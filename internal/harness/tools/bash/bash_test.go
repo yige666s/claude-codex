@@ -1,29 +1,32 @@
 package bash
 
 import (
+	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
-	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
 )
 
 func TestCheckCommandPermission_AllowsReadOnlyCommands(t *testing.T) {
-	result := CheckCommandPermission("git status", safeTempRoot(t))
+	result := CheckCommandPermission("git status", t.TempDir())
 	if result.Behavior != permissions.BehaviorAllow {
 		t.Fatalf("expected allow, got %s (%s)", result.Behavior, result.Message)
 	}
 }
 
 func TestCheckCommandPermission_PassthroughForNormalWriteCommand(t *testing.T) {
-	result := CheckCommandPermission("mkdir build", safeTempRoot(t))
+	result := CheckCommandPermission("mkdir build", t.TempDir())
 	if result.Behavior != permissions.BehaviorPassthrough {
-		t.Fatalf("expected read-only path command to pass through, got %+v", result)
+		t.Fatalf("expected passthrough, got %s (%s)", result.Behavior, result.Message)
 	}
 }
 
 func TestCheckCommandPermission_AsksOnDangerousRedirection(t *testing.T) {
-	result := CheckCommandPermission("echo hi > /etc/passwd", safeTempRoot(t))
+	result := CheckCommandPermission("echo hi > /etc/passwd", t.TempDir())
 	if result.Behavior != permissions.BehaviorAsk {
 		t.Fatalf("expected ask, got %s (%s)", result.Behavior, result.Message)
 	}
@@ -33,7 +36,7 @@ func TestCheckCommandPermission_AsksOnDangerousRedirection(t *testing.T) {
 }
 
 func TestCheckCommandPermission_AsksOnCompoundCdAndGit(t *testing.T) {
-	result := CheckCommandPermission("cd repo && git status", safeTempRoot(t))
+	result := CheckCommandPermission("cd repo && git status", t.TempDir())
 	if result.Behavior != permissions.BehaviorAsk {
 		t.Fatalf("expected ask, got %s (%s)", result.Behavior, result.Message)
 	}
@@ -43,7 +46,7 @@ func TestCheckCommandPermission_AsksOnCompoundCdAndGit(t *testing.T) {
 }
 
 func TestCheckCommandPermission_AsksOnMultipleCdCommands(t *testing.T) {
-	result := CheckCommandPermission("cd a && cd b", safeTempRoot(t))
+	result := CheckCommandPermission("cd a && cd b", t.TempDir())
 	if result.Behavior != permissions.BehaviorAsk {
 		t.Fatalf("expected ask, got %s (%s)", result.Behavior, result.Message)
 	}
@@ -57,7 +60,7 @@ func TestCheckCommandPermission_AsksOnTooManySubcommands(t *testing.T) {
 	for i := range parts {
 		parts[i] = "echo ok"
 	}
-	result := CheckCommandPermission(strings.Join(parts, "; "), safeTempRoot(t))
+	result := CheckCommandPermission(strings.Join(parts, "; "), t.TempDir())
 	if result.Behavior != permissions.BehaviorAsk {
 		t.Fatalf("expected ask, got %s (%s)", result.Behavior, result.Message)
 	}
@@ -67,7 +70,7 @@ func TestCheckCommandPermission_AsksOnTooManySubcommands(t *testing.T) {
 }
 
 func TestExecute_RejectsPermissionEscalationBeforeRunning(t *testing.T) {
-	root := safeTempRoot(t)
+	root := t.TempDir()
 	tool := NewTool(root)
 	payload, err := json.Marshal(map[string]any{
 		"command": "echo blocked > /etc/passwd",
@@ -86,7 +89,7 @@ func TestExecute_RejectsPermissionEscalationBeforeRunning(t *testing.T) {
 }
 
 func TestExecute_RunsPermittedCommand(t *testing.T) {
-	root := safeTempRoot(t)
+	root := t.TempDir()
 	tool := NewTool(root)
 	target := filepath.Join(root, "hello.txt")
 	payload, err := json.Marshal(map[string]any{
@@ -110,14 +113,4 @@ func TestExecute_RunsPermittedCommand(t *testing.T) {
 	if strings.TrimSpace(string(data)) != "hello" {
 		t.Fatalf("unexpected file contents: %q", string(data))
 	}
-}
-
-func safeTempRoot(t *testing.T) string {
-	t.Helper()
-	root, err := os.MkdirTemp("/tmp", "bash-tool-test-")
-	if err != nil {
-		t.Fatalf("mkdirtemp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	return root
 }
