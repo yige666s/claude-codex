@@ -10,52 +10,22 @@ import (
 	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
 )
 
-type Runner func(ctx context.Context, req Request) (string, error)
+type Request struct {
+	Prompt          string `json:"prompt"`
+	Description     string `json:"description,omitempty"`
+	SubagentType    string `json:"subagent_type,omitempty"`
+	Model           string `json:"model,omitempty"`
+	WorkingDir      string `json:"working_dir,omitempty"`
+	RunInBackground bool   `json:"run_in_background,omitempty"`
+	Isolation       string `json:"isolation,omitempty"`
+	MaxTurns        int    `json:"max_turns,omitempty"`
+}
+
+type Runner func(ctx context.Context, request Request) (string, error)
 
 type Tool struct {
 	defaultWorkDir string
 	run            Runner
-}
-
-// Request mirrors the surface-level Agent tool parameters that the model sees.
-// The injected runner may choose to honor only a subset of them.
-type Request struct {
-	Description     string `json:"description,omitempty"`
-	Prompt          string `json:"prompt"`
-	SubagentType    string `json:"subagent_type,omitempty"`
-	Model           string `json:"model,omitempty"`
-	RunInBackground bool   `json:"run_in_background,omitempty"`
-	Isolation       string `json:"isolation,omitempty"`
-	WorkingDir      string `json:"working_dir,omitempty"`
-	CWD             string `json:"cwd,omitempty"`
-	Name            string `json:"name,omitempty"`
-	TeamName        string `json:"team_name,omitempty"`
-	Mode            string `json:"mode,omitempty"`
-}
-
-func (r *Request) normalize(defaultWorkDir string) error {
-	if strings.TrimSpace(r.Prompt) == "" {
-		return fmt.Errorf("prompt is required")
-	}
-	if r.RunInBackground {
-		return fmt.Errorf("agent background execution is not supported")
-	}
-	if r.Isolation != "" {
-		return fmt.Errorf("agent isolation %q is not supported", r.Isolation)
-	}
-
-	if r.CWD != "" && r.WorkingDir != "" && r.CWD != r.WorkingDir {
-		return fmt.Errorf("cwd and working_dir must match when both are provided")
-	}
-
-	switch {
-	case r.CWD != "":
-		r.WorkingDir = r.CWD
-	case r.WorkingDir == "":
-		r.WorkingDir = defaultWorkDir
-	}
-
-	return nil
 }
 
 func NewTool(defaultWorkDir string, run Runner) *Tool {
@@ -74,23 +44,7 @@ func (t *Tool) Description() string {
 }
 
 func (t *Tool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{
-		"type":"object",
-		"properties":{
-			"description":{"type":"string"},
-			"prompt":{"type":"string"},
-			"subagent_type":{"type":"string"},
-			"model":{"type":"string","enum":["sonnet","opus","haiku"]},
-			"run_in_background":{"type":"boolean"},
-			"isolation":{"type":"string","enum":["worktree","remote"]},
-			"working_dir":{"type":"string"},
-			"cwd":{"type":"string"},
-			"name":{"type":"string"},
-			"team_name":{"type":"string"},
-			"mode":{"type":"string"}
-		},
-		"required":["prompt"]
-	}`)
+	return json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"},"description":{"type":"string"},"subagent_type":{"type":"string"},"model":{"type":"string"},"working_dir":{"type":"string"},"run_in_background":{"type":"boolean"},"isolation":{"type":"string","enum":["none","worktree","remote"]},"max_turns":{"type":"integer","minimum":1}},"required":["prompt"]}`)
 }
 
 func (t *Tool) Permission() permissions.Level {
@@ -110,8 +64,32 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return toolkit.Result{}, err
 	}
-	if err := req.normalize(t.defaultWorkDir); err != nil {
-		return toolkit.Result{}, err
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	req.Description = strings.TrimSpace(req.Description)
+	req.SubagentType = strings.TrimSpace(req.SubagentType)
+	req.Model = strings.TrimSpace(req.Model)
+	req.WorkingDir = strings.TrimSpace(req.WorkingDir)
+	req.Isolation = strings.TrimSpace(strings.ToLower(req.Isolation))
+
+	if req.Prompt == "" {
+		return toolkit.Result{}, fmt.Errorf("prompt is required")
+	}
+	if req.RunInBackground {
+		return toolkit.Result{}, fmt.Errorf("agent background execution is not implemented")
+	}
+	switch req.Isolation {
+	case "", "none":
+		req.Isolation = ""
+	case "worktree", "remote":
+		return toolkit.Result{}, fmt.Errorf("agent isolation %q is not implemented", req.Isolation)
+	default:
+		return toolkit.Result{}, fmt.Errorf("agent isolation %q is invalid", req.Isolation)
+	}
+	if req.MaxTurns < 0 {
+		return toolkit.Result{}, fmt.Errorf("max_turns must be positive")
+	}
+	if req.WorkingDir == "" {
+		req.WorkingDir = t.defaultWorkDir
 	}
 
 	type result struct {

@@ -3,13 +3,20 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"strings"
+	"errors"
 	"testing"
+	"time"
 )
 
 func TestAgentToolUsesRunner(t *testing.T) {
-	tool := NewTool("/tmp/project", func(_ context.Context, req Request) (string, error) {
-		return req.WorkingDir + ":" + req.Prompt, nil
+	tool := NewTool("/tmp/project", func(_ context.Context, request Request) (string, error) {
+		if request.WorkingDir != "/tmp/project" {
+			t.Fatalf("unexpected working dir: %q", request.WorkingDir)
+		}
+		if request.Prompt != "inspect files" {
+			t.Fatalf("unexpected prompt: %q", request.Prompt)
+		}
+		return "ok", nil
 	})
 
 	input, _ := json.Marshal(map[string]any{"prompt": "inspect files"})
@@ -17,7 +24,144 @@ func TestAgentToolUsesRunner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent execute: %v", err)
 	}
-	if !strings.Contains(result.Output, "/tmp/project:inspect files") {
+	if result.Output != "ok" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+}
+
+func TestAgentToolForwardsExtendedFields(t *testing.T) {
+	var captured Request
+	tool := NewTool("/tmp/project", func(_ context.Context, request Request) (string, error) {
+		captured = request
+		return "ok", nil
+	})
+
+	input, _ := json.Marshal(map[string]any{
+		"prompt":        " investigate auth ",
+		"description":   " Auth audit ",
+		"subagent_type": " code-reviewer ",
+		"model":         " gpt-5.4 ",
+		"working_dir":   " /tmp/child ",
+		"max_turns":     3,
+	})
+
+	if _, err := tool.Execute(context.Background(), input); err != nil {
+		t.Fatalf("agent execute: %v", err)
+	}
+
+	if captured.Prompt != "investigate auth" {
+		t.Fatalf("unexpected prompt: %q", captured.Prompt)
+	}
+	if captured.Description != "Auth audit" {
+		t.Fatalf("unexpected description: %q", captured.Description)
+	}
+	if captured.SubagentType != "code-reviewer" {
+		t.Fatalf("unexpected subagent type: %q", captured.SubagentType)
+	}
+	if captured.Model != "gpt-5.4" {
+		t.Fatalf("unexpected model: %q", captured.Model)
+	}
+	if captured.WorkingDir != "/tmp/child" {
+		t.Fatalf("unexpected working dir: %q", captured.WorkingDir)
+	}
+	if captured.MaxTurns != 3 {
+		t.Fatalf("unexpected max turns: %d", captured.MaxTurns)
+	}
+}
+
+func TestAgentToolRejectsUnsupportedBackground(t *testing.T) {
+	tool := NewTool("/tmp/project", func(_ context.Context, request Request) (string, error) {
+		t.Fatalf("runner should not be called: %+v", request)
+		return "", nil
+	})
+
+	input, _ := json.Marshal(map[string]any{
+		"prompt":            "inspect files",
+		"run_in_background": true,
+	})
+
+	if _, err := tool.Execute(context.Background(), input); err == nil || err.Error() != "agent background execution is not implemented" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAgentToolRejectsUnsupportedIsolation(t *testing.T) {
+	tool := NewTool("/tmp/project", func(_ context.Context, request Request) (string, error) {
+		t.Fatalf("runner should not be called: %+v", request)
+		return "", nil
+	})
+
+	input, _ := json.Marshal(map[string]any{
+		"prompt":    "inspect files",
+		"isolation": "worktree",
+	})
+
+	if _, err := tool.Execute(context.Background(), input); err == nil || err.Error() != `agent isolation "worktree" is not implemented` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAgentToolValidatesPromptAndMaxTurns(t *testing.T) {
+	tool := NewTool("/tmp/project", func(_ context.Context, request Request) (string, error) {
+		t.Fatalf("runner should not be called: %+v", request)
+		return "", nil
+	})
+
+	cases := []struct {
+		name  string
+		input map[string]any
+		want  string
+	}{
+		{
+			name:  "blank prompt",
+			input: map[string]any{"prompt": "   "},
+			want:  "prompt is required",
+		},
+		{
+			name:  "negative max turns",
+			input: map[string]any{"prompt": "inspect files", "max_turns": -1},
+			want:  "max_turns must be positive",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, _ := json.Marshal(tc.input)
+			if _, err := tool.Execute(context.Background(), raw); err == nil || err.Error() != tc.want {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestAgentToolPropagatesContextCancellation(t *testing.T) {
+	tool := NewTool("/tmp/project", func(ctx context.Context, request Request) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+
+	raw, _ := json.Marshal(map[string]any{"prompt": "inspect files"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := tool.Execute(ctx, raw)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestAgentToolWaitsForRunnerCompletion(t *testing.T) {
+	tool := NewTool("/tmp/project", func(_ context.Context, request Request) (string, error) {
+		time.Sleep(10 * time.Millisecond)
+		return request.Prompt, nil
+	})
+
+	raw, _ := json.Marshal(map[string]any{"prompt": "inspect files"})
+	result, err := tool.Execute(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("agent execute: %v", err)
+	}
+	if result.Output != "inspect files" {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
 }

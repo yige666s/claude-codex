@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	agenttool "github.com/ding/claude-code/claude-go/internal/harness/tools/agent"
 	"github.com/ding/claude-code/claude-go/internal/ui/tui"
 )
 
@@ -154,5 +155,31 @@ func TestRootCommandWithoutArgsStartsTUI(t *testing.T) {
 	}
 	if !called {
 		t.Fatalf("expected zero-arg execution to start the TUI")
+	}
+}
+
+func TestBuildSubagentPromptIncludesMetadata(t *testing.T) {
+	prompt := buildSubagentPrompt(agenttool.Request{
+		Description:  "Review auth flow",
+		SubagentType: "code-reviewer",
+		Prompt:       "Inspect src/auth for session bugs.",
+	})
+
+	wantParts := []string{
+		"Task summary: Review auth flow",
+		"Requested subagent type: code-reviewer",
+		"Inspect src/auth for session bugs.",
+	}
+	for _, part := range wantParts {
+		if !strings.Contains(prompt, part) {
+			t.Fatalf("expected prompt to contain %q, got %q", part, prompt)
+		}
+	}
+}
+
+func TestBuildSubagentPromptWithoutMetadata(t *testing.T) {
+	prompt := buildSubagentPrompt(agenttool.Request{Prompt: "Inspect src/auth for session bugs."})
+	if prompt != "Inspect src/auth for session bugs." {
+		t.Fatalf("unexpected prompt: %q", prompt)
 	}
 }

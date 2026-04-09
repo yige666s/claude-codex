@@ -129,17 +129,24 @@ func NewRootCommandWithIO(streams IO) *cobra.Command {
 
 			var buildEngine func(string) (*engine.Engine, error)
 			buildEngine = func(workingDir string) (*engine.Engine, error) {
-				return newEngine(cfg, mode, workingDir, streams, func(ctx context.Context, req agenttool.Request) (string, error) {
+				return newEngine(cfg, mode, workingDir, streams, func(ctx context.Context, request agenttool.Request) (string, error) {
 					targetDir := workingDir
-					if req.WorkingDir != "" {
-						targetDir = req.WorkingDir
+					if request.WorkingDir != "" {
+						targetDir = request.WorkingDir
 					}
-					childEngine, err := newEngine(cfg, mode, targetDir, streams, nil)
+					childCfg := cfg
+					if request.Model != "" {
+						childCfg.Model = request.Model
+					}
+					if request.MaxTurns > 0 {
+						childCfg.MaxTurns = request.MaxTurns
+					}
+					childEngine, err := newEngine(childCfg, mode, targetDir, streams, nil)
 					if err != nil {
 						return "", err
 					}
 					childSession := state.NewSession(targetDir)
-					result, err := childEngine.Run(ctx, childSession, req.Prompt)
+					result, err := childEngine.Run(ctx, childSession, buildSubagentPrompt(request))
 					if err != nil {
 						return "", err
 					}
@@ -215,6 +222,18 @@ func NewRootCommandWithIO(streams IO) *cobra.Command {
 	command.Flags().IntVar(&maxTurnsFlag, "max-turns", 0, "maximum number of agentic turns (0 = use config default)")
 
 	return command
+}
+
+func buildSubagentPrompt(request agenttool.Request) string {
+	var preamble []string
+	if request.Description != "" {
+		preamble = append(preamble, "Task summary: "+request.Description)
+	}
+	if request.SubagentType != "" {
+		preamble = append(preamble, "Requested subagent type: "+request.SubagentType)
+	}
+	preamble = append(preamble, request.Prompt)
+	return strings.Join(preamble, "\n\n")
 }
 
 func newEngine(cfg config.Config, mode permissions.Mode, workingDir string, streams IO, runSubagent agenttool.Runner) (*engine.Engine, error) {
