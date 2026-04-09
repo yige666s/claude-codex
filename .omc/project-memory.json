@@ -1,0 +1,399 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1775728437923,
+  "projectRoot": "/Users/ding/projectSrc/claude-code/claude-go",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Go",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "go.mod"
+        ]
+      },
+      {
+        "name": "C/C++",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "Makefile"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "go",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "make build",
+    "testCommand": "make test",
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "cmd": {
+      "path": "cmd",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1775728437902,
+      "keyFiles": []
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 6,
+      "lastAccessed": 1775728437905,
+      "keyFiles": [
+        "CCR_ARCHITECTURE.md",
+        "MIGRATION_STATUS.md",
+        "PROVIDER_CONFIG.md",
+        "PROVIDER_IMPLEMENTATION.md",
+        "QUICKSTART_PROVIDERS.md"
+      ]
+    },
+    "internal": {
+      "path": "internal",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1775728437905,
+      "keyFiles": []
+    },
+    "internal/app": {
+      "path": "internal/app",
+      "purpose": "Application code",
+      "fileCount": 0,
+      "lastAccessed": 1775728437906,
+      "keyFiles": []
+    },
+    "internal/public": {
+      "path": "internal/public",
+      "purpose": "Public files",
+      "fileCount": 0,
+      "lastAccessed": 1775728437906,
+      "keyFiles": []
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "REFACTOR_PROGRESS.md",
+      "accessCount": 129,
+      "lastAccessed": 1775711769828,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/slash.go",
+      "accessCount": 41,
+      "lastAccessed": 1775550484278,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/root.go",
+      "accessCount": 29,
+      "lastAccessed": 1775550466823,
+      "type": "file"
+    },
+    {
+      "path": "internal/tui/model.go",
+      "accessCount": 27,
+      "lastAccessed": 1775549960209,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 19,
+      "lastAccessed": 1775734260145,
+      "type": "directory"
+    },
+    {
+      "path": "internal/engine/engine.go",
+      "accessCount": 15,
+      "lastAccessed": 1775549959548,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli",
+      "accessCount": 11,
+      "lastAccessed": 1775549999051,
+      "type": "directory"
+    },
+    {
+      "path": "internal/state/session.go",
+      "accessCount": 11,
+      "lastAccessed": 1775550124241,
+      "type": "file"
+    },
+    {
+      "path": "internal/memory/extractor.go",
+      "accessCount": 9,
+      "lastAccessed": 1775399378932,
+      "type": "file"
+    },
+    {
+      "path": "pkg/anthropic/client.go",
+      "accessCount": 9,
+      "lastAccessed": 1775474470896,
+      "type": "file"
+    },
+    {
+      "path": "internal/tui/types.go",
+      "accessCount": 9,
+      "lastAccessed": 1775549970649,
+      "type": "file"
+    },
+    {
+      "path": "internal/config/config.go",
+      "accessCount": 9,
+      "lastAccessed": 1775554315313,
+      "type": "file"
+    },
+    {
+      "path": "pkg/anthropic/types.go",
+      "accessCount": 8,
+      "lastAccessed": 1775482997672,
+      "type": "file"
+    },
+    {
+      "path": "internal/engine/planner.go",
+      "accessCount": 7,
+      "lastAccessed": 1775550007733,
+      "type": "file"
+    },
+    {
+      "path": "internal/tui/suggestions_test.go",
+      "accessCount": 6,
+      "lastAccessed": 1775391707966,
+      "type": "file"
+    },
+    {
+      "path": "internal/memory/types.go",
+      "accessCount": 6,
+      "lastAccessed": 1775553641617,
+      "type": "file"
+    },
+    {
+      "path": "internal/provider/anthropic.go",
+      "accessCount": 5,
+      "lastAccessed": 1775462855803,
+      "type": "file"
+    },
+    {
+      "path": "internal/tools/tool.go",
+      "accessCount": 5,
+      "lastAccessed": 1775477653432,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/slash_limits.go",
+      "accessCount": 4,
+      "lastAccessed": 1775394944010,
+      "type": "file"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 4,
+      "lastAccessed": 1775491217144,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/adapter.go",
+      "accessCount": 4,
+      "lastAccessed": 1775549952533,
+      "type": "file"
+    },
+    {
+      "path": "go.mod",
+      "accessCount": 4,
+      "lastAccessed": 1775557594024,
+      "type": "file"
+    },
+    {
+      "path": "internal/state/session_manager.go",
+      "accessCount": 3,
+      "lastAccessed": 1775356387353,
+      "type": "file"
+    },
+    {
+      "path": "config.example.json",
+      "accessCount": 3,
+      "lastAccessed": 1775358580242,
+      "type": "file"
+    },
+    {
+      "path": "PROGRESS.md",
+      "accessCount": 3,
+      "lastAccessed": 1775392325493,
+      "type": "file"
+    },
+    {
+      "path": "internal/tools/registry.go",
+      "accessCount": 3,
+      "lastAccessed": 1775398020405,
+      "type": "file"
+    },
+    {
+      "path": "internal/engine",
+      "accessCount": 3,
+      "lastAccessed": 1775549977582,
+      "type": "directory"
+    },
+    {
+      "path": "internal/anthropic",
+      "accessCount": 2,
+      "lastAccessed": 1775358935797,
+      "type": "directory"
+    },
+    {
+      "path": "internal/tui/model_test.go",
+      "accessCount": 2,
+      "lastAccessed": 1775390232694,
+      "type": "file"
+    },
+    {
+      "path": "AUTOCOMPLETE_IMPLEMENTATION.md",
+      "accessCount": 2,
+      "lastAccessed": 1775391058073,
+      "type": "file"
+    },
+    {
+      "path": "internal/ratelimit/tracker.go",
+      "accessCount": 2,
+      "lastAccessed": 1775394300826,
+      "type": "file"
+    },
+    {
+      "path": "internal/memory/storage.go",
+      "accessCount": 2,
+      "lastAccessed": 1775395438438,
+      "type": "file"
+    },
+    {
+      "path": "internal/memory/manager.go",
+      "accessCount": 2,
+      "lastAccessed": 1775395507846,
+      "type": "file"
+    },
+    {
+      "path": "internal/provider/types.go",
+      "accessCount": 2,
+      "lastAccessed": 1775482983406,
+      "type": "file"
+    },
+    {
+      "path": "internal/tui/app.go",
+      "accessCount": 2,
+      "lastAccessed": 1775549951074,
+      "type": "file"
+    },
+    {
+      "path": "internal/provider/openai.go",
+      "accessCount": 1,
+      "lastAccessed": 1775355302497,
+      "type": "file"
+    },
+    {
+      "path": "internal/provider/gemini.go",
+      "accessCount": 1,
+      "lastAccessed": 1775355325249,
+      "type": "file"
+    },
+    {
+      "path": "internal/provider/factory.go",
+      "accessCount": 1,
+      "lastAccessed": 1775355340711,
+      "type": "file"
+    },
+    {
+      "path": "internal/provider/provider_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1775355524165,
+      "type": "file"
+    },
+    {
+      "path": "internal/provider/README.md",
+      "accessCount": 1,
+      "lastAccessed": 1775355549072,
+      "type": "file"
+    },
+    {
+      "path": "docs/PROVIDER_CONFIG.md",
+      "accessCount": 1,
+      "lastAccessed": 1775355615711,
+      "type": "file"
+    },
+    {
+      "path": "docs/PROVIDER_IMPLEMENTATION.md",
+      "accessCount": 1,
+      "lastAccessed": 1775355678058,
+      "type": "file"
+    },
+    {
+      "path": "docs/QUICKSTART_PROVIDERS.md",
+      "accessCount": 1,
+      "lastAccessed": 1775355722219,
+      "type": "file"
+    },
+    {
+      "path": "internal/cli/root_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1775356849735,
+      "type": "file"
+    },
+    {
+      "path": "internal/context/collector.go",
+      "accessCount": 1,
+      "lastAccessed": 1775357607159,
+      "type": "file"
+    },
+    {
+      "path": "internal/tui/suggestions.go",
+      "accessCount": 1,
+      "lastAccessed": 1775390095860,
+      "type": "file"
+    },
+    {
+      "path": "IMPLEMENTATION_SUMMARY.md",
+      "accessCount": 1,
+      "lastAccessed": 1775391156274,
+      "type": "file"
+    },
+    {
+      "path": "internal/ratelimit/types.go",
+      "accessCount": 1,
+      "lastAccessed": 1775394193986,
+      "type": "file"
+    },
+    {
+      "path": "internal/ratelimit/tracker_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1775394268697,
+      "type": "file"
+    },
+    {
+      "path": "internal/memory/manager_new.go",
+      "accessCount": 1,
+      "lastAccessed": 1775395524043,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

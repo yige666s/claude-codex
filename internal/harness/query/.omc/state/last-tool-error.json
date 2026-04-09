@@ -1,0 +1,7 @@
+{
+  "tool_name": "Read",
+  "tool_input_preview": "{\"file_path\":\"/Users/ding/projectSrc/claude-code/src/utils/processUserInput.ts\",\"limit\":100}",
+  "error": "File does not exist. Note: your current working directory is /Users/ding/projectSrc/claude-code/claude-go/internal/harness/query. Did you mean processUserInput?",
+  "timestamp": "2026-04-08T12:15:55.938Z",
+  "retry_count": 1
+}

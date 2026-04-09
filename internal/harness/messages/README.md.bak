@@ -1,0 +1,187 @@
+# Messages Package
+
+This package provides message and attachment handling for the Claude Code harness.
+
+## Skill Listing Mechanism
+
+The Skill Listing mechanism is responsible for informing the LLM about available skills through `<system-reminder>` messages, matching the TypeScript implementation.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Skill Listing Flow                       │
+└─────────────────────────────────────────────────────────────┘
+
+1. Session Start
+   ├─> SkillListingManager.GetSkillListingAttachment()
+   ├─> Formats all user-invocable skills within budget
+   ├─> Returns SkillListingAttachment (isInitial: true)
+   └─> Converts to <system-reminder> message
+
+2. Dynamic Discovery (when new skills are found)
+   ├─> SkillListingManager.GetSkillListingAttachment()
+   ├─> Formats only NEW skills (incremental)
+   ├─> Returns SkillListingAttachment (isInitial: false)
+   └─> Converts to <system-reminder> message
+
+3. Session Resume
+   ├─> SkillListingManager.SuppressNext()
+   └─> Marks all skills as sent (avoids duplication)
+```
+
+### Components
+
+#### 1. Attachment Types
+
+```go
+// SkillListingAttachment represents a skill listing
+type SkillListingAttachment struct {
+    Content    string // Formatted skill list
+    SkillCount int    // Number of skills in this batch
+    IsInitial  bool   // true for first batch, false for incremental
+}
+
+// Converts to system-reminder format
+func (a *SkillListingAttachment) ToSystemReminder() string
+```
+
+#### 2. SkillListingManager
+
+Manages incremental skill listing with deduplication:
+
+```go
+manager := messages.NewSkillListingManager()
+
+// Get attachment for new skills
+attachment := manager.GetSkillListingAttachment(
+    allSkills,
+    contextWindowTokens, // e.g., 200000
+)
+
+if attachment != nil {
+    // Inject into conversation as system-reminder
+    systemReminder := attachment.ToSystemReminder()
+}
+```
+
+#### 3. Formatting Logic
+
+**Budget Control:**
+- Default: 1% of context window (8000 chars for 200k tokens)
+- Bundled skills: Always get full descriptions
+- Other skills: Truncated if needed to fit budget
+
+**Description Truncation:**
+- Max 250 characters per skill description
+- Bundled skills never truncated
+- Non-bundled skills truncated proportionally
+
+**Format:**
+```
+- skill-name: Description text (max 250 chars)
+```
+
+### Usage Example
+
+```go
+package main
+
+import (
+    "github.com/ding/claude-code/claude-go/internal/harness/messages"
+    "github.com/ding/claude-code/claude-go/internal/harness/skills"
+)
+
+func main() {
+    // Create manager
+    manager := messages.NewSkillListingManager()
+    
+    // Get all user-invocable skills
+    skillManager := skills.NewSkillManager()
+    allSkills := skillManager.ListUserInvocableSkills()
+    
+    // Initial listing (session start)
+    attachment := manager.GetSkillListingAttachment(allSkills, 200000)
+    if attachment != nil {
+        // attachment.IsInitial == true
+        // attachment.SkillCount == len(allSkills)
+        systemReminder := attachment.ToSystemReminder()
+        // Inject systemReminder into conversation
+    }
+    
+    // Later: dynamic skill discovery
+    newSkills := discoverNewSkills()
+    allSkills = append(allSkills, newSkills...)
+    
+    attachment = manager.GetSkillListingAttachment(allSkills, 200000)
+    if attachment != nil {
+        // attachment.IsInitial == false
+        // attachment.SkillCount == len(newSkills) (only new ones)
+        systemReminder := attachment.ToSystemReminder()
+        // Inject systemReminder into conversation
+    }
+    
+    // Session resume: suppress duplicate listing
+    manager.SuppressNext(allSkills)
+}
+```
+
+### Integration with Engine
+
+The engine should:
+
+1. **Session Start:**
+   - Create SkillListingManager
+   - Get initial skill listing attachment
+   - Inject as system-reminder message
+
+2. **Dynamic Discovery:**
+   - When new skills are discovered (e.g., conditional activation)
+   - Get incremental skill listing attachment
+   - Inject as system-reminder message
+
+3. **Session Resume:**
+   - Call SuppressNext() to avoid re-announcing existing skills
+
+### Output Format
+
+```xml
+<system-reminder>
+The following skills are available for use with the Skill tool:
+
+- commit: Create a git commit with a descriptive message
+- review-pr: Review a pull request and provide feedback
+- test: Run tests for the project
+</system-reminder>
+```
+
+### Differences from Old Implementation
+
+| Old (collector.go) | New (messages package) |
+|-------------------|------------------------|
+| Static in system prompt | Dynamic via system-reminder |
+| All skills every time | Incremental updates |
+| No budget control | 1% context window budget |
+| No deduplication | Tracks sent skills |
+| Bundled in context | Separate attachment mechanism |
+
+### TypeScript Parity
+
+This implementation matches the TypeScript version:
+
+- ✅ Attachment-based injection
+- ✅ Incremental updates (only new skills)
+- ✅ Budget control (1% of context window)
+- ✅ Bundled skill priority (never truncated)
+- ✅ Description truncation (250 char max)
+- ✅ System-reminder format
+- ✅ Session resume suppression
+
+### Next Steps
+
+To complete the integration:
+
+1. Update engine to use SkillListingManager
+2. Inject skill listing attachments at appropriate times
+3. Handle dynamic skill discovery events
+4. Implement session resume logic

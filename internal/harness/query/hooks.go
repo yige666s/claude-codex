@@ -1,0 +1,73 @@
+package query
+
+import (
+	"context"
+
+	"github.com/ding/claude-code/claude-go/internal/harness/tool"
+	"github.com/ding/claude-code/claude-go/internal/public/types"
+)
+
+// handleStopHooks executes stop hooks and returns the result.
+// It also triggers session memory extraction when thresholds are met.
+func handleStopHooks(
+	ctx context.Context,
+	messagesForQuery []types.Message,
+	assistantMessages []types.AssistantMessage,
+	SystemPrompt types.SystemPrompt,
+	userContext map[string]string,
+	systemContext map[string]string,
+	toolUseContext *tool.ToolUseContext,
+	querySource string,
+	stopHookActive *bool,
+	eventChan chan<- interface{},
+) (*StopHookResult, error) {
+	// Execute configured stop hooks (shell hooks from settings).
+	_, _ = executeStopHooks(ctx, nil)
+
+	// Execute task/teammate hooks (no-op until Agent/Coordinator is implemented).
+	_, _ = executeTaskCompletedHooks(ctx, nil)
+	_, _ = executeTeammateIdleHooks(ctx, nil)
+
+	// Session memory extraction: fires in background when thresholds are met.
+	// Only runs on the main REPL thread (querySource == "repl_main_thread" or "").
+	tryExtractSessionMemory(SessionMemoryExtractionParams{
+		Ctx:          ctx,
+		Messages:     messagesForQuery,
+		ToolUseCtx:   toolUseContext,
+		QuerySource:  querySource,
+		SystemPrompt: SystemPrompt,
+		UserContext:  userContext,
+		SystemCtx:    systemContext,
+	})
+
+	return &StopHookResult{
+		BlockingErrors:      []types.Message{},
+		PreventContinuation: false,
+	}, nil
+}
+
+// executeStopHooks runs configured stop hooks (shell hooks).
+func executeStopHooks(ctx context.Context, hookContext interface{}) ([]HookResult, error) {
+	// TODO: Integrate with the hooks.Registry once available.
+	return nil, nil
+}
+
+// executeTaskCompletedHooks runs task completed hooks.
+func executeTaskCompletedHooks(ctx context.Context, hookContext interface{}) ([]HookResult, error) {
+	// TODO: Integrate with the hooks.Registry once available.
+	return nil, nil
+}
+
+// executeTeammateIdleHooks runs teammate idle hooks.
+func executeTeammateIdleHooks(ctx context.Context, hookContext interface{}) ([]HookResult, error) {
+	// TODO: Integrate with the hooks.Registry once available.
+	return nil, nil
+}
+
+// HookResult represents the result of a hook execution.
+type HookResult struct {
+	BlockingError       string
+	PreventContinuation bool
+	StopReason          string
+}
+

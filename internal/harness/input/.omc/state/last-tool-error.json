@@ -1,0 +1,7 @@
+{
+  "tool_name": "Read",
+  "tool_input_preview": "{\"file_path\":\"/Users/ding/projectSrc/claude-code/claude-go/internal/harness/storage/storage.go\",\"limit\":50}",
+  "error": "File does not exist. Note: your current working directory is /Users/ding/projectSrc/claude-code/claude-go/internal/harness/input.",
+  "timestamp": "2026-04-08T12:34:41.125Z",
+  "retry_count": 1
+}

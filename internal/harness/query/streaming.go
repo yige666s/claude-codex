@@ -1,0 +1,163 @@
+package query
+
+import (
+	"github.com/ding/claude-code/claude-go/internal/public/types"
+)
+
+// StreamingEvent represents an event during streaming.
+type StreamingEvent struct {
+	Type    string
+	Message types.Message
+	Block   interface{}
+}
+
+// streamModelResponse processes streaming model responses.
+func streamModelResponse(
+	messageChan <-chan types.Message,
+	assistantMessages *[]types.AssistantMessage,
+	toolUseBlocks *[]types.ToolUseBlock,
+	needsFollowUp *bool,
+	streamingToolExecutor interface{},
+	eventChan chan<- interface{},
+) error {
+	for msg := range messageChan {
+		switch msg.Type {
+		case types.MessageTypeAssistant:
+			assistantMsg := types.AssistantMessage{
+				Type:    string(msg.Type),
+				Message: msg,
+			}
+			*assistantMessages = append(*assistantMessages, assistantMsg)
+			eventChan <- assistantMsg
+
+			// Extract tool use blocks
+			for _, content := range assistantMsg.Message.Content {
+				if content.Type == "tool_use" {
+					toolUse := types.ToolUseBlock{
+						Type:  content.Type,
+						ID:    content.ID,
+						Name:  content.Name,
+						Input: content.Input,
+					}
+					*toolUseBlocks = append(*toolUseBlocks, toolUse)
+					*needsFollowUp = true
+
+					// Queue tool for streaming execution if enabled
+					if executor, ok := streamingToolExecutor.(interface {
+						QueueTool(types.ToolUseBlock)
+					}); ok {
+						executor.QueueTool(toolUse)
+					}
+				}
+			}
+
+		case "stream_event":
+			// Forward streaming events
+			eventChan <- msg
+
+		case "request_start":
+			// Forward request start events
+			eventChan <- msg
+
+		default:
+			// Forward other message types
+			eventChan <- msg
+		}
+	}
+
+	return nil
+}
+
+// generateStreamEvent creates a stream event.
+func generateStreamEvent(eventType string, data interface{}) StreamEvent {
+	return StreamEvent{
+		Type: eventType,
+	}
+}
+
+// emitRequestStartEvent emits a request start event.
+func emitRequestStartEvent(
+	model string,
+	maxTokens int,
+	messageCount int,
+	eventChan chan<- interface{},
+) {
+	event := map[string]interface{}{
+		"type":          "request_start",
+		"model":         model,
+		"max_tokens":    maxTokens,
+		"message_count": messageCount,
+	}
+	eventChan <- event
+}
+
+// emitContentBlockStart emits a content block start event.
+func emitContentBlockStart(blockType string, index int, eventChan chan<- interface{}) {
+	event := map[string]interface{}{
+		"type":       "content_block_start",
+		"block_type": blockType,
+		"index":      index,
+	}
+	eventChan <- event
+}
+
+// emitContentBlockDelta emits a content block delta event.
+func emitContentBlockDelta(index int, delta interface{}, eventChan chan<- interface{}) {
+	event := map[string]interface{}{
+		"type":  "content_block_delta",
+		"index": index,
+		"delta": delta,
+	}
+	eventChan <- event
+}
+
+// emitContentBlockStop emits a content block stop event.
+func emitContentBlockStop(index int, eventChan chan<- interface{}) {
+	event := map[string]interface{}{
+		"type":  "content_block_stop",
+		"index": index,
+	}
+	eventChan <- event
+}
+
+// emitMessageComplete emits a message complete event.
+func emitMessageComplete(
+	stopReason string,
+	usage *types.Usage,
+	eventChan chan<- interface{},
+) {
+	event := map[string]interface{}{
+		"type":        "message_complete",
+		"stop_reason": stopReason,
+		"usage":       usage,
+	}
+	eventChan <- event
+}
+
+// processStreamingToolExecution processes tool execution during streaming.
+func processStreamingToolExecution(
+	toolUseBlock types.ToolUseBlock,
+	streamingToolExecutor interface{},
+	eventChan chan<- interface{},
+) {
+	// Queue the tool for execution
+	if executor, ok := streamingToolExecutor.(interface {
+		QueueTool(types.ToolUseBlock)
+	}); ok {
+		executor.QueueTool(toolUseBlock)
+	}
+}
+
+// consumeRemainingStreamingResults consumes remaining results from streaming tool executor.
+func consumeRemainingStreamingResults(
+	streamingToolExecutor interface{},
+	eventChan chan<- interface{},
+) {
+	if executor, ok := streamingToolExecutor.(interface {
+		GetRemainingResults() <-chan interface{}
+	}); ok {
+		for result := range executor.GetRemainingResults() {
+			eventChan <- result
+		}
+	}
+}

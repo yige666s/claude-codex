@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cd internal/harness/context && go test -v 2>&1 | head -30\",\"description\":\"Run context package tests\"}",
+  "error": "Exit code 1\n(eval):cd:1: no such file or directory: internal/harness/context",
+  "timestamp": "2026-04-08T11:40:15.019Z",
+  "retry_count": 1
+}
