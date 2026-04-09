@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -341,8 +343,15 @@ func (s *Server) formatSkill(output *strings.Builder, skill *skills.SkillDefinit
 	}
 }
 
+func staticIndexPath() string {
+	if _, filename, _, ok := runtime.Caller(0); ok {
+		return filepath.Join(filepath.Dir(filename), "..", "static", "index.html")
+	}
+	return filepath.Join("internal", "ui", "web", "static", "index.html")
+}
+
 func (s *Server) HandleStatic(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "internal/ui/web/static/index.html")
+	http.ServeFile(w, r, staticIndexPath())
 }
 
 func (s *Server) Start(addr string) error {
