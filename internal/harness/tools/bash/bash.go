@@ -8,12 +8,16 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
 	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
 )
 
-const defaultTimeout = 30 * time.Second
+const (
+	defaultTimeout               = 30 * time.Second
+	maxSubcommandsForSafetyCheck = 50
+)
 
 type Tool struct {
 	rootDir string
@@ -73,6 +77,14 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result
 		timeout = time.Duration(payload.TimeoutSeconds) * time.Second
 	}
 
+	permissionResult := CheckCommandPermission(payload.Command, workdir)
+	if permissionResult.Behavior == permissions.BehaviorAsk || permissionResult.Behavior == permissions.BehaviorDeny {
+		if permissionResult.Message != "" {
+			return toolkit.Result{}, fmt.Errorf("bash command requires approval: %s", permissionResult.Message)
+		}
+		return toolkit.Result{}, fmt.Errorf("bash command requires approval")
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -106,4 +118,100 @@ func truncate(value string, limit int) string {
 		return value
 	}
 	return value[:limit] + "\n...[truncated]"
+}
+
+func CheckCommandPermission(command, cwd string) permissions.PermissionResult {
+	if strings.TrimSpace(command) == "" {
+		return permissions.Allow()
+	}
+
+	subcommands := splitSubcommands(command)
+	if len(subcommands) > maxSubcommandsForSafetyCheck {
+		return permissions.Ask(fmt.Sprintf("command splits into %d subcommands, too many to safety-check individually", len(subcommands)))
+	}
+
+	cdCount := 0
+	hasGit := false
+	for _, subcmd := range subcommands {
+		if isNormalizedCommand(subcmd, "cd") {
+			cdCount++
+		}
+		if isNormalizedCommand(subcmd, "git") {
+			hasGit = true
+		}
+	}
+
+	if cdCount > 1 {
+		return permissions.Ask("multiple directory changes in one command require manual review")
+	}
+	if cdCount > 0 && hasGit {
+		return permissions.Ask("compound commands with cd and git require manual review")
+	}
+
+	var (
+		sawAsk   bool
+		firstAsk permissions.PermissionResult
+	)
+	for _, subcmd := range subcommands {
+		result := checkSingleCommandPermission(subcmd, cwd)
+		if result.Behavior == permissions.BehaviorDeny {
+			return result
+		}
+		if result.Behavior == permissions.BehaviorAsk {
+			if !sawAsk {
+				firstAsk = result
+			}
+			sawAsk = true
+		}
+	}
+
+	pathResult := CheckPathConstraints(command, cwd)
+	if pathResult.Behavior == permissions.BehaviorDeny {
+		return pathResult
+	}
+	if pathResult.Behavior == permissions.BehaviorAsk && !sawAsk {
+		return pathResult
+	}
+	if sawAsk {
+		return firstAsk
+	}
+
+	allReadOnly := true
+	for _, subcmd := range subcommands {
+		if !IsCommandReadOnly(subcmd) {
+			allReadOnly = false
+			break
+		}
+	}
+	if allReadOnly {
+		return permissions.Allow()
+	}
+
+	return permissions.Passthrough("command requires approval from the session permission checker")
+}
+
+func checkSingleCommandPermission(command, cwd string) permissions.PermissionResult {
+	if result := BashCommandIsSafe(command); result.Behavior == permissions.BehaviorAsk || result.Behavior == permissions.BehaviorDeny {
+		return result
+	}
+	if result := CheckPathConstraints(command, cwd); result.Behavior == permissions.BehaviorAsk || result.Behavior == permissions.BehaviorDeny {
+		return result
+	}
+	if IsCommandReadOnly(command) {
+		return permissions.Allow()
+	}
+	return permissions.Passthrough("subcommand requires approval from the session permission checker")
+}
+
+func isNormalizedCommand(command, want string) bool {
+	trimmed := strings.TrimSpace(stripSafeWrappersForPath(command))
+	if trimmed == "" {
+		return false
+	}
+	tokens := splitCommandTokens(trimmed)
+	if len(tokens) == 0 {
+		return false
+	}
+	base := strings.TrimLeftFunc(tokens[0], unicode.IsSpace)
+	return base == want
 }
