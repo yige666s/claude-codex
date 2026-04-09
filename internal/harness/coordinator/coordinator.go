@@ -2,8 +2,10 @@ package coordinator
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ding/claude-code/claude-go/internal/public/fsutil"
@@ -28,10 +30,20 @@ func (m *TeamManager) Create(name string) (Team, error) {
 	if err != nil {
 		return Team{}, err
 	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Team{}, fmt.Errorf("team name is required")
+	}
+	for _, existing := range teams {
+		if strings.EqualFold(existing.Name, name) {
+			return Team{}, fmt.Errorf("team already exists: %s", name)
+		}
+	}
+	now := time.Now().UTC()
 	team := Team{
-		ID:        time.Now().UTC().Format("20060102T150405.000000000Z"),
+		ID:        now.Format("20060102T150405.000000000Z"),
 		Name:      name,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now,
 	}
 	teams = append(teams, team)
 	return team, m.save(teams)
@@ -42,10 +54,14 @@ func (m *TeamManager) Delete(name string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false, fmt.Errorf("team name is required")
+	}
 	filtered := teams[:0]
 	removed := false
 	for _, team := range teams {
-		if team.Name == name {
+		if strings.EqualFold(team.Name, name) {
 			removed = true
 			continue
 		}

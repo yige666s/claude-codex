@@ -43,8 +43,14 @@ func (t *createTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Re
 		return toolkit.Result{}, err
 	}
 	_ = in.Agents
-	// TODO: Implement when coordinator.Manager.Create is available
-	return toolkit.Result{}, fmt.Errorf("team creation not yet implemented")
+	if t.manager == nil {
+		return toolkit.Result{}, fmt.Errorf("team manager is required")
+	}
+	team, err := t.manager.Create(in.Name)
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	return toolkit.Result{Output: fmt.Sprintf("Created team %q (id: %s).", team.Name, team.ID)}, nil
 }
 
 func (t *deleteTool) Name() string        { return "team_delete" }
@@ -62,6 +68,15 @@ func (t *deleteTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Re
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return toolkit.Result{}, err
 	}
-	// TODO: Implement when coordinator.Manager.Delete is available
-	return toolkit.Result{}, fmt.Errorf("team deletion not yet implemented")
+	if t.manager == nil {
+		return toolkit.Result{}, fmt.Errorf("team manager is required")
+	}
+	removed, err := t.manager.Delete(in.Name)
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	if !removed {
+		return toolkit.Result{}, fmt.Errorf("team not found: %s", in.Name)
+	}
+	return toolkit.Result{Output: fmt.Sprintf("Deleted team %q.", in.Name)}, nil
 }

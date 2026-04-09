@@ -30,6 +30,29 @@ func NewManager(config Config) *Manager {
 	}
 }
 
+func (m *Manager) teamStore() *TeamManager {
+	root := strings.TrimSpace(m.config.ScratchpadDir)
+	if root == "" {
+		root = "."
+	}
+	return NewTeamManager(root)
+}
+
+// Create persists a team definition for coordinator-managed teams.
+func (m *Manager) Create(name string) (Team, error) {
+	return m.teamStore().Create(name)
+}
+
+// Delete removes a persisted team definition.
+func (m *Manager) Delete(name string) (bool, error) {
+	return m.teamStore().Delete(name)
+}
+
+// ListTeams returns persisted coordinator team definitions.
+func (m *Manager) ListTeams() ([]Team, error) {
+	return m.teamStore().List()
+}
+
 // RegisterWorker registers a new worker
 func (m *Manager) RegisterWorker(agentID, description string) {
 	m.mu.Lock()
