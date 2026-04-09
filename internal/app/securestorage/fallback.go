@@ -18,10 +18,7 @@ func (s *fallbackStore) Name() string {
 
 func (s *fallbackStore) Read() (Data, error) {
 	data, err := s.primary.Read()
-	if err != nil {
-		return nil, err
-	}
-	if data != nil {
+	if err == nil && data != nil {
 		return data, nil
 	}
 
@@ -38,7 +35,7 @@ func (s *fallbackStore) Read() (Data, error) {
 func (s *fallbackStore) Write(data Data) (WriteResult, error) {
 	primaryBefore, err := s.primary.Read()
 	if err != nil {
-		return WriteResult{}, err
+		primaryBefore = nil
 	}
 
 	result, err := s.primary.Write(data)
