@@ -586,13 +586,21 @@ func parseMCPServerArgs(name string, args []string) (config.MCPServerConfig, err
 	switch {
 	case len(args) >= 2 && args[0] == "--url":
 		return config.MCPServerConfig{Name: name, Transport: "sse", URL: args[1]}, nil
+	case len(args) == 1 && args[0] == "--url":
+		return config.MCPServerConfig{}, mcpUsageError(name)
 	case len(args) >= 2 && args[0] == "--":
 		return config.MCPServerConfig{Name: name, Transport: "stdio", Command: append([]string(nil), args[1:]...)}, nil
+	case len(args) == 1 && args[0] == "--":
+		return config.MCPServerConfig{}, mcpUsageError(name)
 	case len(args) >= 1:
 		return config.MCPServerConfig{Name: name, Transport: "stdio", Command: append([]string(nil), args...)}, nil
 	default:
-		return config.MCPServerConfig{}, fmt.Errorf("usage: /mcp add %s -- <command...> or /mcp add %s --url <url>", name, name)
+		return config.MCPServerConfig{}, mcpUsageError(name)
 	}
+}
+
+func mcpUsageError(name string) error {
+	return fmt.Errorf("usage: /mcp add %s -- <command...> or /mcp add %s --url <url>", name, name)
 }
 
 func upsertMCPServer(servers *[]config.MCPServerConfig, server config.MCPServerConfig) {
@@ -1059,4 +1067,3 @@ func handleSessionStats(slash slashContext, sm *state.SessionManager) error {
 
 	return nil
 }
-
