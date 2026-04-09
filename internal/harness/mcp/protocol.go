@@ -21,6 +21,11 @@ type RPCError struct {
 	Message string `json:"message"`
 }
 
+type Event struct {
+	Name string          `json:"name"`
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
 type ToolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
@@ -50,4 +55,3 @@ type InitializeResult struct {
 	} `json:"serverInfo,omitempty"`
 	Instructions string `json:"instructions,omitempty"`
 }
-

@@ -111,6 +111,85 @@ func (c *Client) CallTool(ctx context.Context, name string, input json.RawMessag
 	return result.Output, nil
 }
 
+// SubscribeEvents connects to an HTTP/SSE MCP server and forwards events to
+// handler until the context is cancelled, the stream ends, or handler fails.
+func (c *Client) SubscribeEvents(ctx context.Context, handler func(Event) error) error {
+	if transport(c.cfg) != "sse" {
+		return fmt.Errorf("event subscription requires sse transport")
+	}
+
+	baseURL := strings.TrimRight(c.cfg.URL, "/")
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/sse", nil)
+	if err != nil {
+		return err
+	}
+	for key, value := range c.cfg.Headers {
+		request.Header.Set(key, value)
+	}
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return fmt.Errorf("mcp sse subscribe failed (%d): %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
+
+	current := Event{}
+	hasData := false
+	dispatch := func() error {
+		if current.Name == "" && !hasData {
+			return nil
+		}
+		if current.Name == "" {
+			current.Name = "message"
+		}
+		if err := handler(current); err != nil {
+			return err
+		}
+		current = Event{}
+		hasData = false
+		return nil
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case line == "":
+			if err := dispatch(); err != nil {
+				return err
+			}
+		case strings.HasPrefix(line, ":"):
+			continue
+		case strings.HasPrefix(line, "event:"):
+			current.Name = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		case strings.HasPrefix(line, "data:"):
+			dataLine := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if !hasData {
+				current.Data = append([]byte(nil), dataLine...)
+				hasData = true
+				continue
+			}
+			current.Data = append(current.Data, '\n')
+			current.Data = append(current.Data, dataLine...)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if err := dispatch(); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
 func (c *Client) call(ctx context.Context, method string, params any, target any) error {
 	switch transport(c.cfg) {
 	case "sse":
