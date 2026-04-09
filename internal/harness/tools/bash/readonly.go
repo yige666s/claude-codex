@@ -160,35 +160,6 @@ func isCommandSafeViaFlagParsing(command string) bool {
 	return isInCommandAllowlist(tokens[0], tokens[1:])
 }
 
-// splitCommandTokens splits a command into tokens respecting quotes.
-func splitCommandTokens(command string) []string {
-	var tokens []string
-	var cur strings.Builder
-	inSingle, inDouble := false, false
-	for i := 0; i < len(command); i++ {
-		c := command[i]
-		switch {
-		case c == '\'' && !inDouble:
-			inSingle = !inSingle
-			cur.WriteByte(c)
-		case c == '"' && !inSingle:
-			inDouble = !inDouble
-			cur.WriteByte(c)
-		case (c == ' ' || c == '\t') && !inSingle && !inDouble:
-			if cur.Len() > 0 {
-				tokens = append(tokens, cur.String())
-				cur.Reset()
-			}
-		default:
-			cur.WriteByte(c)
-		}
-	}
-	if cur.Len() > 0 {
-		tokens = append(tokens, cur.String())
-	}
-	return tokens
-}
-
 // isInCommandAllowlist checks if the base command with given args is in the safe allowlist.
 // This is a simplified version — flags starting with - are allowed for most read-only commands.
 func isInCommandAllowlist(baseCmd string, args []string) bool {

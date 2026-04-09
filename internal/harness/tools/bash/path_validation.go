@@ -281,45 +281,6 @@ func isDangerousRemovalPath(abs string) bool {
 	return false
 }
 
-// splitSubcommands splits a compound command string into individual subcommands.
-// Handles ; | && || but not inside quotes.
-func splitSubcommands(command string) []string {
-	var parts []string
-	var cur strings.Builder
-	inSingle, inDouble := false, false
-	for i := 0; i < len(command); i++ {
-		c := command[i]
-		switch {
-		case c == '\'' && !inDouble:
-			inSingle = !inSingle
-			cur.WriteByte(c)
-		case c == '"' && !inSingle:
-			inDouble = !inDouble
-			cur.WriteByte(c)
-		case inSingle || inDouble:
-			cur.WriteByte(c)
-		case c == ';' || c == '|' || c == '&':
-			if s := strings.TrimSpace(cur.String()); s != "" {
-				parts = append(parts, s)
-			}
-			cur.Reset()
-			// Skip && and ||
-			if i+1 < len(command) && (command[i+1] == '&' || command[i+1] == '|') {
-				i++
-			}
-		default:
-			cur.WriteByte(c)
-		}
-	}
-	if s := strings.TrimSpace(cur.String()); s != "" {
-		parts = append(parts, s)
-	}
-	if len(parts) == 0 {
-		return []string{command}
-	}
-	return parts
-}
-
 // stripSafeWrappersForPath strips timeout/time/nice/nohup wrappers for path analysis.
 func stripSafeWrappersForPath(command string) string {
 	wrappers := []string{"timeout ", "time ", "nice ", "nohup ", "stdbuf "}

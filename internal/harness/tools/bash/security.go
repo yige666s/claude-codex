@@ -10,29 +10,29 @@ import (
 
 // Check IDs for analytics (mirrors TS BASH_SECURITY_CHECK_IDS).
 const (
-	checkIncompleteCommands               = 1
-	checkJqSystemFunction                 = 2
-	checkJqFileArguments                  = 3
-	checkObfuscatedFlags                  = 4
-	checkShellMetacharacters              = 5
-	checkDangerousVariables               = 6
-	checkNewlines                         = 7
-	checkDangerousPatternsCmdSubstitution = 8
-	checkDangerousPatternsInputRedirection = 9
+	checkIncompleteCommands                 = 1
+	checkJqSystemFunction                   = 2
+	checkJqFileArguments                    = 3
+	checkObfuscatedFlags                    = 4
+	checkShellMetacharacters                = 5
+	checkDangerousVariables                 = 6
+	checkNewlines                           = 7
+	checkDangerousPatternsCmdSubstitution   = 8
+	checkDangerousPatternsInputRedirection  = 9
 	checkDangerousPatternsOutputRedirection = 10
-	checkIFSInjection                     = 11
-	checkGitCommitSubstitution            = 12
-	checkProcEnvironAccess                = 13
-	checkMalformedTokenInjection          = 14
-	checkBackslashEscapedWhitespace       = 15
-	checkBraceExpansion                   = 16
-	checkControlCharacters                = 17
-	checkUnicodeWhitespace                = 18
-	checkMidWordHash                      = 19
-	checkZshDangerousCommands             = 20
-	checkBackslashEscapedOperators        = 21
-	checkCommentQuoteDesync               = 22
-	checkQuotedNewline                    = 23
+	checkIFSInjection                       = 11
+	checkGitCommitSubstitution              = 12
+	checkProcEnvironAccess                  = 13
+	checkMalformedTokenInjection            = 14
+	checkBackslashEscapedWhitespace         = 15
+	checkBraceExpansion                     = 16
+	checkControlCharacters                  = 17
+	checkUnicodeWhitespace                  = 18
+	checkMidWordHash                        = 19
+	checkZshDangerousCommands               = 20
+	checkBackslashEscapedOperators          = 21
+	checkCommentQuoteDesync                 = 22
+	checkQuotedNewline                      = 23
 )
 
 var (
@@ -72,7 +72,7 @@ var (
 	braceExpRE      = regexp.MustCompile(`\{[^}]+,[^}]*\}|\{[0-9]+\.\.[0-9]+\}`)
 	procEnvironRE   = regexp.MustCompile(`/proc/[^/]+/environ`)
 	ifsRE           = regexp.MustCompile(`\$(?:IFS|\{[^}]*IFS[^}]*\})`)
-	gitCommitSimple = regexp.MustCompile(`^git\s+commit\s+-[a-zA-Z]*m\s+["'][^"'$`+"`"+`(){}|;&\n]+["']\s*$`)
+	gitCommitSimple = regexp.MustCompile(`^git\s+commit\s+-[a-zA-Z]*m\s+["'][^"'$` + "`" + `(){}|;&\n]+["']\s*$`)
 	ansiCQuoteRE    = regexp.MustCompile(`\$'[^']*'`)
 	localeQuoteRE   = regexp.MustCompile(`\$"[^"]*"`)
 )
@@ -153,11 +153,11 @@ func BashCommandIsSafe(command string) permissions.PermissionResult {
 		validateDangerousVariables,
 		validateCommentQuoteDesync,
 		validateQuotedNewline,
-		validateNewlines,       // non-misparsing (deferred)
+		validateNewlines, // non-misparsing (deferred)
 		validateIFSInjection,
 		validateProcEnvironAccess,
 		validateDangerousPatterns,
-		validateRedirections,   // non-misparsing (deferred)
+		validateRedirections, // non-misparsing (deferred)
 		validateBackslashEscapedWhitespace,
 		validateBackslashEscapedOperators,
 		validateUnicodeWhitespace,
@@ -526,18 +526,6 @@ func hasShellQuoteSingleQuoteBug(s string) bool {
 		}
 	}
 	return false
-}
-
-// stripSafeHeredocSubstitutions strips safe heredoc bodies from command for analysis.
-func stripSafeHeredocSubstitutions(command string) string {
-	// Simple implementation: remove $(cat <<'EOF'...EOF) patterns
-	re := regexp.MustCompile(`\$\(cat\s*<<'[^']+'\n[\s\S]*?\n[^\s)]+\)`)
-	return re.ReplaceAllString(command, "HEREDOC_CONTENT")
-}
-
-// hasSafeHeredocSubstitution returns true if command contains a safe heredoc.
-func hasSafeHeredocSubstitution(command string) bool {
-	return strings.Contains(command, "<<'") || strings.Contains(command, `<<"`)
 }
 
 // extractQuotedArgsContent extracts content inside quoted strings.
