@@ -11,13 +11,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	anthropicbackend "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
-	"github.com/ding/claude-code/claude-go/internal/public/apperrors"
-	bridgepkg "github.com/ding/claude-code/claude-go/internal/backend/bridge"
 	"github.com/ding/claude-code/claude-go/internal/app/config"
+	lspcore "github.com/ding/claude-code/claude-go/internal/app/lsp"
+	bridgepkg "github.com/ding/claude-code/claude-go/internal/backend/bridge"
+	anthropicbackend "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	api "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
 	"github.com/ding/claude-code/claude-go/internal/harness/coordinator"
 	"github.com/ding/claude-code/claude-go/internal/harness/engine"
-	lspcore "github.com/ding/claude-code/claude-go/internal/app/lsp"
 	mcpcore "github.com/ding/claude-code/claude-go/internal/harness/mcp"
 	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
 	"github.com/ding/claude-code/claude-go/internal/harness/plugins"
@@ -35,8 +35,8 @@ import (
 	teamtool "github.com/ding/claude-code/claude-go/internal/harness/tools/team"
 	webtool "github.com/ding/claude-code/claude-go/internal/harness/tools/web"
 	worktreetool "github.com/ding/claude-code/claude-go/internal/harness/tools/worktree"
+	"github.com/ding/claude-code/claude-go/internal/public/apperrors"
 	"github.com/ding/claude-code/claude-go/internal/ui/tui"
-	api "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
 )
 
 type IO struct {
@@ -129,17 +129,17 @@ func NewRootCommandWithIO(streams IO) *cobra.Command {
 
 			var buildEngine func(string) (*engine.Engine, error)
 			buildEngine = func(workingDir string) (*engine.Engine, error) {
-				return newEngine(cfg, mode, workingDir, streams, func(ctx context.Context, childWorkdir, prompt string) (string, error) {
+				return newEngine(cfg, mode, workingDir, streams, func(ctx context.Context, req agenttool.Request) (string, error) {
 					targetDir := workingDir
-					if childWorkdir != "" {
-						targetDir = childWorkdir
+					if req.WorkingDir != "" {
+						targetDir = req.WorkingDir
 					}
 					childEngine, err := newEngine(cfg, mode, targetDir, streams, nil)
 					if err != nil {
 						return "", err
 					}
 					childSession := state.NewSession(targetDir)
-					result, err := childEngine.Run(ctx, childSession, prompt)
+					result, err := childEngine.Run(ctx, childSession, req.Prompt)
 					if err != nil {
 						return "", err
 					}
