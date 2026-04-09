@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -9,6 +10,27 @@ import (
 	"strings"
 	"time"
 )
+
+const defaultPermissionPollInterval = 250 * time.Millisecond
+
+// PermissionRequestParams are the inputs for constructing a pending swarm
+// permission request from worker/runtime metadata.
+type PermissionRequestParams struct {
+	WorkerID              string
+	WorkerName            string
+	WorkerColor           string
+	TeamName              string
+	ToolName              string
+	ToolUseID             string
+	Description           string
+	Input                 map[string]any
+	PermissionSuggestions []any
+}
+
+// PermissionRequestOptions configure RequestPermission fallback polling.
+type PermissionRequestOptions struct {
+	PollInterval time.Duration
+}
 
 // MailboxEntry is a single message in an agent's mailbox file.
 type MailboxEntry struct {
@@ -91,6 +113,44 @@ func GetPermissionsDir(teamName string) string {
 // GenerateRequestID creates a unique permission request ID.
 func GenerateRequestID() string {
 	return fmt.Sprintf("perm-%d-%d", time.Now().UnixMilli(), rand.Int63n(100000))
+}
+
+// CreatePermissionRequest builds a pending permission request with the same
+// default bookkeeping fields as the TypeScript implementation.
+func CreatePermissionRequest(params PermissionRequestParams) (*SwarmPermissionRequest, error) {
+	switch {
+	case strings.TrimSpace(params.TeamName) == "":
+		return nil, fmt.Errorf("CreatePermissionRequest: team name is required")
+	case strings.TrimSpace(params.WorkerID) == "":
+		return nil, fmt.Errorf("CreatePermissionRequest: worker ID is required")
+	case strings.TrimSpace(params.WorkerName) == "":
+		return nil, fmt.Errorf("CreatePermissionRequest: worker name is required")
+	case strings.TrimSpace(params.ToolName) == "":
+		return nil, fmt.Errorf("CreatePermissionRequest: tool name is required")
+	case strings.TrimSpace(params.ToolUseID) == "":
+		return nil, fmt.Errorf("CreatePermissionRequest: toolUseID is required")
+	}
+
+	input := make(map[string]any, len(params.Input))
+	for k, v := range params.Input {
+		input[k] = v
+	}
+	suggestions := append([]any(nil), params.PermissionSuggestions...)
+
+	return &SwarmPermissionRequest{
+		ID:                    GenerateRequestID(),
+		WorkerID:              params.WorkerID,
+		WorkerName:            params.WorkerName,
+		WorkerColor:           params.WorkerColor,
+		TeamName:              params.TeamName,
+		ToolName:              params.ToolName,
+		ToolUseID:             params.ToolUseID,
+		Description:           params.Description,
+		Input:                 input,
+		PermissionSuggestions: suggestions,
+		Status:                "pending",
+		CreatedAt:             time.Now().UnixMilli(),
+	}, nil
 }
 
 // WritePendingPermission writes a permission request to the pending directory.
@@ -176,6 +236,51 @@ func PollForPermissionResponse(teamName, requestID string) (*PermissionResolutio
 	// Remove after reading
 	_ = os.Remove(path)
 	return &res, nil
+}
+
+// WaitForPermissionResponse blocks until the given request is resolved or the
+// caller's context is cancelled.
+func WaitForPermissionResponse(ctx context.Context, teamName, requestID string, pollInterval time.Duration) (*PermissionResolution, error) {
+	if pollInterval <= 0 {
+		pollInterval = defaultPermissionPollInterval
+	}
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		resolution, err := PollForPermissionResponse(teamName, requestID)
+		if err != nil {
+			return nil, err
+		}
+		if resolution != nil {
+			return resolution, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// RequestPermission routes a permission request through the leader bridge when
+// available and otherwise falls back to the filesystem-backed mailbox flow.
+func RequestPermission(ctx context.Context, req *SwarmPermissionRequest, opts PermissionRequestOptions) (*PermissionResolution, error) {
+	if req == nil {
+		return nil, fmt.Errorf("RequestPermission: request is nil")
+	}
+
+	if handler := GetLeaderPermissionHandler(); handler != nil {
+		return handler(ctx, req)
+	}
+
+	if err := WritePendingPermission(req); err != nil {
+		return nil, err
+	}
+
+	return WaitForPermissionResponse(ctx, req.TeamName, req.ID, opts.PollInterval)
 }
 
 // CleanupOldResolutions removes resolved permission files older than maxAge.

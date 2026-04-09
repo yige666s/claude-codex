@@ -13,23 +13,24 @@ type AgentRunnerFunc func(ctx context.Context, cfg InProcessRunConfig) (<-chan s
 
 // InProcessRunConfig carries the parameters for starting an in-process agent.
 type InProcessRunConfig struct {
-	AgentID        AgentID
-	Identity       TeammateIdentity
-	Prompt         string
-	Model          string
-	SystemPrompt   string
-	SystemPromptMode string
-	AllowedTools   []string
-	WorktreePath   string
-	ParentSessionID string
+	AgentID                AgentID
+	Identity               TeammateIdentity
+	Prompt                 string
+	Model                  string
+	SystemPrompt           string
+	SystemPromptMode       string
+	AllowedTools           []string
+	AllowPermissionPrompts bool
+	WorktreePath           string
+	ParentSessionID        string
 }
 
 // InProcessBackend implements TeammateExecutor for in-process agents.
 // Tmux and iTerm2 backends are not implemented (platform-specific).
 type InProcessBackend struct {
-	mu       sync.RWMutex
-	agents   map[AgentID]*TeammateState
-	runner   AgentRunnerFunc
+	mu         sync.RWMutex
+	agents     map[AgentID]*TeammateState
+	runner     AgentRunnerFunc
 	mailboxDir string // base dir for mailboxes (~/.claude/mailboxes)
 }
 
@@ -45,7 +46,7 @@ func NewInProcessBackend(runner AgentRunnerFunc, mailboxDir string) *InProcessBa
 }
 
 func (b *InProcessBackend) Type() BackendType { return BackendTypeInProcess }
-func (b *InProcessBackend) IsAvailable() bool  { return true }
+func (b *InProcessBackend) IsAvailable() bool { return true }
 
 // Spawn creates and starts a new in-process teammate.
 func (b *InProcessBackend) Spawn(cfg TeammateSpawnConfig) (TeammateSpawnResult, error) {
@@ -68,16 +69,16 @@ func (b *InProcessBackend) Spawn(cfg TeammateSpawnConfig) (TeammateSpawnResult, 
 
 	// Add to team file
 	member := TeamMember{
-		AgentID:     string(agentID),
-		Name:        cfg.Name,
-		Color:       cfg.Color,
-		JoinedAt:    time.Now().UnixMilli(),
-		TmuxPaneID:  InProcessMarker,
-		CWD:         cfg.CWD,
-		WorktreePath: cfg.WorktreePath,
+		AgentID:       string(agentID),
+		Name:          cfg.Name,
+		Color:         cfg.Color,
+		JoinedAt:      time.Now().UnixMilli(),
+		TmuxPaneID:    InProcessMarker,
+		CWD:           cfg.CWD,
+		WorktreePath:  cfg.WorktreePath,
 		Subscriptions: []string{},
-		BackendType: string(BackendTypeInProcess),
-		IsActive:    true,
+		BackendType:   string(BackendTypeInProcess),
+		IsActive:      true,
 	}
 	if cfg.TeamName != "" {
 		_ = AddMember(cfg.TeamName, member) // best-effort
@@ -105,14 +106,16 @@ func (b *InProcessBackend) Spawn(cfg TeammateSpawnConfig) (TeammateSpawnResult, 
 		}
 
 		runCfg := InProcessRunConfig{
-			AgentID:         agentID,
-			Identity:        cfg.TeammateIdentity,
-			Prompt:          cfg.Prompt,
-			Model:           cfg.Model,
-			SystemPrompt:    cfg.SystemPrompt,
-			SystemPromptMode: cfg.SystemPromptMode,
-			WorktreePath:    cfg.WorktreePath,
-			ParentSessionID: cfg.ParentSessionID,
+			AgentID:                agentID,
+			Identity:               cfg.TeammateIdentity,
+			Prompt:                 cfg.Prompt,
+			Model:                  cfg.Model,
+			SystemPrompt:           cfg.SystemPrompt,
+			SystemPromptMode:       cfg.SystemPromptMode,
+			AllowedTools:           append([]string(nil), cfg.Permissions...),
+			AllowPermissionPrompts: cfg.AllowPermissionPrompts,
+			WorktreePath:           cfg.WorktreePath,
+			ParentSessionID:        cfg.ParentSessionID,
 		}
 
 		stream, err := b.runner(ctx, runCfg)
