@@ -8,9 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/public/fsutil"
+	"github.com/ding/claude-code/claude-go/internal/harness/memdir"
 	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
 	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"github.com/ding/claude-code/claude-go/internal/public/fsutil"
 )
 
 type EditTool struct {
@@ -59,6 +60,10 @@ func (t *EditTool) Execute(_ context.Context, input json.RawMessage) (toolkit.Re
 
 	path, err := toolkit.ResolvePath(t.rootDir, payload.Path)
 	if err != nil {
+		return toolkit.Result{}, err
+	}
+
+	if err := memdir.CheckTeamMemSecrets(path, payload.NewString, t.rootDir); err != nil {
 		return toolkit.Result{}, err
 	}
 

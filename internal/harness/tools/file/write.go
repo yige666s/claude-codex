@@ -6,9 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ding/claude-code/claude-go/internal/public/fsutil"
+	"github.com/ding/claude-code/claude-go/internal/harness/memdir"
 	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
 	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"github.com/ding/claude-code/claude-go/internal/public/fsutil"
 )
 
 type WriteTool struct {
@@ -52,6 +53,10 @@ func (t *WriteTool) Execute(_ context.Context, input json.RawMessage) (toolkit.R
 
 	path, err := toolkit.ResolvePath(t.rootDir, payload.Path)
 	if err != nil {
+		return toolkit.Result{}, err
+	}
+
+	if err := memdir.CheckTeamMemSecrets(path, payload.Content, t.rootDir); err != nil {
 		return toolkit.Result{}, err
 	}
 
