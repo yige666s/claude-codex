@@ -1,6 +1,7 @@
 package bash
 
 import (
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -19,42 +20,42 @@ const (
 
 // supportedPathCommands is the set of commands for which path extraction is supported.
 var supportedPathCommands = map[string]PathOperationType{
-	"cd":       PathOpRead,
-	"ls":       PathOpRead,
-	"find":     PathOpRead,
-	"mkdir":    PathOpCreate,
-	"touch":    PathOpCreate,
-	"rm":       PathOpWrite,
-	"rmdir":    PathOpWrite,
-	"mv":       PathOpWrite,
-	"cp":       PathOpWrite,
-	"cat":      PathOpRead,
-	"head":     PathOpRead,
-	"tail":     PathOpRead,
-	"sort":     PathOpRead,
-	"uniq":     PathOpRead,
-	"wc":       PathOpRead,
-	"cut":      PathOpRead,
-	"paste":    PathOpRead,
-	"column":   PathOpRead,
-	"tr":       PathOpRead,
-	"file":     PathOpRead,
-	"stat":     PathOpRead,
-	"diff":     PathOpRead,
-	"awk":      PathOpRead,
-	"strings":  PathOpRead,
-	"hexdump":  PathOpRead,
-	"od":       PathOpRead,
-	"base64":   PathOpRead,
-	"nl":       PathOpRead,
-	"grep":     PathOpRead,
-	"rg":       PathOpRead,
-	"sed":      PathOpWrite,
-	"git":      PathOpRead,
-	"jq":       PathOpRead,
+	"cd":        PathOpRead,
+	"ls":        PathOpRead,
+	"find":      PathOpRead,
+	"mkdir":     PathOpCreate,
+	"touch":     PathOpCreate,
+	"rm":        PathOpWrite,
+	"rmdir":     PathOpWrite,
+	"mv":        PathOpWrite,
+	"cp":        PathOpWrite,
+	"cat":       PathOpRead,
+	"head":      PathOpRead,
+	"tail":      PathOpRead,
+	"sort":      PathOpRead,
+	"uniq":      PathOpRead,
+	"wc":        PathOpRead,
+	"cut":       PathOpRead,
+	"paste":     PathOpRead,
+	"column":    PathOpRead,
+	"tr":        PathOpRead,
+	"file":      PathOpRead,
+	"stat":      PathOpRead,
+	"diff":      PathOpRead,
+	"awk":       PathOpRead,
+	"strings":   PathOpRead,
+	"hexdump":   PathOpRead,
+	"od":        PathOpRead,
+	"base64":    PathOpRead,
+	"nl":        PathOpRead,
+	"grep":      PathOpRead,
+	"rg":        PathOpRead,
+	"sed":       PathOpWrite,
+	"git":       PathOpRead,
+	"jq":        PathOpRead,
 	"sha256sum": PathOpRead,
-	"sha1sum":  PathOpRead,
-	"md5sum":   PathOpRead,
+	"sha1sum":   PathOpRead,
+	"md5sum":    PathOpRead,
 }
 
 // dangerousRemovalPaths lists paths that are dangerous to remove.
@@ -158,8 +159,7 @@ func extractCommandPaths(cmd string, args []string, cwd string) []string {
 	switch cmd {
 	case "cd":
 		if len(args) == 0 {
-			home, _ := filepath.Abs("~")
-			return []string{home}
+			return []string{userHomeDir()}
 		}
 		return []string{strings.Join(args, " ")}
 	case "ls":
@@ -240,13 +240,21 @@ func filterOutFlags(args []string) []string {
 // resolvePath resolves a possibly-relative path against cwd.
 func resolvePath(p, cwd string) string {
 	if p == "~" || strings.HasPrefix(p, "~/") {
-		home, _ := filepath.Abs("~")
+		home := userHomeDir()
 		p = strings.Replace(p, "~", home, 1)
 	}
 	if filepath.IsAbs(p) {
 		return filepath.Clean(p)
 	}
 	return filepath.Clean(filepath.Join(cwd, p))
+}
+
+func userHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "~"
+	}
+	return home
 }
 
 // isDangerousPath returns true if the path should require permission based on operation type.
