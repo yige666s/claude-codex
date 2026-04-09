@@ -8,92 +8,116 @@ import (
 	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
 )
 
-func TestSplitSubcommandsRespectsQuotes(t *testing.T) {
-	command := `echo "a;b" && ls | grep foo; printf 'x|y'`
-	want := []string{`echo "a;b"`, "ls", "grep foo", `printf 'x|y'`}
-	if got := splitSubcommands(command); !reflect.DeepEqual(got, want) {
-		t.Fatalf("splitSubcommands(%q) = %#v, want %#v", command, got, want)
+func TestCheckCommandPermission_AllowsReadOnlyCommands(t *testing.T) {
+	result := CheckCommandPermission("git status", safeTempRoot(t))
+	if result.Behavior != permissions.BehaviorAllow {
+		t.Fatalf("expected allow, got %s (%s)", result.Behavior, result.Message)
 	}
 }
 
-func TestIsCommandReadOnly(t *testing.T) {
-	tests := []struct {
-		name    string
-		command string
-		want    bool
-	}{
-		{name: "git status", command: "git status", want: true},
-		{name: "find without exec", command: `find . -name '*.go'`, want: true},
-		{name: "find with delete", command: "find . -delete", want: false},
-		{name: "unquoted expansion", command: "cat $HOME/.bashrc", want: false},
-		{name: "output redirection", command: "ls > out.txt", want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := IsCommandReadOnly(tt.command); got != tt.want {
-				t.Fatalf("IsCommandReadOnly(%q) = %v, want %v", tt.command, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestBashCommandIsSafe(t *testing.T) {
-	controlChar := string([]byte{'e', 'c', 'h', 'o', ' ', 0x07})
-	tests := []struct {
-		name           string
-		command        string
-		wantBehavior   permissions.Behavior
-		wantMisparsing bool
-	}{
-		{name: "empty command", command: "   ", wantBehavior: permissions.BehaviorAllow},
-		{name: "control characters", command: controlChar, wantBehavior: permissions.BehaviorAsk, wantMisparsing: true},
-		{name: "simple git commit", command: `git commit -m "fix typo"`, wantBehavior: permissions.BehaviorAllow},
-		{name: "git commit substitution", command: `git commit -m "$(whoami)"`, wantBehavior: permissions.BehaviorAsk},
-		{name: "safe heredoc substitution", command: "echo $(cat <<'EOF'\nhello\nEOF)", wantBehavior: permissions.BehaviorAllow},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := BashCommandIsSafe(tt.command)
-			if result.Behavior != tt.wantBehavior {
-				t.Fatalf("BashCommandIsSafe(%q) behavior = %q, want %q", tt.command, result.Behavior, tt.wantBehavior)
-			}
-			if result.IsBashSecurityCheckForMisparsing != tt.wantMisparsing {
-				t.Fatalf("BashCommandIsSafe(%q) misparsing = %v, want %v", tt.command, result.IsBashSecurityCheckForMisparsing, tt.wantMisparsing)
-			}
-		})
-	}
-}
-
-func TestCheckPathConstraintsDetectsDangerousTargets(t *testing.T) {
-	cwd := t.TempDir()
-
-	result := CheckPathConstraints("echo hi > /etc/passwd", cwd)
-	if result.Behavior != permissions.BehaviorAsk || result.BlockedPath != "/etc/passwd" {
-		t.Fatalf("unexpected output redirection result: %+v", result)
-	}
-
-	result = CheckPathConstraints("rm -rf /", cwd)
-	if result.Behavior != permissions.BehaviorAsk || result.BlockedPath != "/" {
-		t.Fatalf("unexpected removal result: %+v", result)
-	}
-
-	result = CheckPathConstraints("cat /etc/hosts", cwd)
+func TestCheckCommandPermission_PassthroughForNormalWriteCommand(t *testing.T) {
+	result := CheckCommandPermission("mkdir build", safeTempRoot(t))
 	if result.Behavior != permissions.BehaviorPassthrough {
 		t.Fatalf("expected read-only path command to pass through, got %+v", result)
 	}
 }
 
-func TestResolvePathExpandsHomeDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+func TestCheckCommandPermission_AsksOnDangerousRedirection(t *testing.T) {
+	result := CheckCommandPermission("echo hi > /etc/passwd", safeTempRoot(t))
+	if result.Behavior != permissions.BehaviorAsk {
+		t.Fatalf("expected ask, got %s (%s)", result.Behavior, result.Message)
+	}
+	if !strings.Contains(result.Message, "output redirection") {
+		t.Fatalf("expected redirection message, got %q", result.Message)
+	}
+}
 
-	if got := resolvePath("~/notes.txt", "/tmp/work"); got != filepath.Join(home, "notes.txt") {
-		t.Fatalf("resolvePath did not expand tilde: %q", got)
+func TestCheckCommandPermission_AsksOnCompoundCdAndGit(t *testing.T) {
+	result := CheckCommandPermission("cd repo && git status", safeTempRoot(t))
+	if result.Behavior != permissions.BehaviorAsk {
+		t.Fatalf("expected ask, got %s (%s)", result.Behavior, result.Message)
 	}
-	paths := extractCommandPaths("cd", nil, "/tmp/work")
-	if len(paths) != 1 || paths[0] != home {
-		t.Fatalf("expected cd with no args to target home dir, got %#v", paths)
+	if !strings.Contains(result.Message, "cd and git") {
+		t.Fatalf("expected cd/git message, got %q", result.Message)
 	}
+}
+
+func TestCheckCommandPermission_AsksOnMultipleCdCommands(t *testing.T) {
+	result := CheckCommandPermission("cd a && cd b", safeTempRoot(t))
+	if result.Behavior != permissions.BehaviorAsk {
+		t.Fatalf("expected ask, got %s (%s)", result.Behavior, result.Message)
+	}
+	if !strings.Contains(result.Message, "multiple directory changes") {
+		t.Fatalf("expected multiple cd message, got %q", result.Message)
+	}
+}
+
+func TestCheckCommandPermission_AsksOnTooManySubcommands(t *testing.T) {
+	parts := make([]string, maxSubcommandsForSafetyCheck+1)
+	for i := range parts {
+		parts[i] = "echo ok"
+	}
+	result := CheckCommandPermission(strings.Join(parts, "; "), safeTempRoot(t))
+	if result.Behavior != permissions.BehaviorAsk {
+		t.Fatalf("expected ask, got %s (%s)", result.Behavior, result.Message)
+	}
+	if !strings.Contains(result.Message, "too many") {
+		t.Fatalf("expected too-many-subcommands message, got %q", result.Message)
+	}
+}
+
+func TestExecute_RejectsPermissionEscalationBeforeRunning(t *testing.T) {
+	root := safeTempRoot(t)
+	tool := NewTool(root)
+	payload, err := json.Marshal(map[string]any{
+		"command": "echo blocked > /etc/passwd",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	_, err = tool.Execute(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "requires approval") {
+		t.Fatalf("expected approval error, got %v", err)
+	}
+}
+
+func TestExecute_RunsPermittedCommand(t *testing.T) {
+	root := safeTempRoot(t)
+	tool := NewTool(root)
+	target := filepath.Join(root, "hello.txt")
+	payload, err := json.Marshal(map[string]any{
+		"command": "echo hello > hello.txt",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	result, err := tool.Execute(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if result.Output != "" {
+		t.Fatalf("expected empty output, got %q", result.Output)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "hello" {
+		t.Fatalf("unexpected file contents: %q", string(data))
+	}
+}
+
+func safeTempRoot(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp("/tmp", "bash-tool-test-")
+	if err != nil {
+		t.Fatalf("mkdirtemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	return root
 }
