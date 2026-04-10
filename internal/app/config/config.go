@@ -28,13 +28,13 @@ type MCPServerConfig struct {
 type Config struct {
 	SchemaVersion  int               `json:"schema_version"`
 	Backend        string            `json:"backend"`
-	Provider       string            `json:"provider,omitempty"`        // LLM provider: anthropic, openai, gemini
+	Provider       string            `json:"provider,omitempty"` // LLM provider: anthropic, openai, gemini
 	Model          string            `json:"model"`
 	PermissionMode string            `json:"permission_mode"`
 	Theme          string            `json:"theme"`
 	APIBaseURL     string            `json:"api_base_url"`
-	APIKey         string            `json:"api_key,omitempty"`         // API key for provider
-	APIToken       string            `json:"api_token,omitempty"`       // Alternative to APIKey
+	APIKey         string            `json:"api_key,omitempty"`   // API key for provider
+	APIToken       string            `json:"api_token,omitempty"` // Alternative to APIKey
 	TimeoutSeconds int               `json:"timeout_seconds"`
 	MaxTurns       int               `json:"max_turns"`
 	SecretStore    string            `json:"secret_store"`
@@ -257,7 +257,7 @@ func normalize(cfg Config) Config {
 	if cfg.MaxTurns <= 0 {
 		cfg.MaxTurns = defaults.MaxTurns
 	}
-	cfg.SecretStore = coalesceString(cfg.SecretStore, defaults.SecretStore)
+	cfg.SecretStore = strings.ToLower(strings.TrimSpace(coalesceString(cfg.SecretStore, defaults.SecretStore)))
 	cfg.Telemetry.Exporter = coalesceString(cfg.Telemetry.Exporter, defaults.Telemetry.Exporter)
 	cfg.Telemetry.ServiceName = cfg.Telemetry.ServiceNameOrDefault()
 	if len(cfg.OAuth.Scopes) == 0 {
@@ -388,6 +388,12 @@ func (cfg *Config) Validate() error {
 	}
 	if cfg.Theme != "" && cfg.Theme != "light" && cfg.Theme != "dark" {
 		return fmt.Errorf("invalid theme: %s (must be light or dark)", cfg.Theme)
+	}
+	if cfg.SecretStore != "" {
+		validSecretStores := map[string]bool{"auto": true, "plaintext": true, "keychain": true}
+		if !validSecretStores[cfg.SecretStore] {
+			return fmt.Errorf("invalid secret_store: %s (must be auto, plaintext, or keychain)", cfg.SecretStore)
+		}
 	}
 
 	// Validate telemetry config

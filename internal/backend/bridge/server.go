@@ -36,6 +36,15 @@ type Request struct {
 	Params     json.RawMessage `json:"params,omitempty"`
 }
 
+type runPromptParams struct {
+	WorkingDir string `json:"working_dir,omitempty"`
+	Prompt     string `json:"prompt,omitempty"`
+}
+
+type listToolsParams struct {
+	WorkingDir string `json:"working_dir,omitempty"`
+}
+
 type Response struct {
 	ID     int64           `json:"id"`
 	Result json.RawMessage `json:"result,omitempty"`
@@ -87,14 +96,34 @@ func (s *Server) handle(ctx context.Context, request Request) Response {
 
 	switch request.Method {
 	case "run_prompt":
-		result, err := s.runner.RunPrompt(ctx, request.WorkingDir, request.Prompt)
+		workingDir := request.WorkingDir
+		prompt := request.Prompt
+		if len(request.Params) > 0 {
+			var params runPromptParams
+			if err := json.Unmarshal(request.Params, &params); err == nil {
+				if workingDir == "" {
+					workingDir = params.WorkingDir
+				}
+				if prompt == "" {
+					prompt = params.Prompt
+				}
+			}
+		}
+		result, err := s.runner.RunPrompt(ctx, workingDir, prompt)
 		if err != nil {
 			response.Error = err.Error()
 			return response
 		}
 		response.Result, _ = json.Marshal(map[string]string{"output": result})
 	case "list_tools":
-		tools, err := s.runner.ListTools(ctx, request.WorkingDir)
+		workingDir := request.WorkingDir
+		if len(request.Params) > 0 {
+			var params listToolsParams
+			if err := json.Unmarshal(request.Params, &params); err == nil && workingDir == "" {
+				workingDir = params.WorkingDir
+			}
+		}
+		tools, err := s.runner.ListTools(ctx, workingDir)
 		if err != nil {
 			response.Error = err.Error()
 			return response

@@ -530,12 +530,24 @@ func setConfigValue(cfg *config.Config, key, value string) error {
 			return err
 		}
 		cfg.MaxTurns = parsed
+	case "secret_store":
+		cfg.SecretStore = value
+	case "plugin_dir":
+		cfg.PluginDir = value
+	case "bridge_secret":
+		cfg.BridgeSecret = value
 	case "telemetry.enabled":
 		parsed, err := strconv.ParseBool(value)
 		if err != nil {
 			return err
 		}
 		cfg.Telemetry.Enabled = parsed
+	case "telemetry.insecure":
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		cfg.Telemetry.Insecure = parsed
 	case "telemetry.endpoint":
 		cfg.Telemetry.Endpoint = value
 	case "telemetry.exporter":
@@ -558,6 +570,8 @@ func setConfigValue(cfg *config.Config, key, value string) error {
 			return err
 		}
 		cfg.OAuth.RedirectPort = parsed
+	case "oauth.scopes":
+		cfg.OAuth.Scopes = splitAndTrimCSV(value)
 	default:
 		return fmt.Errorf("unsupported config key %q", key)
 	}
@@ -601,6 +615,18 @@ func parseMCPServerArgs(name string, args []string) (config.MCPServerConfig, err
 
 func mcpUsageError(name string) error {
 	return fmt.Errorf("usage: /mcp add %s -- <command...> or /mcp add %s --url <url>", name, name)
+}
+
+func splitAndTrimCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
 }
 
 func upsertMCPServer(servers *[]config.MCPServerConfig, server config.MCPServerConfig) {

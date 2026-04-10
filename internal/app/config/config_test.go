@@ -57,3 +57,20 @@ func TestLoadRejectsFutureSchemaVersion(t *testing.T) {
 		t.Fatal("expected future schema version to fail")
 	}
 }
+
+func TestNormalizeLowercasesSecretStore(t *testing.T) {
+	cfg := normalize(Config{SecretStore: "KeyChain"})
+	if cfg.SecretStore != "keychain" {
+		t.Fatalf("normalize(secret_store) = %q, want keychain", cfg.SecretStore)
+	}
+}
+
+func TestValidateRejectsInvalidSecretStore(t *testing.T) {
+	cfg := Default()
+	cfg.SecretStore = "vault"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected invalid secret_store to fail validation")
+	}
+}

@@ -23,6 +23,7 @@ type Client struct {
 	cmd          *exec.Cmd
 	stdin        io.WriteCloser
 	decoder      *json.Decoder
+	inProcess    func(context.Context, Request) Response
 	Instructions string // populated from initialize handshake
 }
 
@@ -56,6 +57,29 @@ func NewClientFromConfig(cfg config.MCPServerConfig, httpClient *http.Client) (*
 		client.decoder = json.NewDecoder(bufio.NewReader(stdout))
 	}
 	return client, nil
+}
+
+// NewInProcessClient creates an MCP client that dispatches requests directly to
+// an in-process server without spawning a subprocess or opening a socket.
+func NewInProcessClient(server *Server) *Client {
+	name := "in-process"
+	if server != nil && strings.TrimSpace(server.Name) != "" {
+		name = server.Name
+	}
+	return &Client{
+		cfg:        config.MCPServerConfig{Name: name, Transport: "inprocess"},
+		httpClient: &http.Client{},
+		inProcess: func(ctx context.Context, request Request) Response {
+			if server == nil {
+				return Response{
+					JSONRPC: "2.0",
+					ID:      request.ID,
+					Error:   &RPCError{Code: -32000, Message: "mcp server is nil"},
+				}
+			}
+			return server.handleRequest(ctx, request)
+		},
+	}
 }
 
 // Name returns the configured server name.
@@ -191,11 +215,50 @@ func (c *Client) SubscribeEvents(ctx context.Context, handler func(Event) error)
 }
 
 func (c *Client) call(ctx context.Context, method string, params any, target any) error {
+	if c.inProcess != nil {
+		return c.callInProcess(ctx, method, params, target)
+	}
 	switch transport(c.cfg) {
 	case "sse":
 		return c.callHTTP(ctx, method, params, target)
 	default:
 		return c.callStdio(ctx, method, params, target)
+	}
+}
+
+func (c *Client) callInProcess(ctx context.Context, method string, params any, target any) error {
+	c.mu.Lock()
+	c.nextID++
+	request := Request{JSONRPC: "2.0", ID: c.nextID, Method: method}
+	c.mu.Unlock()
+
+	if params != nil {
+		data, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		request.Params = data
+	}
+
+	type result struct {
+		response Response
+	}
+	done := make(chan result, 1)
+	go func() {
+		done <- result{response: c.inProcess(ctx, request)}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case outcome := <-done:
+		if outcome.response.Error != nil {
+			return fmt.Errorf("mcp error: %s", outcome.response.Error.Message)
+		}
+		if target == nil || len(outcome.response.Result) == 0 {
+			return nil
+		}
+		return json.Unmarshal(outcome.response.Result, target)
 	}
 }
 
@@ -249,6 +312,20 @@ func (c *Client) callStdio(ctx context.Context, method string, params any, targe
 func (c *Client) callHTTP(ctx context.Context, method string, params any, target any) error {
 	baseURL := strings.TrimRight(c.cfg.URL, "/")
 	switch method {
+	case "initialize":
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/initialize", nil)
+		if err != nil {
+			return err
+		}
+		for key, value := range c.cfg.Headers {
+			request.Header.Set(key, value)
+		}
+		response, err := c.httpClient.Do(request)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		return json.NewDecoder(response.Body).Decode(target)
 	case "list_tools":
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/tools", nil)
 		if err != nil {
@@ -288,6 +365,9 @@ func (c *Client) callHTTP(ctx context.Context, method string, params any, target
 }
 
 func transport(cfg config.MCPServerConfig) string {
+	if strings.EqualFold(strings.TrimSpace(cfg.Transport), "inprocess") {
+		return "inprocess"
+	}
 	if strings.TrimSpace(cfg.Transport) != "" {
 		return cfg.Transport
 	}

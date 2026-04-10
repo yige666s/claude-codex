@@ -13,9 +13,10 @@ import (
 )
 
 type Server struct {
-	Name     string
-	Version  string
-	Executor interface {
+	Name         string
+	Version      string
+	Instructions string
+	Executor     interface {
 		Descriptors() []toolkit.Descriptor
 		Execute(context.Context, string, json.RawMessage) (toolkit.Result, error)
 	}
@@ -48,6 +49,8 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	switch {
+	case request.Method == http.MethodPost && request.URL.Path == "/initialize":
+		s.handleInitializeHTTP(writer, request)
 	case request.Method == http.MethodGet && request.URL.Path == "/tools":
 		s.handleToolsHTTP(writer)
 	case request.Method == http.MethodPost && request.URL.Path == "/call":
@@ -66,6 +69,15 @@ func (s *Server) HTTPHandler() http.Handler {
 func (s *Server) handleRequest(ctx context.Context, request Request) Response {
 	response := Response{JSONRPC: "2.0", ID: request.ID}
 	switch request.Method {
+	case "initialize":
+		result := InitializeResult{
+			ProtocolVersion: "2024-11-05",
+			Instructions:    s.Instructions,
+		}
+		result.ServerInfo.Name = s.Name
+		result.ServerInfo.Version = s.Version
+		data, _ := json.Marshal(result)
+		response.Result = data
 	case "list_tools":
 		data, _ := json.Marshal(ListToolsResult{Tools: s.describeTools()})
 		response.Result = data
@@ -91,6 +103,15 @@ func (s *Server) handleRequest(ctx context.Context, request Request) Response {
 
 func (s *Server) handleToolsHTTP(writer http.ResponseWriter) {
 	_ = json.NewEncoder(writer).Encode(ListToolsResult{Tools: s.describeTools()})
+}
+
+func (s *Server) handleInitializeHTTP(writer http.ResponseWriter, request *http.Request) {
+	response := s.handleRequest(request.Context(), Request{Method: "initialize"})
+	if response.Error != nil {
+		http.Error(writer, response.Error.Message, http.StatusBadRequest)
+		return
+	}
+	_, _ = writer.Write(response.Result)
 }
 
 func (s *Server) handleCallHTTP(ctx context.Context, writer http.ResponseWriter, request *http.Request) {
