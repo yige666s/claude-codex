@@ -13,11 +13,12 @@ import (
 
 func TestWriteToolRejectsSecretsInTeamMemory(t *testing.T) {
 	root := t.TempDir()
+	t.Setenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", filepath.Join(root, ".claude", "memory"))
 	tool := NewWriteTool(root)
 
-	teamRelative := filepath.Join(".claude", "memory", "team", "shared.md")
+	teamPath := filepath.Join(memdir.GetTeamMemPath(root), "shared.md")
 	input, err := json.Marshal(map[string]any{
-		"path":    teamRelative,
+		"path":    teamPath,
 		"content": "ghp_abcdefghijklmnopqrstuvwxyz1234567890AB",
 	})
 	if err != nil {
@@ -32,7 +33,6 @@ func TestWriteToolRejectsSecretsInTeamMemory(t *testing.T) {
 		t.Fatalf("expected GitHub PAT error, got %q", err)
 	}
 
-	teamPath := filepath.Join(memdir.GetTeamMemPath(root), "shared.md")
 	if _, statErr := os.Stat(teamPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected file to remain unwritten, stat err=%v", statErr)
 	}
@@ -40,6 +40,7 @@ func TestWriteToolRejectsSecretsInTeamMemory(t *testing.T) {
 
 func TestEditToolRejectsSecretsInTeamMemory(t *testing.T) {
 	root := t.TempDir()
+	t.Setenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", filepath.Join(root, ".claude", "memory"))
 	teamDir := memdir.GetTeamMemPath(root)
 	if err := os.MkdirAll(teamDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -52,7 +53,7 @@ func TestEditToolRejectsSecretsInTeamMemory(t *testing.T) {
 
 	tool := NewEditTool(root)
 	input, err := json.Marshal(map[string]any{
-		"path":       filepath.Join(".claude", "memory", "team", "shared.md"),
+		"path":       teamPath,
 		"old_string": "world",
 		"new_string": "ghp_abcdefghijklmnopqrstuvwxyz1234567890AB",
 	})
