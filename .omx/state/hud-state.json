@@ -1,5 +1,0 @@
-{
-  "last_turn_at": "2026-04-09T11:52:55.919Z",
-  "turn_count": 1,
-  "last_agent_output": "当前这个会话里，我按 `gpt-5.4` 运行，推理强度是 `high`。\n\n如果你问的是这个仓库的 OMX 默认配置：\n- leader: `gpt-5.4`\n- spark/explore: `g"
-}

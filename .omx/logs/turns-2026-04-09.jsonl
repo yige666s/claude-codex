@@ -1,1 +1,0 @@
-{"timestamp":"2026-04-09T11:52:55.841Z","type":"agent-turn-complete","thread_id":"019d7215-af07-7062-955d-785808fe2b47","turn_id":"019d7216-4edd-7ce0-8523-c66bff712cc5","input_preview":"当前是什么模型","output_preview":"当前这个会话里，我按 `gpt-5.4` 运行，推理强度是 `high`。\n\n如果你问的是这个仓库的 OMX 默认配置：\n- leader: `gpt-5.4`\n- spark/explore: `gpt-5.3-codex-spark`\n- standard subagent: `gpt-5.4-mini`"}
