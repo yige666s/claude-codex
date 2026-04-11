@@ -1,7 +1,7 @@
 package compact
 
 import (
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/public/types"
 )
 
 // CompactionResult represents the result of a compaction operation.

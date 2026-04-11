@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/hooks"
+	"claude-codex/internal/harness/hooks"
 )
 
 // PreToolUseHook validates and potentially modifies tool input before execution.

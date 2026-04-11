@@ -1,8 +1,11 @@
 package skills
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -189,6 +192,23 @@ func TestParseStringArray(t *testing.T) {
 	}
 }
 
+func TestParseSkillMetadataEnv(t *testing.T) {
+	allowed, primary := ParseSkillMetadataEnv(map[string]interface{}{
+		"openclaw": map[string]interface{}{
+			"primaryEnv": "SHORTART_API_KEY",
+			"requires": map[string]interface{}{
+				"env": []interface{}{"SHORTART_API_KEY", "OTHER_KEY"},
+			},
+		},
+	})
+	if primary != "SHORTART_API_KEY" {
+		t.Fatalf("expected primary env, got %q", primary)
+	}
+	if len(allowed) != 2 || allowed[0] != "SHORTART_API_KEY" || allowed[1] != "OTHER_KEY" {
+		t.Fatalf("unexpected allowed env %#v", allowed)
+	}
+}
+
 func TestSkillLoader(t *testing.T) {
 	// Create temporary directory
 	tmpDir := t.TempDir()
@@ -230,6 +250,160 @@ Test content
 	}
 }
 
+func TestWrapGeneratedSkillPromptIncludesMetadata(t *testing.T) {
+	prompt := WrapGeneratedSkillPrompt("demo-skill", "hello world", "body")
+	for _, want := range []string{
+		"<command-message>demo-skill</command-message>",
+		"<command-name>/demo-skill</command-name>",
+		"<command-args>hello world</command-args>",
+		"body",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected wrapped prompt to contain %q, got %q", want, prompt)
+		}
+	}
+}
+
+func TestSkillLoaderExecutesShellCommandsInPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "demo")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("mkdir scripts dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "run.py"), []byte("print('hello-from-shell')\n"), 0o644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	content := "---\n" +
+		"name: Demo\n" +
+		"shell: bash\n" +
+		"allowed-tools: Bash(python3 *)\n" +
+		"---\n\n" +
+		"Result:\n" +
+		"```!\n" +
+		"python3 scripts/run.py\n" +
+		"```\n"
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+
+	loader := NewSkillLoader()
+	skill, err := loader.LoadSkillFromFile(skillPath, SourceFile)
+	if err != nil {
+		t.Fatalf("load skill: %v", err)
+	}
+	blocks, err := skill.GetPrompt("", &SkillContext{WorkingDir: skillDir})
+	if err != nil {
+		t.Fatalf("GetPrompt() error = %v", err)
+	}
+	if len(blocks) == 0 || !strings.Contains(blocks[0].Text, "hello-from-shell") {
+		t.Fatalf("expected executed shell output in prompt, got %#v", blocks)
+	}
+}
+
+func TestExecuteShellCommandsInPromptFallsBackToPython3(t *testing.T) {
+	originalLookPath := lookPath
+	defer func() { lookPath = originalLookPath }()
+	lookPath = func(file string) (string, error) {
+		switch file {
+		case "python":
+			return "", exec.ErrNotFound
+		case "python3":
+			return "/usr/bin/python3", nil
+		default:
+			return originalLookPath(file)
+		}
+	}
+
+	workingDir := t.TempDir()
+	scriptsDir := filepath.Join(workingDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "run.py"), []byte("print(42)\n"), 0o644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	result, err := ExecuteShellCommandsInPrompt("```!\npython scripts/run.py\n```", ShellBash, workingDir, nil, []string{"Bash(python3 *)"}, nil)
+	if err != nil {
+		t.Fatalf("ExecuteShellCommandsInPrompt() error = %v", err)
+	}
+	if !strings.Contains(result, "42") {
+		t.Fatalf("expected python3 fallback output, got %q", result)
+	}
+
+	if err := os.WriteFile(filepath.Join(scriptsDir, "other.py"), []byte("print(7)\n"), 0o644); err != nil {
+		t.Fatalf("write second script: %v", err)
+	}
+	result, err = ExecuteShellCommandsInPrompt("```!\npython scripts/other.py\n```", ShellBash, workingDir, nil, []string{"Bash(python3 *)"}, nil)
+	if err != nil {
+		t.Fatalf("ExecuteShellCommandsInPrompt() second script error = %v", err)
+	}
+	if !strings.Contains(result, "7") {
+		t.Fatalf("expected compound python3 fallback output, got %q", result)
+	}
+}
+
+func TestExecuteShellCommandsInPromptRejectsCommandOutsideAllowedTools(t *testing.T) {
+	workingDir := t.TempDir()
+	_, err := ExecuteShellCommandsInPrompt("```!\necho blocked\n```", ShellBash, workingDir, nil, []string{"Bash(printf:*)"}, rejectingRuntime{})
+	if err == nil {
+		t.Fatal("expected command outside allowed-tools to be rejected")
+	}
+	if !strings.Contains(err.Error(), "web sandbox denied command") {
+		t.Fatalf("expected sandbox error, got %v", err)
+	}
+}
+
+func TestExecuteShellCommandsInPromptAllowsLocalShellWithoutWebSandbox(t *testing.T) {
+	workingDir := t.TempDir()
+	result, err := ExecuteShellCommandsInPrompt("```!\necho local-ok\n```", ShellBash, workingDir, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("expected local shell execution to succeed, got %v", err)
+	}
+	if !strings.Contains(result, "local-ok") {
+		t.Fatalf("expected local shell output, got %q", result)
+	}
+}
+
+func TestExecuteShellCommandsInPromptAllowsSkillScopedScriptsDiscovery(t *testing.T) {
+	workingDir := t.TempDir()
+	scriptsDir := filepath.Join(workingDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "run.py"), []byte("print(1)\n"), 0o644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	result, err := ExecuteShellCommandsInPrompt("```!\nfind scripts -name \"*.py\"\n```", ShellBash, workingDir, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("expected scripts discovery to pass, got %v", err)
+	}
+	if !strings.Contains(result, "scripts/run.py") {
+		t.Fatalf("expected scripts discovery output, got %q", result)
+	}
+}
+
+type rejectingRuntime struct{}
+
+func (rejectingRuntime) ExecuteCommand(ctx context.Context, command string) (string, error) {
+	return "", skillsRejected(command)
+}
+
+func (rejectingRuntime) ValidateCommand(command string) error {
+	return skillsRejected(command)
+}
+
+type skillsRejected string
+
+func (e skillsRejected) Error() string {
+	return "web sandbox denied command " + string(e)
+}
+
 func TestSkillManager(t *testing.T) {
 	manager := NewSkillManager()
 
@@ -264,6 +438,19 @@ func TestSkillManager(t *testing.T) {
 
 	// Cleanup
 	ClearBundledSkills()
+}
+
+func TestMatchUserInvocableSkillByTriggerPhrase(t *testing.T) {
+	manager := NewSkillManager()
+	skill := NewSimpleSkill("shortart-image-generator-openclaw", "Generate images. Triggers on: 生成图片, create image, draw", "body")
+	if err := manager.registry.Register(skill); err != nil {
+		t.Fatalf("register skill: %v", err)
+	}
+
+	matched, ok := manager.MatchUserInvocableSkill("帮我生成图片")
+	if !ok || matched == nil || matched.Name != "shortart-image-generator-openclaw" {
+		t.Fatalf("expected trigger phrase to match image skill, got %#v ok=%v", matched, ok)
+	}
 }
 
 func TestConditionalActivation(t *testing.T) {

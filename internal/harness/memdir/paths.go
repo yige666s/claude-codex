@@ -45,7 +45,7 @@ func IsAutoMemoryEnabled() bool {
 // GetMemoryBaseDir returns the base directory for persistent memory storage
 // Resolution order:
 //  1. CLAUDE_CODE_REMOTE_MEMORY_DIR env var (explicit override, set in CCR)
-//  2. ~/.claude (default config home)
+//  2. ~/.claude-codex (default config home)
 func GetMemoryBaseDir() string {
 	if dir := os.Getenv("CLAUDE_CODE_REMOTE_MEMORY_DIR"); dir != "" {
 		return dir
@@ -164,7 +164,7 @@ func getClaudeConfigHomeDir() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(homeDir, ".claude")
+	return filepath.Join(homeDir, ".claude-codex")
 }
 
 func sanitizePath(path string) string {

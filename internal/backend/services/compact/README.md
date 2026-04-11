@@ -79,8 +79,8 @@ The compact service handles conversation compaction and context window managemen
 ```go
 import (
     "context"
-    "github.com/ding/claude-code/claude-go/internal/services/compact"
-    api "github.com/ding/claude-code/claude-go/pkg/anthropic"
+    "claude-codex/internal/services/compact"
+    api "claude-codex/pkg/anthropic"
 )
 
 // Check if auto-compaction should trigger

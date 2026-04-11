@@ -69,3 +69,24 @@ func TestHasSafeHeredocSubstitutionRequiresQuotedDelimiter(t *testing.T) {
 		t.Fatal("expected unquoted heredoc to require normal handling")
 	}
 }
+
+func TestParseCommandExtractsPipeSegmentsAndOutputRedirections(t *testing.T) {
+	parsed := ParseCommand(`printf "hello" | sed 's/h/H/' >out.txt 2>>err.log`)
+
+	wantPipes := []string{`printf "hello"`, `sed 's/h/H/' >out.txt 2>>err.log`}
+	if got := parsed.PipeSegments(); !reflect.DeepEqual(got, wantPipes) {
+		t.Fatalf("PipeSegments() = %#v, want %#v", got, wantPipes)
+	}
+
+	wantRedirects := []OutputRedirection{
+		{Target: "out.txt", Operator: ">"},
+		{Target: "err.log", Operator: ">>"},
+	}
+	if got := parsed.OutputRedirections(); !reflect.DeepEqual(got, wantRedirects) {
+		t.Fatalf("OutputRedirections() = %#v, want %#v", got, wantRedirects)
+	}
+
+	if got := parsed.WithoutOutputRedirections(); got != `printf "hello" | sed 's/h/H/'` {
+		t.Fatalf("WithoutOutputRedirections() = %q", got)
+	}
+}

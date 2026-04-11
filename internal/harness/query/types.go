@@ -4,9 +4,9 @@ import (
 	"context"
 	"sync"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/mcp"
-	"github.com/ding/claude-code/claude-go/internal/harness/tool"
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/harness/mcp"
+	"claude-codex/internal/harness/tool"
+	"claude-codex/internal/public/types"
 )
 
 // QueryParams contains all parameters needed to execute a query.

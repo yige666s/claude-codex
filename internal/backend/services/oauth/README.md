@@ -108,7 +108,7 @@ type OAuthConfig struct {
 ### Start OAuth Flow
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/services/oauth"
+import "claude-codex/internal/services/oauth"
 
 config := &oauth.OAuthConfig{
     ClientID:             "your_client_id",

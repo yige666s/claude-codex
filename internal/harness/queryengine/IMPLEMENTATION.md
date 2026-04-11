@@ -287,7 +287,7 @@ Rationale: Safe concurrent access to shared state.
 === RUN   TestUpdateUsage
 --- PASS: TestUpdateUsage (0.00s)
 PASS
-ok  	github.com/ding/claude-code/claude-go/internal/core/engine	0.633s
+ok  	claude-codex/internal/core/engine	0.633s
 ```
 
 **All 13 tests passing** ✅

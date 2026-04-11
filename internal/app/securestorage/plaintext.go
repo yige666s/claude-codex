@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ding/claude-code/claude-go/internal/public/fsutil"
+	"claude-codex/internal/public/fsutil"
 )
 
 const plaintextWarning = "warning: storing credentials in plaintext"

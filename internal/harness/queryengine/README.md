@@ -396,7 +396,7 @@ go test -bench=. -benchmem
 The QueryEngine integrates with `internal/core/tool`:
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/core/tool"
+import "claude-codex/internal/core/tool"
 
 // Tools are passed in config
 config := engine.QueryEngineConfig{

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/public/types"
 )
 
 // Orchestrator manages tool execution with support for concurrent and serial execution.

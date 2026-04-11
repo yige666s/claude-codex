@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/anthropic"
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/harness/anthropic"
+	"claude-codex/internal/public/types"
 )
 
 // recentMessageWindow is the number of recent messages used to build the

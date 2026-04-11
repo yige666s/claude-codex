@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
+	"claude-codex/internal/harness/permissions"
 )
 
 // PathOperationType describes the kind of filesystem operation a command performs.
@@ -64,9 +64,6 @@ var dangerousRemovalPaths = []string{
 	"/home", "/root", "/boot", "/dev", "/proc", "/sys",
 }
 
-// outputRedirectionRE matches output redirections: >, >|, >>, &>, &>>.
-var outputRedirectionRE = regexp.MustCompile(`(?:^|[^<])(>>?|&>>?|>\|)\s*(\S+)`)
-
 // processSubstitutionRE matches process substitutions >(...) <(...).
 var processSubstitutionRE = regexp.MustCompile(`[><]\(`)
 
@@ -95,9 +92,9 @@ func CheckPathConstraints(command, cwd string) permissions.PermissionResult {
 
 // validateOutputRedirections checks that output redirections do not target dangerous paths.
 func validateOutputRedirections(command, cwd string) permissions.PermissionResult {
-	matches := outputRedirectionRE.FindAllStringSubmatch(command, -1)
-	for _, m := range matches {
-		target := strings.TrimSpace(m[2])
+	parsed := ParseCommand(command)
+	for _, redirection := range parsed.OutputRedirections() {
+		target := strings.TrimSpace(redirection.Target)
 		if target == "" || target == "/dev/null" {
 			continue
 		}

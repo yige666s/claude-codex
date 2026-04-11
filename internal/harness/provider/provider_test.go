@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/provider"
+	"claude-codex/internal/harness/provider"
 )
 
 func TestFactory(t *testing.T) {

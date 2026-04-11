@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/engine"
-	"github.com/ding/claude-code/claude-go/internal/harness/state"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"claude-codex/internal/harness/engine"
+	"claude-codex/internal/harness/state"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 type Planner struct {

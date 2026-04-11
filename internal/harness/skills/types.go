@@ -2,6 +2,8 @@ package skills
 
 import (
 	"time"
+
+	"claude-codex/internal/harness/websandbox"
 )
 
 // SkillSource represents where a skill was loaded from
@@ -23,6 +25,13 @@ const (
 	ContextFork   ExecutionContext = "fork"   // Execute in forked agent
 )
 
+type FrontmatterShell string
+
+const (
+	ShellBash       FrontmatterShell = "bash"
+	ShellPowerShell FrontmatterShell = "powershell"
+)
+
 // SkillDefinition represents a skill that can be invoked
 type SkillDefinition struct {
 	// Core identification
@@ -31,18 +40,21 @@ type SkillDefinition struct {
 	Aliases     []string // Alternative names
 
 	// Documentation
-	Description                string // Skill description
+	Description                 string // Skill description
 	HasUserSpecifiedDescription bool   // Whether description was explicitly provided
-	WhenToUse                  string // When to use this skill
-	ArgumentHint               string // Hint for arguments
+	WhenToUse                   string // When to use this skill
+	ArgumentHint                string // Hint for arguments
 
 	// Execution
-	AllowedTools           []string          // Tools this skill can use
-	Model                  string            // Model to use (empty = inherit)
-	DisableModelInvocation bool              // Skip model invocation
-	ExecutionContext       ExecutionContext  // inline or fork
-	Agent                  string            // Agent type for fork context
-	Effort                 *int              // Effort level (1-5 or custom)
+	AllowedTools           []string         // Tools this skill can use
+	Model                  string           // Model to use (empty = inherit)
+	DisableModelInvocation bool             // Skip model invocation
+	ExecutionContext       ExecutionContext // inline or fork
+	Agent                  string           // Agent type for fork context
+	Effort                 *int             // Effort level (1-5 or custom)
+	Shell                  FrontmatterShell // Optional shell for !-block execution
+	AllowedEnv             []string         // Environment variables allowed for sandboxed execution
+	PrimaryEnv             string           // Primary environment variable for the skill
 
 	// Visibility and permissions
 	UserInvocable bool        // Can be invoked by user
@@ -57,11 +69,11 @@ type SkillDefinition struct {
 	Files         map[string]string // Reference files (for bundled skills)
 
 	// Metadata
-	Version     string    // Skill version
-	SkillRoot   string    // Base directory for skill files
-	Paths       []string  // Path patterns for conditional activation
-	LoadedAt    time.Time // When skill was loaded
-	FileIdentity string   // Canonical file path (for deduplication)
+	Version      string    // Skill version
+	SkillRoot    string    // Base directory for skill files
+	Paths        []string  // Path patterns for conditional activation
+	LoadedAt     time.Time // When skill was loaded
+	FileIdentity string    // Canonical file path (for deduplication)
 
 	// Hooks and configuration
 	Hooks map[string]interface{} // Hook settings
@@ -78,6 +90,7 @@ type SkillContext struct {
 	SessionID    string
 	WorkingDir   string
 	Environment  map[string]string
+	WebSandbox   *websandbox.Runtime
 	State        interface{} // Application state
 	ToolRegistry interface{} // Tool registry
 }
@@ -91,8 +104,8 @@ type ContentBlock struct {
 
 // SkillRegistry manages skill registration and lookup
 type SkillRegistry struct {
-	skills map[string]*SkillDefinition // name -> skill
-	aliases map[string]string          // alias -> name
+	skills  map[string]*SkillDefinition // name -> skill
+	aliases map[string]string           // alias -> name
 }
 
 // NewSkillRegistry creates a new skill registry

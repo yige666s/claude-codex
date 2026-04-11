@@ -3,8 +3,8 @@ package query
 import (
 	"context"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/tool"
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/harness/tool"
+	"claude-codex/internal/public/types"
 )
 
 // performCompaction executes message compaction.

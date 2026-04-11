@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
+	"claude-codex/internal/harness/permissions"
 )
 
 func TestCreatePermissionRequestValidatesAndClonesInput(t *testing.T) {

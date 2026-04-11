@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/hooks"
+	"claude-codex/internal/harness/hooks"
 )
 
 // PermissionRequestHook handles permission requests for tool execution.

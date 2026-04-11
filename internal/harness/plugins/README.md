@@ -53,7 +53,7 @@ type LoadedPlugin struct {
 ### 1. 注册内置插件
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/plugins"
+import "claude-codex/internal/plugins"
 
 // 注册插件
 plugin := &plugins.BuiltinPluginDefinition{

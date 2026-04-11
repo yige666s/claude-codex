@@ -1,7 +1,7 @@
 package query
 
 import (
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/public/types"
 )
 
 // StreamingEvent represents an event during streaming.

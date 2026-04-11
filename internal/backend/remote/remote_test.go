@@ -3,7 +3,7 @@ package remote
 import (
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	"claude-codex/internal/harness/anthropic"
 )
 
 func TestConvertSDKMessage_Assistant(t *testing.T) {

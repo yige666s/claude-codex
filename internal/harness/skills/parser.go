@@ -1,7 +1,11 @@
 package skills
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,6 +29,7 @@ type Frontmatter struct {
 	Effort                 interface{}            `yaml:"effort"`
 	Version                string                 `yaml:"version"`
 	Paths                  interface{}            `yaml:"paths"`
+	Metadata               interface{}            `yaml:"metadata"`
 	Hooks                  map[string]interface{} `yaml:"hooks"`
 	Shell                  interface{}            `yaml:"shell"`
 }
@@ -230,6 +235,152 @@ func ParseEffort(value interface{}) *int {
 	}
 
 	return nil
+}
+
+func ParseSkillMetadataEnv(value interface{}) ([]string, string) {
+	meta, ok := value.(map[string]interface{})
+	if !ok {
+		return nil, ""
+	}
+	openclaw, ok := meta["openclaw"].(map[string]interface{})
+	if !ok {
+		return nil, ""
+	}
+	primaryEnv, _ := openclaw["primaryEnv"].(string)
+	requires, ok := openclaw["requires"].(map[string]interface{})
+	if !ok {
+		return uniqueNonEmpty([]string{primaryEnv}), strings.TrimSpace(primaryEnv)
+	}
+	envList := ParseStringArray(requires["env"])
+	if strings.TrimSpace(primaryEnv) != "" {
+		envList = append(envList, primaryEnv)
+	}
+	return uniqueNonEmpty(envList), strings.TrimSpace(primaryEnv)
+}
+
+func uniqueNonEmpty(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func ParseShellFrontmatter(value interface{}) FrontmatterShell {
+	if value == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", value))) {
+	case "bash":
+		return ShellBash
+	case "powershell":
+		return ShellPowerShell
+	default:
+		return ""
+	}
+}
+
+var (
+	blockPattern         = regexp.MustCompile("(?s)```!\\s*\\n?(.*?)\\n?```")
+	inlinePattern        = regexp.MustCompile("(?m)(^|\\s)!`([^`]+)`")
+	lookPath             = exec.LookPath
+	pythonCommandPattern = regexp.MustCompile(`(^|\&\&\s*|\|\|\s*|;\s*|\(\s*|\n\s*)((?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*)python(\s)`)
+)
+
+type promptShellRuntime interface {
+	ExecuteCommand(ctx context.Context, command string) (string, error)
+	ValidateCommand(command string) error
+}
+
+func ExecuteShellCommandsInPrompt(text string, shell FrontmatterShell, workingDir string, environment map[string]string, allowedTools []string, runtime promptShellRuntime) (string, error) {
+	result := text
+
+	blockMatches := blockPattern.FindAllStringSubmatch(result, -1)
+	for _, match := range blockMatches {
+		if len(match) < 2 {
+			continue
+		}
+		command := applyPython3Fallback(strings.TrimSpace(match[1]))
+		output, err := executePromptShellCommand(command, shell, workingDir, environment, allowedTools, runtime)
+		if err != nil {
+			return "", err
+		}
+		result = strings.Replace(result, match[0], output, 1)
+	}
+
+	inlineMatches := inlinePattern.FindAllStringSubmatch(result, -1)
+	for _, match := range inlineMatches {
+		if len(match) < 3 {
+			continue
+		}
+		command := applyPython3Fallback(strings.TrimSpace(match[2]))
+		output, err := executePromptShellCommand(command, shell, workingDir, environment, allowedTools, runtime)
+		if err != nil {
+			return "", err
+		}
+		result = strings.Replace(result, match[0], match[1]+output, 1)
+	}
+
+	return result, nil
+}
+
+func executePromptShellCommand(command string, shell FrontmatterShell, workingDir string, environment map[string]string, allowedTools []string, runtime promptShellRuntime) (string, error) {
+	if strings.TrimSpace(command) == "" {
+		return "", nil
+	}
+	command = applyPython3Fallback(command)
+	if runtime != nil && !(reflect.ValueOf(runtime).Kind() == reflect.Ptr && reflect.ValueOf(runtime).IsNil()) {
+		return runtime.ExecuteCommand(context.Background(), command)
+	}
+
+	ctx := context.Background()
+	exe := "bash"
+	args := []string{"-lc", command}
+	if shell == ShellPowerShell {
+		exe = "pwsh"
+		args = []string{"-NoProfile", "-Command", command}
+	}
+	cmd := exec.CommandContext(ctx, exe, args...)
+	if strings.TrimSpace(workingDir) != "" {
+		cmd.Dir = workingDir
+	}
+	cmd.Env = os.Environ()
+	for key, value := range environment {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("shell command failed for %q: %s", command, strings.TrimSpace(string(output)))
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func applyPython3Fallback(command string) string {
+	if strings.TrimSpace(command) == "" {
+		return command
+	}
+	if _, err := lookPath("python"); err == nil {
+		return command
+	}
+	if _, err := lookPath("python3"); err != nil {
+		return command
+	}
+	return pythonCommandPattern.ReplaceAllString(command, `${1}${2}python3${3}`)
 }
 
 // ExtractDescriptionFromMarkdown extracts description from markdown content

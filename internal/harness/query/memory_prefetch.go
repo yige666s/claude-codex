@@ -3,8 +3,8 @@ package query
 import (
 	"sync"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/prefetch"
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/harness/prefetch"
+	"claude-codex/internal/public/types"
 )
 
 var (

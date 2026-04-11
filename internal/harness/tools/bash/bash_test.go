@@ -1,11 +1,12 @@
 package bash
 
 import (
+	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
+	"claude-codex/internal/harness/permissions"
 )
 
 func TestSplitSubcommandsRespectsQuotes(t *testing.T) {
@@ -95,5 +96,27 @@ func TestResolvePathExpandsHomeDir(t *testing.T) {
 	paths := extractCommandPaths("cd", nil, "/tmp/work")
 	if len(paths) != 1 || paths[0] != home {
 		t.Fatalf("expected cd with no args to target home dir, got %#v", paths)
+	}
+}
+
+func TestApplyPython3Fallback(t *testing.T) {
+	originalLookPath := lookPath
+	defer func() { lookPath = originalLookPath }()
+	lookPath = func(file string) (string, error) {
+		switch file {
+		case "python":
+			return "", errors.New("not found")
+		case "python3":
+			return "/usr/bin/python3", nil
+		default:
+			return "", errors.New("unexpected")
+		}
+	}
+
+	if got := applyPython3Fallback("python script.py"); got != "python3 script.py" {
+		t.Fatalf("expected python3 fallback, got %q", got)
+	}
+	if got := applyPython3Fallback("cd repo && python script.py"); got != "cd repo && python3 script.py" {
+		t.Fatalf("expected compound python3 fallback, got %q", got)
 	}
 }

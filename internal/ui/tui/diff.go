@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/state"
+	"claude-codex/internal/harness/state"
 )
 
 func renderDiffSummary(message *state.Message) string {

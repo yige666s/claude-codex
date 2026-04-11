@@ -64,7 +64,7 @@ Each line in the transcript file is a JSON object representing an entry:
 ### Basic Session Recording
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/harness/storage"
+import "claude-codex/internal/harness/storage"
 
 // Create session storage
 store, err := storage.NewSessionStorage(homeDir, sessionID, projectDir)
@@ -189,8 +189,8 @@ The storage system provides robust error handling:
 
 ```go
 import (
-    "github.com/ding/claude-code/claude-go/internal/harness/state"
-    "github.com/ding/claude-code/claude-go/internal/harness/storage"
+    "claude-codex/internal/harness/state"
+    "claude-codex/internal/harness/storage"
 )
 
 // Create session

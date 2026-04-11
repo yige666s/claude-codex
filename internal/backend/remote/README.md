@@ -118,7 +118,7 @@ package main
 
 import (
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/remote"
+    "claude-codex/internal/remote"
 )
 
 func main() {

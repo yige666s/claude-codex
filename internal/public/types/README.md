@@ -77,7 +77,7 @@ The `types` package contains shared type definitions for messages, state, config
 ### Creating Messages
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/types"
+import "claude-codex/internal/types"
 
 // Create a user message
 msg := types.NewUserMessage("Hello, Claude!")

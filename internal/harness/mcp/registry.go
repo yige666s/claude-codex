@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/app/config"
+	"claude-codex/internal/app/config"
 )
 
 func DiscoverTools(ctx context.Context, cfgs []config.MCPServerConfig, httpClient *http.Client) (map[string]*Client, map[string][]ToolDefinition, error) {
@@ -26,6 +26,7 @@ func DiscoverTools(ctx context.Context, cfgs []config.MCPServerConfig, httpClien
 			_ = client.Close()
 			return nil, nil, err
 		}
+		RegisterActiveClient(cfg.Name, client)
 		clients[cfg.Name] = client
 		definitions[cfg.Name] = tools
 	}
@@ -51,4 +52,3 @@ func GetMCPInstructionsSection(clients []*Client) string {
 	return "# MCP Server Instructions\n\nThe following MCP servers have provided instructions for how to use their tools and resources:\n\n" +
 		strings.Join(blocks, "\n\n")
 }
-

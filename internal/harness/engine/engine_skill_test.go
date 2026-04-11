@@ -3,8 +3,8 @@ package engine
 import (
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/messages"
-	"github.com/ding/claude-code/claude-go/internal/harness/skills"
+	"claude-codex/internal/harness/messages"
+	"claude-codex/internal/harness/skills"
 )
 
 func TestSkillListingManagerIncremental(t *testing.T) {

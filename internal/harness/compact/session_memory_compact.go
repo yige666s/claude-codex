@@ -4,8 +4,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/memory"
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/harness/memory"
+	"claude-codex/internal/public/types"
 )
 
 // SessionMemoryCompactConfig configures session memory compaction thresholds.

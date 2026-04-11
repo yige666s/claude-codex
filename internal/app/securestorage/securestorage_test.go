@@ -1,11 +1,14 @@
 package securestorage
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"claude-codex/internal/app/config"
 )
 
 func TestPlaintextStoreRoundTrip(t *testing.T) {
@@ -109,15 +112,16 @@ func TestFallbackStoreUsesSecondaryWhenPrimaryWriteFails(t *testing.T) {
 }
 
 func TestKeychainStoreUsesRunnerForCRUD(t *testing.T) {
-	t.Parallel()
+	t.Setenv("CLAUDE_GO_HOME", t.TempDir())
+	ClearKeychainCache()
 
 	runner := &fakeRunner{
 		responses: map[string][]byte{
-			"find-generic-password|-a|alice|-w|-s|Claude Go": []byte(`{"token":"from-keychain"}`),
+			"find-generic-password|-a|alice|-w|-s|Claude Codex": []byte(`{"token":"from-keychain"}`),
 		},
 	}
 
-	store := NewKeychainStore("Claude Go", "alice")
+	store := NewKeychainStore("Claude Codex", "alice")
 	store.run = runner.run
 
 	got, err := store.Read()
@@ -136,12 +140,121 @@ func TestKeychainStoreUsesRunnerForCRUD(t *testing.T) {
 	}
 
 	wantCalls := [][]string{
-		{"find-generic-password", "-a", "alice", "-w", "-s", "Claude Go"},
-		{"add-generic-password", "-U", "-a", "alice", "-s", "Claude Go", "-w", `{"token":"updated"}`},
-		{"delete-generic-password", "-a", "alice", "-s", "Claude Go"},
+		{"find-generic-password", "-a", "alice", "-w", "-s", "Claude Codex"},
+		{"add-generic-password", "-U", "-a", "alice", "-s", "Claude Codex", "-w", `{"token":"updated"}`},
+		{"delete-generic-password", "-a", "alice", "-s", "Claude Codex"},
 	}
 	if !reflect.DeepEqual(runner.calls, wantCalls) {
 		t.Fatalf("runner calls = %#v, want %#v", runner.calls, wantCalls)
+	}
+}
+
+func TestKeychainStoreReadUsesCache(t *testing.T) {
+	t.Setenv("CLAUDE_GO_HOME", t.TempDir())
+
+	runner := &fakeRunner{
+		responses: map[string][]byte{
+			"find-generic-password|-a|alice|-w|-s|Claude Codex": []byte(`{"token":"cached"}`),
+		},
+	}
+
+	store := NewKeychainStore("Claude Codex", "alice")
+	store.run = runner.run
+	ClearKeychainCache()
+
+	first, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read() first error = %v", err)
+	}
+	second, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read() second error = %v", err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("cached reads mismatch: %#v vs %#v", first, second)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 runner call with cache, got %d", len(runner.calls))
+	}
+}
+
+func TestStartKeychainPrefetchWarmsCache(t *testing.T) {
+	t.Setenv("CLAUDE_GO_HOME", t.TempDir())
+
+	runner := &fakeRunner{
+		responses: map[string][]byte{
+			"find-generic-password|-a|alice|-w|-s|Claude Codex": []byte(`{"token":"prefetched"}`),
+		},
+	}
+	store := NewKeychainStore("Claude Codex", "alice")
+	store.run = runner.run
+	ClearKeychainCache()
+
+	StartKeychainPrefetch(store)
+	if err := EnsureKeychainPrefetchCompleted(context.Background(), store); err != nil {
+		t.Fatalf("EnsureKeychainPrefetchCompleted() error = %v", err)
+	}
+
+	got, err := store.Read()
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if got["token"] != "prefetched" {
+		t.Fatalf("prefetched token = %#v", got)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected prefetch to avoid second read call, got %d calls", len(runner.calls))
+	}
+}
+
+func TestNewStoreFromConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Default()
+	cfg.SecretStore = "plaintext"
+	store, err := NewStoreFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewStoreFromConfig(plaintext) error = %v", err)
+	}
+	if store.Name() != "plaintext" {
+		t.Fatalf("store name = %q", store.Name())
+	}
+
+	cfg.SecretStore = "auto"
+	store, err = NewStoreFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewStoreFromConfig(auto) error = %v", err)
+	}
+	if store == nil {
+		t.Fatal("expected auto store")
+	}
+}
+
+func TestDataStoreHelpers(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeStore{name: "fake", readData: Data{}}
+	dataStore := NewDataStore(store)
+	if err := dataStore.Set(KeyMCPOAuth, map[string]any{"server": "token"}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	var got map[string]any
+	ok, err := dataStore.Get(KeyMCPOAuth, &got)
+	if err != nil || !ok {
+		t.Fatalf("Get() err=%v ok=%v", err, ok)
+	}
+	if got["server"] != "token" {
+		t.Fatalf("unexpected data: %#v", got)
+	}
+	if err := dataStore.DeleteKey(KeyMCPOAuth); err != nil {
+		t.Fatalf("DeleteKey() error = %v", err)
+	}
+	ok, err = dataStore.Get(KeyMCPOAuth, &got)
+	if err != nil {
+		t.Fatalf("Get() after delete error = %v", err)
+	}
+	if ok {
+		t.Fatal("expected missing key after delete")
 	}
 }
 

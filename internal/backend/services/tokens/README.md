@@ -31,8 +31,8 @@ Token estimation service provides both API-based and rough estimation methods fo
 ```go
 import (
     "context"
-    "github.com/ding/claude-code/claude-go/internal/services/tokens"
-    api "github.com/ding/claude-code/claude-go/pkg/anthropic"
+    "claude-codex/internal/services/tokens"
+    api "claude-codex/pkg/anthropic"
 )
 
 // Create a counter

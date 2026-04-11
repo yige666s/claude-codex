@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/public/types"
 )
 
 // ProcessUserInputContext contains the context needed for processing user input.

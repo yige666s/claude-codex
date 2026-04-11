@@ -3,7 +3,7 @@ package tools
 import (
 	"fmt"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
+	"claude-codex/internal/harness/permissions"
 )
 
 type Registry struct {

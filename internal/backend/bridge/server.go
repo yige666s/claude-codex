@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 type Authenticator struct {
@@ -27,28 +27,12 @@ type Runner interface {
 	ListTools(context.Context, string) ([]toolkit.Descriptor, error)
 }
 
-type Request struct {
-	ID         int64           `json:"id"`
-	Method     string          `json:"method"`
-	WorkingDir string          `json:"working_dir,omitempty"`
-	Prompt     string          `json:"prompt,omitempty"`
-	Secret     string          `json:"secret,omitempty"`
-	Params     json.RawMessage `json:"params,omitempty"`
-}
-
-type runPromptParams struct {
-	WorkingDir string `json:"working_dir,omitempty"`
-	Prompt     string `json:"prompt,omitempty"`
-}
-
-type listToolsParams struct {
-	WorkingDir string `json:"working_dir,omitempty"`
-}
-
-type Response struct {
-	ID     int64           `json:"id"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  string          `json:"error,omitempty"`
+type SessionRunner interface {
+	CreateSession(context.Context, string) (*SessionInfo, error)
+	RunSessionPrompt(context.Context, string, string) (*SessionPromptResult, error)
+	GetSession(context.Context, string) (*SessionInfo, error)
+	ListSessions(context.Context, string) ([]SessionInfo, error)
+	DeleteSession(context.Context, string) error
 }
 
 type Server struct {
@@ -95,42 +79,199 @@ func (s *Server) handle(ctx context.Context, request Request) Response {
 	}
 
 	switch request.Method {
-	case "run_prompt":
-		workingDir := request.WorkingDir
-		prompt := request.Prompt
-		if len(request.Params) > 0 {
-			var params runPromptParams
-			if err := json.Unmarshal(request.Params, &params); err == nil {
-				if workingDir == "" {
-					workingDir = params.WorkingDir
-				}
-				if prompt == "" {
-					prompt = params.Prompt
-				}
-			}
+	case MethodRunPrompt:
+		workingDir, prompt := resolveRunPromptArgs(request)
+		if prompt == "" {
+			response.Error = "prompt is required"
+			return response
 		}
 		result, err := s.runner.RunPrompt(ctx, workingDir, prompt)
 		if err != nil {
 			response.Error = err.Error()
 			return response
 		}
-		response.Result, _ = json.Marshal(map[string]string{"output": result})
-	case "list_tools":
-		workingDir := request.WorkingDir
-		if len(request.Params) > 0 {
-			var params listToolsParams
-			if err := json.Unmarshal(request.Params, &params); err == nil && workingDir == "" {
-				workingDir = params.WorkingDir
-			}
-		}
+		mustWriteResult(&response, RunPromptResult{Output: result})
+	case MethodListTools:
+		workingDir := resolveListToolsArgs(request)
 		tools, err := s.runner.ListTools(ctx, workingDir)
 		if err != nil {
 			response.Error = err.Error()
 			return response
 		}
-		response.Result, _ = json.Marshal(map[string]any{"tools": tools})
+		mustWriteResult(&response, ListToolsResult{Tools: tools})
+	case MethodCreateSession:
+		runner, ok := s.runner.(SessionRunner)
+		if !ok {
+			response.Error = "create_session is not supported"
+			return response
+		}
+		workingDir := resolveCreateSessionArgs(request)
+		session, err := runner.CreateSession(ctx, workingDir)
+		if err != nil {
+			response.Error = err.Error()
+			return response
+		}
+		mustWriteResult(&response, CreateSessionResult{Session: *session})
+	case MethodSessionPrompt:
+		runner, ok := s.runner.(SessionRunner)
+		if !ok {
+			response.Error = "session_prompt is not supported"
+			return response
+		}
+		sessionID, prompt := resolveSessionPromptArgs(request)
+		if sessionID == "" || prompt == "" {
+			response.Error = "session_id and prompt are required"
+			return response
+		}
+		result, err := runner.RunSessionPrompt(ctx, sessionID, prompt)
+		if err != nil {
+			response.Error = err.Error()
+			return response
+		}
+		mustWriteResult(&response, result)
+	case MethodGetSession:
+		runner, ok := s.runner.(SessionRunner)
+		if !ok {
+			response.Error = "get_session is not supported"
+			return response
+		}
+		sessionID := resolveSessionID(request)
+		if sessionID == "" {
+			response.Error = "session_id is required"
+			return response
+		}
+		session, err := runner.GetSession(ctx, sessionID)
+		if err != nil {
+			response.Error = err.Error()
+			return response
+		}
+		mustWriteResult(&response, GetSessionResult{Session: *session})
+	case MethodListSessions:
+		runner, ok := s.runner.(SessionRunner)
+		if !ok {
+			response.Error = "list_sessions is not supported"
+			return response
+		}
+		workingDir := resolveListSessionsArgs(request)
+		sessions, err := runner.ListSessions(ctx, workingDir)
+		if err != nil {
+			response.Error = err.Error()
+			return response
+		}
+		mustWriteResult(&response, ListSessionsResult{Sessions: sessions})
+	case MethodDeleteSession:
+		runner, ok := s.runner.(SessionRunner)
+		if !ok {
+			response.Error = "delete_session is not supported"
+			return response
+		}
+		sessionID := resolveSessionID(request)
+		if sessionID == "" {
+			response.Error = "session_id is required"
+			return response
+		}
+		if err := runner.DeleteSession(ctx, sessionID); err != nil {
+			response.Error = err.Error()
+			return response
+		}
+		mustWriteResult(&response, DeleteSessionResult{Deleted: true, SessionID: sessionID})
 	default:
 		response.Error = fmt.Sprintf("unknown method %s", request.Method)
 	}
 	return response
+}
+
+func resolveRunPromptArgs(request Request) (string, string) {
+	workingDir := request.WorkingDir
+	prompt := request.Prompt
+	if len(request.Params) > 0 {
+		var params runPromptParams
+		if err := json.Unmarshal(request.Params, &params); err == nil {
+			if workingDir == "" {
+				workingDir = params.WorkingDir
+			}
+			if prompt == "" {
+				prompt = params.Prompt
+			}
+		}
+	}
+	return workingDir, prompt
+}
+
+func resolveListToolsArgs(request Request) string {
+	workingDir := request.WorkingDir
+	if len(request.Params) > 0 {
+		var params listToolsParams
+		if err := json.Unmarshal(request.Params, &params); err == nil && workingDir == "" {
+			workingDir = params.WorkingDir
+		}
+	}
+	return workingDir
+}
+
+func resolveCreateSessionArgs(request Request) string {
+	workingDir := request.WorkingDir
+	if len(request.Params) > 0 {
+		var params createSessionParams
+		if err := json.Unmarshal(request.Params, &params); err == nil && workingDir == "" {
+			workingDir = params.WorkingDir
+		}
+	}
+	return workingDir
+}
+
+func resolveSessionPromptArgs(request Request) (string, string) {
+	sessionID := request.SessionID
+	prompt := request.Prompt
+	if len(request.Params) > 0 {
+		var params sessionPromptParams
+		if err := json.Unmarshal(request.Params, &params); err == nil {
+			if sessionID == "" {
+				sessionID = params.SessionID
+			}
+			if prompt == "" {
+				prompt = params.Prompt
+			}
+		}
+	}
+	return sessionID, prompt
+}
+
+func resolveSessionID(request Request) string {
+	sessionID := request.SessionID
+	if len(request.Params) == 0 || sessionID != "" {
+		return sessionID
+	}
+
+	for _, params := range []any{&getSessionParams{}, &deleteSessionParams{}} {
+		if err := json.Unmarshal(request.Params, params); err != nil {
+			continue
+		}
+		switch value := params.(type) {
+		case *getSessionParams:
+			if value.SessionID != "" {
+				return value.SessionID
+			}
+		case *deleteSessionParams:
+			if value.SessionID != "" {
+				return value.SessionID
+			}
+		}
+	}
+	return ""
+}
+
+func resolveListSessionsArgs(request Request) string {
+	workingDir := request.WorkingDir
+	if len(request.Params) > 0 {
+		var params listSessionsParams
+		if err := json.Unmarshal(request.Params, &params); err == nil && workingDir == "" {
+			workingDir = params.WorkingDir
+		}
+	}
+	return workingDir
+}
+
+func mustWriteResult(response *Response, value any) {
+	response.Result, _ = json.Marshal(value)
 }

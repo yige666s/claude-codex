@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/app/config"
+	"claude-codex/internal/app/config"
 )
 
 type Manifest struct {

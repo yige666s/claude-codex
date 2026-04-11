@@ -9,12 +9,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/public/fsutil"
+	"claude-codex/internal/public/fsutil"
 )
 
 const (
-	homeEnvVar           = "CLAUDE_GO_HOME"
-	CurrentSchemaVersion = 3
+	homeEnvVar                        = "CLAUDE_GO_HOME"
+	CurrentSchemaVersion              = 3
+	DefaultAnthropicAPIKeyPlaceholder = "YOUR_ANTHROPIC_API_KEY"
 )
 
 type MCPServerConfig struct {
@@ -89,19 +90,20 @@ func (e *LoadError) Unwrap() error {
 func Default() Config {
 	return Config{
 		SchemaVersion:  CurrentSchemaVersion,
-		Backend:        "simple",
+		Backend:        "anthropic",
 		Provider:       "anthropic",
 		Model:          "claude-sonnet-4-5",
 		PermissionMode: "default",
 		Theme:          "dark",
 		APIBaseURL:     "https://api.anthropic.com",
+		APIKey:         DefaultAnthropicAPIKeyPlaceholder,
 		TimeoutSeconds: 600,
 		MaxTurns:       8,
 		SecretStore:    "auto",
 		Telemetry: TelemetryConfig{
 			Enabled:     false,
 			Exporter:    "none",
-			ServiceName: "claude-go",
+			ServiceName: "claude-codex",
 		},
 		OAuth: OAuthConfig{
 			Scopes:       []string{"openid", "profile"},
@@ -114,7 +116,7 @@ func Default() Config {
 
 func (cfg TelemetryConfig) ServiceNameOrDefault() string {
 	if strings.TrimSpace(cfg.ServiceName) == "" {
-		return "claude-go"
+		return "claude-codex"
 	}
 	return cfg.ServiceName
 }
@@ -143,7 +145,7 @@ func AppHome() (string, error) {
 		return "", err
 	}
 
-	return filepath.Join(home, ".claude-go"), nil
+	return filepath.Join(home, ".claude-codex"), nil
 }
 
 func ConfigPath() (string, error) {
@@ -365,6 +367,23 @@ func coalesceString(value, fallback string) string {
 	return value
 }
 
+func parseTelemetryExporters(value string) []string {
+	parts := strings.Split(value, ",")
+	exporters := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(strings.ToLower(part))
+		if part == "" {
+			continue
+		}
+		exporters = append(exporters, part)
+	}
+	return exporters
+}
+
+func IsPlaceholderAPIKey(value string) bool {
+	return strings.TrimSpace(value) == DefaultAnthropicAPIKeyPlaceholder
+}
+
 // Validate checks if the configuration is valid
 func (cfg *Config) Validate() error {
 	if cfg.Backend == "" {
@@ -401,9 +420,14 @@ func (cfg *Config) Validate() error {
 		if cfg.Telemetry.Exporter == "" {
 			return fmt.Errorf("telemetry.exporter is required when telemetry is enabled")
 		}
-		validExporters := map[string]bool{"otlp": true, "stdout": true, "jaeger": true}
-		if !validExporters[cfg.Telemetry.Exporter] {
-			return fmt.Errorf("invalid telemetry.exporter: %s (must be otlp, stdout, or jaeger)", cfg.Telemetry.Exporter)
+		validExporters := map[string]bool{
+			"otlp": true, "stdout": true, "jaeger": true,
+			"jsonl": true, "perfetto": true, "bigquery": true,
+		}
+		for _, exporter := range parseTelemetryExporters(cfg.Telemetry.Exporter) {
+			if !validExporters[exporter] {
+				return fmt.Errorf("invalid telemetry.exporter: %s (must be comma-separated values from otlp, stdout, jaeger, jsonl, perfetto, bigquery)", cfg.Telemetry.Exporter)
+			}
 		}
 	}
 
@@ -432,7 +456,7 @@ func LoadWithWorkspace(workspaceDir string) (Config, error) {
 	}
 
 	// Try to load workspace config
-	workspaceCfgPath := filepath.Join(workspaceDir, ".claude-go", "config.json")
+	workspaceCfgPath := filepath.Join(workspaceDir, ".claude-codex", "config.json")
 	if _, err := os.Stat(workspaceCfgPath); err == nil {
 		workspaceCfg, err := loadFromPath(workspaceCfgPath)
 		if err != nil {

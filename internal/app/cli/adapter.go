@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 
-	"github.com/ding/claude-code/claude-go/internal/ui/tui"
+	"claude-codex/internal/ui/tui"
 )
 
 // RegistryAdapter adapts the CLI Registry to the TUI CommandRegistry interface

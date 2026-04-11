@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"claude-codex/internal/harness/permissions"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 const description = `Asks the user multiple choice questions to gather information, clarify ambiguity, understand preferences, make decisions or offer them choices.

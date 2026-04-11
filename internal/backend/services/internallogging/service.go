@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ding/claude-code/claude-go/internal/backend/services/analytics"
-	"github.com/ding/claude-code/claude-go/internal/harness/tool"
+	"claude-codex/internal/backend/services/analytics"
+	"claude-codex/internal/harness/tool"
 )
 
 const (

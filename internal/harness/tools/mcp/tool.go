@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/ding/claude-code/claude-go/internal/app/config"
-	mcpcore "github.com/ding/claude-code/claude-go/internal/harness/mcp"
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"claude-codex/internal/app/config"
+	mcpcore "claude-codex/internal/harness/mcp"
+	"claude-codex/internal/harness/permissions"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 type RemoteTool struct {
@@ -34,6 +34,7 @@ func NewRemoteTools(ctx context.Context, server config.MCPServerConfig) ([]toolk
 	if err != nil {
 		return nil, err
 	}
+	mcpcore.RegisterActiveClient(server.Name, client)
 
 	tools := make([]toolkit.Tool, 0, len(definitions))
 	for _, definition := range definitions {

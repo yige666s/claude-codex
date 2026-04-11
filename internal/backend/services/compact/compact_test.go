@@ -3,7 +3,7 @@ package compact
 import (
 	"testing"
 
-	api "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	api "claude-codex/internal/harness/anthropic"
 )
 
 func TestGetEffectiveContextWindowSize(t *testing.T) {

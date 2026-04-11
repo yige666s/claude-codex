@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"claude-codex/internal/harness/tools"
 )
 
 // Manager provides high-level agent management

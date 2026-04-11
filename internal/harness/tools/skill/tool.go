@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
-	"github.com/ding/claude-code/claude-go/internal/harness/skills"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"claude-codex/internal/harness/permissions"
+	"claude-codex/internal/harness/skills"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 const ToolName = "Skill"
@@ -28,7 +28,7 @@ type Output struct {
 	CommandName  string   `json:"commandName"`
 	AllowedTools []string `json:"allowedTools,omitempty"`
 	Model        string   `json:"model,omitempty"`
-	Status       string   `json:"status,omitempty"` // "inline" or "forked"
+	Status       string   `json:"status,omitempty"`  // "inline" or "forked"
 	AgentID      string   `json:"agentId,omitempty"` // For forked skills
 	Result       string   `json:"result,omitempty"`  // For forked skills
 }
@@ -139,33 +139,10 @@ func (t *Tool) Execute(ctx context.Context, rawInput json.RawMessage) (toolkit.R
 		}
 	}
 
-	// Build output structure
-	output := Output{
-		Success:     true,
-		CommandName: skillName,
-		Status:      "inline",
-	}
+	promptText := promptBuilder.String()
+	promptText = skills.WrapGeneratedSkillPrompt(skillName, input.Args, promptText)
 
-	// Add allowed tools if specified
-	if len(skill.AllowedTools) > 0 {
-		output.AllowedTools = skill.AllowedTools
-	}
-
-	// Add model override if specified
-	if skill.Model != "" {
-		output.Model = skill.Model
-	}
-
-	// Marshal output to JSON
-	outputJSON, err := json.Marshal(output)
-	if err != nil {
-		return toolkit.Result{}, fmt.Errorf("failed to marshal output: %w", err)
-	}
-
-	// Return the JSON output
-	// Note: The skill prompt should be injected as a message by the engine
-	// The engine will wrap it in <command-name> tags and inject it into the conversation
 	return toolkit.Result{
-		Output: string(outputJSON),
+		Output: promptText,
 	}, nil
 }

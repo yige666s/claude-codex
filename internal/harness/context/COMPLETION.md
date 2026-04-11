@@ -3,7 +3,7 @@
 ## ✅ Task Completed Successfully
 
 ### Migration Summary
-Successfully migrated the TypeScript context collection system from `/Users/ding/projectSrc/claude-code/src/utils/queryContext.ts` to Go in `/Users/ding/projectSrc/claude-code/claude-go/internal/harness/context/`.
+Successfully migrated the TypeScript context collection system from `/Users/ding/projectSrc/claude-code/src/utils/queryContext.ts` to Go in `/Users/ding/projectSrc/claude-code/claude-codex/internal/harness/context/`.
 
 ## 📦 Deliverables
 
@@ -71,7 +71,7 @@ Successfully migrated the TypeScript context collection system from `/Users/ding
 ```bash
 PASS
 coverage: 63.3% of statements
-ok  	github.com/ding/claude-code/claude-go/internal/harness/context	0.656s
+ok  	claude-codex/internal/harness/context	0.656s
 ```
 
 ## ✨ Key Features Implemented

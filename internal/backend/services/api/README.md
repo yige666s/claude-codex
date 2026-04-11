@@ -104,7 +104,7 @@ API usage and rate limit tracking:
 ### Basic Client Creation
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/services/api"
+import "claude-codex/internal/services/api"
 
 // Create client with default configuration
 client, err := api.NewClient(ctx, api.ClientConfig{

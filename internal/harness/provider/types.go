@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 )
 
 // Provider defines the interface for LLM providers
@@ -18,20 +19,22 @@ type Provider interface {
 
 // MessageRequest represents a unified message request across providers
 type MessageRequest struct {
-	Model       string          `json:"model"`
-	Messages    []Message       `json:"messages"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature float64         `json:"temperature,omitempty"`
-	TopP        float64         `json:"top_p,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Tools       []Tool          `json:"tools,omitempty"`
-	System      string          `json:"system,omitempty"`
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Temperature float64   `json:"temperature,omitempty"`
+	TopP        float64   `json:"top_p,omitempty"`
+	Stream      bool      `json:"stream,omitempty"`
+	Tools       []Tool    `json:"tools,omitempty"`
+	System      string    `json:"system,omitempty"`
 }
 
 // Message represents a single message in the conversation
 type Message struct {
-	Role    string        `json:"role"`
-	Content interface{}   `json:"content"` // Can be string or []ContentBlock
+	Role       string      `json:"role"`
+	Content    interface{} `json:"content"` // Can be string or []ContentBlock
+	ToolCallID string      `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
 }
 
 // ContentBlock represents a content block (text, image, etc.)
@@ -39,6 +42,12 @@ type ContentBlock struct {
 	Type   string                 `json:"type"`
 	Text   string                 `json:"text,omitempty"`
 	Source map[string]interface{} `json:"source,omitempty"`
+}
+
+type ToolCall struct {
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // Tool represents a function/tool definition
@@ -50,12 +59,13 @@ type Tool struct {
 
 // MessageResponse represents a unified response across providers
 type MessageResponse struct {
-	ID           string        `json:"id"`
-	Model        string        `json:"model"`
-	Role         string        `json:"role"`
-	Content      []ContentBlock `json:"content"`
-	StopReason   string        `json:"stop_reason,omitempty"`
-	Usage        Usage         `json:"usage"`
+	ID         string         `json:"id"`
+	Model      string         `json:"model"`
+	Role       string         `json:"role"`
+	Content    []ContentBlock `json:"content"`
+	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
+	StopReason string         `json:"stop_reason,omitempty"`
+	Usage      Usage          `json:"usage"`
 }
 
 // Usage represents token usage information

@@ -4,15 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
-	workctx "github.com/ding/claude-code/claude-go/internal/harness/context"
-	"github.com/ding/claude-code/claude-go/internal/harness/messages"
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
-	"github.com/ding/claude-code/claude-go/internal/harness/skills"
-	"github.com/ding/claude-code/claude-go/internal/harness/state"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	workctx "claude-codex/internal/harness/context"
+	"claude-codex/internal/harness/messages"
+	"claude-codex/internal/harness/permissions"
+	"claude-codex/internal/harness/skills"
+	"claude-codex/internal/harness/state"
+	"claude-codex/internal/harness/telemetry"
+	toolkit "claude-codex/internal/harness/tools"
+	bashtool "claude-codex/internal/harness/tools/bash"
 )
 
 type Engine struct {
@@ -24,6 +29,7 @@ type Engine struct {
 	skillManager        *skills.SkillManager
 	skillListingManager *messages.SkillListingManager
 	progressCallback    func(toolkit.ProgressEvent)
+	telemetryTracer     telemetry.SessionTracer
 }
 
 type Result struct {
@@ -54,6 +60,14 @@ func (e *Engine) SetProgressCallback(callback func(toolkit.ProgressEvent)) {
 	e.progressCallback = callback
 }
 
+func (e *Engine) SetTelemetryTracer(tracer telemetry.SessionTracer) {
+	if tracer == nil {
+		e.telemetryTracer = telemetry.NoopSessionTracer{}
+		return
+	}
+	e.telemetryTracer = tracer
+}
+
 // SetSkillManager sets the skill manager for the engine
 func (e *Engine) SetSkillManager(sm *skills.SkillManager) {
 	e.skillManager = sm
@@ -69,7 +83,7 @@ func (e *Engine) ExecuteTool(ctx context.Context, name string, input json.RawMes
 		return toolkit.Result{}, err
 	}
 	if e.permissions != nil {
-		if err := e.permissions.Authorize(ctx, tool.Name(), tool.Permission()); err != nil {
+		if err := e.permissions.AuthorizeRequest(ctx, buildPermissionRequest(tool.Name(), tool.Permission(), input)); err != nil {
 			return toolkit.Result{}, err
 		}
 	}
@@ -77,9 +91,25 @@ func (e *Engine) ExecuteTool(ctx context.Context, name string, input json.RawMes
 }
 
 func (e *Engine) Run(ctx context.Context, session *state.Session, prompt string) (Result, error) {
+	return e.run(ctx, session, prompt, true)
+}
+
+func (e *Engine) RunGeneratedPrompt(ctx context.Context, session *state.Session, prompt string) (Result, error) {
+	return e.run(ctx, session, prompt, false)
+}
+
+func (e *Engine) run(ctx context.Context, session *state.Session, prompt string, recordUserMessage bool) (Result, error) {
 	if session == nil {
 		return Result{}, fmt.Errorf("session is required")
 	}
+	interactionID := fmt.Sprintf("interaction-%d", time.Now().UnixNano())
+	e.recordTrace(session.ID, "interaction.start", "interaction", map[string]any{
+		"span_id":       interactionID,
+		"prompt":        prompt,
+		"prompt_length": len(prompt),
+		"prompt_source": promptSource(recordUserMessage),
+		"working_dir":   session.WorkingDir,
+	})
 
 	// Inject workspace context as first system message if session is new
 	if len(session.Messages) == 0 && e.workingDir != "" {
@@ -103,29 +133,74 @@ func (e *Engine) Run(ctx context.Context, session *state.Session, prompt string)
 		}
 	}
 
-	// Only add the user message if it hasn't already been added by the caller (e.g. TUI pre-adds it for immediate display)
-	if last := session.LastUserMessage(); last != prompt {
-		session.AddUserMessage(prompt)
+	// Generated prompts should still be injected into model context, but not as
+	// visible user-authored transcript entries.
+	if recordUserMessage {
+		if last := session.LastUserMessage(); last != prompt {
+			session.AddUserMessage(prompt)
+		}
+	} else if strings.TrimSpace(prompt) != "" {
+		session.AddSystemContext(prompt)
 	}
 
 	// Check if compression is needed before starting the loop
 	compressionConfig := state.DefaultCompressionConfig()
 	if session.NeedsCompression(compressionConfig) {
+		e.recordTrace(session.ID, "session.compression", "session", map[string]any{
+			"span_id":  interactionID + ":compression:pre",
+			"messages": len(session.Messages),
+		})
 		if err := session.Compress(compressionConfig); err != nil {
+			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+				"span_id": interactionID,
+				"status":  "error",
+				"error":   err.Error(),
+			})
 			return Result{}, fmt.Errorf("failed to compress session: %w", err)
 		}
 	}
 
 	for turn := 0; turn < e.maxTurns; turn++ {
+		turnSpanID := fmt.Sprintf("%s:turn:%d", interactionID, turn)
+		e.recordTrace(session.ID, "planner.turn.start", "planner", map[string]any{
+			"span_id": turnSpanID,
+			"turn":    turn,
+			"tools":   len(e.registry.Descriptors()),
+		})
 		plan, err := e.planner.Next(ctx, session, e.registry.Descriptors())
 		if err != nil {
+			e.recordTrace(session.ID, "planner.turn.end", "planner", map[string]any{
+				"span_id": turnSpanID,
+				"turn":    turn,
+				"status":  "error",
+				"error":   err.Error(),
+			})
+			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+				"span_id": interactionID,
+				"status":  "error",
+				"error":   err.Error(),
+			})
 			return Result{}, err
 		}
+		e.recordTrace(session.ID, "planner.turn.end", "planner", map[string]any{
+			"span_id":         turnSpanID,
+			"turn":            turn,
+			"status":          "ok",
+			"tool_call_count": len(plan.ToolCalls),
+			"assistant_chars": len(plan.AssistantText),
+			"stop_reason":     plan.StopReason,
+		})
 
 		if len(plan.ToolCalls) == 0 {
 			if plan.AssistantText != "" {
 				session.AddAssistantMessage(plan.AssistantText)
 			}
+			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+				"span_id":         interactionID,
+				"status":          "ok",
+				"tool_call_count": 0,
+				"output_chars":    len(plan.AssistantText),
+			})
 			return Result{
 				Output:  plan.AssistantText,
 				Session: session,
@@ -145,22 +220,41 @@ func (e *Engine) Run(ctx context.Context, session *state.Session, prompt string)
 		}
 		session.AddAssistantMessageWithTools(plan.AssistantText, stateToolCalls)
 
-		if err := e.executeToolCalls(ctx, session, plan.ToolCalls); err != nil {
+		if err := e.executeToolCalls(ctx, session, plan.ToolCalls, interactionID); err != nil {
+			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+				"span_id": interactionID,
+				"status":  "error",
+				"error":   err.Error(),
+			})
 			return Result{}, err
 		}
 
 		// Check if compression is needed after tool execution
 		if session.NeedsCompression(compressionConfig) {
+			e.recordTrace(session.ID, "session.compression", "session", map[string]any{
+				"span_id":  fmt.Sprintf("%s:compression:post:%d", interactionID, turn),
+				"messages": len(session.Messages),
+			})
 			if err := session.Compress(compressionConfig); err != nil {
+				e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+					"span_id": interactionID,
+					"status":  "error",
+					"error":   err.Error(),
+				})
 				return Result{}, fmt.Errorf("failed to compress session: %w", err)
 			}
 		}
 	}
 
+	e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+		"span_id": interactionID,
+		"status":  "error",
+		"error":   fmt.Sprintf("planner exceeded max turns (%d)", e.maxTurns),
+	})
 	return Result{}, fmt.Errorf("planner exceeded max turns (%d)", e.maxTurns)
 }
 
-func (e *Engine) executeToolCalls(ctx context.Context, session *state.Session, calls []ToolCall) error {
+func (e *Engine) executeToolCalls(ctx context.Context, session *state.Session, calls []ToolCall, interactionID string) error {
 	// Partition tool calls into concurrent-safe and non-concurrent-safe groups
 	var safeCalls []ToolCall
 	var unsafeCalls []ToolCall
@@ -210,16 +304,20 @@ func (e *Engine) executeToolCalls(ctx context.Context, session *state.Session, c
 					return err
 				}
 
+				request := buildPermissionRequest(tool.Name(), tool.Permission(), call.Input)
 				if e.permissions != nil {
-					if err := e.permissions.Authorize(runCtx, tool.Name(), tool.Permission()); err != nil {
+					if err := e.permissions.AuthorizeRequest(runCtx, request); err != nil {
 						return err
 					}
 				}
 
+				e.recordToolTrace(session.ID, interactionID, call, request, "start", nil)
 				// Report start
 				progressReporter.Report(toolkit.ProgressEvent{
 					ToolName: call.Name,
 					Status:   "started",
+					Message:  request.Summary,
+					Metadata: cloneStringMap(request.Metadata),
 				})
 
 				var result toolkit.Result
@@ -231,18 +329,26 @@ func (e *Engine) executeToolCalls(ctx context.Context, session *state.Session, c
 				}
 
 				if err != nil {
+					e.recordToolTrace(session.ID, interactionID, call, request, "error", map[string]any{"error": err.Error()})
 					progressReporter.Report(toolkit.ProgressEvent{
 						ToolName: call.Name,
 						Status:   "failed",
 						Message:  err.Error(),
+						Metadata: cloneStringMap(request.Metadata),
 					})
 					return err
 				}
 
+				e.recordToolTrace(session.ID, interactionID, call, request, "end", map[string]any{
+					"status":       "ok",
+					"output_chars": len(result.Output),
+				})
 				progressReporter.Report(toolkit.ProgressEvent{
 					ToolName: call.Name,
 					Status:   "completed",
+					Message:  request.Summary,
 					Progress: 1.0,
+					Metadata: cloneStringMap(request.Metadata),
 				})
 
 				idx := callIndex[call.ID]
@@ -269,16 +375,20 @@ func (e *Engine) executeToolCalls(ctx context.Context, session *state.Session, c
 			return err
 		}
 
+		request := buildPermissionRequest(tool.Name(), tool.Permission(), call.Input)
 		if e.permissions != nil {
-			if err := e.permissions.Authorize(ctx, tool.Name(), tool.Permission()); err != nil {
+			if err := e.permissions.AuthorizeRequest(ctx, request); err != nil {
 				return err
 			}
 		}
 
+		e.recordToolTrace(session.ID, interactionID, call, request, "start", nil)
 		// Report start
 		progressReporter.Report(toolkit.ProgressEvent{
 			ToolName: call.Name,
 			Status:   "started",
+			Message:  request.Summary,
+			Metadata: cloneStringMap(request.Metadata),
 		})
 
 		var result toolkit.Result
@@ -290,18 +400,26 @@ func (e *Engine) executeToolCalls(ctx context.Context, session *state.Session, c
 		}
 
 		if err != nil {
+			e.recordToolTrace(session.ID, interactionID, call, request, "error", map[string]any{"error": err.Error()})
 			progressReporter.Report(toolkit.ProgressEvent{
 				ToolName: call.Name,
 				Status:   "failed",
 				Message:  err.Error(),
+				Metadata: cloneStringMap(request.Metadata),
 			})
 			return err
 		}
 
+		e.recordToolTrace(session.ID, interactionID, call, request, "end", map[string]any{
+			"status":       "ok",
+			"output_chars": len(result.Output),
+		})
 		progressReporter.Report(toolkit.ProgressEvent{
 			ToolName: call.Name,
 			Status:   "completed",
+			Message:  request.Summary,
 			Progress: 1.0,
+			Metadata: cloneStringMap(request.Metadata),
 		})
 
 		idx := callIndex[call.ID]
@@ -319,4 +437,225 @@ func (e *Engine) executeToolCalls(ctx context.Context, session *state.Session, c
 	}
 
 	return nil
+}
+
+func buildPermissionRequest(toolName string, level permissions.Level, input json.RawMessage) permissions.Request {
+	request := permissions.Request{
+		ToolName: toolName,
+		Level:    level,
+	}
+
+	if len(input) == 0 {
+		return request
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(input, &payload); err != nil {
+		request.Summary = summarizeText(string(input), 120)
+		return request
+	}
+
+	metadata := map[string]string{}
+	switch toolName {
+	case "bash":
+		if command, ok := payload["command"].(string); ok {
+			request.Summary = summarizeText(command, 120)
+			metadata["command"] = summarizeText(command, 240)
+			fields := strings.Fields(command)
+			if len(fields) > 0 {
+				metadata["command_prefix"] = fields[0]
+			}
+			analysis := bashtool.AnalyzeCommand(command)
+			if bashtool.IsCommandReadOnly(command) {
+				metadata["access"] = "read-only"
+			} else {
+				metadata["access"] = "write-or-exec"
+			}
+			if analysis.CompoundStructure.HasCompoundOperators {
+				metadata["compound"] = strings.Join(analysis.CompoundStructure.Operators, " ")
+			}
+			if analysis.CompoundStructure.HasPipeline {
+				metadata["pipeline"] = "true"
+			}
+			if analysis.DangerousPatterns.HasCommandSubstitution {
+				metadata["command_substitution"] = "true"
+			}
+			if analysis.DangerousPatterns.HasParameterExpansion {
+				metadata["parameter_expansion"] = "true"
+			}
+			if analysis.DangerousPatterns.HasHeredoc {
+				metadata["heredoc"] = "true"
+			}
+			if risk := destructiveBashHint(command); risk != "" {
+				metadata["risk"] = risk
+			}
+		}
+	case "file_read", "file_write", "file_edit":
+		if path, ok := payload["path"].(string); ok {
+			request.Summary = path
+			metadata["path"] = path
+			metadata["filename"] = filepath.Base(path)
+		}
+		if oldString, ok := payload["old_string"].(string); ok {
+			metadata["old"] = summarizeText(oldString, 80)
+		}
+		if newString, ok := payload["new_string"].(string); ok {
+			metadata["new"] = summarizeText(newString, 80)
+		}
+	case "web_fetch":
+		if url, ok := payload["url"].(string); ok {
+			request.Summary = summarizeText(url, 120)
+			metadata["url"] = url
+		}
+	case "agent":
+		if prompt, ok := payload["prompt"].(string); ok {
+			request.Summary = summarizeText(prompt, 120)
+		}
+		if description, ok := payload["description"].(string); ok && strings.TrimSpace(description) != "" {
+			metadata["description"] = summarizeText(description, 120)
+		}
+		if subagentType, ok := payload["subagent_type"].(string); ok && strings.TrimSpace(subagentType) != "" {
+			metadata["subagent_type"] = subagentType
+		}
+		if model, ok := payload["model"].(string); ok && strings.TrimSpace(model) != "" {
+			metadata["model"] = model
+		}
+		if teamName, ok := payload["team_name"].(string); ok && strings.TrimSpace(teamName) != "" {
+			metadata["team_name"] = teamName
+		}
+	case "team_create", "team_delete":
+		if teamName, ok := payload["name"].(string); ok && strings.TrimSpace(teamName) != "" {
+			action := strings.TrimPrefix(toolName, "team_")
+			request.Summary = fmt.Sprintf("%s team %s", action, teamName)
+			metadata["team_name"] = teamName
+			metadata["operation"] = action
+		}
+	default:
+		if strings.HasPrefix(toolName, "mcp__") {
+			serverName, remoteTool := parseMCPToolName(toolName)
+			if serverName != "" {
+				metadata["server"] = serverName
+			}
+			if remoteTool != "" {
+				metadata["mcp_tool"] = remoteTool
+			}
+			if serverName != "" || remoteTool != "" {
+				request.Summary = strings.Trim(strings.Join([]string{serverName, remoteTool}, "/"), "/")
+			}
+			if uri, ok := payload["uri"].(string); ok && strings.TrimSpace(uri) != "" {
+				metadata["uri"] = uri
+			}
+			if path, ok := payload["path"].(string); ok && strings.TrimSpace(path) != "" {
+				metadata["path"] = path
+			}
+			if url, ok := payload["url"].(string); ok && strings.TrimSpace(url) != "" {
+				metadata["url"] = url
+			}
+			break
+		}
+		if path, ok := payload["path"].(string); ok {
+			request.Summary = path
+			metadata["path"] = path
+		}
+	}
+
+	if request.Summary == "" {
+		if text, err := json.Marshal(payload); err == nil {
+			request.Summary = summarizeText(string(text), 120)
+		}
+	}
+	if len(metadata) > 0 {
+		request.Metadata = metadata
+	}
+	return request
+}
+
+func summarizeText(value string, limit int) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\n", " "))
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return value[:limit]
+	}
+	return value[:limit-3] + "..."
+}
+
+func destructiveBashHint(command string) string {
+	command = strings.TrimSpace(strings.ToLower(command))
+	switch {
+	case strings.Contains(command, "rm -rf"), strings.Contains(command, "rm -r "), strings.Contains(command, "rmdir "):
+		return "destructive removal"
+	case strings.Contains(command, "mv "), strings.Contains(command, "cp "):
+		return "filesystem mutation"
+	case strings.Contains(command, "chmod "), strings.Contains(command, "chown "):
+		return "permission mutation"
+	case strings.Contains(command, "git push"), strings.Contains(command, "git commit"), strings.Contains(command, "git reset"):
+		return "git state mutation"
+	case strings.Contains(command, "curl ") && (strings.Contains(command, "| sh") || strings.Contains(command, "| bash")):
+		return "network script execution"
+	case strings.Contains(command, "sudo "):
+		return "privileged execution"
+	default:
+		return ""
+	}
+}
+
+func cloneStringMap(input map[string]string) map[string]string {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
+}
+
+func parseMCPToolName(toolName string) (string, string) {
+	parts := strings.Split(toolName, "__")
+	if len(parts) < 3 || parts[0] != "mcp" {
+		return "", ""
+	}
+	return parts[1], strings.Join(parts[2:], "__")
+}
+
+func (e *Engine) recordTrace(sessionID string, name string, kind string, attrs map[string]any) {
+	if e == nil || e.telemetryTracer == nil {
+		return
+	}
+	telemetry.RecordEvent(e.telemetryTracer, sessionID, name, kind, attrs)
+}
+
+func (e *Engine) recordToolTrace(sessionID string, interactionID string, call ToolCall, request permissions.Request, phase string, extra map[string]any) {
+	attrs := map[string]any{
+		"span_id":      fmt.Sprintf("%s:tool:%s", interactionID, call.ID),
+		"tool_name":    call.Name,
+		"tool_call_id": call.ID,
+	}
+	if request.Summary != "" {
+		attrs["summary"] = request.Summary
+	}
+	for key, value := range request.Metadata {
+		attrs[key] = value
+	}
+	for key, value := range extra {
+		attrs[key] = value
+	}
+	name := "tool.end"
+	switch phase {
+	case "start":
+		name = "tool.start"
+	case "error":
+		name = "tool.end"
+		attrs["status"] = "error"
+	}
+	e.recordTrace(sessionID, name, "tool", attrs)
+}
+
+func promptSource(recordUserMessage bool) string {
+	if recordUserMessage {
+		return "user"
+	}
+	return "generated"
 }

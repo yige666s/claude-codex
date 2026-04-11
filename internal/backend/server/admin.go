@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/ding/claude-code/claude-go/internal/backend/server/auth"
+	"claude-codex/internal/backend/server/auth"
 )
 
 // AdminHandler provides admin endpoints for managing sessions

@@ -154,7 +154,7 @@ export GEMINI_API_KEY=AIzaSyxxxxx
 ## Programmatic Usage
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/provider"
+import "claude-codex/internal/provider"
 
 // Create a provider factory
 factory := provider.NewFactory()

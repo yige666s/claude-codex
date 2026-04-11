@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"bytes"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/app/config"
+	"claude-codex/internal/app/config"
+	"claude-codex/internal/harness/skills"
 )
 
 func TestSetConfigValue_ExtendedKeys(t *testing.T) {
@@ -108,5 +111,109 @@ func TestParseMCPServerArgs_RejectsIncompleteFlags(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestHandleModelCommand(t *testing.T) {
+	t.Setenv("CLAUDE_GO_HOME", t.TempDir())
+
+	cfg := config.Default()
+	var out bytes.Buffer
+	sc := slashContext{
+		cfg:     &cfg,
+		streams: IO{Out: &out},
+	}
+
+	if err := handleModelCommand(nil, sc); err != nil {
+		t.Fatalf("show current model: %v", err)
+	}
+	if !strings.Contains(out.String(), cfg.Model) {
+		t.Fatalf("expected current model in output, got %q", out.String())
+	}
+
+	out.Reset()
+	if err := handleModelCommand([]string{"claude-opus-test"}, sc); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+	if cfg.Model != "claude-opus-test" {
+		t.Fatalf("expected config model to change, got %q", cfg.Model)
+	}
+	if !strings.Contains(out.String(), "updated model to claude-opus-test") {
+		t.Fatalf("unexpected set output: %q", out.String())
+	}
+}
+
+func TestHandleModeCommand(t *testing.T) {
+	t.Setenv("CLAUDE_GO_HOME", t.TempDir())
+
+	cfg := config.Default()
+	var out bytes.Buffer
+	sc := slashContext{
+		cfg:     &cfg,
+		streams: IO{Out: &out},
+	}
+
+	if err := handleModeCommand(nil, sc); err != nil {
+		t.Fatalf("show current mode: %v", err)
+	}
+	if !strings.Contains(out.String(), "current mode: "+cfg.PermissionMode) {
+		t.Fatalf("expected current mode in output, got %q", out.String())
+	}
+
+	out.Reset()
+	if err := handleModeCommand([]string{"plan"}, sc); err != nil {
+		t.Fatalf("set mode: %v", err)
+	}
+	if cfg.PermissionMode != "plan" {
+		t.Fatalf("expected permission mode to change, got %q", cfg.PermissionMode)
+	}
+	if !strings.Contains(out.String(), "updated mode to plan") {
+		t.Fatalf("unexpected set output: %q", out.String())
+	}
+
+	out.Reset()
+	if err := handleModeCommand([]string{"bogus"}, sc); err == nil {
+		t.Fatal("expected invalid mode to fail")
+	}
+}
+
+func TestListCommandsForHelpIncludesSkills(t *testing.T) {
+	manager := skills.NewSkillManager()
+	dir := t.TempDir()
+	skillDir := dir + "/demo"
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	content := `---
+name: Demo Skill
+description: Demo skill
+---
+
+Demo content
+`
+	if err := os.WriteFile(skillDir+"/SKILL.md", []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := manager.LoadSkillsFromDirectory(dir, skills.SourceFile); err != nil {
+		t.Fatalf("load skills: %v", err)
+	}
+
+	commands := listCommandsForHelp(slashContext{
+		skillManager:   manager,
+		defaultWorkDir: t.TempDir(),
+	})
+
+	names := make(map[string]bool, len(commands))
+	for _, cmd := range commands {
+		names[cmd.Name] = true
+	}
+	if !names["/skills"] {
+		t.Fatal("expected /skills in help command list")
+	}
+	if !names["/mode"] {
+		t.Fatal("expected /mode in help command list")
+	}
+	if !names["/demo"] {
+		t.Fatal("expected dynamically loaded skill command in help command list")
 	}
 }

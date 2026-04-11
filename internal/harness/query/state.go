@@ -3,8 +3,8 @@ package query
 import (
 	"sync"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/tool"
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/harness/tool"
+	"claude-codex/internal/public/types"
 )
 
 // State management functions for tracking query state across iterations.

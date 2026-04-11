@@ -7,18 +7,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"claude-codex/internal/harness/websandbox"
 )
 
 // LoadedFrom indicates where a skill was loaded from
 type LoadedFrom string
 
 const (
-	LoadedFromCommands   LoadedFrom = "commands_DEPRECATED"
-	LoadedFromSkills     LoadedFrom = "skills"
-	LoadedFromPlugin     LoadedFrom = "plugin"
-	LoadedFromManaged    LoadedFrom = "managed"
-	LoadedFromBundled    LoadedFrom = "bundled"
-	LoadedFromMCP        LoadedFrom = "mcp"
+	LoadedFromCommands LoadedFrom = "commands_DEPRECATED"
+	LoadedFromSkills   LoadedFrom = "skills"
+	LoadedFromPlugin   LoadedFrom = "plugin"
+	LoadedFromManaged  LoadedFrom = "managed"
+	LoadedFromBundled  LoadedFrom = "bundled"
+	LoadedFromMCP      LoadedFrom = "mcp"
 )
 
 // SkillLoader loads skills from the filesystem
@@ -26,10 +28,10 @@ type SkillLoader struct {
 	cache *SkillCache
 
 	// Dynamic skill tracking
-	dynamicSkillDirs                sync.Map // map[string]bool - tracks discovered skill directories
-	dynamicSkills                   sync.Map // map[string]*SkillDefinition - dynamically loaded skills
-	conditionalSkills               sync.Map // map[string]*SkillDefinition - skills with paths frontmatter
-	activatedConditionalSkillNames  sync.Map // map[string]bool - tracks which conditional skills were activated
+	dynamicSkillDirs               sync.Map // map[string]bool - tracks discovered skill directories
+	dynamicSkills                  sync.Map // map[string]*SkillDefinition - dynamically loaded skills
+	conditionalSkills              sync.Map // map[string]*SkillDefinition - skills with paths frontmatter
+	activatedConditionalSkillNames sync.Map // map[string]bool - tracks which conditional skills were activated
 
 	// Listeners for skill changes
 	listeners []func()
@@ -197,6 +199,8 @@ func (l *SkillLoader) buildSkillDefinition(
 	argumentNames := ParseArgumentNames(fm.Arguments)
 	paths := ParsePaths(fm.Paths)
 	effort := ParseEffort(fm.Effort)
+	shell := ParseShellFrontmatter(fm.Shell)
+	allowedEnv, primaryEnv := ParseSkillMetadataEnv(fm.Metadata)
 
 	// Determine execution context
 	var execContext ExecutionContext
@@ -208,30 +212,33 @@ func (l *SkillLoader) buildSkillDefinition(
 
 	// Build skill
 	skill := &SkillDefinition{
-		Name:                       skillName,
-		DisplayName:                displayName,
-		Description:                description,
+		Name:                        skillName,
+		DisplayName:                 displayName,
+		Description:                 description,
 		HasUserSpecifiedDescription: hasUserDescription,
-		WhenToUse:                  fm.WhenToUse,
-		ArgumentHint:               fm.ArgumentHint,
-		AllowedTools:               allowedTools,
-		Model:                      fm.Model,
-		DisableModelInvocation:     ParseBooleanFrontmatter(fm.DisableModelInvocation),
-		UserInvocable:              ParseBooleanFrontmatter(fm.UserInvocable),
-		ExecutionContext:           execContext,
-		Agent:                      fm.Agent,
-		Effort:                     effort,
-		Version:                    fm.Version,
-		Source:                     source,
-		LoadedFrom:                 string(LoadedFromSkills),
-		Content:                    parsed.Content,
-		ContentLength:              len(parsed.Content),
-		ArgumentNames:              argumentNames,
-		Paths:                      paths,
-		Hooks:                      fm.Hooks,
-		LoadedAt:                   time.Now(),
-		FileIdentity:               identity,
-		SkillRoot:                  filepath.Dir(filePath),
+		WhenToUse:                   fm.WhenToUse,
+		ArgumentHint:                fm.ArgumentHint,
+		AllowedTools:                allowedTools,
+		Model:                       fm.Model,
+		DisableModelInvocation:      ParseBooleanFrontmatter(fm.DisableModelInvocation),
+		UserInvocable:               ParseBooleanFrontmatter(fm.UserInvocable),
+		ExecutionContext:            execContext,
+		Agent:                       fm.Agent,
+		Effort:                      effort,
+		Shell:                       shell,
+		AllowedEnv:                  allowedEnv,
+		PrimaryEnv:                  primaryEnv,
+		Version:                     fm.Version,
+		Source:                      source,
+		LoadedFrom:                  string(LoadedFromSkills),
+		Content:                     parsed.Content,
+		ContentLength:               len(parsed.Content),
+		ArgumentNames:               argumentNames,
+		Paths:                       paths,
+		Hooks:                       fm.Hooks,
+		LoadedAt:                    time.Now(),
+		FileIdentity:                identity,
+		SkillRoot:                   filepath.Dir(filePath),
 	}
 
 	// Set default user invocable if not specified (matching TypeScript behavior)
@@ -260,6 +267,26 @@ func (l *SkillLoader) buildSkillDefinition(
 		// Replace ${CLAUDE_SESSION_ID} with session ID if available
 		if ctx != nil && ctx.SessionID != "" {
 			content = strings.ReplaceAll(content, "${CLAUDE_SESSION_ID}", ctx.SessionID)
+		}
+
+		if skill.LoadedFrom != string(LoadedFromMCP) {
+			workingDir := skill.SkillRoot
+			env := map[string]string{}
+			if ctx != nil {
+				if strings.TrimSpace(ctx.WorkingDir) != "" {
+					workingDir = ctx.WorkingDir
+				}
+				env = ctx.Environment
+			}
+			var sandboxRuntime *websandbox.Runtime
+			if ctx != nil {
+				sandboxRuntime = ctx.WebSandbox
+			}
+			processed, err := ExecuteShellCommandsInPrompt(content, skill.Shell, workingDir, env, skill.AllowedTools, sandboxRuntime)
+			if err != nil {
+				return nil, err
+			}
+			content = processed
 		}
 
 		return []ContentBlock{{Type: "text", Text: content}}, nil

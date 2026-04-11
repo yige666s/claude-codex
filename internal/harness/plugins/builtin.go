@@ -3,7 +3,7 @@ package plugins
 import (
 	"sync"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/skills"
+	"claude-codex/internal/harness/skills"
 )
 
 // BuiltinMarketplaceName is the marketplace identifier for built-in plugins

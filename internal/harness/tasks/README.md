@@ -208,7 +208,7 @@ package main
 
 import (
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/tasks"
+    "claude-codex/internal/tasks"
 )
 
 func main() {
@@ -257,7 +257,7 @@ package main
 
 import (
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/tasks"
+    "claude-codex/internal/tasks"
 )
 
 func main() {
@@ -310,7 +310,7 @@ package main
 
 import (
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/tasks"
+    "claude-codex/internal/tasks"
 )
 
 func main() {
@@ -351,7 +351,7 @@ func main() {
 package main
 
 import (
-    "github.com/ding/claude-code/claude-go/internal/tasks"
+    "claude-codex/internal/tasks"
 )
 
 // 自定义任务实现

@@ -97,10 +97,14 @@ func (r *Registry) List() []*Command {
 
 // GenerateHelp generates help text for all commands
 func (r *Registry) GenerateHelp() string {
+	return generateHelpForCommands(r.List())
+}
+
+func generateHelpForCommands(commands []*Command) string {
 	var b strings.Builder
 	b.WriteString("Available slash commands:\n\n")
 
-	for _, cmd := range r.List() {
+	for _, cmd := range commands {
 		// Command name and aliases
 		names := []string{cmd.Name}
 		if len(cmd.Aliases) > 0 {

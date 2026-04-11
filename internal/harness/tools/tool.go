@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
+	"claude-codex/internal/harness/permissions"
 )
 
 type Result struct {

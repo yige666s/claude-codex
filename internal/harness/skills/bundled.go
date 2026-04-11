@@ -169,14 +169,14 @@ func prependBaseDir(blocks []ContentBlock, baseDir string) []ContentBlock {
 // Helper to create a simple text-based skill
 func NewSimpleSkill(name, description, content string) *SkillDefinition {
 	return &SkillDefinition{
-		Name:                       name,
-		Description:                description,
+		Name:                        name,
+		Description:                 description,
 		HasUserSpecifiedDescription: true,
-		Content:                    content,
-		ContentLength:              len(content),
-		UserInvocable:              true,
-		Source:                     SourceBundled,
-		LoadedFrom:                 "bundled",
+		Content:                     content,
+		ContentLength:               len(content),
+		UserInvocable:               true,
+		Source:                      SourceBundled,
+		LoadedFrom:                  "bundled",
 		GetPrompt: func(args string, ctx *SkillContext) ([]ContentBlock, error) {
 			text := content
 			if args != "" {
@@ -190,12 +190,12 @@ func NewSimpleSkill(name, description, content string) *SkillDefinition {
 // Helper to create a skill with custom prompt generator
 func NewCustomSkill(name, description string, generator PromptGenerator) *SkillDefinition {
 	return &SkillDefinition{
-		Name:                       name,
-		Description:                description,
+		Name:                        name,
+		Description:                 description,
 		HasUserSpecifiedDescription: true,
-		UserInvocable:              true,
-		Source:                     SourceBundled,
-		LoadedFrom:                 "bundled",
-		GetPrompt:                  generator,
+		UserInvocable:               true,
+		Source:                      SourceBundled,
+		LoadedFrom:                  "bundled",
+		GetPrompt:                   generator,
 	}
 }

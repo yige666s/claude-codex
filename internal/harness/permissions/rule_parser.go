@@ -4,10 +4,10 @@ import "strings"
 
 // Legacy tool name aliases (TS normalizeLegacyToolName).
 var legacyToolNameAliases = map[string]string{
-	"Task":           "AgentTool",
-	"KillShell":      "TaskStopTool",
+	"Task":            "AgentTool",
+	"KillShell":       "TaskStopTool",
 	"AgentOutputTool": "TaskOutputTool",
-	"BashOutputTool": "TaskOutputTool",
+	"BashOutputTool":  "TaskOutputTool",
 }
 
 // NormalizeLegacyToolName returns the canonical tool name for legacy aliases.
@@ -30,7 +30,9 @@ func EscapeRuleContent(content string) string {
 // UnescapeRuleContent unescapes content extracted from a "Tool(content)" rule string.
 // Order: \( → (  then \) → )  then \\ → \
 func UnescapeRuleContent(content string) string {
-	s := strings.ReplaceAll(content, `\(`, "(")
+	s := strings.ReplaceAll(content, `\\(`, "(")
+	s = strings.ReplaceAll(s, `\\)`, ")")
+	s = strings.ReplaceAll(s, `\(`, "(")
 	s = strings.ReplaceAll(s, `\)`, ")")
 	s = strings.ReplaceAll(s, `\\`, `\`)
 	return s

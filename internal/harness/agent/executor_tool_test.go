@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
-	"github.com/ding/claude-code/claude-go/internal/harness/tools"
-	"github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	"claude-codex/internal/harness/permissions"
+	"claude-codex/internal/harness/tools"
+	"claude-codex/internal/harness/anthropic"
 )
 
 // Mock tool for testing

@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/tool"
+	"claude-codex/internal/harness/tool"
 )
 
 // readOnlyBashCommands is the set of bash command prefixes considered safe

@@ -13,10 +13,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/app/config"
-	"github.com/ding/claude-code/claude-go/internal/harness/engine"
-	"github.com/ding/claude-code/claude-go/internal/harness/memory"
-	"github.com/ding/claude-code/claude-go/internal/harness/state"
+	appauth "claude-codex/internal/app/auth"
+	"claude-codex/internal/app/config"
+	"claude-codex/internal/harness/engine"
+	"claude-codex/internal/harness/memory"
+	"claude-codex/internal/harness/permissions"
+	"claude-codex/internal/harness/skills"
+	"claude-codex/internal/harness/state"
 )
 
 type slashContext struct {
@@ -26,6 +29,7 @@ type slashContext struct {
 	streams         IO
 	saveSession     bool
 	newEngineForDir func(string) (*engine.Engine, error)
+	skillManager    *skills.SkillManager
 }
 
 var commandRegistry *Registry
@@ -69,6 +73,18 @@ func registerCommands() {
 			Handler:     wrapHandlerWithArgs(handleThemeCommand),
 		},
 		{
+			Name:        "/model",
+			Usage:       "[show|default|<model>]",
+			Description: "Show or set the active model",
+			Handler:     wrapHandlerWithArgs(handleModelCommand),
+		},
+		{
+			Name:        "/mode",
+			Usage:       "[show|default|plan|bypass|auto]",
+			Description: "Show or set the permission mode",
+			Handler:     wrapHandlerWithArgs(handleModeCommand),
+		},
+		{
 			Name:        "/mcp",
 			Usage:       "[list|add|remove]",
 			Description: "Manage MCP servers",
@@ -79,6 +95,17 @@ func registerCommands() {
 			Aliases:     []string{"/doc"},
 			Description: "Check environment and dependencies",
 			Handler:     wrapHandler(handleDoctorCommand),
+		},
+		{
+			Name:        "/login",
+			Usage:       "[status|console]",
+			Description: "Authenticate with OAuth and persist bridge credentials",
+			Handler:     wrapHandlerWithArgs(handleLoginCommand),
+		},
+		{
+			Name:        "/logout",
+			Description: "Remove persisted OAuth and trusted device credentials",
+			Handler:     wrapHandlerWithArgs(handleLogoutCommand),
 		},
 		{
 			Name:        "/cost",
@@ -167,7 +194,22 @@ func runSlashCommand(ctx context.Context, line string, slash slashContext) error
 		return nil
 	}
 
-	return commandRegistry.Execute(ctx, fields[0], fields[1:], slash)
+	output, err := executeSlashLikeCommand(ctx, fields[0], fields[1:], slash)
+	if err != nil {
+		if output != "" {
+			_, _ = fmt.Fprint(slash.streams.Out, output)
+		}
+		return err
+	}
+
+	if strings.HasPrefix(output, "__SKILL_PROMPT__") {
+		return executeGeneratedSkillPrompt(ctx, strings.TrimPrefix(output, "__SKILL_PROMPT__"), slash)
+	}
+	if output == "" {
+		return nil
+	}
+	_, err = fmt.Fprint(slash.streams.Out, output)
+	return err
 }
 
 func handleThemeCommand(args []string, slash slashContext) error {
@@ -190,6 +232,83 @@ func handleThemeCommand(args []string, slash slashContext) error {
 
 	_, err := fmt.Fprintf(slash.streams.Out, "theme set to %s\n", theme)
 	return err
+}
+
+func handleModelCommand(args []string, slash slashContext) error {
+	switch {
+	case len(args) == 0, isModelInfoArg(args[0]):
+		current := strings.TrimSpace(slash.cfg.Model)
+		if current == "" {
+			current = config.Default().Model
+		}
+		suffix := ""
+		if current == config.Default().Model {
+			suffix = " (default)"
+		}
+		_, err := fmt.Fprintf(slash.streams.Out, "current model: %s%s\n", current, suffix)
+		return err
+	case isModelHelpArg(args[0]):
+		return fmt.Errorf("usage: /model [show|default|<model>]")
+	case len(args) == 1:
+		model := strings.TrimSpace(args[0])
+		if model == "" {
+			return fmt.Errorf("usage: /model [show|default|<model>]")
+		}
+		if strings.EqualFold(model, "default") {
+			model = config.Default().Model
+		}
+		slash.cfg.Model = model
+		if err := config.Save(*slash.cfg); err != nil {
+			return err
+		}
+		label := "updated"
+		if model == config.Default().Model {
+			label = "reset"
+		}
+		_, err := fmt.Fprintf(slash.streams.Out, "%s model to %s\n", label, model)
+		return err
+	default:
+		return fmt.Errorf("usage: /model [show|default|<model>]")
+	}
+}
+
+func handleModeCommand(args []string, slash slashContext) error {
+	switch {
+	case len(args) == 0 || strings.EqualFold(strings.TrimSpace(args[0]), "show"):
+		current := strings.TrimSpace(slash.cfg.PermissionMode)
+		if current == "" {
+			current = config.Default().PermissionMode
+		}
+		suffix := ""
+		if current == config.Default().PermissionMode {
+			suffix = " (default)"
+		}
+		_, err := fmt.Fprintf(slash.streams.Out, "current mode: %s%s\n", current, suffix)
+		return err
+	case len(args) == 1:
+		mode := strings.TrimSpace(args[0])
+		if mode == "" {
+			return fmt.Errorf("usage: /mode [show|default|plan|bypass|auto]")
+		}
+		if strings.EqualFold(mode, "default") {
+			mode = config.Default().PermissionMode
+		}
+		if _, err := permissions.ParseMode(mode); err != nil {
+			return fmt.Errorf("usage: /mode [show|default|plan|bypass|auto]")
+		}
+		slash.cfg.PermissionMode = mode
+		if err := config.Save(*slash.cfg); err != nil {
+			return err
+		}
+		label := "updated"
+		if mode == config.Default().PermissionMode {
+			label = "reset"
+		}
+		_, err := fmt.Fprintf(slash.streams.Out, "%s mode to %s\n", label, mode)
+		return err
+	default:
+		return fmt.Errorf("usage: /mode [show|default|plan|bypass|auto]")
+	}
 }
 
 func handleConfigCommand(args []string, slash slashContext) error {
@@ -232,13 +351,114 @@ func handleDoctorCommand(slash slashContext) error {
 		formatToolCheck("go"),
 		formatToolCheck("git"),
 		formatToolCheck("rg"),
-		fmt.Sprintf("claude-go-home: %s", slash.home),
+		fmt.Sprintf("claude-codex-home: %s", slash.home),
 		fmt.Sprintf("config-path: %s", path),
 		fmt.Sprintf("default-workdir: %s", slash.defaultWorkDir),
 		fmt.Sprintf("mcp-servers: %d", len(slash.cfg.MCPServers)),
 	}
 	_, err = fmt.Fprintln(slash.streams.Out, strings.Join(lines, "\n"))
 	return err
+}
+
+func handleLoginCommand(args []string, slash slashContext) error {
+	manager, err := appauth.NewManager(*slash.cfg, nil)
+	if err != nil {
+		return err
+	}
+
+	if len(args) > 0 && strings.EqualFold(strings.TrimSpace(args[0]), "status") {
+		status, err := manager.Status(context.Background())
+		if err != nil {
+			return err
+		}
+		if !status.Authenticated {
+			_, err = fmt.Fprintln(slash.streams.Out, "login status: not authenticated")
+			return err
+		}
+		_, err = fmt.Fprintf(
+			slash.streams.Out,
+			"login status: authenticated\nexpires_at: %s\nscopes: %s\ntrusted_device: %t\n",
+			status.ExpiresAt.Format(time.RFC3339),
+			strings.Join(status.Scopes, ", "),
+			status.HasTrustedDevice,
+		)
+		return err
+	}
+
+	loginWithClaudeAI := true
+	if len(args) > 0 && strings.EqualFold(strings.TrimSpace(args[0]), "console") {
+		loginWithClaudeAI = false
+	}
+
+	_, err = fmt.Fprintln(slash.streams.Out, "starting oauth login flow...")
+	if err != nil {
+		return err
+	}
+
+	tokens, err := manager.Login(context.Background(), func(manualURL, automaticURL string) error {
+		_, err := fmt.Fprintf(
+			slash.streams.Out,
+			"Open the authorization URL in your browser:\n%s\n\nManual fallback URL:\n%s\n\nWaiting for OAuth callback on localhost...\n",
+			automaticURL,
+			manualURL,
+		)
+		return err
+	}, appauth.LoginOptions{
+		LoginWithClaudeAI: loginWithClaudeAI,
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintf(
+		slash.streams.Out,
+		"login successful\nexpires_at: %s\nscopes: %s\n",
+		time.Unix(tokens.ExpiresAt, 0).Format(time.RFC3339),
+		strings.Join(tokens.Scopes, ", "),
+	)
+	return err
+}
+
+func handleLogoutCommand(_ []string, slash slashContext) error {
+	manager, err := appauth.NewManager(*slash.cfg, nil)
+	if err != nil {
+		return err
+	}
+	if err := manager.Logout(); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(slash.streams.Out, "logout successful")
+	return err
+}
+
+func executeSlashLikeCommand(ctx context.Context, name string, args []string, slash slashContext) (string, error) {
+	if slash.skillManager != nil {
+		return NewCombinedRegistryAdapter(commandRegistry, slash.skillManager, slash.defaultWorkDir, slash).Execute(ctx, name, args)
+	}
+	return NewRegistryAdapter(commandRegistry, slash).Execute(ctx, name, args)
+}
+
+func executeGeneratedSkillPrompt(ctx context.Context, prompt string, slash slashContext) error {
+	runner, err := slash.newEngineForDir(slash.defaultWorkDir)
+	if err != nil {
+		return err
+	}
+	session := state.NewSession(slash.defaultWorkDir)
+	result, err := runner.RunGeneratedPrompt(ctx, session, prompt)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(result.Output) != "" {
+		if _, err := fmt.Fprintln(slash.streams.Out, result.Output); err != nil {
+			return err
+		}
+	}
+	if slash.saveSession {
+		if _, err := session.Save(slash.home); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func handleMCPCommand(args []string, slash slashContext) error {
@@ -671,9 +891,51 @@ func loadResumeTarget(args []string, home string) (*state.Session, string, error
 }
 
 func handleHelpCommand(slash slashContext) error {
-	help := commandRegistry.GenerateHelp()
+	help := generateHelpForCommands(listCommandsForHelp(slash))
 	_, err := fmt.Fprint(slash.streams.Out, help)
 	return err
+}
+
+func listCommandsForHelp(slash slashContext) []*Command {
+	commands := commandRegistry.List()
+	if slash.skillManager == nil {
+		return commands
+	}
+
+	merged := make([]*Command, 0, len(commands)+8)
+	seen := make(map[string]bool, len(commands))
+	for _, cmd := range commands {
+		merged = append(merged, cmd)
+		seen[cmd.Name] = true
+	}
+
+	for _, cmd := range NewSkillCommandRegistry(slash.skillManager, slash.defaultWorkDir).List() {
+		if seen[cmd.Name] {
+			continue
+		}
+		merged = append(merged, cmd)
+		seen[cmd.Name] = true
+	}
+
+	return merged
+}
+
+func isModelHelpArg(arg string) bool {
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "help", "-h", "--help":
+		return true
+	default:
+		return false
+	}
+}
+
+func isModelInfoArg(arg string) bool {
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "show", "current", "info":
+		return true
+	default:
+		return false
+	}
 }
 
 func handleHistoryCommand(args []string, slash slashContext) error {

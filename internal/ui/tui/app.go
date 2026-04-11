@@ -8,7 +8,8 @@ func Run(options Options) error {
 		model,
 		tea.WithInput(options.Input),
 		tea.WithOutput(options.Output),
-		tea.WithAltScreen(), // use alternate screen buffer so terminal history stays clean
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 	)
 	_, err := program.Run()
 	return err

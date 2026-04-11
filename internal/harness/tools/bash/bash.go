@@ -5,19 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 	"unicode"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"claude-codex/internal/harness/permissions"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 const (
 	defaultTimeout               = 30 * time.Second
 	maxSubcommandsForSafetyCheck = 50
 )
+
+var lookPath = exec.LookPath
+
+var pythonCommandPattern = regexp.MustCompile(`(^|\&\&\s*|\|\|\s*|;\s*|\(\s*|\n\s*)((?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*)python(\s)`)
 
 type Tool struct {
 	rootDir string
@@ -62,6 +67,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result
 	if strings.TrimSpace(payload.Command) == "" {
 		return toolkit.Result{}, fmt.Errorf("command is required")
 	}
+	payload.Command = applyPython3Fallback(payload.Command)
 
 	workdir := t.rootDir
 	if payload.Workdir != "" {
@@ -111,6 +117,19 @@ func shellCommand(command string) (string, []string) {
 		return "cmd", []string{"/C", command}
 	}
 	return "sh", []string{"-lc", command}
+}
+
+func applyPython3Fallback(command string) string {
+	if strings.TrimSpace(command) == "" {
+		return command
+	}
+	if _, err := lookPath("python"); err == nil {
+		return command
+	}
+	if _, err := lookPath("python3"); err != nil {
+		return command
+	}
+	return pythonCommandPattern.ReplaceAllString(command, `${1}${2}python3${3}`)
 }
 
 func truncate(value string, limit int) string {

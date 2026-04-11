@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/skills"
+	"claude-codex/internal/harness/skills"
 )
 
 // SkillCommandRegistry wraps SkillManager to provide CommandRegistry interface
@@ -114,11 +114,19 @@ func (r *SkillCommandRegistry) Execute(ctx context.Context, name string, args []
 			promptText += block.Text
 		}
 	}
+	promptText = skills.WrapGeneratedSkillPrompt(skill.Name, argsStr, promptText)
 
 	// Return a special marker that tells TUI to send this as a prompt to AI
 	// Format: __SKILL_PROMPT__<prompt>
 	fmt.Fprintf(slash.streams.Out, "__SKILL_PROMPT__%s", promptText)
 	return nil
+}
+
+func (r *SkillCommandRegistry) MatchNaturalPrompt(prompt string) (*skills.SkillDefinition, bool) {
+	if r == nil || r.skillManager == nil {
+		return nil, false
+	}
+	return r.skillManager.MatchUserInvocableSkill(prompt)
 }
 
 // handleListSkills lists all available skills

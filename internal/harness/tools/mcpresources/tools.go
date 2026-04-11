@@ -6,8 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	mcpcore "claude-codex/internal/harness/mcp"
+	"claude-codex/internal/harness/permissions"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 // ---- ListMcpResources ----
@@ -49,10 +50,22 @@ func (t *listTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Resu
 	if name == "" {
 		return toolkit.Result{Output: "No server_name specified. Provide a server_name to list its resources."}, nil
 	}
-
-	return toolkit.Result{Output: fmt.Sprintf(
-		"MCP resource listing for server '%s': (MCP resource listing requires an active MCP connection)", name,
-	)}, nil
+	client, ok := mcpcore.GetActiveClient(name)
+	if !ok {
+		return toolkit.Result{Output: fmt.Sprintf("MCP server '%s' is not connected.", name)}, nil
+	}
+	resources, err := client.ListResources(context.Background())
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	if len(resources) == 0 {
+		return toolkit.Result{Output: fmt.Sprintf("No MCP resources available for server '%s'.", name)}, nil
+	}
+	data, err := json.MarshalIndent(resources, "", "  ")
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	return toolkit.Result{Output: string(data)}, nil
 }
 
 // ---- ReadMcpResource ----
@@ -88,8 +101,17 @@ func (t *readTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Resu
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return toolkit.Result{}, fmt.Errorf("ReadMcpResource: %w", err)
 	}
-	return toolkit.Result{Output: fmt.Sprintf(
-		"Read MCP resource '%s' from server '%s': (MCP resource reading requires an active MCP connection)",
-		in.URI, in.ServerName,
-	)}, nil
+	client, ok := mcpcore.GetActiveClient(in.ServerName)
+	if !ok {
+		return toolkit.Result{Output: fmt.Sprintf("MCP server '%s' is not connected.", in.ServerName)}, nil
+	}
+	contents, err := client.ReadResource(context.Background(), in.URI)
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	data, err := json.MarshalIndent(contents, "", "  ")
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	return toolkit.Result{Output: string(data)}, nil
 }

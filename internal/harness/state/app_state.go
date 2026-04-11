@@ -3,7 +3,7 @@ package state
 import (
 	"sync"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/tasks"
+	"claude-codex/internal/harness/tasks"
 )
 
 // AppState represents the backend application state

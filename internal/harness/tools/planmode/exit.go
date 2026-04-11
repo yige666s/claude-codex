@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"claude-codex/internal/harness/permissions"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 const exitDescription = `Use this tool when you are in plan mode and have finished writing your plan and are ready for user approval.

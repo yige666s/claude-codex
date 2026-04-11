@@ -26,7 +26,7 @@ Browser (WebSocket) ──▶ Go HTTP Server ──▶ Harness Engine ──▶ 
 ### 1. Build the Web UI server
 
 ```bash
-cd claude-go
+cd claude-codex
 go build -o webui ./cmd/webui
 ```
 

@@ -8,8 +8,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/state"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"claude-codex/internal/harness/state"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 type ToolCall struct {

@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sync"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"claude-codex/internal/harness/permissions"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 type ReadTool struct {
@@ -17,8 +18,54 @@ type readInput struct {
 	Path string `json:"path"`
 }
 
+type ReadListener func(path string, content string)
+
+var (
+	readListenersMu    sync.RWMutex
+	readListeners      = map[int]ReadListener{}
+	nextReadListenerID int
+)
+
 func NewReadTool(rootDir string) *ReadTool {
 	return &ReadTool{rootDir: rootDir}
+}
+
+func RegisterReadListener(listener ReadListener) func() {
+	if listener == nil {
+		return func() {}
+	}
+
+	readListenersMu.Lock()
+	id := nextReadListenerID
+	nextReadListenerID++
+	readListeners[id] = listener
+	readListenersMu.Unlock()
+
+	return func() {
+		readListenersMu.Lock()
+		delete(readListeners, id)
+		readListenersMu.Unlock()
+	}
+}
+
+func ResetReadListenersForTest() {
+	readListenersMu.Lock()
+	readListeners = map[int]ReadListener{}
+	nextReadListenerID = 0
+	readListenersMu.Unlock()
+}
+
+func notifyReadListeners(path string, content string) {
+	readListenersMu.RLock()
+	listeners := make([]ReadListener, 0, len(readListeners))
+	for _, listener := range readListeners {
+		listeners = append(listeners, listener)
+	}
+	readListenersMu.RUnlock()
+
+	for _, listener := range listeners {
+		listener(path, content)
+	}
 }
 
 func (t *ReadTool) Name() string {
@@ -56,6 +103,8 @@ func (t *ReadTool) Execute(_ context.Context, input json.RawMessage) (toolkit.Re
 	if err != nil {
 		return toolkit.Result{}, err
 	}
+
+	notifyReadListeners(path, string(data))
 
 	return toolkit.Result{Output: string(data)}, nil
 }

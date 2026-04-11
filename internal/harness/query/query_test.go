@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/tool"
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/harness/tool"
+	"claude-codex/internal/public/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

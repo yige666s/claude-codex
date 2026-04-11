@@ -74,3 +74,20 @@ func TestValidateRejectsInvalidSecretStore(t *testing.T) {
 		t.Fatal("expected invalid secret_store to fail validation")
 	}
 }
+
+func TestValidateAllowsMultipleTelemetryExporters(t *testing.T) {
+	cfg := Default()
+	cfg.Telemetry.Enabled = true
+	cfg.Telemetry.Exporter = "jsonl,perfetto,bigquery"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected telemetry exporters to validate, got %v", err)
+	}
+}
+
+func TestDefaultIncludesAnthropicAPIKeyPlaceholder(t *testing.T) {
+	cfg := Default()
+	if cfg.APIKey != DefaultAnthropicAPIKeyPlaceholder {
+		t.Fatalf("expected default api key placeholder %q, got %q", DefaultAnthropicAPIKeyPlaceholder, cfg.APIKey)
+	}
+}

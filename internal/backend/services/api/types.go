@@ -3,7 +3,7 @@ package api
 import (
 	"time"
 
-	anthropic "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	anthropic "claude-codex/internal/harness/anthropic"
 )
 
 // RetryContext holds context for retry operations

@@ -7,11 +7,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/compact"
-	"github.com/ding/claude-code/claude-go/internal/harness/input"
-	"github.com/ding/claude-code/claude-go/internal/harness/mcp"
-	"github.com/ding/claude-code/claude-go/internal/harness/storage"
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/harness/compact"
+	"claude-codex/internal/harness/input"
+	"claude-codex/internal/harness/mcp"
+	"claude-codex/internal/harness/storage"
+	"claude-codex/internal/public/types"
 )
 
 // QueryEngine owns the query lifecycle and session state for a conversation.

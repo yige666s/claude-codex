@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/public/types"
 )
 
 func TestProcessUserInput_RegularInput(t *testing.T) {

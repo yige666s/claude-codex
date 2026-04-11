@@ -3,7 +3,7 @@ package plugins
 import (
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/skills"
+	"claude-codex/internal/harness/skills"
 )
 
 func TestRegisterBuiltinPlugin(t *testing.T) {

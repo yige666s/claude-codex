@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 type Server struct {
@@ -19,6 +19,10 @@ type Server struct {
 	Executor     interface {
 		Descriptors() []toolkit.Descriptor
 		Execute(context.Context, string, json.RawMessage) (toolkit.Result, error)
+	}
+	ResourceProvider interface {
+		ListResources(context.Context) ([]ResourceDefinition, error)
+		ReadResource(context.Context, string) ([]ResourceContent, error)
 	}
 	registry *toolkit.Registry
 	mu       sync.Mutex
@@ -53,8 +57,12 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		s.handleInitializeHTTP(writer, request)
 	case request.Method == http.MethodGet && request.URL.Path == "/tools":
 		s.handleToolsHTTP(writer)
+	case request.Method == http.MethodGet && request.URL.Path == "/resources":
+		s.handleResourcesHTTP(writer, request)
 	case request.Method == http.MethodPost && request.URL.Path == "/call":
 		s.handleCallHTTP(request.Context(), writer, request)
+	case request.Method == http.MethodPost && request.URL.Path == "/resource":
+		s.handleReadResourceHTTP(request.Context(), writer, request)
 	case request.Method == http.MethodGet && request.URL.Path == "/sse":
 		s.handleSSE(writer, request)
 	default:
@@ -81,6 +89,14 @@ func (s *Server) handleRequest(ctx context.Context, request Request) Response {
 	case "list_tools":
 		data, _ := json.Marshal(ListToolsResult{Tools: s.describeTools()})
 		response.Result = data
+	case "list_resources":
+		resources, err := s.listResources(ctx)
+		if err != nil {
+			response.Error = &RPCError{Code: -32000, Message: err.Error()}
+			return response
+		}
+		data, _ := json.Marshal(ListResourcesResult{Resources: resources})
+		response.Result = data
 	case "call_tool":
 		var params CallToolParams
 		if err := json.Unmarshal(request.Params, &params); err != nil {
@@ -95,6 +111,19 @@ func (s *Server) handleRequest(ctx context.Context, request Request) Response {
 		s.broadcastEvent("tool_call", map[string]any{"name": params.Name, "output": result.Output})
 		data, _ := json.Marshal(CallToolResult{Output: result.Output})
 		response.Result = data
+	case "read_resource":
+		var params ReadResourceParams
+		if err := json.Unmarshal(request.Params, &params); err != nil {
+			response.Error = &RPCError{Code: -32602, Message: err.Error()}
+			return response
+		}
+		result, err := s.readResource(ctx, params.URI)
+		if err != nil {
+			response.Error = &RPCError{Code: -32000, Message: err.Error()}
+			return response
+		}
+		data, _ := json.Marshal(ReadResourceResult{Contents: result})
+		response.Result = data
 	default:
 		response.Error = &RPCError{Code: -32601, Message: "unknown method"}
 	}
@@ -103,6 +132,15 @@ func (s *Server) handleRequest(ctx context.Context, request Request) Response {
 
 func (s *Server) handleToolsHTTP(writer http.ResponseWriter) {
 	_ = json.NewEncoder(writer).Encode(ListToolsResult{Tools: s.describeTools()})
+}
+
+func (s *Server) handleResourcesHTTP(writer http.ResponseWriter, request *http.Request) {
+	resources, err := s.listResources(request.Context())
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	_ = json.NewEncoder(writer).Encode(ListResourcesResult{Resources: resources})
 }
 
 func (s *Server) handleInitializeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -121,6 +159,20 @@ func (s *Server) handleCallHTTP(ctx context.Context, writer http.ResponseWriter,
 		return
 	}
 	response := s.handleRequest(ctx, Request{Method: "call_tool", Params: mustJSON(params)})
+	if response.Error != nil {
+		http.Error(writer, response.Error.Message, http.StatusBadRequest)
+		return
+	}
+	_, _ = writer.Write(response.Result)
+}
+
+func (s *Server) handleReadResourceHTTP(ctx context.Context, writer http.ResponseWriter, request *http.Request) {
+	var params ReadResourceParams
+	if err := json.NewDecoder(request.Body).Decode(&params); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	response := s.handleRequest(ctx, Request{Method: "read_resource", Params: mustJSON(params)})
 	if response.Error != nil {
 		http.Error(writer, response.Error.Message, http.StatusBadRequest)
 		return
@@ -196,6 +248,20 @@ func (s *Server) execute(ctx context.Context, name string, input json.RawMessage
 	default:
 		return toolkit.Result{}, fmt.Errorf("mcp server has no executor or registry")
 	}
+}
+
+func (s *Server) listResources(ctx context.Context) ([]ResourceDefinition, error) {
+	if s.ResourceProvider == nil {
+		return nil, fmt.Errorf("mcp server has no resource provider")
+	}
+	return s.ResourceProvider.ListResources(ctx)
+}
+
+func (s *Server) readResource(ctx context.Context, uri string) ([]ResourceContent, error) {
+	if s.ResourceProvider == nil {
+		return nil, fmt.Errorf("mcp server has no resource provider")
+	}
+	return s.ResourceProvider.ReadResource(ctx, uri)
 }
 
 func (s *Server) broadcastEvent(event string, payload any) {

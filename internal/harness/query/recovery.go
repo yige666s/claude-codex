@@ -3,7 +3,7 @@ package query
 import (
 	"fmt"
 
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/public/types"
 )
 
 // handleMaxOutputTokensRecovery handles recovery from max_output_tokens errors.

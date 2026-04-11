@@ -40,7 +40,7 @@ func NewClient(opts ClientOptions) *Client {
 		opts.Timeout = defaultTimeout
 	}
 	if opts.UserAgent == "" {
-		opts.UserAgent = "claude-go/1.0"
+		opts.UserAgent = "claude-codex/1.0"
 	}
 
 	return &Client{

@@ -5,7 +5,7 @@ import (
 	"os"
 	"strconv"
 
-	api "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	api "claude-codex/internal/harness/anthropic"
 )
 
 // GetEffectiveContextWindowSize returns context window minus reserved output tokens

@@ -19,7 +19,7 @@
 //
 // Usage:
 //
-//	import "github.com/ding/claude-code/claude-go/internal/public/types"
+//	import "claude-codex/internal/public/types"
 //
 //	// Create a new user message
 //	msg := types.NewUserMessage("Hello, Claude!")

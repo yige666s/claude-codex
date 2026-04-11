@@ -10,7 +10,7 @@ Successfully migrated the TypeScript session storage system to Go.
 - **Language**: TypeScript
 
 ### Target
-- **Directory**: `/Users/ding/projectSrc/claude-code/claude-go/internal/harness/storage/`
+- **Directory**: `/Users/ding/projectSrc/claude-code/claude-codex/internal/harness/storage/`
 - **Files Created**: 7 files
 - **Total Lines**: 2,300 lines
 - **Language**: Go
@@ -286,8 +286,8 @@ type Snapshot struct {
 
 ```go
 import (
-    "github.com/ding/claude-code/claude-go/internal/harness/state"
-    "github.com/ding/claude-code/claude-go/internal/harness/storage"
+    "claude-codex/internal/harness/state"
+    "claude-codex/internal/harness/storage"
 )
 
 // Create session

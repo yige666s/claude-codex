@@ -60,7 +60,7 @@ type Permissions struct {
 ### 验证配置
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/schemas"
+import "claude-codex/internal/schemas"
 
 // 从 JSON 验证
 result := schemas.ValidateSettingsJSON(jsonData)

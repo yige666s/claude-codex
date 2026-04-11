@@ -1,7 +1,7 @@
 package compact
 
 import (
-	api "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	api "claude-codex/internal/harness/anthropic"
 )
 
 // GroupMessagesByAPIRound groups messages at API-round boundaries

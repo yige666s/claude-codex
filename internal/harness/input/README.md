@@ -50,7 +50,7 @@ input/
 ```go
 import (
     "context"
-    "github.com/ding/claude-code/claude-go/internal/harness/input"
+    "claude-codex/internal/harness/input"
 )
 
 opts := &input.ProcessUserInputOptions{

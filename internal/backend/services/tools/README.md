@@ -85,7 +85,7 @@ type ToolExecutionOptions struct {
 ### Register Tools
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/services/tools"
+import "claude-codex/internal/services/tools"
 
 // Create registry
 registry := tools.NewToolRegistry()

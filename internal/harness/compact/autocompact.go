@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/public/types"
 )
 
 // AutoCompactor manages automatic compaction based on context window usage.

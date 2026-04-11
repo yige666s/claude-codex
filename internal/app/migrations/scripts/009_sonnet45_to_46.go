@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ding/claude-code/claude-go/internal/app/migrations"
+	"claude-codex/internal/app/migrations"
 )
 
 func init() {

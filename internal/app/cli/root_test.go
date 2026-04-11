@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	agenttool "github.com/ding/claude-code/claude-go/internal/harness/tools/agent"
-	"github.com/ding/claude-code/claude-go/internal/ui/tui"
+	"claude-codex/internal/app/config"
+	agenttool "claude-codex/internal/harness/tools/agent"
+	"claude-codex/internal/ui/tui"
 )
 
 func TestRootCommandCreatesHelloGoFile(t *testing.T) {
@@ -112,13 +113,75 @@ func TestRootCommandConfigMemoryResumeAndCost(t *testing.T) {
 	}
 
 	output = runCommand("/doctor")
-	if !strings.Contains(output, "claude-go-home:") {
+	if !strings.Contains(output, "claude-codex-home:") {
 		t.Fatalf("expected doctor output, got %q", output)
 	}
 
 	output = runCommand("/theme", "light")
 	if !strings.Contains(output, "theme set to light") {
 		t.Fatalf("expected theme output, got %q", output)
+	}
+}
+
+func TestRootCommandSkillsHelpAndModel(t *testing.T) {
+	projectRoot := t.TempDir()
+	homeRoot := t.TempDir()
+	userHome := t.TempDir()
+	t.Setenv("CLAUDE_GO_HOME", homeRoot)
+	t.Setenv("HOME", userHome)
+
+	skillDir := filepath.Join(projectRoot, ".claude", "skills", "inspect-hello")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	skillContent := `---
+name: Inspect Hello
+description: Read hello.go and print it
+---
+
+读取 hello.go 并输出文件内容。
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "hello.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write hello.go: %v", err)
+	}
+
+	runCommand := func(args ...string) string {
+		t.Helper()
+		stdout := new(bytes.Buffer)
+		stderr := new(bytes.Buffer)
+		command := NewRootCommandWithIO(IO{
+			In:  strings.NewReader(""),
+			Out: stdout,
+			Err: stderr,
+		})
+		command.SetArgs(args)
+		if err := command.Execute(); err != nil {
+			t.Fatalf("execute %v: %v", args, err)
+		}
+		return stdout.String()
+	}
+
+	output := runCommand("--backend", "simple", "--permission-mode", "bypass", "--cwd", projectRoot, "/skills")
+	if !strings.Contains(output, "/inspect-hello") {
+		t.Fatalf("expected /skills output to include custom skill, got %q", output)
+	}
+
+	output = runCommand("--backend", "simple", "--permission-mode", "bypass", "--cwd", projectRoot, "/help")
+	if !strings.Contains(output, "/skills") || !strings.Contains(output, "/inspect-hello") || !strings.Contains(output, "/model") {
+		t.Fatalf("expected /help to include skills and model, got %q", output)
+	}
+
+	output = runCommand("--cwd", projectRoot, "/model", "claude-opus-test")
+	if !strings.Contains(output, "updated model to claude-opus-test") {
+		t.Fatalf("expected model set output, got %q", output)
+	}
+
+	output = runCommand("--cwd", projectRoot, "/model")
+	if !strings.Contains(output, "claude-opus-test") {
+		t.Fatalf("expected /model to show updated model, got %q", output)
 	}
 }
 
@@ -174,6 +237,34 @@ func TestBuildSubagentPromptIncludesMetadata(t *testing.T) {
 		if !strings.Contains(prompt, part) {
 			t.Fatalf("expected prompt to contain %q, got %q", part, prompt)
 		}
+	}
+}
+
+func TestNewPlannerSupportsOpenAIBackend(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	planner, err := newPlanner(config.Config{
+		Backend:        "openai",
+		Model:          "gpt-4o",
+		TimeoutSeconds: 30,
+	})
+	if err != nil {
+		t.Fatalf("newPlanner(openai): %v", err)
+	}
+	if planner == nil {
+		t.Fatal("expected openai planner to be created")
+	}
+}
+
+func TestNewPlannerTreatsAnthropicPlaceholderAsMissingKey(t *testing.T) {
+	_, err := newPlanner(config.Config{
+		Backend:        "anthropic",
+		Model:          "claude-sonnet-4-5",
+		APIKey:         config.DefaultAnthropicAPIKeyPlaceholder,
+		TimeoutSeconds: 30,
+	})
+	if err == nil {
+		t.Fatal("expected placeholder anthropic api key to be rejected")
 	}
 }
 

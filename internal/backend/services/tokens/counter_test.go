@@ -3,7 +3,7 @@ package tokens
 import (
 	"testing"
 
-	api "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	api "claude-codex/internal/harness/anthropic"
 )
 
 func TestRoughTokenCountEstimation(t *testing.T) {

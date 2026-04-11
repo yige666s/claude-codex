@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ding/claude-code/claude-go/internal/backend/services/cost"
+	"claude-codex/internal/backend/services/cost"
 )
 
 // CostSummaryHook handles cost summary display on exit.

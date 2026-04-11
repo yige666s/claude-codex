@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	api "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	api "claude-codex/internal/harness/anthropic"
 )
 
 // CompactConversation performs full conversation compaction

@@ -5,7 +5,7 @@ package swarm
 import (
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
+	"claude-codex/internal/harness/permissions"
 )
 
 // BackendType identifies the execution backend for a teammate.

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/public/ratelimit"
-	"github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	"claude-codex/internal/public/ratelimit"
+	"claude-codex/internal/harness/anthropic"
 )
 
 func handleLimits(args []string, sc slashContext) error {

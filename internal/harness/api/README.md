@@ -16,7 +16,7 @@ A clean, idiomatic Go implementation of the Claude API client, migrated from the
 ## Installation
 
 ```bash
-go get github.com/yourusername/claude-go/internal/harness/api
+go get github.com/yourusername/claude-codex/internal/harness/api
 ```
 
 ## Quick Start
@@ -31,7 +31,7 @@ import (
     "fmt"
     "log"
     
-    "github.com/yourusername/claude-go/internal/harness/api"
+    "github.com/yourusername/claude-codex/internal/harness/api"
 )
 
 func main() {
@@ -113,7 +113,7 @@ client := api.NewClient(api.ClientOptions{
     BaseURL:    "https://api.anthropic.com", // Optional, defaults to official API
     MaxRetries: 3,                            // Optional, defaults to 3
     Timeout:    60 * time.Second,            // Optional, defaults to 60s
-    UserAgent:  "my-app/1.0",                // Optional, defaults to "claude-go/1.0"
+    UserAgent:  "my-app/1.0",                // Optional, defaults to "claude-codex/1.0"
 })
 ```
 

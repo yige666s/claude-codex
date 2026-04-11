@@ -47,13 +47,13 @@ func DefaultMCPSkillBuilder(toolName string, metadata map[string]interface{}) (*
 
 	// Create skill
 	skill := &SkillDefinition{
-		Name:                       toolName,
-		Description:                description,
+		Name:                        toolName,
+		Description:                 description,
 		HasUserSpecifiedDescription: description != "",
-		Source:                     SourceMCP,
-		LoadedFrom:                 "mcp",
-		UserInvocable:              true,
-		AllowedTools:               []string{}, // MCP skills can use all tools by default
+		Source:                      SourceMCP,
+		LoadedFrom:                  "mcp",
+		UserInvocable:               true,
+		AllowedTools:                []string{}, // MCP skills can use all tools by default
 	}
 
 	// Create prompt generator that describes the MCP tool

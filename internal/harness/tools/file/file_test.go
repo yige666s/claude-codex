@@ -6,9 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/memdir"
+	"claude-codex/internal/harness/memdir"
 )
 
 func TestWriteToolRejectsSecretsInTeamMemory(t *testing.T) {
@@ -75,5 +76,49 @@ func TestEditToolRejectsSecretsInTeamMemory(t *testing.T) {
 	}
 	if string(content) != "hello world" {
 		t.Fatalf("expected original file to remain unchanged, got %q", string(content))
+	}
+}
+
+func TestReadToolNotifiesReadListeners(t *testing.T) {
+	ResetReadListenersForTest()
+	t.Cleanup(ResetReadListenersForTest)
+
+	root := t.TempDir()
+	path := filepath.Join(root, "notes.md")
+	if err := os.WriteFile(path, []byte("# MAGIC DOC: Notes\n_body_\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	var gotPath string
+	var gotContent string
+	unregister := RegisterReadListener(func(readPath string, content string) {
+		callCount.Add(1)
+		gotPath = readPath
+		gotContent = content
+	})
+	defer unregister()
+
+	tool := NewReadTool(root)
+	input, err := json.Marshal(map[string]any{"path": "notes.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("read execute: %v", err)
+	}
+	if result.Output != "# MAGIC DOC: Notes\n_body_\n" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if callCount.Load() != 1 {
+		t.Fatalf("expected listener to run once, got %d", callCount.Load())
+	}
+	if gotPath != path {
+		t.Fatalf("unexpected read path: %q", gotPath)
+	}
+	if gotContent != result.Output {
+		t.Fatalf("unexpected read content: %q", gotContent)
 	}
 }

@@ -87,7 +87,7 @@ const (
 ### 1. 创建技能管理器
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/skills"
+import "claude-codex/internal/skills"
 
 // 创建管理器
 manager := skills.NewSkillManager()

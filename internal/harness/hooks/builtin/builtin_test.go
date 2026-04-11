@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/hooks"
+	"claude-codex/internal/harness/hooks"
 )
 
 func TestPreToolUseHook_Name(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	anthropic "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	anthropic "claude-codex/internal/harness/anthropic"
 )
 
 // Client wraps the Anthropic API client with additional functionality

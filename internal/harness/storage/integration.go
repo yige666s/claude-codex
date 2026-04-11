@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/state"
+	"claude-codex/internal/harness/state"
 )
 
 // IntegrateWithStateSession demonstrates integration with existing state.Session

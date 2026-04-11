@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/public/apperrors"
+	"claude-codex/internal/public/apperrors"
 )
 
 type Mode string
@@ -59,6 +59,8 @@ type Checker struct {
 type Request struct {
 	ToolName string
 	Level    Level
+	Summary  string
+	Metadata map[string]string
 }
 
 type RequestHandler func(ctx context.Context, request Request) error
@@ -85,46 +87,50 @@ func NewChecker(mode Mode, input io.Reader, output io.Writer, options ...Option)
 }
 
 func (c *Checker) Authorize(ctx context.Context, toolName string, level Level) error {
+	return c.AuthorizeRequest(ctx, Request{
+		ToolName: toolName,
+		Level:    level,
+	})
+}
+
+func (c *Checker) AuthorizeRequest(ctx context.Context, request Request) error {
 	switch c.Mode {
 	case ModeBypass:
 		return nil
 	case ModePlan:
-		if level == LevelNone || level == LevelRead {
+		if request.Level == LevelNone || request.Level == LevelRead {
 			return nil
 		}
 		return apperrors.Permission(
-			fmt.Sprintf("Tool %s is blocked in plan mode.", toolName),
+			fmt.Sprintf("Tool %s is blocked in plan mode.", request.ToolName),
 			"Switch to a write-capable permission mode before retrying.",
 			nil,
 		)
 	case ModeAuto:
-		if level == LevelNone || level == LevelRead {
+		if request.Level == LevelNone || request.Level == LevelRead {
 			return nil
 		}
 		return apperrors.Permission(
-			fmt.Sprintf("Tool %s is blocked in auto mode until rules are implemented.", toolName),
+			fmt.Sprintf("Tool %s is blocked in auto mode until rules are implemented.", request.ToolName),
 			"Use bypass or default mode for write and execute actions.",
 			nil,
 		)
 	default:
-		if level == LevelNone || level == LevelRead {
+		if request.Level == LevelNone || request.Level == LevelRead {
 			return nil
 		}
 
 		// Check if this tool+level combination was already approved
-		cacheKey := fmt.Sprintf("%s:%s", toolName, level)
+		cacheKey := fmt.Sprintf("%s:%s", request.ToolName, request.Level)
 		if c.approved[cacheKey] {
 			return nil
 		}
 
 		var err error
 		if c.requests != nil {
-			err = c.requests(ctx, Request{
-				ToolName: toolName,
-				Level:    level,
-			})
+			err = c.requests(ctx, request)
 		} else {
-			err = c.prompt(toolName, level)
+			err = c.prompt(request)
 		}
 
 		// Cache the approval if successful
@@ -136,16 +142,16 @@ func (c *Checker) Authorize(ctx context.Context, toolName string, level Level) e
 	}
 }
 
-func (c *Checker) prompt(toolName string, level Level) error {
+func (c *Checker) prompt(request Request) error {
 	if c.input == nil || c.output == nil {
 		return apperrors.Permission(
-			fmt.Sprintf("Tool %s needs %s permission but no approval channel is available.", toolName, level),
+			fmt.Sprintf("Tool %s needs %s permission but no approval channel is available.", request.ToolName, request.Level),
 			"Run with --permission-mode bypass for non-interactive execution, or attach stdin/stderr for prompts.",
 			nil,
 		)
 	}
 
-	if _, err := fmt.Fprintf(c.output, "Allow tool %s with %s permission? [y/N]: ", toolName, level); err != nil {
+	if _, err := fmt.Fprintf(c.output, "Allow tool %s with %s permission? [y/N]: ", request.ToolName, request.Level); err != nil {
 		return err
 	}
 
@@ -153,7 +159,7 @@ func (c *Checker) prompt(toolName string, level Level) error {
 	answer, err := reader.ReadString('\n')
 	if err != nil && answer == "" {
 		return apperrors.Permission(
-			fmt.Sprintf("Permission request for tool %s was interrupted.", toolName),
+			fmt.Sprintf("Permission request for tool %s was interrupted.", request.ToolName),
 			"Retry the command and answer the prompt, or use --permission-mode bypass.",
 			err,
 		)
@@ -164,7 +170,7 @@ func (c *Checker) prompt(toolName string, level Level) error {
 		return nil
 	default:
 		return apperrors.Permission(
-			fmt.Sprintf("Tool %s was denied by the operator.", toolName),
+			fmt.Sprintf("Tool %s was denied by the operator.", request.ToolName),
 			"Retry and approve the prompt if the action is expected.",
 			nil,
 		)

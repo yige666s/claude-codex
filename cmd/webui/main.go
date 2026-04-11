@@ -5,15 +5,17 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/skills"
-	"github.com/ding/claude-code/claude-go/internal/harness/tools"
-	bashtool "github.com/ding/claude-code/claude-go/internal/harness/tools/bash"
-	filetool "github.com/ding/claude-code/claude-go/internal/harness/tools/file"
-	searchtool "github.com/ding/claude-code/claude-go/internal/harness/tools/search"
-	skilltool "github.com/ding/claude-code/claude-go/internal/harness/tools/skill"
-	webtool "github.com/ding/claude-code/claude-go/internal/harness/tools/web"
-	"github.com/ding/claude-code/claude-go/internal/ui/web/server"
+	"claude-codex/internal/harness/skills"
+	"claude-codex/internal/harness/tools"
+	filetool "claude-codex/internal/harness/tools/file"
+	searchtool "claude-codex/internal/harness/tools/search"
+	skilltool "claude-codex/internal/harness/tools/skill"
+	webtool "claude-codex/internal/harness/tools/web"
+	websandbox "claude-codex/internal/harness/websandbox"
+	"claude-codex/internal/ui/web/server"
 )
 
 func main() {
@@ -76,23 +78,11 @@ func main() {
 	log.Printf("Skills loaded: %d total (%d bundled, %d dynamic, %d user-invocable)",
 		stats.TotalSkills, stats.BundledSkills, stats.DynamicSkills, stats.UserInvocable)
 
-	// Create tool registry with basic tools
-	toolsList := []tools.Tool{
-		bashtool.NewTool(workingDir),
-		filetool.NewReadTool(workingDir),
-		filetool.NewWriteTool(workingDir),
-		filetool.NewEditTool(workingDir),
-		searchtool.NewGlobTool(workingDir),
-		searchtool.NewGrepTool(workingDir),
-		webtool.NewSearchTool(nil),
-		webtool.NewFetchTool(nil),
-		skilltool.NewTool(skillManager),
-	}
-
-	registry := tools.NewRegistry(toolsList...)
+	registryBuilder := newRegistryBuilder(skillManager)
+	sandboxFactory := newSandboxFactory()
 
 	// Create and start server
-	srv := server.New(credential, baseURL, *model, registry, skillManager)
+	srv := server.New(credential, baseURL, *model, registryBuilder, sandboxFactory, skillManager)
 	log.Printf("Starting Web UI server on %s", *addr)
 	log.Printf("Using API base URL: %s", baseURL)
 	log.Printf("Using model: %s", *model)
@@ -100,5 +90,35 @@ func main() {
 
 	if err := srv.Start(*addr); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func newRegistryBuilder(skillManager *skills.SkillManager) func(websandbox.Scope) *tools.Registry {
+	sandboxFactory := newSandboxFactory()
+	return func(scope websandbox.Scope) *tools.Registry {
+		toolsList := []tools.Tool{
+			websandbox.NewBashTool(scope, sandboxFactory(scope)),
+			filetool.NewReadTool(scope.RootDir),
+			filetool.NewWriteTool(scope.RootDir),
+			filetool.NewEditTool(scope.RootDir),
+			searchtool.NewGlobTool(scope.RootDir),
+			searchtool.NewGrepTool(scope.RootDir),
+			webtool.NewSearchTool(nil),
+			webtool.NewFetchTool(nil),
+			skilltool.NewTool(skillManager),
+		}
+		return tools.NewRegistry(toolsList...)
+	}
+}
+
+func newSandboxFactory() func(websandbox.Scope) websandbox.RuntimeOptions {
+	image := strings.TrimSpace(os.Getenv("CLAUDE_GO_WEB_SANDBOX_IMAGE"))
+	return func(scope websandbox.Scope) websandbox.RuntimeOptions {
+		return websandbox.RuntimeOptions{
+			Image:          image,
+			Timeout:        2 * time.Minute,
+			NetworkEnabled: scope.SkillScoped,
+			AutoBuildImage: true,
+		}
 	}
 }

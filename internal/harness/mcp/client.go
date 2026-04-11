@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ding/claude-code/claude-go/internal/app/config"
+	"claude-codex/internal/app/config"
 )
 
 type Client struct {
@@ -24,6 +24,7 @@ type Client struct {
 	stdin        io.WriteCloser
 	decoder      *json.Decoder
 	inProcess    func(context.Context, Request) Response
+	sdkControl   SendMCPMessageCallback
 	Instructions string // populated from initialize handshake
 }
 
@@ -35,7 +36,8 @@ func NewClientFromConfig(cfg config.MCPServerConfig, httpClient *http.Client) (*
 	if client.httpClient == nil {
 		client.httpClient = &http.Client{}
 	}
-	if transport(cfg) == "stdio" {
+	switch transport(cfg) {
+	case "stdio":
 		if len(cfg.Command) == 0 {
 			return nil, fmt.Errorf("mcp stdio server %s has no command", cfg.Name)
 		}
@@ -55,6 +57,12 @@ func NewClientFromConfig(cfg config.MCPServerConfig, httpClient *http.Client) (*
 		client.cmd = cmd
 		client.stdin = stdin
 		client.decoder = json.NewDecoder(bufio.NewReader(stdout))
+	case "sdk":
+		handler, ok := getSDKControlHandler(cfg.Name)
+		if !ok {
+			return nil, fmt.Errorf("mcp sdk server %s has no registered handler", cfg.Name)
+		}
+		client.sdkControl = handler
 	}
 	return client, nil
 }
@@ -82,12 +90,23 @@ func NewInProcessClient(server *Server) *Client {
 	}
 }
 
+func NewSDKControlClient(name string, handler SendMCPMessageCallback) *Client {
+	return &Client{
+		cfg:        config.MCPServerConfig{Name: name, Transport: "sdk"},
+		httpClient: &http.Client{},
+		sdkControl: handler,
+	}
+}
+
 // Name returns the configured server name.
 func (c *Client) Name() string { return c.cfg.Name }
 
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.cfg.Name != "" {
+		activeClients.Delete(c.cfg.Name)
+	}
 	if c.stdin != nil {
 		_ = c.stdin.Close()
 	}
@@ -101,7 +120,7 @@ func (c *Client) Initialize(ctx context.Context) (*Client, error) {
 	var result InitializeResult
 	params := map[string]any{
 		"protocolVersion": "2024-11-05",
-		"clientInfo":      map[string]any{"name": "claude-go", "version": "0.1.0"},
+		"clientInfo":      map[string]any{"name": "claude-codex", "version": "0.1.0"},
 	}
 	if err := c.call(ctx, "initialize", params, &result); err != nil {
 		// Non-fatal: many servers don't implement initialize strictly
@@ -133,6 +152,22 @@ func (c *Client) CallTool(ctx context.Context, name string, input json.RawMessag
 		return "", err
 	}
 	return result.Output, nil
+}
+
+func (c *Client) ListResources(ctx context.Context) ([]ResourceDefinition, error) {
+	var result ListResourcesResult
+	if err := c.call(ctx, "list_resources", nil, &result); err != nil {
+		return nil, err
+	}
+	return result.Resources, nil
+}
+
+func (c *Client) ReadResource(ctx context.Context, uri string) ([]ResourceContent, error) {
+	var result ReadResourceResult
+	if err := c.call(ctx, "read_resource", ReadResourceParams{URI: uri}, &result); err != nil {
+		return nil, err
+	}
+	return result.Contents, nil
 }
 
 // SubscribeEvents connects to an HTTP/SSE MCP server and forwards events to
@@ -218,12 +253,47 @@ func (c *Client) call(ctx context.Context, method string, params any, target any
 	if c.inProcess != nil {
 		return c.callInProcess(ctx, method, params, target)
 	}
+	if c.sdkControl != nil {
+		return c.callSDK(ctx, method, params, target)
+	}
 	switch transport(c.cfg) {
 	case "sse":
 		return c.callHTTP(ctx, method, params, target)
 	default:
 		return c.callStdio(ctx, method, params, target)
 	}
+}
+
+func (c *Client) callSDK(ctx context.Context, method string, params any, target any) error {
+	c.mu.Lock()
+	c.nextID++
+	request := Request{JSONRPC: "2.0", ID: c.nextID, Method: method}
+	c.mu.Unlock()
+
+	if params != nil {
+		data, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		request.Params = data
+	}
+
+	response, err := c.sdkControl(c.cfg.Name, JSONRPCMessage{
+		ID:      request.ID,
+		Method:  request.Method,
+		Params:  request.Params,
+		JSONRPC: request.JSONRPC,
+	})
+	if err != nil {
+		return err
+	}
+	if response.Error != nil {
+		return fmt.Errorf("mcp error: %s", response.Error.Message)
+	}
+	if target == nil || len(response.Result) == 0 {
+		return nil
+	}
+	return json.Unmarshal(response.Result, target)
 }
 
 func (c *Client) callInProcess(ctx context.Context, method string, params any, target any) error {
@@ -340,12 +410,45 @@ func (c *Client) callHTTP(ctx context.Context, method string, params any, target
 		}
 		defer response.Body.Close()
 		return json.NewDecoder(response.Body).Decode(target)
+	case "list_resources":
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/resources", nil)
+		if err != nil {
+			return err
+		}
+		for key, value := range c.cfg.Headers {
+			request.Header.Set(key, value)
+		}
+		response, err := c.httpClient.Do(request)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		return json.NewDecoder(response.Body).Decode(target)
 	case "call_tool":
 		data, err := json.Marshal(params)
 		if err != nil {
 			return err
 		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/call", bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		request.Header.Set("content-type", "application/json")
+		for key, value := range c.cfg.Headers {
+			request.Header.Set(key, value)
+		}
+		response, err := c.httpClient.Do(request)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		return json.NewDecoder(response.Body).Decode(target)
+	case "read_resource":
+		data, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/resource", bytes.NewReader(data))
 		if err != nil {
 			return err
 		}

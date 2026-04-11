@@ -32,8 +32,19 @@ type ToolDefinition struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
+type ResourceDefinition struct {
+	URI         string `json:"uri"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mime_type,omitempty"`
+}
+
 type ListToolsResult struct {
 	Tools []ToolDefinition `json:"tools"`
+}
+
+type ListResourcesResult struct {
+	Resources []ResourceDefinition `json:"resources"`
 }
 
 type CallToolParams struct {
@@ -43,6 +54,21 @@ type CallToolParams struct {
 
 type CallToolResult struct {
 	Output string `json:"output"`
+}
+
+type ReadResourceParams struct {
+	URI string `json:"uri"`
+}
+
+type ReadResourceResult struct {
+	Contents []ResourceContent `json:"contents"`
+}
+
+type ResourceContent struct {
+	URI      string `json:"uri"`
+	MimeType string `json:"mime_type,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Blob     string `json:"blob,omitempty"`
 }
 
 // InitializeResult is the response from a server's initialize handshake.

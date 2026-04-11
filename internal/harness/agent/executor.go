@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/tools"
-	"github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	"claude-codex/internal/harness/tools"
+	"claude-codex/internal/harness/anthropic"
 )
 
 // Executor handles agent execution

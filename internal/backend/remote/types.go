@@ -1,7 +1,7 @@
 package remote
 
 import (
-	"github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	"claude-codex/internal/harness/anthropic"
 )
 
 // SDKMessage types from CCR backend

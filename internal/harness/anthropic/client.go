@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/public/ratelimit"
+	"claude-codex/internal/public/ratelimit"
 )
 
 type Client struct {

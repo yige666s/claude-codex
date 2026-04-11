@@ -8,11 +8,11 @@ fmt:
 test:
 	$(GO) test ./...
 
-build-tui:
-	$(GO) build -o tui ./cmd/tui
+run-tui:
+	rm -f tui && $(GO) build -o tui ./cmd/tui && ./tui
 
-build-webui:
-	$(GO) build -o webui ./cmd/webui
+run-webui:
+	rm -f webui && $(GO) build -o webui ./cmd/webui && ./webui
 
 clean:
 	rm -rf tui webui

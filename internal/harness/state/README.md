@@ -145,7 +145,7 @@ package main
 
 import (
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/state"
+    "claude-codex/internal/state"
 )
 
 func main() {
@@ -182,7 +182,7 @@ package main
 
 import (
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/state"
+    "claude-codex/internal/state"
 )
 
 func main() {
@@ -218,8 +218,8 @@ package main
 
 import (
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/state"
-    "github.com/ding/claude-code/claude-go/internal/tasks"
+    "claude-codex/internal/state"
+    "claude-codex/internal/tasks"
 )
 
 func main() {
@@ -257,7 +257,7 @@ package main
 
 import (
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/state"
+    "claude-codex/internal/state"
 )
 
 func main() {
@@ -287,7 +287,7 @@ package main
 import (
     "fmt"
     "time"
-    "github.com/ding/claude-code/claude-go/internal/state"
+    "claude-codex/internal/state"
 )
 
 func main() {
@@ -325,7 +325,7 @@ package main
 import (
     "fmt"
     "time"
-    "github.com/ding/claude-code/claude-go/internal/state"
+    "claude-codex/internal/state"
 )
 
 func main() {
@@ -361,7 +361,7 @@ package main
 
 import (
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/state"
+    "claude-codex/internal/state"
 )
 
 func main() {
@@ -400,7 +400,7 @@ package main
 
 import (
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/state"
+    "claude-codex/internal/state"
 )
 
 func main() {

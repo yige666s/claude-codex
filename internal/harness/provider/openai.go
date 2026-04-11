@@ -48,23 +48,25 @@ func NewOpenAIProvider(cfg Config) (*OpenAIProvider, error) {
 
 // openAIRequest represents OpenAI API request format
 type openAIRequest struct {
-	Model       string              `json:"model"`
-	Messages    []openAIMessage     `json:"messages"`
-	MaxTokens   int                 `json:"max_tokens,omitempty"`
-	Temperature float64             `json:"temperature,omitempty"`
-	TopP        float64             `json:"top_p,omitempty"`
-	Stream      bool                `json:"stream,omitempty"`
-	Tools       []openAITool        `json:"tools,omitempty"`
+	Model       string          `json:"model"`
+	Messages    []openAIMessage `json:"messages"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Temperature float64         `json:"temperature,omitempty"`
+	TopP        float64         `json:"top_p,omitempty"`
+	Stream      bool            `json:"stream,omitempty"`
+	Tools       []openAITool    `json:"tools,omitempty"`
 }
 
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string           `json:"role"`
+	Content    interface{}      `json:"content,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 }
 
 type openAITool struct {
-	Type     string                 `json:"type"`
-	Function openAIFunction         `json:"function"`
+	Type     string         `json:"type"`
+	Function openAIFunction `json:"function"`
 }
 
 type openAIFunction struct {
@@ -73,14 +75,25 @@ type openAIFunction struct {
 	Parameters  map[string]interface{} `json:"parameters,omitempty"`
 }
 
+type openAIToolCall struct {
+	ID       string                `json:"id"`
+	Type     string                `json:"type"`
+	Function openAIToolCallPayload `json:"function"`
+}
+
+type openAIToolCallPayload struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
 // openAIResponse represents OpenAI API response format
 type openAIResponse struct {
-	ID      string          `json:"id"`
-	Object  string          `json:"object"`
-	Created int64           `json:"created"`
-	Model   string          `json:"model"`
-	Choices []openAIChoice  `json:"choices"`
-	Usage   openAIUsage     `json:"usage"`
+	ID      string         `json:"id"`
+	Object  string         `json:"object"`
+	Created int64          `json:"created"`
+	Model   string         `json:"model"`
+	Choices []openAIChoice `json:"choices"`
+	Usage   openAIUsage    `json:"usage"`
 }
 
 type openAIChoice struct {
@@ -117,7 +130,7 @@ func (p *OpenAIProvider) CreateMessage(ctx context.Context, request MessageReque
 
 	// Convert messages
 	for _, msg := range request.Messages {
-		content := ""
+		var content interface{}
 		switch v := msg.Content.(type) {
 		case string:
 			content = v
@@ -130,12 +143,31 @@ func (p *OpenAIProvider) CreateMessage(ctx context.Context, request MessageReque
 				}
 			}
 			content = strings.Join(texts, "\n")
+		default:
+			content = ""
 		}
 
-		openAIReq.Messages = append(openAIReq.Messages, openAIMessage{
-			Role:    msg.Role,
-			Content: content,
-		})
+		openAIMessage := openAIMessage{
+			Role:       msg.Role,
+			Content:    content,
+			ToolCallID: msg.ToolCallID,
+		}
+		if len(msg.ToolCalls) > 0 {
+			openAIMessage.Content = nil
+			openAIMessage.ToolCalls = make([]openAIToolCall, len(msg.ToolCalls))
+			for i, call := range msg.ToolCalls {
+				openAIMessage.ToolCalls[i] = openAIToolCall{
+					ID:   call.ID,
+					Type: "function",
+					Function: openAIToolCallPayload{
+						Name:      call.Name,
+						Arguments: string(call.Input),
+					},
+				}
+			}
+		}
+
+		openAIReq.Messages = append(openAIReq.Messages, openAIMessage)
 	}
 
 	// Convert tools if present
@@ -181,8 +213,15 @@ func (p *OpenAIProvider) CreateMessage(ctx context.Context, request MessageReque
 	}
 
 	// Parse response
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil, fmt.Errorf("openai request failed: %s: empty response body", resp.Status)
+	}
 	var openAIResp openAIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&openAIResp); err != nil {
+	if err := json.Unmarshal(data, &openAIResp); err != nil {
 		return nil, err
 	}
 
@@ -192,6 +231,26 @@ func (p *OpenAIProvider) CreateMessage(ctx context.Context, request MessageReque
 
 	// Convert to unified format
 	choice := openAIResp.Choices[0]
+	contentText := ""
+	if text, ok := choice.Message.Content.(string); ok {
+		contentText = text
+	}
+	toolCalls := make([]ToolCall, 0, len(choice.Message.ToolCalls))
+	for _, call := range choice.Message.ToolCalls {
+		input := json.RawMessage("{}")
+		if strings.TrimSpace(call.Function.Arguments) != "" {
+			input = json.RawMessage(call.Function.Arguments)
+		}
+		toolCalls = append(toolCalls, ToolCall{
+			ID:    call.ID,
+			Name:  call.Function.Name,
+			Input: input,
+		})
+	}
+	stopReason := choice.FinishReason
+	if stopReason == "tool_calls" {
+		stopReason = "tool_use"
+	}
 	return &MessageResponse{
 		ID:    openAIResp.ID,
 		Model: openAIResp.Model,
@@ -199,10 +258,11 @@ func (p *OpenAIProvider) CreateMessage(ctx context.Context, request MessageReque
 		Content: []ContentBlock{
 			{
 				Type: "text",
-				Text: choice.Message.Content,
+				Text: contentText,
 			},
 		},
-		StopReason: choice.FinishReason,
+		ToolCalls:  toolCalls,
+		StopReason: stopReason,
 		Usage: Usage{
 			InputTokens:  openAIResp.Usage.PromptTokens,
 			OutputTokens: openAIResp.Usage.CompletionTokens,

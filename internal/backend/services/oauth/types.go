@@ -55,11 +55,11 @@ type TokenAccount struct {
 
 // TokenExchangeResponse is the response from token exchange
 type TokenExchangeResponse struct {
-	AccessToken  string            `json:"access_token"`
-	RefreshToken string            `json:"refresh_token"`
-	ExpiresIn    int               `json:"expires_in"`
-	Scope        string            `json:"scope,omitempty"`
-	Account      *TokenAccount     `json:"account,omitempty"`
+	AccessToken  string             `json:"access_token"`
+	RefreshToken string             `json:"refresh_token"`
+	ExpiresIn    int                `json:"expires_in"`
+	Scope        string             `json:"scope,omitempty"`
+	Account      *TokenAccount      `json:"account,omitempty"`
 	Organization *TokenOrganization `json:"organization,omitempty"`
 }
 
@@ -84,12 +84,12 @@ type AccountInfo struct {
 
 // OrganizationInfo contains organization details
 type OrganizationInfo struct {
-	UUID                   string       `json:"uuid,omitempty"`
-	BillingType            BillingType  `json:"billing_type,omitempty"`
-	HasExtraUsageEnabled   bool         `json:"has_extra_usage_enabled,omitempty"`
-	SubscriptionCreatedAt  string       `json:"subscription_created_at,omitempty"`
-	SubscriptionType       string       `json:"subscription_type,omitempty"`
-	RateLimitTier          RateLimitTier `json:"rate_limit_tier,omitempty"`
+	UUID                  string        `json:"uuid,omitempty"`
+	BillingType           BillingType   `json:"billing_type,omitempty"`
+	HasExtraUsageEnabled  bool          `json:"has_extra_usage_enabled,omitempty"`
+	SubscriptionCreatedAt string        `json:"subscription_created_at,omitempty"`
+	SubscriptionType      string        `json:"subscription_type,omitempty"`
+	RateLimitTier         RateLimitTier `json:"rate_limit_tier,omitempty"`
 }
 
 // UserRolesResponse contains user role information
@@ -99,14 +99,14 @@ type UserRolesResponse struct {
 
 // OAuthConfig contains OAuth configuration
 type OAuthConfig struct {
-	ClientID              string
-	TokenURL              string
-	ConsoleAuthorizeURL   string
-	ClaudeAIAuthorizeURL  string
-	ConsoleSuccessURL     string
-	ClaudeAISuccessURL    string
-	ManualRedirectURL     string
-	BaseAPIURL            string
+	ClientID             string
+	TokenURL             string
+	ConsoleAuthorizeURL  string
+	ClaudeAIAuthorizeURL string
+	ConsoleSuccessURL    string
+	ClaudeAISuccessURL   string
+	ManualRedirectURL    string
+	BaseAPIURL           string
 }
 
 // PKCEParams contains PKCE flow parameters
@@ -149,22 +149,31 @@ type ProfileInfo struct {
 
 // OAuth scopes
 const (
-	ClaudeAIInferenceScope = "claude_ai:inference"
-	ProfileScope           = "profile"
-	OrganizationScope      = "organization"
+	ClaudeAIInferenceScope  = "user:inference"
+	ProfileScope            = "user:profile"
+	ConsoleScope            = "org:create_api_key"
+	ClaudeAISessionsScope   = "user:sessions:claude_code"
+	ClaudeAIMCPServersScope = "user:mcp_servers"
+	ClaudeAIFileUploadScope = "user:file_upload"
 )
 
 // AllOAuthScopes is the full set of OAuth scopes
 var AllOAuthScopes = []string{
-	ClaudeAIInferenceScope,
+	ConsoleScope,
 	ProfileScope,
-	OrganizationScope,
+	ClaudeAIInferenceScope,
+	ClaudeAISessionsScope,
+	ClaudeAIMCPServersScope,
+	ClaudeAIFileUploadScope,
 }
 
 // ClaudeAIOAuthScopes is the Claude AI specific scopes
 var ClaudeAIOAuthScopes = []string{
-	ClaudeAIInferenceScope,
 	ProfileScope,
+	ClaudeAIInferenceScope,
+	ClaudeAISessionsScope,
+	ClaudeAIMCPServersScope,
+	ClaudeAIFileUploadScope,
 }
 
 // Constants for token management

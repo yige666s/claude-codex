@@ -11,7 +11,7 @@ type ShellRuleType string
 const (
 	ShellRuleExact    ShellRuleType = "exact"
 	ShellRulePrefix   ShellRuleType = "prefix"   // legacy "cmd:*" syntax
-	ShellRuleWildcard ShellRuleType = "wildcard"  // glob * pattern
+	ShellRuleWildcard ShellRuleType = "wildcard" // glob * pattern
 )
 
 // ShellPermissionRule is a parsed representation of a shell command permission rule.
@@ -95,9 +95,9 @@ func MatchWildcardPattern(pattern, command string, caseInsensitive bool) bool {
 
 	// Special rule: if pattern ends with " .*" (space + wildcard) and there's exactly one wildcard,
 	// make trailing args optional so "git *" matches bare "git".
-	if wildcardCount == 1 && strings.HasSuffix(p, ` \*`) {
+	if wildcardCount == 1 && strings.HasSuffix(p, ` *`) {
 		// Replace trailing " *" with optional group
-		p = p[:len(p)-3] + `( .*)?`
+		p = p[:len(p)-2] + `( .*)?`
 	} else {
 		// Convert remaining * to .*
 		p = strings.ReplaceAll(p, "*", ".*")

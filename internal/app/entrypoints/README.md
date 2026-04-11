@@ -120,7 +120,7 @@ type ShutdownManager interface {
 ```go
 import (
     "context"
-    "github.com/ding/claude-code/claude-go/internal/entrypoints"
+    "claude-codex/internal/entrypoints"
 )
 
 // 创建管理器实例
@@ -312,8 +312,8 @@ go test ./internal/entrypoints/... -cover
 
 ```go
 import (
-    "github.com/ding/claude-code/claude-go/internal/migrations"
-    "github.com/ding/claude-code/claude-go/internal/entrypoints"
+    "claude-codex/internal/migrations"
+    "claude-codex/internal/entrypoints"
 )
 
 // 创建迁移管理器适配器

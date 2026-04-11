@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/tool"
+	"claude-codex/internal/harness/tool"
 )
 
 // QueryEngineConfig contains all configuration options for the QueryEngine.

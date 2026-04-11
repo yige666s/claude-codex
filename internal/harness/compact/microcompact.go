@@ -3,7 +3,7 @@ package compact
 import (
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/public/types"
 )
 
 // MicrocompactMessages removes old tool results to reduce context size.

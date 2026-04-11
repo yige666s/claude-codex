@@ -1,4 +1,4 @@
-module github.com/ding/claude-code/claude-go
+module claude-codex
 
 go 1.24.4
 

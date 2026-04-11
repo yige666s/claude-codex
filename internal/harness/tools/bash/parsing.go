@@ -10,13 +10,16 @@ type heredocSpec struct {
 
 const heredocMask = "__HEREDOC_BODY__"
 
-// splitSubcommands splits a compound command string into individual subcommands.
-// It ignores separators inside quotes, nested grouping, comments, and heredoc bodies.
-func splitSubcommands(command string) []string {
+type separatorPredicate func(separator string) bool
+
+func splitTopLevelSegments(command string, shouldSplit separatorPredicate) ([]string, []string) {
 	command = maskHeredocBodies(joinEscapedNewlines(command), false)
 
-	var parts []string
-	var cur strings.Builder
+	var (
+		parts     []string
+		operators []string
+		cur       strings.Builder
+	)
 	inSingle, inDouble, inComment := false, false, false
 	parenDepth, braceDepth, bracketDepth := 0, 0, 0
 
@@ -37,7 +40,12 @@ func splitSubcommands(command string) []string {
 		if inComment {
 			if c == '\n' {
 				inComment = false
-				flush()
+				if shouldSplit("\n") {
+					flush()
+					operators = append(operators, "\n")
+					continue
+				}
+				cur.WriteByte(c)
 			}
 			continue
 		}
@@ -70,64 +78,93 @@ func splitSubcommands(command string) []string {
 			continue
 		}
 
+		if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
+			separator, width := detectTopLevelSeparator(command, i)
+			if separator != "" && shouldSplit(separator) {
+				flush()
+				operators = append(operators, separator)
+				i += width - 1
+				continue
+			}
+		}
+
 		switch c {
 		case '(':
 			parenDepth++
-			cur.WriteByte(c)
 		case ')':
 			if parenDepth > 0 {
 				parenDepth--
 			}
-			cur.WriteByte(c)
 		case '{':
 			braceDepth++
-			cur.WriteByte(c)
 		case '}':
 			if braceDepth > 0 {
 				braceDepth--
 			}
-			cur.WriteByte(c)
 		case '[':
 			bracketDepth++
-			cur.WriteByte(c)
 		case ']':
 			if bracketDepth > 0 {
 				bracketDepth--
 			}
-			cur.WriteByte(c)
-		case '\n', ';':
-			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
-				flush()
-				continue
-			}
-			cur.WriteByte(c)
-		case '|':
-			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 && !(i > 0 && command[i-1] == '>') {
-				flush()
-				if i+1 < len(command) && command[i+1] == '|' {
-					i++
-				}
-				continue
-			}
-			cur.WriteByte(c)
-		case '&':
-			if parenDepth == 0 && braceDepth == 0 && bracketDepth == 0 {
-				flush()
-				if i+1 < len(command) && command[i+1] == '&' {
-					i++
-				}
-				continue
-			}
-			cur.WriteByte(c)
-		default:
-			cur.WriteByte(c)
 		}
+
+		cur.WriteByte(c)
 	}
 
 	flush()
 	if len(parts) == 0 {
-		return []string{strings.TrimSpace(command)}
+		return []string{strings.TrimSpace(command)}, operators
 	}
+	return parts, operators
+}
+
+func detectTopLevelSeparator(command string, idx int) (string, int) {
+	if idx < 0 || idx >= len(command) {
+		return "", 0
+	}
+	switch command[idx] {
+	case '\n':
+		return "\n", 1
+	case ';':
+		return ";", 1
+	case '|':
+		if idx > 0 && command[idx-1] == '>' {
+			return "", 0
+		}
+		if idx+1 < len(command) {
+			switch command[idx+1] {
+			case '|':
+				return "||", 2
+			case '&':
+				return "|&", 2
+			}
+		}
+		return "|", 1
+	case '&':
+		if idx > 0 && command[idx-1] == '>' {
+			return "", 0
+		}
+		if idx+1 < len(command) && command[idx+1] == '&' {
+			return "&&", 2
+		}
+		return "&", 1
+	default:
+		return "", 0
+	}
+}
+
+// splitSubcommands splits a compound command string into individual subcommands.
+// It ignores separators inside quotes, nested grouping, comments, and heredoc bodies.
+func splitSubcommands(command string) []string {
+	parts, _ := splitTopLevelSegments(command, func(separator string) bool {
+		switch separator {
+		case "\n", ";", "|", "|&", "&", "&&", "||":
+			return true
+		default:
+			return false
+		}
+	})
 	return parts
 }
 

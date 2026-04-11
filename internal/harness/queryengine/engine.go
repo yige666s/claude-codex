@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/tool"
+	"claude-codex/internal/harness/tool"
 	"github.com/google/uuid"
 )
 

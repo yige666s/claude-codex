@@ -59,7 +59,7 @@ type VersionManager interface {
 ### 注册迁移
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/migrations"
+import "claude-codex/internal/migrations"
 
 func init() {
     migrations.MustRegister(migrations.Migration{
@@ -81,7 +81,7 @@ func myMigrationFunc(ctx context.Context) error {
 ```go
 import (
     "context"
-    "github.com/ding/claude-code/claude-go/internal/migrations"
+    "claude-codex/internal/migrations"
 )
 
 // 创建版本管理器

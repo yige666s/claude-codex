@@ -93,7 +93,7 @@ Already implemented:
 ```
 PASS
 coverage: 63.3% of statements
-ok  	github.com/ding/claude-code/claude-go/internal/harness/context	1.107s
+ok  	claude-codex/internal/harness/context	1.107s
 ```
 
 All tests pass with 63.3% coverage, exceeding the 60% requirement.

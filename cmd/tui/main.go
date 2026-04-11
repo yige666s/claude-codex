@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ding/claude-code/claude-go/internal/app/cli"
+	"claude-codex/internal/app/cli"
 )
 
 func main() {

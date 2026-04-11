@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/prompt"
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/harness/prompt"
+	"claude-codex/internal/public/types"
 )
 
 func TestNewSystemPromptBuilder(t *testing.T) {

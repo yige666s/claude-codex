@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/coordinator"
+	"claude-codex/internal/harness/coordinator"
 )
 
 func TestEnterToolCreatesWorktree(t *testing.T) {

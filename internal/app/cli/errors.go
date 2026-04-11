@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ding/claude-code/claude-go/internal/public/apperrors"
-	"github.com/ding/claude-code/claude-go/internal/app/config"
+	"claude-codex/internal/public/apperrors"
+	"claude-codex/internal/app/config"
 )
 
 func FormatError(err error) string {

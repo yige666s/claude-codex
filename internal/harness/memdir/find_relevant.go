@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	"claude-codex/internal/harness/anthropic"
 )
 
 // RelevantMemory represents a memory file selected as relevant

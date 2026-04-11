@@ -6,10 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/memdir"
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
-	"github.com/ding/claude-code/claude-go/internal/public/fsutil"
+	"claude-codex/internal/harness/memdir"
+	"claude-codex/internal/harness/permissions"
+	toolkit "claude-codex/internal/harness/tools"
+	"claude-codex/internal/public/fsutil"
 )
 
 type WriteTool struct {

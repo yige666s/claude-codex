@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/agent"
+	"claude-codex/internal/harness/agent"
 )
 
 // Extractor handles automatic memory extraction from conversations

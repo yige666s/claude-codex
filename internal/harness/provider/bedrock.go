@@ -3,7 +3,7 @@ package provider
 import (
 	"context"
 
-	api "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	api "claude-codex/internal/harness/anthropic"
 )
 
 // BedrockProvider implements Provider for AWS Bedrock

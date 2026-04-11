@@ -3,7 +3,7 @@ package compact
 import (
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/public/types"
 )
 
 func TestSnipMessages_NoLargeResults(t *testing.T) {

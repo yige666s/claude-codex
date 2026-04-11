@@ -13,7 +13,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/app/config"
+	"claude-codex/internal/app/config"
 )
 
 var ErrUnsupportedPlatform = errors.New("secure storage keychain backend is only supported on darwin")
@@ -39,6 +39,20 @@ func (s *KeychainStore) Name() string {
 }
 
 func (s *KeychainStore) Read() (Data, error) {
+	key := cacheKeyForKeychainStore(s)
+	if cached, ok := getCachedKeychainData(key); ok {
+		return cached, nil
+	}
+
+	data, err := s.readUncached()
+	if err != nil {
+		return nil, err
+	}
+	setCachedKeychainData(key, data)
+	return data, nil
+}
+
+func (s *KeychainStore) readUncached() (Data, error) {
 	output, err := s.run(
 		"find-generic-password",
 		"-a", s.accountName,
@@ -63,6 +77,7 @@ func (s *KeychainStore) Read() (Data, error) {
 }
 
 func (s *KeychainStore) Write(data Data) (WriteResult, error) {
+	ClearKeychainCache()
 	if data == nil {
 		data = Data{}
 	}
@@ -81,11 +96,13 @@ func (s *KeychainStore) Write(data Data) (WriteResult, error) {
 	); err != nil {
 		return WriteResult{}, err
 	}
+	setCachedKeychainData(cacheKeyForKeychainStore(s), data)
 
 	return WriteResult{}, nil
 }
 
 func (s *KeychainStore) Delete() error {
+	ClearKeychainCache()
 	_, err := s.run(
 		"delete-generic-password",
 		"-a", s.accountName,
@@ -122,16 +139,16 @@ func DefaultCredentialsPath() (string, error) {
 func DefaultServiceName() string {
 	appHome, err := config.AppHome()
 	if err != nil {
-		return "Claude Go"
+		return "Claude Codex"
 	}
 
 	defaultHome := defaultAppHome()
 	if appHome == defaultHome {
-		return "Claude Go"
+		return "Claude Codex"
 	}
 
 	sum := sha256.Sum256([]byte(appHome))
-	return fmt.Sprintf("Claude Go-%s", hex.EncodeToString(sum[:4]))
+	return fmt.Sprintf("Claude Codex-%s", hex.EncodeToString(sum[:4]))
 }
 
 func DefaultAccountName() string {
@@ -141,7 +158,7 @@ func DefaultAccountName() string {
 	if current, err := user.Current(); err == nil && strings.TrimSpace(current.Username) != "" {
 		return current.Username
 	}
-	return "claude-go-user"
+	return "claude-codex-user"
 }
 
 func defaultAppHome() string {
@@ -149,7 +166,7 @@ func defaultAppHome() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".claude-go")
+	return filepath.Join(home, ".claude-codex")
 }
 
 func runSecurityCommand(args ...string) ([]byte, error) {

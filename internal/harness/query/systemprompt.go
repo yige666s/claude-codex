@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	harnesscontext "github.com/ding/claude-code/claude-go/internal/harness/context"
-	"github.com/ding/claude-code/claude-go/internal/harness/mcp"
-	"github.com/ding/claude-code/claude-go/internal/harness/prompt"
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	harnesscontext "claude-codex/internal/harness/context"
+	"claude-codex/internal/harness/mcp"
+	"claude-codex/internal/harness/prompt"
+	"claude-codex/internal/public/types"
 )
 
 // SystemPromptBuilder handles dynamic system prompt construction for queries.

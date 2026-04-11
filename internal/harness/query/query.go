@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/public/types"
 )
 
 // Global system prompt builder instance

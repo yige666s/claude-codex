@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"claude-codex/internal/harness/permissions"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 type FetchTool struct {
@@ -62,7 +62,7 @@ func (t *FetchTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.R
 	if err != nil {
 		return toolkit.Result{}, err
 	}
-	request.Header.Set("user-agent", "claude-go-phase2/1.0")
+	request.Header.Set("user-agent", "claude-codex-phase2/1.0")
 
 	response, err := t.client.Do(request)
 	if err != nil {

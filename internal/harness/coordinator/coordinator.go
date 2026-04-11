@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/public/fsutil"
+	"claude-codex/internal/public/fsutil"
 )
 
 type Team struct {
@@ -22,7 +22,7 @@ type TeamManager struct {
 }
 
 func NewTeamManager(root string) *TeamManager {
-	return &TeamManager{path: filepath.Join(root, ".claude-go-teams.json")}
+	return &TeamManager{path: filepath.Join(root, ".claude-codex-teams.json")}
 }
 
 func (m *TeamManager) Create(name string) (Team, error) {

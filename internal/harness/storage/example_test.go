@@ -5,7 +5,7 @@ import (
 	"log"
 	"path/filepath"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/storage"
+	"claude-codex/internal/harness/storage"
 )
 
 // Example demonstrates basic usage of the session storage system

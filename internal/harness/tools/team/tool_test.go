@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/coordinator"
+	"claude-codex/internal/harness/coordinator"
 )
 
 func TestCreateDeleteTool(t *testing.T) {

@@ -7,10 +7,11 @@ import (
 
 // ProgressEvent represents a progress update during tool execution
 type ProgressEvent struct {
-	ToolName string  `json:"tool_name"`
-	Status   string  `json:"status"` // "started", "progress", "completed", "failed"
-	Message  string  `json:"message,omitempty"`
-	Progress float64 `json:"progress,omitempty"` // 0.0 to 1.0
+	ToolName string            `json:"tool_name"`
+	Status   string            `json:"status"` // "started", "progress", "completed", "failed"
+	Message  string            `json:"message,omitempty"`
+	Progress float64           `json:"progress,omitempty"` // 0.0 to 1.0
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // ProgressReporter allows tools to report progress during execution

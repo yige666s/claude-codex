@@ -218,7 +218,7 @@ builder.cache.InvalidateOlderThan(1 * time.Hour)
 Run tests with:
 
 ```bash
-cd /Users/ding/projectSrc/claude-code/claude-go/internal/harness/prompt
+cd /Users/ding/projectSrc/claude-code/claude-codex/internal/harness/prompt
 go test -v -cover
 ```
 

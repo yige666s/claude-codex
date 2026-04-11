@@ -10,12 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/app/config"
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
-	toolkit "github.com/ding/claude-code/claude-go/internal/harness/tools"
+	"claude-codex/internal/app/config"
+	"claude-codex/internal/harness/permissions"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 type testTool struct{}
+type testResources struct{}
 
 func (testTool) Name() string                  { return "echo" }
 func (testTool) Description() string           { return "echo input" }
@@ -26,13 +27,25 @@ func (testTool) Execute(_ context.Context, input json.RawMessage) (toolkit.Resul
 	return toolkit.Result{Output: string(input)}, nil
 }
 
+func (testResources) ListResources(_ context.Context) ([]ResourceDefinition, error) {
+	return []ResourceDefinition{{URI: "file://resource.txt", Name: "resource.txt", MimeType: "text/plain"}}, nil
+}
+
+func (testResources) ReadResource(_ context.Context, uri string) ([]ResourceContent, error) {
+	return []ResourceContent{{URI: uri, MimeType: "text/plain", Text: "resource-body"}}, nil
+}
+
 func TestServerHTTPToolsAndCall(t *testing.T) {
 	registry := toolkit.NewRegistry(testTool{})
 	server := NewServer(registry)
 	server.Name = "local-mcp"
 	server.Version = "1.2.3"
 	server.Instructions = "Use echo for smoke tests."
-	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeHTTP))
+	server.ResourceProvider = testResources{}
+	httpServer, ok := newHTTPTestServer(t, http.HandlerFunc(server.ServeHTTP))
+	if !ok {
+		return
+	}
 	defer httpServer.Close()
 
 	client, err := NewClientFromConfig(config.MCPServerConfig{Name: "local", URL: httpServer.URL, Transport: "sse"}, httpServer.Client())
@@ -53,6 +66,14 @@ func TestServerHTTPToolsAndCall(t *testing.T) {
 	if err != nil || !bytes.Contains([]byte(output), []byte("world")) {
 		t.Fatalf("unexpected call output %q err=%v", output, err)
 	}
+	resources, err := client.ListResources(context.Background())
+	if err != nil || len(resources) != 1 || resources[0].URI != "file://resource.txt" {
+		t.Fatalf("unexpected resources %#v err=%v", resources, err)
+	}
+	contents, err := client.ReadResource(context.Background(), "file://resource.txt")
+	if err != nil || len(contents) != 1 || contents[0].Text != "resource-body" {
+		t.Fatalf("unexpected resource contents %#v err=%v", contents, err)
+	}
 }
 
 func TestInProcessClientInitializeListAndCall(t *testing.T) {
@@ -61,6 +82,7 @@ func TestInProcessClientInitializeListAndCall(t *testing.T) {
 	server.Name = "in-process"
 	server.Version = "9.9.9"
 	server.Instructions = "in-process instructions"
+	server.ResourceProvider = testResources{}
 
 	client := NewInProcessClient(server)
 
@@ -89,12 +111,19 @@ func TestInProcessClientInitializeListAndCall(t *testing.T) {
 	if !bytes.Contains([]byte(output), []byte("pong")) {
 		t.Fatalf("unexpected call output %q", output)
 	}
+	resources, err := client.ListResources(context.Background())
+	if err != nil || len(resources) != 1 {
+		t.Fatalf("list resources: %#v err=%v", resources, err)
+	}
 }
 
 func TestClientSubscribeEventsOverHTTP(t *testing.T) {
 	registry := toolkit.NewRegistry(testTool{})
 	server := NewServer(registry)
-	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeHTTP))
+	httpServer, ok := newHTTPTestServer(t, http.HandlerFunc(server.ServeHTTP))
+	if !ok {
+		return
+	}
 	defer httpServer.Close()
 
 	client, err := NewClientFromConfig(
@@ -156,5 +185,65 @@ func TestClientSubscribeEventsOverHTTP(t *testing.T) {
 
 	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("subscribe events: %v", err)
+	}
+}
+
+func newHTTPTestServer(t *testing.T, handler http.Handler) (*httptest.Server, bool) {
+	t.Helper()
+	var server *httptest.Server
+	ok := true
+	func() {
+		defer func() {
+			if recover() != nil {
+				ok = false
+			}
+		}()
+		server = httptest.NewServer(handler)
+	}()
+	if !ok {
+		t.Skip("sandbox does not allow binding local test servers")
+	}
+	return server, ok
+}
+
+func TestSDKControlTransportRoundTrip(t *testing.T) {
+	RegisterSDKControlHandler("sdk-server", func(_ string, msg JSONRPCMessage) (JSONRPCMessage, error) {
+		return JSONRPCMessage{
+			ID:      msg.ID,
+			JSONRPC: "2.0",
+			Result:  mustJSON(ListToolsResult{Tools: []ToolDefinition{{Name: "sdkTool"}}}),
+		}, nil
+	})
+	defer UnregisterSDKControlHandler("sdk-server")
+
+	client, err := NewClientFromConfig(config.MCPServerConfig{Name: "sdk-server", Transport: "sdk"}, nil)
+	if err != nil {
+		t.Fatalf("new sdk client: %v", err)
+	}
+	tools, err := client.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("sdk list tools: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "sdkTool" {
+		t.Fatalf("unexpected sdk tools: %#v", tools)
+	}
+}
+
+func TestInProcessTransportPair(t *testing.T) {
+	a, b := CreateLinkedTransportPair()
+	done := make(chan JSONRPCMessage, 1)
+	b.OnMessage = func(message JSONRPCMessage) {
+		done <- message
+	}
+	if err := a.Send(JSONRPCMessage{Method: "ping"}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	select {
+	case msg := <-done:
+		if msg.Method != "ping" {
+			t.Fatalf("unexpected message: %+v", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for linked transport")
 	}
 }

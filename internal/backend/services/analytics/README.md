@@ -82,7 +82,7 @@ Analytics is automatically disabled when:
 ### Create Service
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/services/analytics"
+import "claude-codex/internal/services/analytics"
 
 config := &analytics.Config{
     Disabled:       false,

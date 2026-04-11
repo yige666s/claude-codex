@@ -240,7 +240,7 @@ go test ./internal/harness/prefetch/... -v
 
 ```
 PASS
-ok      github.com/ding/claude-code/claude-go/internal/harness/prefetch    0.967s
+ok      claude-codex/internal/harness/prefetch    0.967s
 ```
 
 ## TODO

@@ -1,7 +1,7 @@
 package tokens
 
 import (
-	api "github.com/ding/claude-code/claude-go/internal/harness/anthropic"
+	api "claude-codex/internal/harness/anthropic"
 )
 
 // Token counting constants

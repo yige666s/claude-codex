@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/skills"
-	"github.com/ding/claude-code/claude-go/internal/ui/tui"
+	"claude-codex/internal/harness/skills"
+	"claude-codex/internal/ui/tui"
 )
 
 // CombinedRegistryAdapter combines slash commands and skills into a single registry
@@ -78,4 +78,15 @@ func (a *CombinedRegistryAdapter) Execute(ctx context.Context, name string, args
 
 	// Not found in either registry
 	return "", a.slashRegistry.Execute(ctx, name, args, a.context)
+}
+
+func (a *CombinedRegistryAdapter) MatchSkillPrompt(prompt string) (string, []string, bool) {
+	if a == nil || a.skillRegistry == nil {
+		return "", nil, false
+	}
+	skill, ok := a.skillRegistry.MatchNaturalPrompt(prompt)
+	if !ok || skill == nil {
+		return "", nil, false
+	}
+	return "/" + skill.Name, []string{prompt}, true
 }

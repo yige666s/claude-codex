@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/public/types"
 )
 
 // Update represents a streaming update from tool execution.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/skills"
+	"claude-codex/internal/harness/skills"
 )
 
 const (

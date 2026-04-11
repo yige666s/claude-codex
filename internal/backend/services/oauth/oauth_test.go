@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -120,12 +121,12 @@ func TestShouldUseClaudeAIAuth(t *testing.T) {
 	}{
 		{
 			name:     "has inference scope",
-			scopes:   []string{"profile", "claude_ai:inference"},
+			scopes:   []string{ProfileScope, ClaudeAIInferenceScope},
 			expected: true,
 		},
 		{
 			name:     "no inference scope",
-			scopes:   []string{"profile", "organization"},
+			scopes:   []string{ProfileScope, ConsoleScope},
 			expected: false,
 		},
 		{
@@ -178,6 +179,9 @@ func TestAuthCodeListener(t *testing.T) {
 		listener := NewAuthCodeListener("/callback")
 		port, err := listener.Start(0)
 		if err != nil {
+			if strings.Contains(err.Error(), "operation not permitted") {
+				t.Skip("sandbox does not allow binding localhost listeners")
+			}
 			t.Fatalf("expected no error, got %v", err)
 		}
 		if port == 0 {
@@ -195,6 +199,9 @@ func TestAuthCodeListener(t *testing.T) {
 		listener := NewAuthCodeListener("/callback")
 		_, err := listener.Start(0)
 		if err != nil {
+			if strings.Contains(err.Error(), "operation not permitted") {
+				t.Skip("sandbox does not allow binding localhost listeners")
+			}
 			t.Fatalf("expected no error, got %v", err)
 		}
 
@@ -254,12 +261,12 @@ func TestHasProfileScope(t *testing.T) {
 	}{
 		{
 			name:     "has profile",
-			scopes:   []string{"profile", "organization"},
+			scopes:   []string{ProfileScope, ConsoleScope},
 			expected: true,
 		},
 		{
 			name:     "no profile",
-			scopes:   []string{"organization"},
+			scopes:   []string{ConsoleScope},
 			expected: false,
 		},
 		{

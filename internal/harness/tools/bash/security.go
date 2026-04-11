@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/permissions"
+	"claude-codex/internal/harness/permissions"
 )
 
 // Check IDs for analytics (mirrors TS BASH_SECURITY_CHECK_IDS).
@@ -87,10 +87,11 @@ type validationContext struct {
 }
 
 func buildValidationContext(command string) validationContext {
-	unquoted := stripSingleQuoteContents(command)
-	fullyPre := stripBothQuoteContents(command)
+	analysis := AnalyzeCommand(command)
+	unquoted := analysis.QuoteContext.WithDoubleQuotes
+	fullyPre := analysis.QuoteContext.UnquotedKeepQuoteChars
 	fully := stripSafeRedirections(fullyPre)
-	keepChars := stripQuoteContentsKeepDelimiters(command)
+	keepChars := analysis.QuoteContext.UnquotedKeepQuoteChars
 	return validationContext{
 		original:               command,
 		unquoted:               unquoted,

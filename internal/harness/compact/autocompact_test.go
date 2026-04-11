@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ding/claude-code/claude-go/internal/public/types"
+	"claude-codex/internal/public/types"
 )
 
 func TestNewAutoCompactor(t *testing.T) {

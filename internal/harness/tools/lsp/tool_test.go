@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	lspapi "github.com/ding/claude-code/claude-go/internal/app/lsp"
+	lspapi "claude-codex/internal/app/lsp"
 )
 
 func TestToolWorkspaceSymbols(t *testing.T) {

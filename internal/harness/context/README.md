@@ -32,7 +32,7 @@ The context module provides context management for Claude Code, including system
 ### Get System Context
 
 ```go
-import "github.com/ding/claude-code/claude-go/internal/context"
+import "claude-codex/internal/context"
 
 // Get system context with git status
 ctx, err := context.GetSystemContext("/path/to/repo", true)

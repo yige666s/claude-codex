@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ding/claude-code/claude-go/internal/harness/memory"
+	"claude-codex/internal/harness/memory"
 )
 
 func handleMemoryV2Command(args []string, sc slashContext) error {

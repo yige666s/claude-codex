@@ -29,7 +29,7 @@ func TestNewClient(t *testing.T) {
 			}{
 				baseURL:    defaultBaseURL,
 				maxRetries: defaultMaxRetries,
-				userAgent:  "claude-go/1.0",
+				userAgent:  "claude-codex/1.0",
 			},
 		},
 		{

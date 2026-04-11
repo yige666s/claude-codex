@@ -1,0 +1,108 @@
+# ============================================================
+# Go
+# ============================================================
+
+# 编译产物 / 二进制文件
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+tui
+webui
+
+# 测试产物
+*.test
+*.bench
+coverage.out
+coverage.html
+*.coverprofile
+/testdata/
+
+# Go 工具链本地缓存
+.gocache/
+.gomodcache/
+
+# Go workspace 文件（可选提交）
+go.work
+go.work.sum
+
+# ============================================================
+# 项目运行时数据
+# ============================================================
+.omc/
+.omx/
+
+# ============================================================
+# 编辑器 / IDE
+# ============================================================
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains（GoLand、IntelliJ 等）
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Vim / Neovim
+*.swp
+*.swo
+*~
+.netrwhist
+
+# Emacs
+\#*\#
+.\#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ============================================================
+# 操作系统
+# ============================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+
+# ============================================================
+# 调试 / 性能分析
+# ============================================================
+*.prof
+*.pprof
+cpu.out
+mem.out
+trace.out
+
+# ============================================================
+# 敏感信息 / 本地配置
+# ============================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.yaml
+secrets.json
+
+
+/docs/

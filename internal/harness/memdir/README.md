@@ -149,7 +149,7 @@ package main
 
 import (
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/memdir"
+    "claude-codex/internal/memdir"
 )
 
 func main() {
@@ -180,8 +180,8 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/memdir"
-    "github.com/ding/claude-code/claude-go/pkg/anthropic"
+    "claude-codex/internal/memdir"
+    "claude-codex/pkg/anthropic"
 )
 
 func main() {
@@ -231,7 +231,7 @@ package main
 
 import (
     "fmt"
-    "github.com/ding/claude-code/claude-go/internal/memdir"
+    "claude-codex/internal/memdir"
 )
 
 func main() {
@@ -267,7 +267,7 @@ package main
 import (
     "fmt"
     "time"
-    "github.com/ding/claude-code/claude-go/internal/memdir"
+    "claude-codex/internal/memdir"
 )
 
 func main() {

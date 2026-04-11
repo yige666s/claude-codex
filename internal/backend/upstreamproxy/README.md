@@ -61,7 +61,7 @@ type InitOptions struct {
 ```go
 import (
     "context"
-    "github.com/ding/claude-code/claude-go/internal/upstreamproxy"
+    "claude-codex/internal/upstreamproxy"
 )
 
 ctx := context.Background()
