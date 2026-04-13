@@ -103,6 +103,6 @@ trace.out
 *.pfx
 secrets.yaml
 secrets.json
-
-
-/docs/
+.omc/
+.omx/
+docs/

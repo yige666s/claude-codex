@@ -2,13 +2,13 @@ package server
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -24,6 +24,9 @@ import (
 	toolkit "claude-codex/internal/harness/tools"
 	"claude-codex/internal/harness/websandbox"
 )
+
+//go:embed static/index.html
+var staticFiles embed.FS
 
 type Server struct {
 	engine          *engine.Engine
@@ -62,7 +65,7 @@ func New(apiKey, baseURL, model string, registryBuilder func(websandbox.Scope) *
 
 	defaultScope := websandbox.Scope{RootDir: workingDir}
 	registry := registryBuilder(defaultScope)
-	eng := engine.NewWithDir(planner, registry, checker, 8, workingDir)
+	eng := engine.NewWithDir(planner, registry, checker, 0, workingDir)
 	eng.SetSkillManager(skillManager)
 
 	return &Server{
@@ -368,7 +371,7 @@ func (s *Server) engineForScope(scope websandbox.Scope) *engine.Engine {
 	planner := anthropic.NewPlanner(client, s.model)
 	checker := permissions.NewChecker(permissions.ModeBypass, nil, nil)
 	registry := s.registryBuilder(scope)
-	eng := engine.NewWithDir(planner, registry, checker, 8, scope.RootDir)
+	eng := engine.NewWithDir(planner, registry, checker, 0, scope.RootDir)
 	eng.SetSkillManager(s.skillManager)
 	return eng
 }
@@ -496,15 +499,17 @@ func (s *Server) formatSkill(output *strings.Builder, skill *skills.SkillDefinit
 	}
 }
 
-func staticIndexPath() string {
-	if _, filename, _, ok := runtime.Caller(0); ok {
-		return filepath.Join(filepath.Dir(filename), "..", "static", "index.html")
-	}
-	return filepath.Join("internal", "ui", "web", "static", "index.html")
-}
-
 func (s *Server) HandleStatic(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, staticIndexPath())
+	// Read from embedded file system
+	data, err := staticFiles.ReadFile("static/index.html")
+	if err != nil {
+		log.Printf("Error reading embedded index.html: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(data)
 }
 
 func (s *Server) Start(addr string) error {

@@ -38,8 +38,8 @@ type Result struct {
 }
 
 func New(planner Planner, registry *toolkit.Registry, checker *permissions.Checker, maxTurns int) *Engine {
-	if maxTurns <= 0 {
-		maxTurns = 8
+	if maxTurns < 0 {
+		maxTurns = 0
 	}
 	return &Engine{
 		planner:     planner,
@@ -160,7 +160,7 @@ func (e *Engine) run(ctx context.Context, session *state.Session, prompt string,
 		}
 	}
 
-	for turn := 0; turn < e.maxTurns; turn++ {
+	for turn := 0; e.maxTurns <= 0 || turn < e.maxTurns; turn++ {
 		turnSpanID := fmt.Sprintf("%s:turn:%d", interactionID, turn)
 		e.recordTrace(session.ID, "planner.turn.start", "planner", map[string]any{
 			"span_id": turnSpanID,
@@ -254,6 +254,108 @@ func (e *Engine) run(ctx context.Context, session *state.Session, prompt string,
 	return Result{}, fmt.Errorf("planner exceeded max turns (%d)", e.maxTurns)
 }
 
+func toolFailureMessage(call ToolCall, output string) state.Message {
+	return state.Message{
+		Role:       "tool",
+		ToolCallID: call.ID,
+		ToolName:   call.Name,
+		ToolInput:  call.Input,
+		ToolOutput: output,
+	}
+}
+
+func formatToolExecutionError(call ToolCall, err error) string {
+	if err == nil {
+		return ""
+	}
+	if call.Name == "" {
+		return err.Error()
+	}
+	return fmt.Sprintf("%s: %v", call.Name, err)
+}
+
+func (e *Engine) executeToolCall(
+	ctx context.Context,
+	session *state.Session,
+	interactionID string,
+	call ToolCall,
+	progressReporter toolkit.ProgressReporter,
+) state.Message {
+	tool, err := e.registry.Get(call.Name)
+	if err != nil {
+		output := formatToolExecutionError(call, err)
+		e.recordToolTrace(session.ID, interactionID, call, permissions.Request{}, "error", map[string]any{"error": err.Error()})
+		progressReporter.Report(toolkit.ProgressEvent{
+			ToolName: call.Name,
+			Status:   "failed",
+			Message:  err.Error(),
+		})
+		return toolFailureMessage(call, output)
+	}
+
+	request := buildPermissionRequest(tool.Name(), tool.Permission(), call.Input)
+	if e.permissions != nil {
+		if err := e.permissions.AuthorizeRequest(ctx, request); err != nil {
+			output := formatToolExecutionError(call, err)
+			e.recordToolTrace(session.ID, interactionID, call, request, "error", map[string]any{"error": err.Error()})
+			progressReporter.Report(toolkit.ProgressEvent{
+				ToolName: call.Name,
+				Status:   "failed",
+				Message:  err.Error(),
+				Metadata: cloneStringMap(request.Metadata),
+			})
+			return toolFailureMessage(call, output)
+		}
+	}
+
+	e.recordToolTrace(session.ID, interactionID, call, request, "start", nil)
+	progressReporter.Report(toolkit.ProgressEvent{
+		ToolName: call.Name,
+		Status:   "started",
+		Message:  request.Summary,
+		Metadata: cloneStringMap(request.Metadata),
+	})
+
+	var result toolkit.Result
+	if progressTool, ok := tool.(toolkit.ProgressAwareTool); ok {
+		result, err = progressTool.ExecuteWithProgress(ctx, call.Input, progressReporter)
+	} else {
+		result, err = tool.Execute(ctx, call.Input)
+	}
+
+	if err != nil {
+		output := formatToolExecutionError(call, err)
+		e.recordToolTrace(session.ID, interactionID, call, request, "error", map[string]any{"error": err.Error()})
+		progressReporter.Report(toolkit.ProgressEvent{
+			ToolName: call.Name,
+			Status:   "failed",
+			Message:  err.Error(),
+			Metadata: cloneStringMap(request.Metadata),
+		})
+		return toolFailureMessage(call, output)
+	}
+
+	e.recordToolTrace(session.ID, interactionID, call, request, "end", map[string]any{
+		"status":       "ok",
+		"output_chars": len(result.Output),
+	})
+	progressReporter.Report(toolkit.ProgressEvent{
+		ToolName: call.Name,
+		Status:   "completed",
+		Message:  request.Summary,
+		Progress: 1.0,
+		Metadata: cloneStringMap(request.Metadata),
+	})
+
+	return state.Message{
+		Role:       "tool",
+		ToolCallID: call.ID,
+		ToolName:   call.Name,
+		ToolInput:  call.Input,
+		ToolOutput: result.Output,
+	}
+}
+
 func (e *Engine) executeToolCalls(ctx context.Context, session *state.Session, calls []ToolCall, interactionID string) error {
 	// Partition tool calls into concurrent-safe and non-concurrent-safe groups
 	var safeCalls []ToolCall
@@ -262,7 +364,8 @@ func (e *Engine) executeToolCalls(ctx context.Context, session *state.Session, c
 	for _, call := range calls {
 		tool, err := e.registry.Get(call.Name)
 		if err != nil {
-			return err
+			unsafeCalls = append(unsafeCalls, call)
+			continue
 		}
 		if tool.IsConcurrencySafe() {
 			safeCalls = append(safeCalls, call)
@@ -299,66 +402,8 @@ func (e *Engine) executeToolCalls(ctx context.Context, session *state.Session, c
 		for _, call := range safeCalls {
 			call := call
 			group.Go(func() error {
-				tool, err := e.registry.Get(call.Name)
-				if err != nil {
-					return err
-				}
-
-				request := buildPermissionRequest(tool.Name(), tool.Permission(), call.Input)
-				if e.permissions != nil {
-					if err := e.permissions.AuthorizeRequest(runCtx, request); err != nil {
-						return err
-					}
-				}
-
-				e.recordToolTrace(session.ID, interactionID, call, request, "start", nil)
-				// Report start
-				progressReporter.Report(toolkit.ProgressEvent{
-					ToolName: call.Name,
-					Status:   "started",
-					Message:  request.Summary,
-					Metadata: cloneStringMap(request.Metadata),
-				})
-
-				var result toolkit.Result
-				// Check if tool supports progress reporting
-				if progressTool, ok := tool.(toolkit.ProgressAwareTool); ok {
-					result, err = progressTool.ExecuteWithProgress(runCtx, call.Input, progressReporter)
-				} else {
-					result, err = tool.Execute(runCtx, call.Input)
-				}
-
-				if err != nil {
-					e.recordToolTrace(session.ID, interactionID, call, request, "error", map[string]any{"error": err.Error()})
-					progressReporter.Report(toolkit.ProgressEvent{
-						ToolName: call.Name,
-						Status:   "failed",
-						Message:  err.Error(),
-						Metadata: cloneStringMap(request.Metadata),
-					})
-					return err
-				}
-
-				e.recordToolTrace(session.ID, interactionID, call, request, "end", map[string]any{
-					"status":       "ok",
-					"output_chars": len(result.Output),
-				})
-				progressReporter.Report(toolkit.ProgressEvent{
-					ToolName: call.Name,
-					Status:   "completed",
-					Message:  request.Summary,
-					Progress: 1.0,
-					Metadata: cloneStringMap(request.Metadata),
-				})
-
 				idx := callIndex[call.ID]
-				results[idx] = state.Message{
-					Role:       "tool",
-					ToolCallID: call.ID,
-					ToolName:   call.Name,
-					ToolInput:  call.Input,
-					ToolOutput: result.Output,
-				}
+				results[idx] = e.executeToolCall(runCtx, session, interactionID, call, progressReporter)
 				return nil
 			})
 		}
@@ -370,66 +415,8 @@ func (e *Engine) executeToolCalls(ctx context.Context, session *state.Session, c
 
 	// Execute non-concurrent-safe tools sequentially
 	for _, call := range unsafeCalls {
-		tool, err := e.registry.Get(call.Name)
-		if err != nil {
-			return err
-		}
-
-		request := buildPermissionRequest(tool.Name(), tool.Permission(), call.Input)
-		if e.permissions != nil {
-			if err := e.permissions.AuthorizeRequest(ctx, request); err != nil {
-				return err
-			}
-		}
-
-		e.recordToolTrace(session.ID, interactionID, call, request, "start", nil)
-		// Report start
-		progressReporter.Report(toolkit.ProgressEvent{
-			ToolName: call.Name,
-			Status:   "started",
-			Message:  request.Summary,
-			Metadata: cloneStringMap(request.Metadata),
-		})
-
-		var result toolkit.Result
-		// Check if tool supports progress reporting
-		if progressTool, ok := tool.(toolkit.ProgressAwareTool); ok {
-			result, err = progressTool.ExecuteWithProgress(ctx, call.Input, progressReporter)
-		} else {
-			result, err = tool.Execute(ctx, call.Input)
-		}
-
-		if err != nil {
-			e.recordToolTrace(session.ID, interactionID, call, request, "error", map[string]any{"error": err.Error()})
-			progressReporter.Report(toolkit.ProgressEvent{
-				ToolName: call.Name,
-				Status:   "failed",
-				Message:  err.Error(),
-				Metadata: cloneStringMap(request.Metadata),
-			})
-			return err
-		}
-
-		e.recordToolTrace(session.ID, interactionID, call, request, "end", map[string]any{
-			"status":       "ok",
-			"output_chars": len(result.Output),
-		})
-		progressReporter.Report(toolkit.ProgressEvent{
-			ToolName: call.Name,
-			Status:   "completed",
-			Message:  request.Summary,
-			Progress: 1.0,
-			Metadata: cloneStringMap(request.Metadata),
-		})
-
 		idx := callIndex[call.ID]
-		results[idx] = state.Message{
-			Role:       "tool",
-			ToolCallID: call.ID,
-			ToolName:   call.Name,
-			ToolInput:  call.Input,
-			ToolOutput: result.Output,
-		}
+		results[idx] = e.executeToolCall(ctx, session, interactionID, call, progressReporter)
 	}
 
 	for _, message := range results {

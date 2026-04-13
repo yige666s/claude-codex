@@ -91,3 +91,31 @@ func TestDefaultIncludesAnthropicAPIKeyPlaceholder(t *testing.T) {
 		t.Fatalf("expected default api key placeholder %q, got %q", DefaultAnthropicAPIKeyPlaceholder, cfg.APIKey)
 	}
 }
+
+func TestDefaultMaxTurnsIsUnlimited(t *testing.T) {
+	cfg := Default()
+	if cfg.MaxTurns != 0 {
+		t.Fatalf("expected default max turns to be unlimited (0), got %d", cfg.MaxTurns)
+	}
+}
+
+func TestValidateAllowsUnlimitedMaxTurns(t *testing.T) {
+	cfg := Default()
+	cfg.MaxTurns = 0
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected max_turns=0 to validate, got %v", err)
+	}
+}
+
+func TestApplyEnvOverridesAllowsUnlimitedMaxTurns(t *testing.T) {
+	cfg := Default()
+	cfg.MaxTurns = 3
+	t.Setenv("CLAUDE_GO_MAX_TURNS", "0")
+
+	applyEnvOverrides(&cfg)
+
+	if cfg.MaxTurns != 0 {
+		t.Fatalf("expected env override to set max turns to 0, got %d", cfg.MaxTurns)
+	}
+}

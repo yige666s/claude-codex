@@ -258,6 +258,8 @@
             const content = messageInput.value.trim();
             if (!content || !ws || ws.readyState !== WebSocket.OPEN) return;
 
+            addMessage(content, 'user');
+
             ws.send(JSON.stringify({
                 type: 'chat',
                 content: content

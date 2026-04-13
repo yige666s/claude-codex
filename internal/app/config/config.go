@@ -98,7 +98,7 @@ func Default() Config {
 		APIBaseURL:     "https://api.anthropic.com",
 		APIKey:         DefaultAnthropicAPIKeyPlaceholder,
 		TimeoutSeconds: 600,
-		MaxTurns:       8,
+		MaxTurns:       0,
 		SecretStore:    "auto",
 		Telemetry: TelemetryConfig{
 			Enabled:     false,
@@ -256,7 +256,7 @@ func normalize(cfg Config) Config {
 	if cfg.TimeoutSeconds <= 0 {
 		cfg.TimeoutSeconds = defaults.TimeoutSeconds
 	}
-	if cfg.MaxTurns <= 0 {
+	if cfg.MaxTurns < 0 {
 		cfg.MaxTurns = defaults.MaxTurns
 	}
 	cfg.SecretStore = strings.ToLower(strings.TrimSpace(coalesceString(cfg.SecretStore, defaults.SecretStore)))
@@ -294,7 +294,7 @@ func applyEnvOverrides(cfg *Config) {
 		}
 	}
 	if value := os.Getenv("CLAUDE_GO_MAX_TURNS"); value != "" {
-		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 0 {
 			cfg.MaxTurns = parsed
 		}
 	}
@@ -402,8 +402,8 @@ func (cfg *Config) Validate() error {
 	if cfg.TimeoutSeconds < 0 {
 		return fmt.Errorf("timeout_seconds cannot be negative")
 	}
-	if cfg.MaxTurns < 1 {
-		return fmt.Errorf("max_turns must be at least 1")
+	if cfg.MaxTurns < 0 {
+		return fmt.Errorf("max_turns cannot be negative")
 	}
 	if cfg.Theme != "" && cfg.Theme != "light" && cfg.Theme != "dark" {
 		return fmt.Errorf("invalid theme: %s (must be light or dark)", cfg.Theme)

@@ -221,6 +221,62 @@ func TestRootCommandWithoutArgsStartsTUI(t *testing.T) {
 	}
 }
 
+func TestRootCommandMaxTurnsFlagAllowsZeroOverride(t *testing.T) {
+	projectRoot := t.TempDir()
+	homeRoot := t.TempDir()
+	t.Setenv("CLAUDE_GO_HOME", homeRoot)
+
+	if err := config.Save(config.Config{
+		SchemaVersion:  config.CurrentSchemaVersion,
+		Backend:        "simple",
+		Provider:       "anthropic",
+		Model:          "claude-sonnet-4-5",
+		PermissionMode: "bypass",
+		Theme:          "dark",
+		APIBaseURL:     "https://api.anthropic.com",
+		APIKey:         config.DefaultAnthropicAPIKeyPlaceholder,
+		TimeoutSeconds: 600,
+		MaxTurns:       8,
+		SecretStore:    "auto",
+		Telemetry:      config.Default().Telemetry,
+		OAuth:          config.Default().OAuth,
+	}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	called := false
+	previous := startTUI
+	startTUI = func(options tui.Options) error {
+		called = true
+		return nil
+	}
+	defer func() {
+		startTUI = previous
+	}()
+
+	command := NewRootCommandWithIO(IO{
+		In:  strings.NewReader(""),
+		Out: new(bytes.Buffer),
+		Err: new(bytes.Buffer),
+	})
+	command.SetArgs([]string{"--cwd", projectRoot, "--max-turns", "0"})
+
+	if err := command.Execute(); err != nil {
+		t.Fatalf("execute command: %v", err)
+	}
+	if !called {
+		t.Fatal("expected TUI to start")
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if cfg.MaxTurns != 0 {
+		t.Fatalf("expected max_turns override to persist 0, got %d", cfg.MaxTurns)
+	}
+}
+
 func TestBuildSubagentPromptIncludesMetadata(t *testing.T) {
 	prompt := buildSubagentPrompt(agenttool.Request{
 		Description:  "Review auth flow",

@@ -187,7 +187,7 @@ go run ./cmd/webui -api-key your-key
 - Uses `ModeBypass` for permissions (auto-approves all tool calls)
 - Sessions are stored in memory (not persisted)
 - WebSocket protocol is simple JSON messages
-- Static HTML file is served from `internal/ui/web/static/`
+- Static HTML file is embedded from `internal/ui/web/server/static/`
 
 ## Future Enhancements
 

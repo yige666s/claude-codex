@@ -86,7 +86,11 @@ func main() {
 	log.Printf("Starting Web UI server on %s", *addr)
 	log.Printf("Using API base URL: %s", baseURL)
 	log.Printf("Using model: %s", *model)
-	log.Printf("Open http://localhost%s in your browser", *addr)
+	displayAddr := *addr
+	if strings.HasPrefix(displayAddr, ":") {
+		displayAddr = "localhost" + displayAddr
+	}
+	log.Printf("Open http://%s in your browser", displayAddr)
 
 	if err := srv.Start(*addr); err != nil {
 		log.Fatal(err)

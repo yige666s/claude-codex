@@ -108,7 +108,7 @@ func NewRootCommandWithIO(streams IO) *cobra.Command {
 			if permissionModeFlag != "" {
 				cfg.PermissionMode = permissionModeFlag
 			}
-			if maxTurnsFlag > 0 {
+			if cmd.Flags().Changed("max-turns") {
 				cfg.MaxTurns = maxTurnsFlag
 			}
 
@@ -236,7 +236,7 @@ func NewRootCommandWithIO(streams IO) *cobra.Command {
 	command.Flags().StringVar(&permissionModeFlag, "permission-mode", "", "permission mode: default, plan, bypass, auto")
 	command.Flags().StringVar(&cwdFlag, "cwd", "", "project root for file and shell tools")
 	command.Flags().BoolVar(&saveSessionFlag, "save-session", true, "persist the session transcript under CLAUDE_GO_HOME")
-	command.Flags().IntVar(&maxTurnsFlag, "max-turns", 0, "maximum number of agentic turns (0 = use config default)")
+	command.Flags().IntVar(&maxTurnsFlag, "max-turns", 0, "maximum number of agentic turns (0 = use config default, unlimited by default)")
 
 	return command
 }
