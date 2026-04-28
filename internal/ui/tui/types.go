@@ -134,7 +134,8 @@ type Options struct {
 }
 
 type permissionResult struct {
-	err error
+	decision permissions.Decision
+	err      error
 }
 
 type permissionEnvelope struct {

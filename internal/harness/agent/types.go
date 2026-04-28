@@ -15,10 +15,14 @@ type AgentType string
 type AgentSource string
 
 const (
-	SourceBuiltIn        AgentSource = "built-in"
-	SourcePlugin         AgentSource = "plugin"
-	SourceUser           AgentSource = "user"
-	SourcePolicySettings AgentSource = "policySettings"
+	SourceBuiltIn         AgentSource = "built-in"
+	SourcePlugin          AgentSource = "plugin"
+	SourceUser            AgentSource = "user"
+	SourceUserSettings    AgentSource = "userSettings"
+	SourceProjectSettings AgentSource = "projectSettings"
+	SourceLocalSettings   AgentSource = "localSettings"
+	SourceFlagSettings    AgentSource = "flagSettings"
+	SourcePolicySettings  AgentSource = "policySettings"
 )
 
 // PermissionMode controls how permissions are handled
@@ -26,9 +30,9 @@ type PermissionMode string
 
 const (
 	PermissionDefault PermissionMode = "default"
-	PermissionBubble  PermissionMode = "bubble"  // Surface to parent
-	PermissionAllow   PermissionMode = "allow"   // Auto-allow
-	PermissionDeny    PermissionMode = "deny"    // Auto-deny
+	PermissionBubble  PermissionMode = "bubble" // Surface to parent
+	PermissionAllow   PermissionMode = "allow"  // Auto-allow
+	PermissionDeny    PermissionMode = "deny"   // Auto-deny
 )
 
 // ModelOption specifies which model to use
@@ -43,22 +47,30 @@ const (
 
 // AgentDefinition defines an agent template
 type AgentDefinition struct {
-	AgentType    AgentType
-	WhenToUse    string
-	Tools        []string // Tool names, or ["*"] for all tools
+	AgentType       AgentType
+	WhenToUse       string
+	Tools           []string // Tool names/rule specs, or ["*"] for all tools
 	DisallowedTools []string // Tool names explicitly denied
-	MaxTurns     int
-	Model        ModelOption
-	Permission   PermissionMode
-	Source       AgentSource
-	BaseDir      string
-	SystemPrompt string
-	Background   bool   // Always run async
-	OmitClaudeMd bool   // Skip CLAUDE.md injection
-	Color        string // UI color hint
+	MaxTurns        int
+	Model           ModelOption
+	Effort          string
+	Permission      PermissionMode
+	Source          AgentSource
+	BaseDir         string
+	Filename        string
+	SystemPrompt    string
+	InitialPrompt   string
+	Background      bool   // Always run async
+	Isolation       string // worktree or remote
+	Memory          string // user, project, local
+	OmitClaudeMd    bool   // Skip CLAUDE.md injection
+	Color           string // UI color hint
 
 	// Optional MCP servers
 	MCPServers []string
+
+	// Optional required MCP server patterns
+	RequiredMCPServers []string
 
 	// Optional skills
 	Skills []string
@@ -66,23 +78,23 @@ type AgentDefinition struct {
 
 // AgentInstance represents a running agent
 type AgentInstance struct {
-	ID              AgentID
-	Type            AgentType
-	ParentID        *AgentID
-	Model           string // Resolved model string
-	StartTime       time.Time
-	EndTime         *time.Time
-	Status          AgentStatus
-	TurnCount       int
-	MaxTurns        int
+	ID        AgentID
+	Type      AgentType
+	ParentID  *AgentID
+	Model     string // Resolved model string
+	StartTime time.Time
+	EndTime   *time.Time
+	Status    AgentStatus
+	TurnCount int
+	MaxTurns  int
 
 	// Context
-	WorkingDir      string
-	Tools           []string
+	WorkingDir string
+	Tools      []string
 
 	// State
-	Messages        []Message
-	AbortSignal     context.CancelFunc
+	Messages    []Message
+	AbortSignal context.CancelFunc
 }
 
 // AgentStatus represents the current state of an agent
@@ -124,26 +136,26 @@ type ContentBlock struct {
 
 // AgentResult represents the outcome of an agent execution
 type AgentResult struct {
-	AgentID       AgentID
-	Success       bool
-	Error         error
-	TurnCount     int
-	Duration      time.Duration
-	FinalMessage  *Message
+	AgentID      AgentID
+	Success      bool
+	Error        error
+	TurnCount    int
+	Duration     time.Duration
+	FinalMessage *Message
 
 	// Metrics
-	InputTokens   int
-	OutputTokens  int
-	TotalTokens   int
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
 }
 
 // AgentConfig contains configuration for running an agent
 type AgentConfig struct {
-	Definition     *AgentDefinition
-	ParentID       *AgentID
-	ParentModel    string
-	WorkingDir     string
-	InitialPrompt  string
+	Definition    *AgentDefinition
+	ParentID      *AgentID
+	ParentModel   string
+	WorkingDir    string
+	InitialPrompt string
 
 	// Fork-specific
 	IsFork         bool
@@ -151,8 +163,8 @@ type AgentConfig struct {
 	ParentMessages []Message
 
 	// Overrides
-	SystemPrompt   *string
-	MaxTurns       *int
+	SystemPrompt *string
+	MaxTurns     *int
 
 	// Streaming
 	StreamCallback StreamCallback
@@ -163,18 +175,18 @@ type StreamCallback func(event StreamEvent)
 
 // StreamEvent represents a streaming event from the agent
 type StreamEvent struct {
-	Type      string    // "text_delta", "tool_use_start", "tool_use_end", etc.
-	Content   string    // Text content for text_delta
-	ToolName  string    // Tool name for tool_use events
-	ToolID    string    // Tool ID for tool_use events
+	Type      string // "text_delta", "tool_use_start", "tool_use_end", etc.
+	Content   string // Text content for text_delta
+	ToolName  string // Tool name for tool_use events
+	ToolID    string // Tool ID for tool_use events
 	Timestamp time.Time
 }
 
 // ProgressUpdate represents a progress notification from a running agent
 type ProgressUpdate struct {
-	AgentID     AgentID
-	TurnNumber  int
-	Status      AgentStatus
-	Summary     string
-	Timestamp   time.Time
+	AgentID    AgentID
+	TurnNumber int
+	Status     AgentStatus
+	Summary    string
+	Timestamp  time.Time
 }

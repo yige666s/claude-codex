@@ -81,6 +81,11 @@ func cloneMessages(messages []types.Message) []types.Message {
 
 	cloned := make([]types.Message, len(messages))
 	copy(cloned, messages)
+	for i := range cloned {
+		if messages[i].Content != nil {
+			cloned[i].Content = append([]types.ContentBlock(nil), messages[i].Content...)
+		}
+	}
 	return cloned
 }
 

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"claude-codex/internal/public/ratelimit"
 	"claude-codex/internal/harness/anthropic"
+	"claude-codex/internal/public/ratelimit"
 )
 
 func handleLimits(args []string, sc slashContext) error {
@@ -140,4 +140,3 @@ func displayRateLimitInfo(out interface{ Write([]byte) (int, error) }, limiter *
 
 // Unused but kept for future use
 var _ = (*anthropic.Client)(nil)
-

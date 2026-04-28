@@ -48,7 +48,7 @@ var readOnlyCommandPrefixes = []string{
 	"tac", "rev", "fold", "expand", "unexpand", "fmt", "comm", "cmp",
 	"numfmt", "readlink", "diff", "true", "false", "sleep", "which",
 	"type", "expr", "test", "getconf", "seq", "tsort", "pr",
-	"sort", "uniq", "grep", "rg", "awk", "sed",
+	"sort", "uniq", "grep", "rg", "awk",
 	"git log", "git show", "git diff", "git status", "git branch",
 	"git remote", "git stash list", "git tag", "git describe",
 	"git ls-files", "git blame", "git shortlog",
@@ -180,8 +180,10 @@ func isInCommandAllowlist(baseCmd string, args []string) bool {
 		return allFlags(args)
 	case "ls", "cat", "head", "tail", "wc", "stat", "du", "df":
 		return allFlagsOrPaths(args)
-	case "grep", "rg", "awk", "sed":
+	case "grep", "rg", "awk":
 		return allFlagsOrPaths(args)
+	case "sed":
+		return isSedReadOnly(args)
 	case "git":
 		return isGitReadOnly(args)
 	case "sort", "uniq", "cut", "paste", "tr", "column", "comm", "diff":
@@ -200,6 +202,103 @@ func isInCommandAllowlist(baseCmd string, args []string) bool {
 		return len(args) == 1
 	case "date":
 		return len(args) == 0 || (len(args) == 1 && strings.HasPrefix(args[0], "+"))
+	}
+	return false
+}
+
+func isSedReadOnly(args []string) bool {
+	expressions := make([]string, 0, 1)
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-i" || strings.HasPrefix(arg, "-i") || arg == "--in-place" || strings.HasPrefix(arg, "--in-place="):
+			return false
+		case arg == "-e" || arg == "--expression":
+			if i+1 >= len(args) {
+				return false
+			}
+			i++
+			expressions = append(expressions, unquoteShellToken(args[i]))
+		case strings.HasPrefix(arg, "-e") && len(arg) > 2:
+			expressions = append(expressions, unquoteShellToken(arg[2:]))
+		case strings.HasPrefix(arg, "-") && arg != "-":
+			continue
+		default:
+			expr := unquoteShellToken(arg)
+			if looksLikeSedExpression(expr) {
+				expressions = append(expressions, expr)
+			}
+		}
+	}
+	for _, expr := range expressions {
+		if sedExpressionWritesOrExecutes(expr) {
+			return false
+		}
+	}
+	return true
+}
+
+func unquoteShellToken(token string) string {
+	if len(token) >= 2 {
+		first, last := token[0], token[len(token)-1]
+		if (first == '\'' && last == '\'') || (first == '"' && last == '"') {
+			return token[1 : len(token)-1]
+		}
+	}
+	return token
+}
+
+func looksLikeSedExpression(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	switch value[0] {
+	case 's', 'p', 'd', 'q', 'n', 'N', 'w', 'W', 'e', 'E', '/', '1', '2', '3', '4', '5', '6', '7', '8', '9', '$', '{':
+		return true
+	default:
+		return false
+	}
+}
+
+func sedExpressionWritesOrExecutes(expr string) bool {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return false
+	}
+	if regexp.MustCompile(`(^|[;{}\s])[wWeE]([;\s]|$)`).MatchString(expr) {
+		return true
+	}
+	if strings.HasPrefix(expr, "s") {
+		return sedSubstitutionHasWriteOrExecFlag(expr)
+	}
+	return false
+}
+
+func sedSubstitutionHasWriteOrExecFlag(expr string) bool {
+	if len(expr) < 2 {
+		return false
+	}
+	delimiter := expr[1]
+	escaped := false
+	delimiters := 0
+	for i := 2; i < len(expr); i++ {
+		c := expr[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if c == delimiter {
+			delimiters++
+			if delimiters == 2 {
+				flags := strings.TrimSpace(expr[i+1:])
+				return strings.ContainsAny(flags, "wWeE")
+			}
+		}
 	}
 	return false
 }

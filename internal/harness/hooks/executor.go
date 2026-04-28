@@ -179,6 +179,9 @@ func (e *Executor) aggregateResults(results []*HookResult) *AggregatedResult {
 				aggregated.PermissionBehavior = "ask"
 				aggregated.PermissionDecisionReason = result.PermissionDecision.Reason
 			}
+			if len(result.PermissionDecision.UpdatedPermissions) > 0 {
+				aggregated.PermissionUpdates = append(aggregated.PermissionUpdates, result.PermissionDecision.UpdatedPermissions...)
+			}
 		}
 
 		// Collect MCP tool output (last one wins)

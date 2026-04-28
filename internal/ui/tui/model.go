@@ -17,6 +17,7 @@ import (
 
 	"claude-codex/internal/backend/services/promptsuggestion"
 	"claude-codex/internal/harness/engine"
+	"claude-codex/internal/harness/permissions"
 	"claude-codex/internal/harness/state"
 	"claude-codex/internal/harness/tools"
 )
@@ -286,11 +287,22 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.permission != nil {
 			switch strings.ToLower(keyString) {
 			case "y", "enter":
-				m.permission.reply <- permissionResult{}
+				m.permission.reply <- permissionResult{decision: permissions.Decision{Behavior: permissions.BehaviorAllow}}
+				m.permission = nil
+				return m, waitForPermission(m.broker)
+			case "a":
+				m.permission.reply <- permissionResult{decision: permissions.Decision{
+					Behavior: permissions.BehaviorAllow,
+					Remember: true,
+					Updates:  m.permission.request.Suggestions,
+				}}
 				m.permission = nil
 				return m, waitForPermission(m.broker)
 			case "n", "esc":
-				m.permission.reply <- permissionResult{err: fmt.Errorf("tool %s was denied by the operator", m.permission.request.ToolName)}
+				m.permission.reply <- permissionResult{decision: permissions.Decision{
+					Behavior: permissions.BehaviorDeny,
+					Reason:   fmt.Sprintf("tool %s was denied by the operator", m.permission.request.ToolName),
+				}}
 				m.permission = nil
 				return m, waitForPermission(m.broker)
 			default:
@@ -652,7 +664,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastStatus = "cancelled"
 			m.refreshViews()
 			m.output.GotoBottom()
-			return m, nil
+			return m, tea.ClearScreen
 		}
 		if msg.err != nil {
 			m.errText = msg.err.Error()
@@ -665,7 +677,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshViews()
 		m.output.GotoBottom()
-		return m, nil
+		return m, tea.ClearScreen
 	case promptSuggestionMsg:
 		m.promptSuggestion = strings.TrimSpace(msg.text)
 		if m.promptSuggestion != "" {
@@ -701,7 +713,7 @@ func (m appModel) View() string {
 	if !m.busy {
 		statusLeft = " "
 	}
-	status := m.styles.status.Render(strings.TrimSpace(statusLeft + " " + m.lastStatus + "  tokens:" + itoa(m.session.Usage.TotalTokens) + "  cost:$" + formatCost(m.session.Usage.EstimatedCostUSD)))
+	status := m.styles.status.Render(strings.TrimSpace(statusLeft + " " + m.displayStatus() + "  tokens:" + itoa(m.session.Usage.TotalTokens) + "  cost:$" + formatCost(m.session.Usage.EstimatedCostUSD)))
 
 	// Render suggestions if available
 	suggestionsView := ""
@@ -735,11 +747,42 @@ func (m appModel) View() string {
 		mainArea,
 		strings.Join(extras, "\n\n"),
 		"",
-		m.styles.input.Render(m.input.View()),
+		m.styles.input.Render(m.renderInput()),
 		suggestionsView,
 		promptSuggestionView,
 		status,
 	}, "\n"))
+}
+
+func (m appModel) renderInput() string {
+	view := m.input.View()
+	if strings.TrimSpace(m.input.Value()) != "" {
+		return view
+	}
+	lines := strings.Split(view, "\n")
+	seenPlaceholder := false
+	for i, line := range lines {
+		if !strings.Contains(line, m.input.Placeholder) {
+			continue
+		}
+		if !seenPlaceholder {
+			seenPlaceholder = true
+			continue
+		}
+		lines[i] = strings.Replace(line, m.input.Placeholder, strings.Repeat(" ", len(m.input.Placeholder)), 1)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m appModel) displayStatus() string {
+	status := strings.TrimSpace(m.lastStatus)
+	if status == "" {
+		return "idle"
+	}
+	if !m.busy && (status == "running" || strings.HasPrefix(status, "▶ ")) {
+		return "idle"
+	}
+	return status
 }
 
 func (m *appModel) refreshViews() {

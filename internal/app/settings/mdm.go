@@ -113,7 +113,7 @@ func readDarwinManagedSettings() SettingsWithErrors {
 	if !ok {
 		return SettingsWithErrors{Settings: Document{}}
 	}
-	res := ValidateSettingsFileContent(string(mustJSON(doc)))
+	res := validateSettingsFileContent(string(mustJSON(doc)), false)
 	if !res.IsValid && len(warnings) == 0 {
 		return SettingsWithErrors{Settings: Document{}, Errors: []ValidationError{{File: path, Path: "root", Message: res.Error}}}
 	}

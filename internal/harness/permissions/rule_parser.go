@@ -1,6 +1,9 @@
 package permissions
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Legacy tool name aliases (TS normalizeLegacyToolName).
 var legacyToolNameAliases = map[string]string{
@@ -16,6 +19,18 @@ func NormalizeLegacyToolName(name string) string {
 		return canonical
 	}
 	return name
+}
+
+// GetLegacyToolNames returns legacy aliases for a canonical tool name.
+func GetLegacyToolNames(canonicalName string) []string {
+	var legacy []string
+	for alias, canonical := range legacyToolNameAliases {
+		if canonical == canonicalName {
+			legacy = append(legacy, alias)
+		}
+	}
+	sort.Strings(legacy)
+	return legacy
 }
 
 // EscapeRuleContent escapes content for use inside "Tool(content)" rule strings.

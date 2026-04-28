@@ -2,6 +2,7 @@ package settings
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,7 +46,7 @@ func parseSettingsFile(path string) SettingsWithErrors {
 		return SettingsWithErrors{Settings: Document{}, Errors: warnings}
 	}
 
-	result := ValidateSettingsFileContent(string(mustJSON(doc)))
+	result := validateSettingsFileContent(string(mustJSON(doc)), false)
 	if !result.IsValid {
 		return SettingsWithErrors{
 			Settings: nil,
@@ -130,7 +131,14 @@ func UpdateSettingsForSource(source EditableSettingSource, workingDir string, up
 	}
 
 	existing := parseSettingsFile(path).Settings
-	updated := MergeDocuments(existing, updates)
+	if existing == nil {
+		rawExisting, err := readRawSettingsDocument(path)
+		if err != nil {
+			return err
+		}
+		existing = rawExisting
+	}
+	updated := MergeDocumentsReplacingArrays(existing, updates)
 	if updated == nil {
 		updated = Document{}
 	}
@@ -142,7 +150,37 @@ func UpdateSettingsForSource(source EditableSettingSource, workingDir string, up
 	return fsutil.WriteFileAtomic(path, data, 0o644)
 }
 
+func readRawSettingsDocument(path string) (Document, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Document{}, nil
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return Document{}, nil
+	}
+	var raw any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("invalid JSON syntax in settings file at %s: %w", path, err)
+	}
+	doc, ok := raw.(map[string]any)
+	if !ok {
+		return Document{}, nil
+	}
+	return Document(doc), nil
+}
+
 func MergeDocuments(base, overlay Document) Document {
+	return mergeDocuments(base, overlay, true)
+}
+
+func MergeDocumentsReplacingArrays(base, overlay Document) Document {
+	return mergeDocuments(base, overlay, false)
+}
+
+func mergeDocuments(base, overlay Document, mergeArrays bool) Document {
 	if base == nil && overlay == nil {
 		return nil
 	}
@@ -157,13 +195,43 @@ func MergeDocuments(base, overlay Document) Document {
 		}
 		if existingMap, ok := asDocument(result[key]); ok {
 			if incomingMap, ok := asDocument(value); ok {
-				result[key] = MergeDocuments(existingMap, incomingMap)
+				result[key] = mergeDocuments(existingMap, incomingMap, mergeArrays)
 				continue
+			}
+		}
+		if mergeArrays {
+			if existingArray, ok := result[key].([]any); ok {
+				if incomingArray, ok := value.([]any); ok {
+					result[key] = mergeUniqueArrays(existingArray, incomingArray)
+					continue
+				}
 			}
 		}
 		result[key] = deepCloneAny(value)
 	}
 	return result
+}
+
+func mergeUniqueArrays(base, overlay []any) []any {
+	out := make([]any, 0, len(base)+len(overlay))
+	seen := map[string]struct{}{}
+	for _, item := range append(base, overlay...) {
+		key := stableArrayItemKey(item)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, deepCloneAny(item))
+	}
+	return out
+}
+
+func stableArrayItemKey(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return strings.TrimSpace(fmt.Sprintf("%#v", value))
+	}
+	return string(data)
 }
 
 func CloneDocument(doc Document) Document {

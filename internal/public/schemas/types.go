@@ -6,11 +6,15 @@ import "time"
 type PermissionMode string
 
 const (
-	PermissionModeAsk    PermissionMode = "ask"
-	PermissionModeAllow  PermissionMode = "allow"
-	PermissionModeAuto   PermissionMode = "auto"
-	PermissionModeYolo   PermissionMode = "yolo"
-	PermissionModeBypass PermissionMode = "bypass"
+	PermissionModeDefault     PermissionMode = "default"
+	PermissionModePlan        PermissionMode = "plan"
+	PermissionModeAcceptEdits PermissionMode = "acceptEdits"
+	PermissionModeDontAsk     PermissionMode = "dontAsk"
+	PermissionModeAsk         PermissionMode = "ask"
+	PermissionModeAllow       PermissionMode = "allow"
+	PermissionModeAuto        PermissionMode = "auto"
+	PermissionModeYolo        PermissionMode = "yolo"
+	PermissionModeBypass      PermissionMode = "bypass"
 )
 
 // PermissionRule represents a permission rule pattern
@@ -219,10 +223,13 @@ type HookMatcher struct {
 
 // Permissions represents permission configuration
 type Permissions struct {
-	Allow       []PermissionRule `json:"allow,omitempty"`
-	Deny        []PermissionRule `json:"deny,omitempty"`
-	Ask         []PermissionRule `json:"ask,omitempty"`
-	DefaultMode PermissionMode   `json:"defaultMode,omitempty"`
+	Allow                        []PermissionRule `json:"allow,omitempty"`
+	Deny                         []PermissionRule `json:"deny,omitempty"`
+	Ask                          []PermissionRule `json:"ask,omitempty"`
+	DefaultMode                  PermissionMode   `json:"defaultMode,omitempty"`
+	DisableBypassPermissionsMode string           `json:"disableBypassPermissionsMode,omitempty"`
+	DisableAutoMode              string           `json:"disableAutoMode,omitempty"`
+	AdditionalDirectories        []string         `json:"additionalDirectories,omitempty"`
 }
 
 // EnvironmentVariables represents environment variable configuration
@@ -317,23 +324,27 @@ func (c *MCPWebSocketServerConfig) Validate() error {
 
 // AllowedMCPServerEntry represents an allowed MCP server entry
 type AllowedMCPServerEntry struct {
-	ServerName string `json:"serverName" validate:"required"`
-	ToolName   string `json:"toolName,omitempty"`
+	ServerName    string   `json:"serverName,omitempty"`
+	ServerCommand []string `json:"serverCommand,omitempty"`
+	ServerURL     string   `json:"serverUrl,omitempty"`
+	ToolName      string   `json:"toolName,omitempty"`
 }
 
 // DeniedMCPServerEntry represents a denied MCP server entry
 type DeniedMCPServerEntry struct {
-	ServerName string `json:"serverName" validate:"required"`
-	ToolName   string `json:"toolName,omitempty"`
+	ServerName    string   `json:"serverName,omitempty"`
+	ServerCommand []string `json:"serverCommand,omitempty"`
+	ServerURL     string   `json:"serverUrl,omitempty"`
+	ToolName      string   `json:"toolName,omitempty"`
 }
 
 // SandboxNetworkConfig represents sandbox network configuration
 type SandboxNetworkConfig struct {
-	AllowedDomains        []string `json:"allowedDomains,omitempty"`
+	AllowedDomains          []string `json:"allowedDomains,omitempty"`
 	AllowManagedDomainsOnly bool     `json:"allowManagedDomainsOnly,omitempty"`
-	AllowUnixSockets      []string `json:"allowUnixSockets,omitempty"`
-	AllowLocalBinding     bool     `json:"allowLocalBinding,omitempty"`
-	HTTPProxyPort         *int     `json:"httpProxyPort,omitempty"`
+	AllowUnixSockets        []string `json:"allowUnixSockets,omitempty"`
+	AllowLocalBinding       bool     `json:"allowLocalBinding,omitempty"`
+	HTTPProxyPort           *int     `json:"httpProxyPort,omitempty"`
 }
 
 // SandboxFilesystemConfig represents sandbox filesystem configuration
@@ -346,22 +357,22 @@ type SandboxFilesystemConfig struct {
 
 // SandboxSettings represents sandbox configuration
 type SandboxSettings struct {
-	Enabled                   bool                      `json:"enabled,omitempty"`
-	FailIfUnavailable         bool                      `json:"failIfUnavailable,omitempty"`
-	AutoAllowBashIfSandboxed  bool                      `json:"autoAllowBashIfSandboxed,omitempty"`
-	AllowUnsandboxedCommands  bool                      `json:"allowUnsandboxedCommands,omitempty"`
-	Network                   *SandboxNetworkConfig     `json:"network,omitempty"`
-	Filesystem                *SandboxFilesystemConfig  `json:"filesystem,omitempty"`
+	Enabled                  bool                     `json:"enabled,omitempty"`
+	FailIfUnavailable        bool                     `json:"failIfUnavailable,omitempty"`
+	AutoAllowBashIfSandboxed bool                     `json:"autoAllowBashIfSandboxed,omitempty"`
+	AllowUnsandboxedCommands bool                     `json:"allowUnsandboxedCommands,omitempty"`
+	Network                  *SandboxNetworkConfig    `json:"network,omitempty"`
+	Filesystem               *SandboxFilesystemConfig `json:"filesystem,omitempty"`
 }
 
 // MarketplaceSource represents a marketplace source configuration
 type MarketplaceSource struct {
-	Type   MarketplaceSourceType `json:"type" validate:"required"`
-	Owner  string                `json:"owner,omitempty"`
-	Repo   string                `json:"repo,omitempty"`
-	Ref    string                `json:"ref,omitempty"`
-	URL    string                `json:"url,omitempty"`
-	Path   string                `json:"path,omitempty"`
+	Type  MarketplaceSourceType `json:"type" validate:"required"`
+	Owner string                `json:"owner,omitempty"`
+	Repo  string                `json:"repo,omitempty"`
+	Ref   string                `json:"ref,omitempty"`
+	URL   string                `json:"url,omitempty"`
+	Path  string                `json:"path,omitempty"`
 }
 
 // PluginManifest represents plugin metadata
@@ -394,20 +405,20 @@ type Keybinding struct {
 
 // Settings represents the root settings.json structure
 type Settings struct {
-	Permissions      *Permissions                   `json:"permissions,omitempty"`
-	Hooks            map[HookEvent][]HookMatcher    `json:"hooks,omitempty"`
-	MCPServers       map[string]MCPServerConfig     `json:"mcpServers,omitempty"`
-	Env              EnvironmentVariables           `json:"env,omitempty"`
-	Marketplaces     map[string]MarketplaceSource   `json:"marketplaces,omitempty"`
-	Sandbox          *SandboxSettings               `json:"sandbox,omitempty"`
-	Keybindings      []Keybinding                   `json:"keybindings,omitempty"`
-	AllowedMCPServers []AllowedMCPServerEntry       `json:"allowedMcpServers,omitempty"`
-	DeniedMCPServers  []DeniedMCPServerEntry        `json:"deniedMcpServers,omitempty"`
-	Model            *string                        `json:"model,omitempty"`
-	Verbose          bool                           `json:"verbose,omitempty"`
-	FastMode         bool                           `json:"fastMode,omitempty"`
-	AutoUpdates      *bool                          `json:"autoUpdates,omitempty"`
-	Telemetry        *bool                          `json:"telemetry,omitempty"`
-	CreatedAt        *time.Time                     `json:"createdAt,omitempty"`
-	UpdatedAt        *time.Time                     `json:"updatedAt,omitempty"`
+	Permissions       *Permissions                 `json:"permissions,omitempty"`
+	Hooks             map[HookEvent][]HookMatcher  `json:"hooks,omitempty"`
+	MCPServers        map[string]any               `json:"mcpServers,omitempty"`
+	Env               EnvironmentVariables         `json:"env,omitempty"`
+	Marketplaces      map[string]MarketplaceSource `json:"marketplaces,omitempty"`
+	Sandbox           *SandboxSettings             `json:"sandbox,omitempty"`
+	Keybindings       []Keybinding                 `json:"keybindings,omitempty"`
+	AllowedMCPServers []AllowedMCPServerEntry      `json:"allowedMcpServers,omitempty"`
+	DeniedMCPServers  []DeniedMCPServerEntry       `json:"deniedMcpServers,omitempty"`
+	Model             *string                      `json:"model,omitempty"`
+	Verbose           bool                         `json:"verbose,omitempty"`
+	FastMode          bool                         `json:"fastMode,omitempty"`
+	AutoUpdates       *bool                        `json:"autoUpdates,omitempty"`
+	Telemetry         *bool                        `json:"telemetry,omitempty"`
+	CreatedAt         *time.Time                   `json:"createdAt,omitempty"`
+	UpdatedAt         *time.Time                   `json:"updatedAt,omitempty"`
 }

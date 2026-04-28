@@ -1,23 +1,27 @@
-# QueryEngine Go Implementation
+# QueryEngine Go Adapter
 
-This package provides a Go implementation of the TypeScript QueryEngine, which manages conversation lifecycle and session state for Claude Code.
+This package provides the Go-facing `QueryEngine` facade that matches the
+TypeScript `src/QueryEngine.ts` role more closely than the old placeholder
+implementation.
+
+The actual query lifecycle now lives in `internal/harness/query`. This package
+is the SDK-shaped adapter layer on top of that runtime.
 
 ## Overview
 
-The QueryEngine is the core component that handles:
+The QueryEngine facade handles:
 - Message submission and streaming responses
 - Session state management across multiple turns
-- Permission tracking and denial recording
-- Usage statistics accumulation
-- History snipping for memory management
-- Tool execution coordination
+- Stable session identity
+- SDK-style result messages
+- Conversion between adapter-facing messages and the shared query runtime
 
 ## Architecture
 
 ### Core Components
 
 #### 1. **QueryEngine** (`engine.go`)
-The main engine that owns the query lifecycle and session state.
+The main adapter that delegates to `internal/harness/query.QueryEngine`.
 
 ```go
 engine := engine.NewQueryEngine(engine.QueryEngineConfig{
@@ -37,11 +41,9 @@ for msg := range ch {
 ```
 
 **Key Features:**
-- Thread-safe message and state management
-- Async streaming via Go channels
-- Context-based cancellation
-- Permission denial tracking
-- Usage accumulation
+- Delegates turn execution to the shared query runtime
+- Emits SDK-shaped streamed messages plus a terminal `result`
+- Preserves a stable session ID and adapter-facing config
 
 #### 2. **SessionState** (`session.go`)
 Manages mutable state for a conversation session.
@@ -74,19 +76,10 @@ json, _ := snapshot.ToJSON()
 - Nested memory path tracking
 - Serializable snapshots
 
-#### 3. **SubmitMessageHandler** (`submit.go`)
-Handles the full lifecycle of a message submission.
-
-**Flow:**
-1. Process user input (slash commands, etc.)
-2. Handle orphaned permissions
-3. Build system context
-4. Yield system init message
-5. Enter query loop
-6. Stream responses
-7. Handle snip replay
-8. Track usage and permissions
-9. Yield final result
+#### 3. **Shared Runtime** (`../query`)
+The concrete query lifecycle is implemented in `internal/harness/query`.
+`queryengine` intentionally no longer carries a second placeholder execution
+path.
 
 #### 4. **SnipCompactor** (`snip.go`)
 Manages history snipping and replay for memory efficiency.
@@ -111,6 +104,20 @@ if result.Executed {
 - Boundary message insertion
 - Snip projection utilities
 - Session merging
+
+## Design Note
+
+This package used to contain a second, incomplete engine implementation with
+`Not yet implemented` placeholders. That was structurally divergent from the
+TypeScript source, which has one `QueryEngine` plus helper modules under
+`src/query/*`.
+
+The current design is:
+
+- `internal/harness/queryengine` = TS-aligned facade
+- `internal/harness/query` = shared query lifecycle/runtime
+- `internal/harness/engine` = thin UI-facing adapter that now defaults to the
+  `queryengine -> query` runtime path
 
 ## Types
 

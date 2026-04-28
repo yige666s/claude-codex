@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -14,6 +15,11 @@ import (
 var agentDefinitionsCache struct {
 	mu    sync.RWMutex
 	cache map[string][]*AgentDefinition
+}
+
+var pluginDefinitions struct {
+	mu          sync.RWMutex
+	definitions []*AgentDefinition
 }
 
 func init() {
@@ -28,6 +34,28 @@ func ClearAgentDefinitionsCache() {
 	agentDefinitionsCache.mu.Unlock()
 }
 
+func RegisterPluginDefinitions(definitions []*AgentDefinition) {
+	pluginDefinitions.mu.Lock()
+	defer pluginDefinitions.mu.Unlock()
+	pluginDefinitions.definitions = append([]*AgentDefinition(nil), definitions...)
+	ClearAgentDefinitionsCache()
+}
+
+func ClearPluginDefinitions() {
+	pluginDefinitions.mu.Lock()
+	pluginDefinitions.definitions = nil
+	pluginDefinitions.mu.Unlock()
+	ClearAgentDefinitionsCache()
+}
+
+func GetPluginDefinitions() []*AgentDefinition {
+	pluginDefinitions.mu.RLock()
+	defer pluginDefinitions.mu.RUnlock()
+	out := make([]*AgentDefinition, len(pluginDefinitions.definitions))
+	copy(out, pluginDefinitions.definitions)
+	return out
+}
+
 // AgentDefinitionsResult holds the merged list of agent definitions and any
 // warnings encountered during loading.
 type AgentDefinitionsResult struct {
@@ -40,9 +68,11 @@ type AgentDefinitionsResult struct {
 //
 // Priority (highest first):
 //  1. Policy settings (managed agents — override everything)
-//  2. User settings (~/.claude/agents/)
+//  2. Flag settings / CLI args
 //  3. Project settings (<cwd>/.claude/agents/)
-//  4. Built-in agents
+//  4. User settings (~/.claude/agents/)
+//  5. Plugin agents
+//  6. Built-in agents
 //
 // Mirrors getAgentDefinitionsWithOverrides in loadAgentsDir.ts.
 func GetAgentDefinitionsWithOverrides(cwd string, isCoordinatorMode bool) (*AgentDefinitionsResult, error) {
@@ -78,7 +108,7 @@ func loadAgentDefinitions(cwd string, isCoordinatorMode bool) (*AgentDefinitions
 	// Merge in user-level agents.
 	home, _ := os.UserHomeDir()
 	userAgentsDir := filepath.Join(home, ".claude", "agents")
-	userAgents, warn, err := loadFromDir(userAgentsDir, SourceUser)
+	userAgents, warn, err := loadFromDir(userAgentsDir, SourceUserSettings)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("user agents dir: %v", err))
 	}
@@ -86,14 +116,16 @@ func loadAgentDefinitions(cwd string, isCoordinatorMode bool) (*AgentDefinitions
 
 	// Merge in project-level agents.
 	projectAgentsDir := filepath.Join(cwd, ".claude", "agents")
-	projectAgents, warn, err := loadFromDir(projectAgentsDir, SourceUser)
+	projectAgents, warn, err := loadFromDir(projectAgentsDir, SourceProjectSettings)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("project agents dir: %v", err))
 	}
 	warnings = append(warnings, warn...)
 
+	pluginAgents := GetPluginDefinitions()
+
 	// Merge: higher-priority sources win on AgentType collision.
-	merged := mergeAgentDefinitions(builtins, userAgents, projectAgents)
+	merged := mergeAgentDefinitions(builtins, pluginAgents, userAgents, projectAgents)
 
 	return &AgentDefinitionsResult{Agents: merged, Warnings: warnings}, nil
 }
@@ -162,20 +194,47 @@ func loadFromDir(dir string, source AgentSource) ([]*AgentDefinition, []string, 
 	return defs, warnings, nil
 }
 
+func LoadDefinitionsFromDirectory(dir string, source AgentSource) ([]*AgentDefinition, []string, error) {
+	return loadFromDir(dir, source)
+}
+
+func LoadDefinitionFromFile(path string, source AgentSource) (*AgentDefinition, string, error) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".md":
+		return parseAgentFromMarkdown(path, source)
+	case ".json":
+		return parseAgentFromJSON(path, source)
+	default:
+		return nil, "", fmt.Errorf("unsupported agent definition extension %q", filepath.Ext(path))
+	}
+}
+
 // agentFrontmatter holds YAML-like frontmatter fields parsed from .md agent files.
 type agentFrontmatter struct {
-	AgentType       string   `json:"agent_type"`
-	WhenToUse       string   `json:"when_to_use"`
-	Tools           []string `json:"tools"`
-	DisallowedTools []string `json:"disallowed_tools"`
-	MaxTurns        int      `json:"max_turns"`
-	Model           string   `json:"model"`
-	Permission      string   `json:"permission_mode"`
-	Background      bool     `json:"background"`
-	OmitClaudeMd    bool     `json:"omit_claude_md"`
-	Color           string   `json:"color"`
-	MCPServers      []string `json:"mcp_servers"`
-	Skills          []string `json:"skills"`
+	Name                 string   `json:"name"`
+	Description          string   `json:"description"`
+	AgentType            string   `json:"agent_type"`
+	WhenToUse            string   `json:"when_to_use"`
+	Tools                []string `json:"tools"`
+	DisallowedTools      []string `json:"disallowed_tools"`
+	DisallowedToolsCamel []string `json:"disallowedTools"`
+	MaxTurns             int      `json:"max_turns"`
+	MaxTurnsCamel        int      `json:"maxTurns"`
+	Model                string   `json:"model"`
+	Permission           string   `json:"permission_mode"`
+	PermissionMode       string   `json:"permissionMode"`
+	Background           bool     `json:"background"`
+	OmitClaudeMd         bool     `json:"omit_claude_md"`
+	OmitClaudeMdCamel    bool     `json:"omitClaudeMd"`
+	Color                string   `json:"color"`
+	MCPServers           []string `json:"mcp_servers"`
+	MCPServersCamel      []string `json:"mcpServers"`
+	RequiredMCPServers   []string `json:"requiredMcpServers"`
+	Skills               []string `json:"skills"`
+	InitialPrompt        string   `json:"initialPrompt"`
+	Memory               string   `json:"memory"`
+	Isolation            string   `json:"isolation"`
+	Effort               string   `json:"effort"`
 }
 
 // parseAgentFromMarkdown parses a .md file with optional YAML frontmatter.
@@ -209,7 +268,11 @@ func parseAgentFromMarkdown(path string, source AgentSource) (*AgentDefinition, 
 		}
 	}
 
-	// Fall back to filename as agent type.
+	normalizeFrontmatter(&fm)
+
+	// Fall back to filename as agent type for legacy Go definitions. TS-style
+	// agents should provide "name" in frontmatter; keeping the fallback
+	// preserves existing Go behavior.
 	agentType := fm.AgentType
 	if agentType == "" {
 		base := filepath.Base(path)
@@ -217,21 +280,27 @@ func parseAgentFromMarkdown(path string, source AgentSource) (*AgentDefinition, 
 	}
 
 	def := &AgentDefinition{
-		AgentType:       AgentType(agentType),
-		WhenToUse:       fm.WhenToUse,
-		Tools:           fm.Tools,
-		DisallowedTools: fm.DisallowedTools,
-		MaxTurns:        fm.MaxTurns,
-		Model:           ModelOption(fm.Model),
-		Permission:      PermissionMode(fm.Permission),
-		Source:          source,
-		BaseDir:         filepath.Dir(path),
-		Background:      fm.Background,
-		OmitClaudeMd:    fm.OmitClaudeMd,
-		Color:           fm.Color,
-		MCPServers:      fm.MCPServers,
-		Skills:          fm.Skills,
-		SystemPrompt:    systemPrompt,
+		AgentType:          AgentType(agentType),
+		WhenToUse:          fm.WhenToUse,
+		Tools:              fm.Tools,
+		DisallowedTools:    fm.DisallowedTools,
+		MaxTurns:           fm.MaxTurns,
+		Model:              ModelOption(fm.Model),
+		Effort:             fm.Effort,
+		Permission:         PermissionMode(fm.Permission),
+		Source:             source,
+		BaseDir:            filepath.Dir(path),
+		Filename:           strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+		Background:         fm.Background,
+		Isolation:          fm.Isolation,
+		Memory:             fm.Memory,
+		OmitClaudeMd:       fm.OmitClaudeMd,
+		Color:              fm.Color,
+		MCPServers:         fm.MCPServers,
+		RequiredMCPServers: fm.RequiredMCPServers,
+		Skills:             fm.Skills,
+		InitialPrompt:      fm.InitialPrompt,
+		SystemPrompt:       systemPrompt,
 	}
 
 	// Apply defaults.
@@ -253,19 +322,31 @@ func parseAgentFromMarkdown(path string, source AgentSource) (*AgentDefinition, 
 
 // agentJSONDef is the JSON shape for .json agent definition files.
 type agentJSONDef struct {
-	AgentType       string   `json:"agent_type"`
-	WhenToUse       string   `json:"when_to_use"`
-	Tools           []string `json:"tools"`
-	DisallowedTools []string `json:"disallowed_tools"`
-	MaxTurns        int      `json:"max_turns"`
-	Model           string   `json:"model"`
-	PermissionMode  string   `json:"permission_mode"`
-	SystemPrompt    string   `json:"system_prompt"`
-	Background      bool     `json:"background"`
-	OmitClaudeMd    bool     `json:"omit_claude_md"`
-	Color           string   `json:"color"`
-	MCPServers      []string `json:"mcp_servers"`
-	Skills          []string `json:"skills"`
+	Description          string   `json:"description"`
+	Prompt               string   `json:"prompt"`
+	AgentType            string   `json:"agent_type"`
+	WhenToUse            string   `json:"when_to_use"`
+	Tools                []string `json:"tools"`
+	DisallowedTools      []string `json:"disallowed_tools"`
+	DisallowedToolsCamel []string `json:"disallowedTools"`
+	MaxTurns             int      `json:"max_turns"`
+	MaxTurnsCamel        int      `json:"maxTurns"`
+	Model                string   `json:"model"`
+	Effort               string   `json:"effort"`
+	PermissionMode       string   `json:"permission_mode"`
+	PermissionModeCamel  string   `json:"permissionMode"`
+	SystemPrompt         string   `json:"system_prompt"`
+	Background           bool     `json:"background"`
+	OmitClaudeMd         bool     `json:"omit_claude_md"`
+	OmitClaudeMdCamel    bool     `json:"omitClaudeMd"`
+	Color                string   `json:"color"`
+	MCPServers           []string `json:"mcp_servers"`
+	MCPServersCamel      []string `json:"mcpServers"`
+	RequiredMCPServers   []string `json:"requiredMcpServers"`
+	Skills               []string `json:"skills"`
+	InitialPrompt        string   `json:"initialPrompt"`
+	Memory               string   `json:"memory"`
+	Isolation            string   `json:"isolation"`
 }
 
 // parseAgentFromJSON parses a .json agent definition file.
@@ -279,6 +360,7 @@ func parseAgentFromJSON(path string, source AgentSource) (*AgentDefinition, stri
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, "", fmt.Errorf("JSON parse error: %w", err)
 	}
+	normalizeJSONAgent(&raw)
 
 	agentType := raw.AgentType
 	if agentType == "" {
@@ -287,21 +369,27 @@ func parseAgentFromJSON(path string, source AgentSource) (*AgentDefinition, stri
 	}
 
 	def := &AgentDefinition{
-		AgentType:       AgentType(agentType),
-		WhenToUse:       raw.WhenToUse,
-		Tools:           raw.Tools,
-		DisallowedTools: raw.DisallowedTools,
-		MaxTurns:        raw.MaxTurns,
-		Model:           ModelOption(raw.Model),
-		Permission:      PermissionMode(raw.PermissionMode),
-		Source:          source,
-		BaseDir:         filepath.Dir(path),
-		Background:      raw.Background,
-		OmitClaudeMd:    raw.OmitClaudeMd,
-		Color:           raw.Color,
-		MCPServers:      raw.MCPServers,
-		Skills:          raw.Skills,
-		SystemPrompt:    raw.SystemPrompt,
+		AgentType:          AgentType(agentType),
+		WhenToUse:          raw.WhenToUse,
+		Tools:              raw.Tools,
+		DisallowedTools:    raw.DisallowedTools,
+		MaxTurns:           raw.MaxTurns,
+		Model:              ModelOption(raw.Model),
+		Effort:             raw.Effort,
+		Permission:         PermissionMode(raw.PermissionMode),
+		Source:             source,
+		BaseDir:            filepath.Dir(path),
+		Filename:           strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+		Background:         raw.Background,
+		Isolation:          raw.Isolation,
+		Memory:             raw.Memory,
+		OmitClaudeMd:       raw.OmitClaudeMd,
+		Color:              raw.Color,
+		MCPServers:         raw.MCPServers,
+		RequiredMCPServers: raw.RequiredMCPServers,
+		Skills:             raw.Skills,
+		InitialPrompt:      raw.InitialPrompt,
+		SystemPrompt:       raw.SystemPrompt,
 	}
 
 	if len(def.Tools) == 0 {
@@ -318,6 +406,54 @@ func parseAgentFromJSON(path string, source AgentSource) (*AgentDefinition, stri
 	}
 
 	return def, "", nil
+}
+
+func normalizeFrontmatter(fm *agentFrontmatter) {
+	if fm.AgentType == "" {
+		fm.AgentType = fm.Name
+	}
+	if fm.WhenToUse == "" {
+		fm.WhenToUse = strings.ReplaceAll(fm.Description, `\n`, "\n")
+	}
+	if len(fm.DisallowedTools) == 0 {
+		fm.DisallowedTools = fm.DisallowedToolsCamel
+	}
+	if fm.MaxTurns == 0 {
+		fm.MaxTurns = fm.MaxTurnsCamel
+	}
+	if fm.Permission == "" {
+		fm.Permission = fm.PermissionMode
+	}
+	if !fm.OmitClaudeMd {
+		fm.OmitClaudeMd = fm.OmitClaudeMdCamel
+	}
+	if len(fm.MCPServers) == 0 {
+		fm.MCPServers = fm.MCPServersCamel
+	}
+}
+
+func normalizeJSONAgent(raw *agentJSONDef) {
+	if raw.WhenToUse == "" {
+		raw.WhenToUse = strings.ReplaceAll(raw.Description, `\n`, "\n")
+	}
+	if raw.SystemPrompt == "" {
+		raw.SystemPrompt = raw.Prompt
+	}
+	if len(raw.DisallowedTools) == 0 {
+		raw.DisallowedTools = raw.DisallowedToolsCamel
+	}
+	if raw.MaxTurns == 0 {
+		raw.MaxTurns = raw.MaxTurnsCamel
+	}
+	if raw.PermissionMode == "" {
+		raw.PermissionMode = raw.PermissionModeCamel
+	}
+	if !raw.OmitClaudeMd {
+		raw.OmitClaudeMd = raw.OmitClaudeMdCamel
+	}
+	if len(raw.MCPServers) == 0 {
+		raw.MCPServers = raw.MCPServersCamel
+	}
 }
 
 // parseSimpleYAML is a minimal YAML parser for the agent frontmatter subset.
@@ -343,7 +479,9 @@ func parseSimpleYAML(text string, out *agentFrontmatter) error {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "- ") && currentKey != "" {
 			inList = true
-			listItems = append(listItems, strings.TrimPrefix(trimmed, "- "))
+			item := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+			item = strings.Trim(item, `"'`)
+			listItems = append(listItems, item)
 			continue
 		}
 
@@ -366,6 +504,7 @@ func parseSimpleYAML(text string, out *agentFrontmatter) error {
 				var items []string
 				for _, item := range strings.Split(inner, ",") {
 					item = strings.TrimSpace(item)
+					item = strings.Trim(item, `"'`)
 					if item != "" {
 						items = append(items, item)
 					}
@@ -382,6 +521,10 @@ func parseSimpleYAML(text string, out *agentFrontmatter) error {
 			}
 			if val == "false" || val == "no" {
 				m[key] = false
+				continue
+			}
+			if n, err := strconv.Atoi(val); err == nil {
+				m[key] = n
 				continue
 			}
 

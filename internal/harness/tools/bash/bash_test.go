@@ -28,6 +28,9 @@ func TestIsCommandReadOnly(t *testing.T) {
 		{name: "find with delete", command: "find . -delete", want: false},
 		{name: "unquoted expansion", command: "cat $HOME/.bashrc", want: false},
 		{name: "output redirection", command: "ls > out.txt", want: false},
+		{name: "sed stdout substitution without file", command: `sed 's/a/b/'`, want: true},
+		{name: "sed in place is not read-only", command: `sed -i 's/a/b/' file.txt`, want: false},
+		{name: "sed write command is not read-only", command: `sed -n 'w out.txt' file.txt`, want: false},
 	}
 
 	for _, tt := range tests {

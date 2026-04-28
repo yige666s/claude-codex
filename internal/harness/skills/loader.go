@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -89,8 +91,8 @@ func (l *SkillLoader) LoadSkillsFromDirectory(dir string, source SkillSource) ([
 
 	var skills []*SkillDefinition
 	for _, entry := range entries {
-		// Only process directories (skill-name/)
-		if !entry.IsDir() {
+		// Process directories and symlinked directories (skill-name/)
+		if !isDirectoryEntry(dir, entry) {
 			continue
 		}
 
@@ -130,6 +132,121 @@ func (l *SkillLoader) LoadSkillsFromDirectory(dir string, source SkillSource) ([
 	}
 
 	return skills, nil
+}
+
+// LoadCommandsFromDirectory loads legacy command-style skills from a commands directory.
+// It supports both command.md files and command/SKILL.md directories. Directory
+// SKILL.md files take precedence over sibling markdown files in that directory.
+func (l *SkillLoader) LoadCommandsFromDirectory(dir string, source SkillSource) ([]*SkillDefinition, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to stat commands directory: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("not a directory: %s", dir)
+	}
+
+	commandDirs := make(map[string]struct{})
+	if err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Name() == "SKILL.md" {
+			commandDirs[filepath.Dir(path)] = struct{}{}
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("failed to scan commands directory: %w", err)
+	}
+
+	var skills []*SkillDefinition
+	for commandDir := range commandDirs {
+		commandFile := filepath.Join(commandDir, "SKILL.md")
+		relDir, err := filepath.Rel(dir, commandDir)
+		if err != nil || relDir == "." || strings.HasPrefix(relDir, "..") {
+			continue
+		}
+		skillName := commandNameFromRelativePath(relDir)
+		skill, err := l.LoadSkillFromFile(commandFile, source)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load command from %s: %v\n", commandFile, err)
+			continue
+		}
+		l.configureLegacyCommandSkill(skill, skillName)
+		skills = append(skills, skill)
+	}
+
+	if err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if filepath.Ext(entry.Name()) != ".md" || entry.Name() == "SKILL.md" {
+			return nil
+		}
+		if isInsideCommandDir(path, commandDirs) {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return nil
+		}
+		namePath := strings.TrimSuffix(rel, filepath.Ext(rel))
+		skillName := commandNameFromRelativePath(namePath)
+		skill, err := l.LoadSkillFromFile(path, source)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load command from %s: %v\n", path, err)
+			return nil
+		}
+		l.configureLegacyCommandSkill(skill, skillName)
+		skills = append(skills, skill)
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("failed to walk commands directory: %w", err)
+	}
+
+	return skills, nil
+}
+
+func (l *SkillLoader) configureLegacyCommandSkill(skill *SkillDefinition, name string) {
+	if skill == nil {
+		return
+	}
+	skill.Name = name
+	skill.LoadedFrom = string(LoadedFromCommands)
+	if len(skill.Paths) > 0 {
+		l.conditionalSkills.Store(skill.Name, skill)
+	}
+}
+
+func commandNameFromRelativePath(rel string) string {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" && part != "." {
+			filtered = append(filtered, part)
+		}
+	}
+	return strings.Join(filtered, ":")
+}
+
+func isInsideCommandDir(path string, commandDirs map[string]struct{}) bool {
+	for commandDir := range commandDirs {
+		rel, err := filepath.Rel(commandDir, path)
+		if err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadSkillFromFile loads a single skill from a file
@@ -199,6 +316,10 @@ func (l *SkillLoader) buildSkillDefinition(
 	argumentNames := ParseArgumentNames(fm.Arguments)
 	paths := ParsePaths(fm.Paths)
 	effort := ParseEffort(fm.Effort)
+	model := strings.TrimSpace(fm.Model)
+	if strings.EqualFold(model, "inherit") {
+		model = ""
+	}
 	shell := ParseShellFrontmatter(fm.Shell)
 	allowedEnv, primaryEnv := ParseSkillMetadataEnv(fm.Metadata)
 
@@ -219,7 +340,7 @@ func (l *SkillLoader) buildSkillDefinition(
 		WhenToUse:                   fm.WhenToUse,
 		ArgumentHint:                fm.ArgumentHint,
 		AllowedTools:                allowedTools,
-		Model:                       fm.Model,
+		Model:                       model,
 		DisableModelInvocation:      ParseBooleanFrontmatter(fm.DisableModelInvocation),
 		UserInvocable:               ParseBooleanFrontmatter(fm.UserInvocable),
 		ExecutionContext:            execContext,
@@ -255,7 +376,7 @@ func (l *SkillLoader) buildSkillDefinition(
 		}
 
 		// Substitute arguments in content
-		if len(skill.ArgumentNames) > 0 && args != "" {
+		if args != "" {
 			content = substituteArguments(content, skill.ArgumentNames, args)
 		}
 
@@ -295,15 +416,72 @@ func (l *SkillLoader) buildSkillDefinition(
 	return skill
 }
 
-// substituteArguments substitutes named arguments in content
-// Supports {{arg}} syntax for named arguments
-func substituteArguments(content string, argNames []string, args string) string {
-	// Split args by whitespace
-	argValues := strings.Fields(args)
+func isDirectoryEntry(parent string, entry os.DirEntry) bool {
+	if entry.IsDir() {
+		return true
+	}
+	if entry.Type()&os.ModeSymlink == 0 {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(parent, entry.Name()))
+	return err == nil && info.IsDir()
+}
 
-	result := content
+// substituteArguments substitutes named arguments in content
+// Supports Claude Code placeholders ($ARGUMENTS, $ARGUMENTS[n], $0, $name)
+// and keeps the older {{arg}} form for compatibility with existing Go tests.
+func substituteArguments(content string, argNames []string, args string) string {
+	argValues := parsePromptArguments(args)
+	argByName := make(map[string]string, len(argNames))
+	for i, name := range argNames {
+		if i < len(argValues) {
+			argByName[name] = argValues[i]
+		} else {
+			argByName[name] = ""
+		}
+	}
+
+	usedPlaceholder := false
+	placeholderPattern := regexp.MustCompile(`\$ARGUMENTS\[\d+\]|\$ARGUMENTS|\$\d+|\$[A-Za-z_][A-Za-z0-9_]*`)
+	result := placeholderPattern.ReplaceAllStringFunc(content, func(token string) string {
+		switch {
+		case token == "$ARGUMENTS":
+			usedPlaceholder = true
+			return args
+		case strings.HasPrefix(token, "$ARGUMENTS["):
+			indexText := strings.TrimSuffix(strings.TrimPrefix(token, "$ARGUMENTS["), "]")
+			index, err := strconv.Atoi(indexText)
+			if err != nil || index < 0 || index >= len(argValues) {
+				usedPlaceholder = true
+				return ""
+			}
+			usedPlaceholder = true
+			return argValues[index]
+		case len(token) > 1 && token[1] >= '0' && token[1] <= '9':
+			index, err := strconv.Atoi(token[1:])
+			if err != nil || index < 0 || index >= len(argValues) {
+				usedPlaceholder = true
+				return ""
+			}
+			usedPlaceholder = true
+			return argValues[index]
+		default:
+			name := token[1:]
+			if value, ok := argByName[name]; ok {
+				usedPlaceholder = true
+				return value
+			}
+			return token
+		}
+	})
+
+	// Preserve the original Go-only placeholder format to avoid breaking local skills.
 	for i, name := range argNames {
 		placeholder := fmt.Sprintf("{{%s}}", name)
+		if !strings.Contains(result, placeholder) {
+			continue
+		}
+		usedPlaceholder = true
 		value := ""
 		if i < len(argValues) {
 			value = argValues[i]
@@ -311,6 +489,65 @@ func substituteArguments(content string, argNames []string, args string) string 
 		result = strings.ReplaceAll(result, placeholder, value)
 	}
 
+	if !usedPlaceholder && strings.TrimSpace(args) != "" {
+		separator := "\n\n"
+		if strings.HasSuffix(result, "\n") {
+			separator = "\n"
+		}
+		result += separator + "ARGUMENTS: " + args
+	}
+
+	return result
+}
+
+func parsePromptArguments(args string) []string {
+	var result []string
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+	escaped := false
+
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		result = append(result, current.String())
+		current.Reset()
+	}
+
+	for _, r := range args {
+		if escaped {
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' && !inSingle {
+			escaped = true
+			continue
+		}
+		switch r {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+				continue
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+				continue
+			}
+		case ' ', '\t', '\n', '\r':
+			if !inSingle && !inDouble {
+				flush()
+				continue
+			}
+		}
+		current.WriteRune(r)
+	}
+	if escaped {
+		current.WriteRune('\\')
+	}
+	flush()
 	return result
 }
 

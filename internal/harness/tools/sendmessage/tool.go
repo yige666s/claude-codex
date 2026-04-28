@@ -6,9 +6,8 @@
 // If the target is identified only by name or ID the message is written to a
 // mailbox file on disk so a resumed agent can pick it up.
 //
-// UDS and cross-machine bridge routing from the TypeScript implementation are
-// out of scope here — those depend on the networking/OAuth infrastructure that
-// has not been ported yet.
+// Cross-process UDS delivery is handled by the bootstrap inbox server; this
+// tool keeps the direct file-mailbox fallback used by local runtimes.
 package sendmessage
 
 import (

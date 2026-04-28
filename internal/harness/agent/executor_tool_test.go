@@ -3,11 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"claude-codex/internal/harness/anthropic"
 	"claude-codex/internal/harness/permissions"
 	"claude-codex/internal/harness/tools"
-	"claude-codex/internal/harness/anthropic"
 )
 
 // Mock tool for testing
@@ -17,11 +18,11 @@ type mockTool struct {
 	err    error
 }
 
-func (m *mockTool) Name() string                                { return m.name }
-func (m *mockTool) Description() string                         { return "Mock tool" }
-func (m *mockTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (m *mockTool) Permission() permissions.Level               { return permissions.LevelRead }
-func (m *mockTool) IsConcurrencySafe() bool                     { return true }
+func (m *mockTool) Name() string                  { return m.name }
+func (m *mockTool) Description() string           { return "Mock tool" }
+func (m *mockTool) InputSchema() json.RawMessage  { return json.RawMessage(`{}`) }
+func (m *mockTool) Permission() permissions.Level { return permissions.LevelRead }
+func (m *mockTool) IsConcurrencySafe() bool       { return true }
 func (m *mockTool) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
 	if m.err != nil {
 		return tools.Result{}, m.err
@@ -61,6 +62,37 @@ func TestBuildAPITools(t *testing.T) {
 			t.Error("Expected nil when no registry")
 		}
 	})
+}
+
+func TestBuildAPIToolsForDefinitionAppliesAgentFilters(t *testing.T) {
+	executor := NewExecutor(nil)
+	registry := tools.NewRegistry(
+		&mockTool{name: ToolRead, output: "read"},
+		&mockTool{name: ToolBash, output: "bash"},
+		&mockTool{name: ToolAgent, output: "agent"},
+		&mockTool{name: "mcp__notes__search", output: "mcp"},
+	)
+	executor.SetToolRegistry(registry)
+
+	def := &AgentDefinition{
+		AgentType:       "explore",
+		Tools:           []string{"*"},
+		DisallowedTools: []string{ToolBash},
+		Source:          SourceBuiltIn,
+		Permission:      PermissionDefault,
+	}
+	apiTools := executor.buildAPIToolsForDefinition(def, false, false)
+	var names []string
+	for _, tool := range apiTools {
+		names = append(names, tool.Name)
+	}
+	got := strings.Join(names, ",")
+	if strings.Contains(got, ToolBash) || strings.Contains(got, ToolAgent) {
+		t.Fatalf("agent filters not applied: %s", got)
+	}
+	if !strings.Contains(got, ToolRead) || !strings.Contains(got, "mcp__notes__search") {
+		t.Fatalf("expected read and mcp tools, got %s", got)
+	}
 }
 
 func TestExtractToolUseBlocks(t *testing.T) {

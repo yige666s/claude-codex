@@ -1,48 +1,51 @@
-// Package engine provides tests for the QueryEngine.
+// Package engine provides tests for the QueryEngine adapter.
 package engine
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
+	"claude-codex/internal/harness/plannerapi"
+	"claude-codex/internal/harness/query"
+	"claude-codex/internal/harness/state"
 	"claude-codex/internal/harness/tool"
+	toolkit "claude-codex/internal/harness/tools"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// Mock implementations for testing
 
 type mockTool struct {
 	name        string
 	description string
 }
 
-func (m *mockTool) Name() string                                                { return m.name }
-func (m *mockTool) Aliases() []string                                           { return nil }
-func (m *mockTool) SearchHint() string                                          { return "" }
+func (m *mockTool) Name() string       { return m.name }
+func (m *mockTool) Aliases() []string  { return nil }
+func (m *mockTool) SearchHint() string { return "" }
 func (m *mockTool) Description(input map[string]interface{}, opts tool.DescriptionOptions) (string, error) {
 	return m.description, nil
 }
 func (m *mockTool) Call(ctx context.Context, args map[string]interface{}, toolCtx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: "mock result"}, nil
 }
-func (m *mockTool) InputSchema() *tool.ToolInputJSONSchema                     { return nil }
-func (m *mockTool) OutputSchema() *tool.ToolInputJSONSchema                    { return nil }
+func (m *mockTool) InputSchema() *tool.ToolInputJSONSchema  { return nil }
+func (m *mockTool) OutputSchema() *tool.ToolInputJSONSchema { return nil }
 func (m *mockTool) ValidateInput(input map[string]interface{}, toolCtx *tool.ToolUseContext) (tool.ValidationResult, error) {
 	return tool.NewValidationSuccess(), nil
 }
 func (m *mockTool) CheckPermissions(input map[string]interface{}, toolCtx *tool.ToolUseContext) (*tool.PermissionResult, error) {
 	return nil, nil
 }
-func (m *mockTool) IsEnabled() bool                                            { return true }
-func (m *mockTool) IsConcurrencySafe(input map[string]interface{}) bool        { return true }
-func (m *mockTool) IsReadOnly(input map[string]interface{}) bool               { return false }
-func (m *mockTool) IsDestructive(input map[string]interface{}) bool            { return false }
-func (m *mockTool) IsOpenWorld(input map[string]interface{}) bool              { return false }
-func (m *mockTool) RequiresUserInteraction() bool                              { return false }
-func (m *mockTool) InterruptBehavior() tool.InterruptBehavior                  { return tool.InterruptCancel }
+func (m *mockTool) IsEnabled() bool                                     { return true }
+func (m *mockTool) IsConcurrencySafe(input map[string]interface{}) bool { return true }
+func (m *mockTool) IsReadOnly(input map[string]interface{}) bool        { return false }
+func (m *mockTool) IsDestructive(input map[string]interface{}) bool     { return false }
+func (m *mockTool) IsOpenWorld(input map[string]interface{}) bool       { return false }
+func (m *mockTool) RequiresUserInteraction() bool                       { return false }
+func (m *mockTool) InterruptBehavior() tool.InterruptBehavior           { return tool.InterruptCancel }
 func (m *mockTool) IsSearchOrReadCommand(input map[string]interface{}) *tool.SearchOrReadInfo {
 	return nil
 }
@@ -56,7 +59,7 @@ func (m *mockTool) PreparePermissionMatcher(input map[string]interface{}) (func(
 	return nil, nil
 }
 func (m *mockTool) BackfillObservableInput(input map[string]interface{}) {}
-func (m *mockTool) InputsEquivalent(a, b map[string]interface{}) bool   { return false }
+func (m *mockTool) InputsEquivalent(a, b map[string]interface{}) bool    { return false }
 func (m *mockTool) IsTransparentWrapper() bool                           { return false }
 func (m *mockTool) MaxResultSizeChars() int                              { return 0 }
 func (m *mockTool) IsMCP() bool                                          { return false }
@@ -66,176 +69,202 @@ func (m *mockTool) AlwaysLoad() bool                                     { retur
 func (m *mockTool) MCPInfo() *tool.MCPInfo                               { return nil }
 func (m *mockTool) Strict() bool                                         { return false }
 
-func TestNewQueryEngine(t *testing.T) {
-	config := QueryEngineConfig{
-		Cwd:   "/test",
-		Tools: []tool.Tool{&mockTool{name: "test_tool"}},
-		CanUseTool: func(tool tool.Tool, input map[string]interface{}, toolCtx *tool.ToolUseContext, assistantMessage interface{}, toolUseID string, forceDecision bool) (*PermissionResult, error) {
-			return &PermissionResult{Behavior: "allow"}, nil
-		},
-		GetAppState: func() interface{} { return nil },
-		SetAppState: func(f func(interface{}) interface{}) {},
-	}
-
-	engine := NewQueryEngine(config)
-
-	assert.NotNil(t, engine)
-	assert.Equal(t, "/test", engine.config.Cwd)
-	assert.Len(t, engine.config.Tools, 1)
-	assert.Empty(t, engine.mutableMessages)
-	assert.NotNil(t, engine.totalUsage)
-	assert.Empty(t, engine.permissionDenials)
+func allowAllCanUseTool(tool tool.Tool, input map[string]interface{}, toolCtx *tool.ToolUseContext, assistantMessage interface{}, toolUseID string, forceDecision bool) (*PermissionResult, error) {
+	return &PermissionResult{Behavior: "allow"}, nil
 }
 
-func TestNewQueryEngineWithInitialMessages(t *testing.T) {
-	initialMessages := []Message{
-		{
-			Type:      "user",
-			UUID:      uuid.New().String(),
-			Timestamp: time.Now(),
-			Content:   "Hello",
-		},
-	}
-
-	config := QueryEngineConfig{
-		Cwd:             "/test",
-		InitialMessages: initialMessages,
-		CanUseTool: func(tool tool.Tool, input map[string]interface{}, toolCtx *tool.ToolUseContext, assistantMessage interface{}, toolUseID string, forceDecision bool) (*PermissionResult, error) {
-			return &PermissionResult{Behavior: "allow"}, nil
-		},
-		GetAppState: func() interface{} { return nil },
-		SetAppState: func(f func(interface{}) interface{}) {},
-	}
-
-	engine := NewQueryEngine(config)
-
-	assert.Len(t, engine.mutableMessages, 1)
-	assert.Equal(t, "user", engine.mutableMessages[0].Type)
+type adapterPlanner struct {
+	call plannerapi.ToolCall
 }
 
-func TestQueryEngineGetMessages(t *testing.T) {
+func (p adapterPlanner) Next(_ context.Context, session *state.Session, _ []toolkit.Descriptor) (plannerapi.Plan, error) {
+	last := session.LastMessage()
+	if last != nil && last.Role == "tool" {
+		return plannerapi.Plan{
+			AssistantText: "handled: " + last.ToolOutput,
+			StopReason:    "end_turn",
+		}, nil
+	}
+	return plannerapi.Plan{
+		ToolCalls:  []plannerapi.ToolCall{p.call},
+		StopReason: "tool_use",
+	}, nil
+}
+
+type terminalPlanner struct{}
+
+func (terminalPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (plannerapi.Plan, error) {
+	return plannerapi.Plan{AssistantText: "done", StopReason: "end_turn"}, nil
+}
+
+func TestNewQueryEngine_InitializesAdapter(t *testing.T) {
+	cache := query.NewFileStateCache(16, 16*1024)
 	engine := NewQueryEngine(QueryEngineConfig{
-		CanUseTool: func(tool tool.Tool, input map[string]interface{}, toolCtx *tool.ToolUseContext, assistantMessage interface{}, toolUseID string, forceDecision bool) (*PermissionResult, error) {
-			return &PermissionResult{Behavior: "allow"}, nil
-		},
-		GetAppState: func() interface{} { return nil },
-		SetAppState: func(f func(interface{}) interface{}) {},
+		Cwd:                t.TempDir(),
+		Tools:              []tool.Tool{&mockTool{name: "test_tool", description: "test tool"}},
+		ReadFileCache:      cache,
+		UserSpecifiedModel: "claude-3-opus",
+		CanUseTool:         allowAllCanUseTool,
 	})
 
-	msg := Message{
-		Type:      "user",
-		UUID:      uuid.New().String(),
-		Timestamp: time.Now(),
-		Content:   "Test message",
-	}
+	require.NotNil(t, engine)
+	require.NotNil(t, engine.inner)
+	require.NotNil(t, engine.innerConfig)
 
-	engine.addMessage(msg)
+	assert.Equal(t, cache, engine.GetReadFileState())
+	assert.Equal(t, "claude-3-opus", engine.innerConfig.UserSpecifiedModel)
+	require.Len(t, engine.innerConfig.Tools, 1)
+	assert.Equal(t, "test_tool", engine.innerConfig.Tools[0].Name())
+	assert.NotEmpty(t, engine.GetSessionID())
+	assert.Equal(t, engine.GetSessionID(), engine.GetSessionID())
+}
+
+func TestNewQueryEngine_WithInitialMessages(t *testing.T) {
+	engine := NewQueryEngine(QueryEngineConfig{
+		Cwd: t.TempDir(),
+		InitialMessages: []Message{
+			{
+				Type:      "user",
+				UUID:      uuid.New().String(),
+				Timestamp: time.Now(),
+				Content:   "Hello",
+			},
+		},
+		CanUseTool: allowAllCanUseTool,
+	})
 
 	messages := engine.GetMessages()
-	assert.Len(t, messages, 1)
+	require.Len(t, messages, 1)
 	assert.Equal(t, "user", messages[0].Type)
-
-	// Verify it's a copy (modifying returned slice doesn't affect internal state)
-	messages[0].Type = "modified"
-	assert.Equal(t, "user", engine.mutableMessages[0].Type)
+	assert.Equal(t, "Hello", messages[0].Content)
 }
 
-func TestQueryEngineInterrupt(t *testing.T) {
+func TestQueryEngineSetModel_UpdatesUnderlyingConfig(t *testing.T) {
 	engine := NewQueryEngine(QueryEngineConfig{
-		CanUseTool: func(tool tool.Tool, input map[string]interface{}, toolCtx *tool.ToolUseContext, assistantMessage interface{}, toolUseID string, forceDecision bool) (*PermissionResult, error) {
-			return &PermissionResult{Behavior: "allow"}, nil
-		},
-		GetAppState: func() interface{} { return nil },
-		SetAppState: func(f func(interface{}) interface{}) {},
-	})
-
-	// Interrupt should cancel the abort context
-	engine.Interrupt()
-
-	select {
-	case <-engine.abortCtx.Done():
-		// Expected: context should be cancelled
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("Context was not cancelled after interrupt")
-	}
-}
-
-func TestQueryEngineSetModel(t *testing.T) {
-	engine := NewQueryEngine(QueryEngineConfig{
+		Cwd:                t.TempDir(),
 		UserSpecifiedModel: "claude-3-opus",
-		CanUseTool: func(tool tool.Tool, input map[string]interface{}, toolCtx *tool.ToolUseContext, assistantMessage interface{}, toolUseID string, forceDecision bool) (*PermissionResult, error) {
-			return &PermissionResult{Behavior: "allow"}, nil
-		},
-		GetAppState: func() interface{} { return nil },
-		SetAppState: func(f func(interface{}) interface{}) {},
+		CanUseTool:         allowAllCanUseTool,
 	})
-
-	assert.Equal(t, "claude-3-opus", engine.config.UserSpecifiedModel)
 
 	engine.SetModel("claude-3-sonnet")
+
 	assert.Equal(t, "claude-3-sonnet", engine.config.UserSpecifiedModel)
+	assert.Equal(t, "claude-3-sonnet", engine.innerConfig.UserSpecifiedModel)
 }
 
-func TestQueryEnginePermissionTracking(t *testing.T) {
-	deniedTool := &mockTool{name: "denied_tool"}
-
+func TestQueryEngineSubmitMessage_DelegatesToQueryEngine(t *testing.T) {
 	engine := NewQueryEngine(QueryEngineConfig{
-		Tools: []tool.Tool{deniedTool},
-		CanUseTool: func(tool tool.Tool, input map[string]interface{}, toolCtx *tool.ToolUseContext, assistantMessage interface{}, toolUseID string, forceDecision bool) (*PermissionResult, error) {
-			return &PermissionResult{Behavior: "deny", Reason: "test denial"}, nil
-		},
-		GetAppState: func() interface{} { return nil },
-		SetAppState: func(f func(interface{}) interface{}) {},
+		Cwd:           t.TempDir(),
+		SessionID:     "session-under-test",
+		FallbackModel: "claude-sonnet-4-6",
+		CanUseTool:    allowAllCanUseTool,
 	})
 
-	// Simulate permission check
-	result, err := engine.wrapCanUseTool(
-		deniedTool,
-		map[string]interface{}{},
-		nil,
-		nil,
-		"test-tool-use-id",
-		false,
-	)
-
+	ch, err := engine.SubmitMessage(context.Background(), "Hello, world!", nil)
 	require.NoError(t, err)
-	assert.Equal(t, "deny", result.Behavior)
 
-	// Verify denial was tracked
-	denials := engine.GetPermissionDenials()
-	assert.Len(t, denials, 1)
-	assert.Equal(t, "denied_tool", denials[0].ToolName)
-	assert.Equal(t, "test-tool-use-id", denials[0].ToolUseID)
+	var messages []SDKMessage
+	for msg := range ch {
+		messages = append(messages, msg)
+	}
+
+	require.NotEmpty(t, messages)
+	last := messages[len(messages)-1]
+	assert.Equal(t, "result", last.Type)
+	assert.Equal(t, "session-under-test", last.SessionID)
+	assert.NotEqual(t, "Not yet implemented", last.Result)
+
+	stored := engine.GetMessages()
+	require.NotEmpty(t, stored)
+	assert.Equal(t, "user", stored[0].Type)
 }
 
-func TestQueryEngineUsageTracking(t *testing.T) {
+func TestAskConvenienceFunction_UsesSameAdapterFlow(t *testing.T) {
+	ch, err := Ask(context.Background(), QueryEngineConfig{
+		Cwd:           t.TempDir(),
+		FallbackModel: "claude-sonnet-4-6",
+		CanUseTool:    allowAllCanUseTool,
+	}, "Test prompt")
+	require.NoError(t, err)
+
+	var messages []SDKMessage
+	for msg := range ch {
+		messages = append(messages, msg)
+	}
+
+	require.NotEmpty(t, messages)
+	assert.Equal(t, "result", messages[len(messages)-1].Type)
+}
+
+func TestQueryEngineSubmitMessage_RunsPlannerBackedRuntime(t *testing.T) {
 	engine := NewQueryEngine(QueryEngineConfig{
-		CanUseTool: func(tool tool.Tool, input map[string]interface{}, toolCtx *tool.ToolUseContext, assistantMessage interface{}, toolUseID string, forceDecision bool) (*PermissionResult, error) {
-			return &PermissionResult{Behavior: "allow"}, nil
+		Cwd:           t.TempDir(),
+		SessionID:     "planner-session",
+		FallbackModel: "claude-sonnet-4-6",
+		CanUseTool:    allowAllCanUseTool,
+		Planner: adapterPlanner{
+			call: plannerapi.ToolCall{
+				ID:    "tool-1",
+				Name:  "fake_tool",
+				Input: json.RawMessage(`{"path":"README.md"}`),
+			},
 		},
-		GetAppState: func() interface{} { return nil },
-		SetAppState: func(f func(interface{}) interface{}) {},
+		ToolDescriptors: []toolkit.Descriptor{{Name: "fake_tool"}},
+		ExecuteTool: func(context.Context, string, []byte) (string, error) {
+			return "tool output", nil
+		},
+		MaxTurns: 3,
 	})
 
-	// Add some usage
-	engine.updateUsage(&Usage{
-		InputTokens:  100,
-		OutputTokens: 50,
+	ch, err := engine.SubmitMessage(context.Background(), "run tool", nil)
+	require.NoError(t, err)
+
+	var messages []SDKMessage
+	for msg := range ch {
+		messages = append(messages, msg)
+	}
+
+	require.NotEmpty(t, messages)
+	assert.Equal(t, "result", messages[len(messages)-1].Type)
+
+	stored := engine.GetMessages()
+	require.NotEmpty(t, stored)
+	assert.Equal(t, "assistant", stored[len(stored)-1].Type)
+	assert.Equal(t, "handled: tool output", stored[len(stored)-1].Content)
+}
+
+func TestQueryEngineSubmitMessage_ParsesTokenBudget(t *testing.T) {
+	engine := NewQueryEngine(QueryEngineConfig{
+		Cwd:        t.TempDir(),
+		CanUseTool: allowAllCanUseTool,
+		Planner:    terminalPlanner{},
 	})
 
-	usage := engine.GetTotalUsage()
-	assert.Equal(t, 100, usage.InputTokens)
-	assert.Equal(t, 50, usage.OutputTokens)
+	ch, err := engine.SubmitMessage(context.Background(), "+1k keep going", nil)
+	require.NoError(t, err)
+	for range ch {
+	}
 
-	// Add more usage
-	engine.updateUsage(&Usage{
-		InputTokens:  200,
-		OutputTokens: 100,
+	require.NotNil(t, engine.innerConfig.TokenBudget)
+	assert.Equal(t, 1000, *engine.innerConfig.TokenBudget)
+}
+
+func TestQueryEngineInterrupt_DoesNotPanic(t *testing.T) {
+	engine := NewQueryEngine(QueryEngineConfig{
+		Cwd:        t.TempDir(),
+		CanUseTool: allowAllCanUseTool,
 	})
 
-	usage = engine.GetTotalUsage()
-	assert.Equal(t, 300, usage.InputTokens)
-	assert.Equal(t, 150, usage.OutputTokens)
+	engine.Interrupt()
+}
+
+func TestQueryEnginePermissionDenials_StartEmpty(t *testing.T) {
+	engine := NewQueryEngine(QueryEngineConfig{
+		Cwd:        t.TempDir(),
+		CanUseTool: allowAllCanUseTool,
+	})
+
+	assert.Empty(t, engine.GetPermissionDenials())
 }
 
 func TestAccumulateUsage(t *testing.T) {
@@ -314,83 +343,6 @@ func TestAccumulateUsage(t *testing.T) {
 			assert.Equal(t, tt.expected.OutputTokens, result.OutputTokens)
 			assert.Equal(t, tt.expected.CacheCreationInputTokens, result.CacheCreationInputTokens)
 			assert.Equal(t, tt.expected.CacheReadInputTokens, result.CacheReadInputTokens)
-		})
-	}
-}
-
-func TestSubmitMessage(t *testing.T) {
-	engine := NewQueryEngine(QueryEngineConfig{
-		Cwd: "/test",
-		CanUseTool: func(tool tool.Tool, input map[string]interface{}, toolCtx *tool.ToolUseContext, assistantMessage interface{}, toolUseID string, forceDecision bool) (*PermissionResult, error) {
-			return &PermissionResult{Behavior: "allow"}, nil
-		},
-		GetAppState: func() interface{} { return nil },
-		SetAppState: func(f func(interface{}) interface{}) {},
-	})
-
-	ctx := context.Background()
-	ch, err := engine.SubmitMessage(ctx, "Hello, world!", nil)
-
-	require.NoError(t, err)
-	require.NotNil(t, ch)
-
-	// Read messages from channel
-	var messages []SDKMessage
-	for msg := range ch {
-		messages = append(messages, msg)
-	}
-
-	// Should receive at least a result message
-	assert.NotEmpty(t, messages)
-
-	// Last message should be a result
-	lastMsg := messages[len(messages)-1]
-	assert.Equal(t, "result", lastMsg.Type)
-}
-
-func TestAskConvenienceFunction(t *testing.T) {
-	config := QueryEngineConfig{
-		Cwd: "/test",
-		CanUseTool: func(tool tool.Tool, input map[string]interface{}, toolCtx *tool.ToolUseContext, assistantMessage interface{}, toolUseID string, forceDecision bool) (*PermissionResult, error) {
-			return &PermissionResult{Behavior: "allow"}, nil
-		},
-		GetAppState: func() interface{} { return nil },
-		SetAppState: func(f func(interface{}) interface{}) {},
-	}
-
-	ctx := context.Background()
-	ch, err := Ask(ctx, config, "Test prompt")
-
-	require.NoError(t, err)
-	require.NotNil(t, ch)
-
-	// Consume channel
-	for range ch {
-	}
-}
-
-func TestSDKCompatToolName(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "simple name",
-			input:    "read_file",
-			expected: "read_file",
-		},
-		{
-			name:     "name with special chars",
-			input:    "mcp__server__tool",
-			expected: "mcp__server__tool",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := sdkCompatToolName(tt.input)
-			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

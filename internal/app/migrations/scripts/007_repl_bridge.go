@@ -2,9 +2,9 @@ package scripts
 
 import (
 	"context"
-	"fmt"
 
 	"claude-codex/internal/app/migrations"
+	"claude-codex/internal/app/settings"
 )
 
 func init() {
@@ -18,12 +18,16 @@ func init() {
 
 // migrateReplBridgeEnabledToRemoteControlAtStartup migrates REPL bridge setting
 func migrateReplBridgeEnabledToRemoteControlAtStartup(ctx context.Context) error {
-	// TODO: Implement when config and settings modules are available
-
-	// The migration should:
-	// 1. Check for replBridgeEnabled in config
-	// 2. Migrate to remoteControlAtStartup setting
-	// 3. Log analytics event
-
-	return fmt.Errorf("migration not yet implemented - requires config module")
+	cfg, path, err := loadRawConfig()
+	if err != nil {
+		return err
+	}
+	if value, ok := cfg["replBridgeEnabled"].(bool); ok {
+		if err := setUserSetting(settings.Document{"remoteControlAtStartup": value}); err != nil {
+			return err
+		}
+		delete(cfg, "replBridgeEnabled")
+		return saveRawConfig(path, cfg)
+	}
+	return nil
 }

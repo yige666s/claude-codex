@@ -10,6 +10,7 @@ import (
 // Update represents a streaming update from tool execution.
 type Update struct {
 	ToolUseID  string
+	ToolName   string
 	Message    interface{}
 	Result     *ToolResult
 	Error      error
@@ -19,24 +20,22 @@ type Update struct {
 
 // StreamingExecutor manages concurrent tool execution with streaming updates.
 type StreamingExecutor struct {
-	tools          []Tool
 	canUseTool     CanUseToolFn
 	toolUseContext *ToolUseContext
 
-	mu             sync.Mutex
-	queue          []types.ToolUseBlock
-	results        chan *Update
-	wg             sync.WaitGroup
-	ctx            context.Context
-	cancel         context.CancelFunc
-	discarded      bool
+	mu        sync.Mutex
+	queue     []types.ToolUseBlock
+	results   chan *Update
+	wg        sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
+	discarded bool
 }
 
 // NewStreamingExecutor creates a new streaming executor.
-func NewStreamingExecutor(tools []Tool, canUseTool CanUseToolFn, toolUseContext *ToolUseContext) *StreamingExecutor {
+func NewStreamingExecutor(canUseTool CanUseToolFn, toolUseContext *ToolUseContext) *StreamingExecutor {
 	ctx, cancel := context.WithCancel(toolUseContext.Ctx)
 	return &StreamingExecutor{
-		tools:          tools,
 		canUseTool:     canUseTool,
 		toolUseContext: toolUseContext,
 		queue:          make([]types.ToolUseBlock, 0),
@@ -68,14 +67,16 @@ func (se *StreamingExecutor) executeTool(toolUse types.ToolUseBlock) {
 	// Send queued status
 	se.results <- &Update{
 		ToolUseID: toolUse.ID,
+		ToolName:  toolUse.Name,
 		Status:    "queued",
 	}
 
 	// Find the tool
-	tool := FindToolByName(se.tools, toolUse.Name)
+	tool := se.toolUseContext.FindToolByName(toolUse.Name)
 	if tool == nil {
 		se.results <- &Update{
 			ToolUseID: toolUse.ID,
+			ToolName:  toolUse.Name,
 			Status:    "failed",
 			Error:     ErrToolNotFound,
 		}
@@ -85,15 +86,48 @@ func (se *StreamingExecutor) executeTool(toolUse types.ToolUseBlock) {
 	// Send running status
 	se.results <- &Update{
 		ToolUseID: toolUse.ID,
+		ToolName:  toolUse.Name,
 		Status:    "running",
 	}
 
+	input := toolUse.Input
+	if input == nil {
+		input = map[string]interface{}{}
+	}
+	if se.canUseTool != nil {
+		permission, err := se.canUseTool(tool, input, se.toolUseContext, nil, toolUse.ID, nil)
+		if err != nil {
+			se.results <- &Update{
+				ToolUseID: toolUse.ID,
+				ToolName:  toolUse.Name,
+				Status:    "failed",
+				Error:     err,
+			}
+			return
+		}
+		if permission != nil {
+			if permission.UpdatedInput != nil {
+				input = permission.UpdatedInput
+			}
+			if permission.Behavior == PermissionDeny {
+				se.results <- &Update{
+					ToolUseID: toolUse.ID,
+					ToolName:  toolUse.Name,
+					Status:    "failed",
+					Error:     ErrPermissionDenied,
+				}
+				return
+			}
+		}
+	}
+
 	// Execute the tool
-	result, err := tool.Call(se.ctx, toolUse.Input, se.toolUseContext)
+	result, err := tool.Call(se.ctx, input, se.toolUseContext)
 
 	if err != nil {
 		se.results <- &Update{
 			ToolUseID: toolUse.ID,
+			ToolName:  toolUse.Name,
 			Status:    "failed",
 			Error:     err,
 		}
@@ -103,6 +137,7 @@ func (se *StreamingExecutor) executeTool(toolUse types.ToolUseBlock) {
 	// Send completed status
 	se.results <- &Update{
 		ToolUseID: toolUse.ID,
+		ToolName:  toolUse.Name,
 		Status:    "completed",
 		Result:    result,
 	}

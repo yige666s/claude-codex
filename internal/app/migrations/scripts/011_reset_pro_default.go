@@ -2,9 +2,9 @@ package scripts
 
 import (
 	"context"
-	"fmt"
 
 	"claude-codex/internal/app/migrations"
+	"claude-codex/internal/app/settings"
 )
 
 func init() {
@@ -18,12 +18,15 @@ func init() {
 
 // resetProToOpusDefault resets Pro users to opus default
 func resetProToOpusDefault(ctx context.Context) error {
-	// TODO: Implement when config and settings modules are available
-
-	// The migration should:
-	// 1. Check if user is Pro subscriber
-	// 2. Reset model to opus default if needed
-	// 3. Log analytics event
-
-	return fmt.Errorf("migration not yet implemented - requires config module")
+	user, path, err := loadSettings(settings.SourceUser, workingDirFromContext())
+	if err != nil {
+		return err
+	}
+	switch stringValue(user, "model") {
+	case "claude-opus-4-20250514", "claude-opus-4-1-20250805", "opus-4-5-fast":
+		user["model"] = "opus"
+		return saveSettings(path, user)
+	default:
+		return nil
+	}
 }

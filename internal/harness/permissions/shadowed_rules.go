@@ -61,7 +61,8 @@ func DetectUnreachableRules(ctx *ToolContext, options DetectUnreachableRulesOpti
 
 func parseRules(rules RulesBySource, behavior Behavior) []Rule {
 	var out []Rule
-	for source, values := range rules {
+	for _, source := range permissionRuleSources {
+		values := rules[source]
 		for _, value := range values {
 			out = append(out, Rule{
 				Source:   source,

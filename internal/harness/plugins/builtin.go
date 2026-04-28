@@ -23,22 +23,39 @@ type BuiltinPluginDefinition struct {
 
 // LoadedPlugin represents a plugin that has been loaded
 type LoadedPlugin struct {
-	Name        string
-	Manifest    PluginManifest
-	Path        string // Filesystem path or "builtin" for built-in plugins
-	Source      string // Plugin ID (name@marketplace)
-	Repository  string // Repository URL or plugin ID
-	Enabled     bool
-	IsBuiltin   bool
-	HooksConfig map[string]interface{}
-	MCPServers  map[string]interface{}
+	Name              string
+	Manifest          PluginManifest
+	Path              string // Filesystem path or "builtin" for built-in plugins
+	Source            string // Plugin ID (name@marketplace)
+	Repository        string // Repository URL or plugin ID
+	Enabled           bool
+	IsBuiltin         bool
+	HooksConfig       map[string]interface{}
+	MCPServers        map[string]interface{}
+	LSPServers        map[string]interface{}
+	Settings          map[string]interface{}
+	CommandsPath      string
+	CommandsPaths     []string
+	CommandsMetadata  map[string]CommandMetadata
+	AgentsPath        string
+	AgentsPaths       []string
+	SkillsPath        string
+	SkillsPaths       []string
+	OutputStylesPath  string
+	OutputStylesPaths []string
 }
 
 // PluginManifest contains plugin metadata
 type PluginManifest struct {
-	Name        string
-	Description string
-	Version     string
+	Name         string
+	Description  string
+	Version      string
+	Author       *PluginAuthor
+	License      string
+	Homepage     string
+	Repository   string
+	Keywords     []string
+	Dependencies []string
 }
 
 // BuiltinPluginRegistry manages built-in plugins

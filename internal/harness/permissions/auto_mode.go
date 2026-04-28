@@ -4,9 +4,9 @@ import "sync"
 
 // autoModeState holds module-level auto mode flags (mirrors TS autoModeState.ts).
 var autoModeState struct {
-	mu           sync.Mutex
-	active       bool
-	flagCli      bool
+	mu            sync.Mutex
+	active        bool
+	flagCli       bool
 	circuitBroken bool
 }
 

@@ -317,9 +317,5 @@ func (o *Orchestrator) executeToolUse(
 
 // GetInProgressToolUseIDs returns the IDs of tools currently executing.
 func (o *Orchestrator) GetInProgressToolUseIDs() []string {
-	var ids []string
-	for id := range o.context.InProgressToolUseIDs {
-		ids = append(ids, id)
-	}
-	return ids
+	return o.context.GetInProgressToolUseIDs()
 }

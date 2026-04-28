@@ -81,7 +81,7 @@ func (b *InProcessBackend) Spawn(cfg TeammateSpawnConfig) (TeammateSpawnResult, 
 		IsActive:      true,
 	}
 	if cfg.TeamName != "" {
-		_ = AddMember(cfg.TeamName, member) // best-effort
+		_ = UpsertMember(cfg.TeamName, member) // best-effort
 	}
 
 	// Start the agent goroutine

@@ -2,7 +2,6 @@ package scripts
 
 import (
 	"context"
-	"fmt"
 
 	"claude-codex/internal/app/migrations"
 )
@@ -18,12 +17,17 @@ func init() {
 
 // resetAutoModeOptInForDefaultOffer resets auto mode opt-in flag
 func resetAutoModeOptInForDefaultOffer(ctx context.Context) error {
-	// TODO: Implement when config and settings modules are available
-
-	// The migration should:
-	// 1. Reset auto mode opt-in flags in config
-	// 2. Allow users to see the default offer again
-	// 3. Log analytics event
-
-	return fmt.Errorf("migration not yet implemented - requires config module")
+	cfg, path, err := loadRawConfig()
+	if err != nil {
+		return err
+	}
+	for _, key := range []string{
+		"autoModeOptInAccepted",
+		"autoModeDefaultOfferAccepted",
+		"autoModeDefaultOfferRejected",
+		"autoModeDefaultOfferDismissed",
+	} {
+		delete(cfg, key)
+	}
+	return saveRawConfig(path, cfg)
 }

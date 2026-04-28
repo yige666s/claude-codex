@@ -169,6 +169,14 @@ func TestSessionStorage(t *testing.T) {
 		if storage.GetSessionID() != "test-session" {
 			t.Errorf("Expected session ID 'test-session', got '%s'", storage.GetSessionID())
 		}
+
+		gotPath := storage.GetTranscriptPath()
+		if filepath.Dir(gotPath) != transcriptDir(homeDir, projectDir) {
+			t.Fatalf("expected transcript under %q, got %q", transcriptDir(homeDir, projectDir), gotPath)
+		}
+		if filepath.Dir(gotPath) == projectDir {
+			t.Fatalf("transcript should not be stored directly in project dir: %q", gotPath)
+		}
 	})
 
 	t.Run("RecordMessage", func(t *testing.T) {
@@ -313,6 +321,102 @@ func TestSessionStorage(t *testing.T) {
 		meta := storage.GetMetadata()
 		if meta.CustomTitle != "Original Title" {
 			t.Errorf("Expected title 'Original Title', got '%s'", meta.CustomTitle)
+		}
+	})
+
+	t.Run("SessionHelpersUseAppHomeStorage", func(t *testing.T) {
+		storage, err := NewSessionStorage(homeDir, "helper-test", projectDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer storage.Close()
+
+		if err := storage.RecordMessageSync(&TranscriptMessage{
+			UUID:    "helper-msg",
+			Role:    "user",
+			Content: "helper test",
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		if !SessionExists(homeDir, projectDir, "helper-test") {
+			t.Fatal("expected session to exist in app home storage")
+		}
+
+		sessions, err := ListSessions(homeDir, projectDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		found := false
+		for _, sessionID := range sessions {
+			if sessionID == "helper-test" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected helper-test in session list, got %v", sessions)
+		}
+
+		if err := DeleteSession(homeDir, projectDir, "helper-test"); err != nil {
+			t.Fatal(err)
+		}
+		if SessionExists(homeDir, projectDir, "helper-test") {
+			t.Fatal("expected deleted session to be gone")
+		}
+	})
+
+	t.Run("MigratesLegacyWorkspaceTranscript", func(t *testing.T) {
+		legacyPath := filepath.Join(projectDir, "legacy-test.jsonl")
+		if err := os.WriteFile(legacyPath, []byte("{\"type\":\"user\",\"content\":\"legacy\"}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		storage, err := NewSessionStorage(homeDir, "legacy-test", projectDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer storage.Close()
+
+		if storage.GetTranscriptPath() != transcriptPath(homeDir, projectDir, "legacy-test") {
+			t.Fatalf("expected migrated transcript path %q, got %q", transcriptPath(homeDir, projectDir, "legacy-test"), storage.GetTranscriptPath())
+		}
+		if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+			t.Fatalf("expected legacy transcript to be moved, stat err=%v", err)
+		}
+		if _, err := os.Stat(storage.GetTranscriptPath()); err != nil {
+			t.Fatalf("expected migrated transcript to exist: %v", err)
+		}
+
+		entries, err := storage.LoadTranscript()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("expected migrated transcript entries, got %d", len(entries))
+		}
+	})
+
+	t.Run("ListSessionsIncludesLegacyWorkspaceFiles", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(projectDir, "legacy-list.jsonl"), []byte("legacy\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		sessions, err := ListSessions(homeDir, projectDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		found := false
+		for _, sessionID := range sessions {
+			if sessionID == "legacy-list" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected legacy workspace transcript in session list, got %v", sessions)
 		}
 	})
 }

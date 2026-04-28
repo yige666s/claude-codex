@@ -177,6 +177,50 @@ func TestHandleModeCommand(t *testing.T) {
 	}
 }
 
+func TestHandleConfigSettingsCommandSetAndGet(t *testing.T) {
+	home := t.TempDir()
+	workDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_HOME", home)
+
+	cfg := config.Default()
+	var out bytes.Buffer
+	sc := slashContext{
+		cfg:            &cfg,
+		defaultWorkDir: workDir,
+		streams:        IO{Out: &out},
+	}
+
+	if err := handleConfigCommand([]string{"settings", "set", "permissions.defaultMode", "plan"}, sc); err != nil {
+		t.Fatalf("set settings key: %v", err)
+	}
+	if !strings.Contains(out.String(), "updated settings permissions.defaultMode") {
+		t.Fatalf("unexpected set output: %q", out.String())
+	}
+
+	out.Reset()
+	if err := handleConfigCommand([]string{"settings", "get", "permissions.defaultMode"}, sc); err != nil {
+		t.Fatalf("get settings key: %v", err)
+	}
+	if !strings.Contains(out.String(), `permissions.defaultMode = "plan"`) {
+		t.Fatalf("unexpected get output: %q", out.String())
+	}
+}
+
+func TestHandleConfigSettingsCommandRejectsInvalidOption(t *testing.T) {
+	cfg := config.Default()
+	var out bytes.Buffer
+	sc := slashContext{
+		cfg:            &cfg,
+		defaultWorkDir: t.TempDir(),
+		streams:        IO{Out: &out},
+	}
+
+	err := handleConfigCommand([]string{"settings", "set", "permissions.defaultMode", "invalid"}, sc)
+	if err == nil || !strings.Contains(err.Error(), "options:") {
+		t.Fatalf("expected invalid option error, got %v", err)
+	}
+}
+
 func TestListCommandsForHelpIncludesSkills(t *testing.T) {
 	manager := skills.NewSkillManager()
 	dir := t.TempDir()

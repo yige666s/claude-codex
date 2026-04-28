@@ -2,9 +2,10 @@ package scripts
 
 import (
 	"context"
-	"fmt"
+	"time"
 
 	"claude-codex/internal/app/migrations"
+	"claude-codex/internal/app/settings"
 )
 
 func init() {
@@ -18,19 +19,23 @@ func init() {
 
 // migrateLegacyOpusToCurrent migrates legacy opus model strings to current alias
 func migrateLegacyOpusToCurrent(ctx context.Context) error {
-	// TODO: Implement when config and settings modules are available
-
-	// The migration should:
-	// 1. Check API provider === "firstParty"
-	// 2. Check if legacy model remap is enabled
-	// 3. Check userSettings.model for legacy opus strings:
-	//    - claude-opus-4-20250514
-	//    - claude-opus-4-1-20250805
-	//    - claude-opus-4-0
-	//    - claude-opus-4-1
-	// 4. Update to "opus" alias
-	// 5. Set globalConfig.legacyOpusMigrationTimestamp
-	// 6. Log analytics event
-
-	return fmt.Errorf("migration not yet implemented - requires config module")
+	user, userPath, err := loadSettings(settings.SourceUser, workingDirFromContext())
+	if err != nil {
+		return err
+	}
+	switch stringValue(user, "model") {
+	case "claude-opus-4-20250514", "claude-opus-4-1-20250805", "claude-opus-4-0", "claude-opus-4-1":
+		user["model"] = "opus"
+		if err := saveSettings(userPath, user); err != nil {
+			return err
+		}
+		cfg, cfgPath, err := loadRawConfig()
+		if err != nil {
+			return err
+		}
+		cfg["legacyOpusMigrationTimestamp"] = time.Now().UnixMilli()
+		return saveRawConfig(cfgPath, cfg)
+	default:
+		return nil
+	}
 }

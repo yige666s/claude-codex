@@ -9,15 +9,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	appauth "claude-codex/internal/app/auth"
 	"claude-codex/internal/app/config"
+	appsettings "claude-codex/internal/app/settings"
 	"claude-codex/internal/harness/engine"
 	"claude-codex/internal/harness/memory"
 	"claude-codex/internal/harness/permissions"
+	"claude-codex/internal/harness/plugins"
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 )
@@ -62,8 +65,8 @@ func registerCommands() {
 		},
 		{
 			Name:        "/config",
-			Usage:       "[show|path|set <key> <value>]",
-			Description: "Show, get path, or set configuration values",
+			Usage:       "[show|path|set <key> <value>|settings <list|get|set>]",
+			Description: "Show, get path, or set configuration/settings values",
 			Handler:     wrapHandlerWithArgs(handleConfigCommand),
 		},
 		{
@@ -149,7 +152,7 @@ func registerCommands() {
 		},
 		{
 			Name:        "/limits",
-			Aliases:     []string{"/quota", "/usage"},
+			Aliases:     []string{"/quota"},
 			Description: "Show current API rate limit status",
 			Handler:     wrapHandlerWithArgs(handleLimits),
 		},
@@ -159,6 +162,53 @@ func registerCommands() {
 			Usage:       "[list|show|search|filter|index|stats] [args...]",
 			Description: "Manage session memories (new system)",
 			Handler:     wrapHandlerWithArgs(handleMemoryV2Command),
+		},
+		{
+			Name:        "/status",
+			Description: "Show current CLI, git, auth, skill, and plugin status",
+			Handler:     wrapHandlerWithArgs(handleStatusCommand),
+		},
+		{
+			Name:        "/files",
+			Usage:       "[tracked|changed|all]",
+			Description: "List project files",
+			Handler:     wrapHandlerWithArgs(handleFilesCommand),
+		},
+		{
+			Name:        "/permissions",
+			Usage:       "[list|add <allow|deny|ask> <rule>|remove <allow|deny|ask> <rule>]",
+			Description: "Show or update permission rules",
+			Handler:     wrapHandlerWithArgs(handlePermissionsCommand),
+		},
+		{
+			Name:        "/plugin",
+			Usage:       "[list|install-local <id> <path>|uninstall <id>|enable <id>|disable <id>]",
+			Description: "Manage plugins",
+			Handler:     wrapHandlerWithArgs(handlePluginCommand),
+		},
+		{
+			Name:        "/branch",
+			Usage:       "[show|list|create <name>|switch <name>|delete <name>]",
+			Description: "Manage git branches",
+			Handler:     wrapHandlerWithArgs(handleBranchCommand),
+		},
+		{
+			Name:        "/tag",
+			Usage:       "[list|add <tag>|remove <tag>] [<session-id>|latest]",
+			Description: "Manage session tags",
+			Handler:     wrapHandlerWithArgs(handleTagCommand),
+		},
+		{
+			Name:        "/export",
+			Usage:       "[<session-id>|latest] [json|markdown] [<output-path>]",
+			Description: "Export a saved session",
+			Handler:     wrapHandlerWithArgs(handleExportCommand),
+		},
+		{
+			Name:        "/usage",
+			Usage:       "[summary|sessions] [<limit>]",
+			Description: "Show local session token usage",
+			Handler:     wrapHandlerWithArgs(handleUsageCommand),
 		},
 	}
 
@@ -327,6 +377,8 @@ func handleConfigCommand(args []string, slash slashContext) error {
 		}
 		_, err = fmt.Fprintln(slash.streams.Out, path)
 		return err
+	case args[0] == "settings":
+		return handleConfigSettingsCommand(args[1:], slash)
 	case len(args) >= 3 && args[0] == "set":
 		if err := setConfigValue(slash.cfg, args[1], strings.Join(args[2:], " ")); err != nil {
 			return err
@@ -337,7 +389,60 @@ func handleConfigCommand(args []string, slash slashContext) error {
 		_, err := fmt.Fprintf(slash.streams.Out, "updated %s\n", args[1])
 		return err
 	default:
-		return fmt.Errorf("usage: /config [show|path|set <key> <value>]")
+		return fmt.Errorf("usage: /config [show|path|set <key> <value>|settings <list|get|set>]")
+	}
+}
+
+func handleConfigSettingsCommand(args []string, slash slashContext) error {
+	switch {
+	case len(args) == 0 || args[0] == "list":
+		settings := appsettings.ListSupportedSettings()
+		lines := make([]string, 0, len(settings))
+		for _, setting := range settings {
+			suffix := ""
+			if len(setting.Options) > 0 {
+				suffix = " [" + strings.Join(setting.Options, "|") + "]"
+			}
+			lines = append(lines, fmt.Sprintf("%s\t%s%s\t%s", setting.Key, setting.Type, suffix, setting.Description))
+		}
+		_, err := fmt.Fprintln(slash.streams.Out, strings.Join(lines, "\n"))
+		return err
+	case len(args) == 2 && args[0] == "get":
+		setting, ok := appsettings.GetSupportedSetting(args[1])
+		if !ok {
+			return fmt.Errorf("unsupported settings key %q", args[1])
+		}
+		merged := appsettings.LoadMergedSettings(slash.defaultWorkDir)
+		if len(merged.Errors) > 0 {
+			return fmt.Errorf("cannot read invalid settings: %s", merged.Errors[0].Message)
+		}
+		value, ok := appsettings.ReadSettingValue(merged.Settings, setting)
+		if !ok {
+			value = nil
+		}
+		data, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(slash.streams.Out, "%s = %s\n", setting.Key, string(data))
+		return err
+	case len(args) >= 3 && args[0] == "set":
+		setting, ok := appsettings.GetSupportedSetting(args[1])
+		if !ok {
+			return fmt.Errorf("unsupported settings key %q", args[1])
+		}
+		value, err := appsettings.CoerceSupportedSettingValue(setting, strings.Join(args[2:], " "))
+		if err != nil {
+			return err
+		}
+		update := appsettings.BuildSettingUpdate(setting, value)
+		if err := appsettings.UpdateSettingsForSource(appsettings.EditableUser, slash.defaultWorkDir, update); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(slash.streams.Out, "updated settings %s\n", setting.Key)
+		return err
+	default:
+		return fmt.Errorf("usage: /config settings [list|get <key>|set <key> <value>]")
 	}
 }
 
@@ -500,6 +605,389 @@ func handleMCPCommand(args []string, slash slashContext) error {
 		return err
 	default:
 		return fmt.Errorf("usage: /mcp [list|add <name> -- <command...>|add <name> --url <url>|remove <name>]")
+	}
+}
+
+func handleStatusCommand(_ []string, slash slashContext) error {
+	var lines []string
+	lines = append(lines,
+		"cwd: "+slash.defaultWorkDir,
+		"backend: "+slash.cfg.Backend,
+		"provider: "+slash.cfg.Provider,
+		"model: "+slash.cfg.Model,
+		"permission_mode: "+slash.cfg.PermissionMode,
+		"theme: "+slash.cfg.Theme,
+		fmt.Sprintf("mcp_servers: %d", len(slash.cfg.MCPServers)),
+	)
+
+	if slash.skillManager != nil {
+		stats := slash.skillManager.GetStats()
+		lines = append(lines, fmt.Sprintf("skills: %d total, %d user-invocable", stats.TotalSkills, stats.UserInvocable))
+	}
+
+	if branch := gitOutput(slash.defaultWorkDir, "branch", "--show-current"); branch != "" {
+		lines = append(lines, "git_branch: "+branch)
+	}
+	if changes := gitChangedCount(slash.defaultWorkDir); changes >= 0 {
+		lines = append(lines, fmt.Sprintf("git_changes: %d", changes))
+	}
+
+	pluginCount, disabledCount := pluginStatusCounts(slash)
+	lines = append(lines, fmt.Sprintf("plugins: %d configured, %d disabled", pluginCount, disabledCount))
+
+	authStatus := "not authenticated"
+	if manager, err := appauth.NewManager(*slash.cfg, nil); err == nil {
+		if status, err := manager.Status(context.Background()); err == nil && status.Authenticated {
+			authStatus = "authenticated"
+		}
+	}
+	lines = append(lines, "auth: "+authStatus)
+
+	_, err := fmt.Fprintln(slash.streams.Out, strings.Join(lines, "\n"))
+	return err
+}
+
+func handleFilesCommand(args []string, slash slashContext) error {
+	mode := "tracked"
+	if len(args) > 0 {
+		mode = strings.ToLower(strings.TrimSpace(args[0]))
+	}
+
+	var files []string
+	var err error
+	switch mode {
+	case "", "tracked":
+		files, err = gitTrackedFiles(slash.defaultWorkDir)
+		if err != nil {
+			files, err = walkProjectFiles(slash.defaultWorkDir)
+		}
+	case "changed":
+		files, err = gitChangedFiles(slash.defaultWorkDir)
+	case "all":
+		files, err = walkProjectFiles(slash.defaultWorkDir)
+	default:
+		return fmt.Errorf("usage: /files [tracked|changed|all]")
+	}
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		_, err = fmt.Fprintln(slash.streams.Out, "no files")
+		return err
+	}
+	sort.Strings(files)
+	_, err = fmt.Fprintln(slash.streams.Out, strings.Join(files, "\n"))
+	return err
+}
+
+func handlePermissionsCommand(args []string, slash slashContext) error {
+	if len(args) == 0 || args[0] == "list" {
+		return listPermissions(slash)
+	}
+	if len(args) < 3 {
+		return fmt.Errorf("usage: /permissions [list|add <allow|deny|ask> <rule>|remove <allow|deny|ask> <rule>]")
+	}
+	action := strings.ToLower(strings.TrimSpace(args[0]))
+	behavior := strings.ToLower(strings.TrimSpace(args[1]))
+	if !isPermissionBehavior(behavior) {
+		return fmt.Errorf("permission behavior must be allow, deny, or ask")
+	}
+	rule := strings.TrimSpace(strings.Join(args[2:], " "))
+	if rule == "" {
+		return fmt.Errorf("permission rule is required")
+	}
+
+	switch action {
+	case "add":
+		if err := updateUserPermissionRules(slash.defaultWorkDir, behavior, rule, true); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(slash.streams.Out, "added %s permission: %s\n", behavior, rule)
+		return err
+	case "remove":
+		if err := updateUserPermissionRules(slash.defaultWorkDir, behavior, rule, false); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(slash.streams.Out, "removed %s permission: %s\n", behavior, rule)
+		return err
+	default:
+		return fmt.Errorf("usage: /permissions [list|add <allow|deny|ask> <rule>|remove <allow|deny|ask> <rule>]")
+	}
+}
+
+func handlePluginCommand(args []string, slash slashContext) error {
+	if len(args) == 0 || args[0] == "list" || args[0] == "status" {
+		return listPlugins(slash)
+	}
+
+	switch args[0] {
+	case "install-local":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: /plugin install-local <plugin-id> <path>")
+		}
+		installer := plugins.Installer{
+			CacheDir:       filepath.Join(slash.home, "plugins", "cache"),
+			InstalledStore: plugins.InstalledPluginStore{Path: installedPluginsPath(slash.home)},
+		}
+		info, err := installer.InstallLocal(args[1], args[2], plugins.PluginScopeUser, slash.defaultWorkDir)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(slash.streams.Out, "installed plugin %s at %s\n", info.PluginID, info.InstallPath)
+		return err
+	case "uninstall":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: /plugin uninstall <plugin-id>")
+		}
+		installer := plugins.Installer{InstalledStore: plugins.InstalledPluginStore{Path: installedPluginsPath(slash.home)}}
+		if err := installer.Uninstall(args[1], appsettings.SettingsFilePathForSource(appsettings.SourceUser, slash.defaultWorkDir)); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(slash.streams.Out, "uninstalled plugin %s\n", args[1])
+		return err
+	case "enable", "disable":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: /plugin %s <plugin-id>", args[0])
+		}
+		enabled := args[0] == "enable"
+		if err := plugins.UpdateEnabledPluginSetting(appsettings.SettingsFilePathForSource(appsettings.SourceUser, slash.defaultWorkDir), args[1], enabled); err != nil {
+			return err
+		}
+		word := "disabled"
+		if enabled {
+			word = "enabled"
+		}
+		_, err := fmt.Fprintf(slash.streams.Out, "%s plugin %s\n", word, args[1])
+		return err
+	default:
+		return fmt.Errorf("usage: /plugin [list|install-local <id> <path>|uninstall <id>|enable <id>|disable <id>]")
+	}
+}
+
+func handleBranchCommand(args []string, slash slashContext) error {
+	action := "show"
+	if len(args) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args[0]))
+	}
+
+	switch action {
+	case "", "show", "current":
+		branch, err := gitCommandOutput(slash.defaultWorkDir, "branch", "--show-current")
+		if err != nil {
+			return err
+		}
+		branch = strings.TrimSpace(branch)
+		if branch == "" {
+			_, err = fmt.Fprintln(slash.streams.Out, "current_branch: detached")
+			return err
+		}
+		_, err = fmt.Fprintf(slash.streams.Out, "current_branch: %s\n", branch)
+		return err
+	case "list":
+		output, err := gitCommandOutput(slash.defaultWorkDir, "branch", "--list", "--format=%(refname:short)")
+		if err != nil {
+			return err
+		}
+		branches := splitNonEmptyLines(output)
+		if len(branches) == 0 {
+			_, err = fmt.Fprintln(slash.streams.Out, "no branches")
+			return err
+		}
+		sort.Strings(branches)
+		_, err = fmt.Fprintln(slash.streams.Out, strings.Join(branches, "\n"))
+		return err
+	case "create":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: /branch create <name>")
+		}
+		if _, err := gitCommandOutput(slash.defaultWorkDir, "branch", args[1]); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(slash.streams.Out, "created branch %s\n", args[1])
+		return err
+	case "switch", "checkout":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: /branch switch <name>")
+		}
+		if _, err := gitCommandOutput(slash.defaultWorkDir, "switch", args[1]); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(slash.streams.Out, "switched to branch %s\n", args[1])
+		return err
+	case "delete", "remove":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: /branch delete <name>")
+		}
+		if _, err := gitCommandOutput(slash.defaultWorkDir, "branch", "-d", args[1]); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(slash.streams.Out, "deleted branch %s\n", args[1])
+		return err
+	default:
+		return fmt.Errorf("usage: /branch [show|list|create <name>|switch <name>|delete <name>]")
+	}
+}
+
+func handleTagCommand(args []string, slash slashContext) error {
+	action := "list"
+	rest := args
+	if len(args) > 0 {
+		switch strings.ToLower(strings.TrimSpace(args[0])) {
+		case "list", "show":
+			action = "list"
+			rest = args[1:]
+		case "add", "remove":
+			action = strings.ToLower(strings.TrimSpace(args[0]))
+			rest = args[1:]
+		}
+	}
+
+	switch action {
+	case "list":
+		if len(rest) > 1 {
+			return fmt.Errorf("usage: /tag list [<session-id>|latest]")
+		}
+		session, err := resolveSession(rest, slash.home)
+		if err != nil {
+			return err
+		}
+		tags := "(none)"
+		if len(session.Tags) > 0 {
+			tags = strings.Join(session.Tags, ", ")
+		}
+		_, err = fmt.Fprintf(slash.streams.Out, "session_id: %s\ntags: %s\n", session.ID, tags)
+		return err
+	case "add", "remove":
+		if len(rest) < 1 {
+			return fmt.Errorf("usage: /tag %s <tag> [<session-id>|latest]", action)
+		}
+		tag := strings.TrimSpace(rest[0])
+		if tag == "" {
+			return fmt.Errorf("tag is required")
+		}
+		session, err := resolveSession(rest[1:], slash.home)
+		if err != nil {
+			return err
+		}
+		if action == "add" {
+			session.AddTag(tag)
+		} else {
+			session.RemoveTag(tag)
+		}
+		if _, err := session.Save(slash.home); err != nil {
+			return err
+		}
+		verb := "added"
+		if action == "remove" {
+			verb = "removed"
+		}
+		_, err = fmt.Fprintf(slash.streams.Out, "%s tag %s on session %s\n", verb, tag, session.ID)
+		return err
+	default:
+		return fmt.Errorf("usage: /tag [list|add <tag>|remove <tag>] [<session-id>|latest]")
+	}
+}
+
+func handleExportCommand(args []string, slash slashContext) error {
+	sessionToken, format, outputPath, err := parseExportArgs(args)
+	if err != nil {
+		return err
+	}
+	session, err := resolveSession([]string{sessionToken}, slash.home)
+	if err != nil {
+		return err
+	}
+
+	var data []byte
+	switch format {
+	case "json":
+		data, err = session.Export()
+	case "markdown":
+		data = []byte(formatSessionMarkdown(session))
+	default:
+		err = fmt.Errorf("unsupported export format: %s", format)
+	}
+	if err != nil {
+		return err
+	}
+
+	if outputPath == "" {
+		_, err = fmt.Fprintln(slash.streams.Out, strings.TrimRight(string(data), "\n"))
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(slash.streams.Out, "exported session %s to %s\n", session.ID, outputPath)
+	return err
+}
+
+func handleUsageCommand(args []string, slash slashContext) error {
+	mode := "summary"
+	limit := 10
+	if len(args) > 0 {
+		if parsed, err := strconv.Atoi(args[0]); err == nil {
+			mode = "sessions"
+			limit = parsed
+		} else {
+			mode = strings.ToLower(strings.TrimSpace(args[0]))
+		}
+	}
+	if len(args) > 1 {
+		parsed, err := strconv.Atoi(args[1])
+		if err != nil {
+			return fmt.Errorf("invalid limit: %s", args[1])
+		}
+		limit = parsed
+	}
+	if limit <= 0 {
+		return fmt.Errorf("limit must be greater than zero")
+	}
+
+	sm := state.NewSessionManager(slash.home)
+	switch mode {
+	case "", "summary":
+		stats, err := sm.GetSessionStats()
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(
+			slash.streams.Out,
+			"sessions: %d\narchived_sessions: %d\nmessages: %d\ntotal_tokens: %d\nestimated_cost_usd: %.6f\n",
+			stats.TotalSessions,
+			stats.ArchivedSessions,
+			stats.TotalMessages,
+			stats.TotalTokens,
+			stats.TotalCost,
+		)
+		return err
+	case "sessions", "list":
+		sessions, err := sm.ListSessions(state.SearchOptions{IncludeArchived: true, SortBy: "updated", Limit: limit})
+		if err != nil {
+			return err
+		}
+		if len(sessions) == 0 {
+			_, err = fmt.Fprintln(slash.streams.Out, "no sessions")
+			return err
+		}
+		for _, session := range sessions {
+			last := singleLinePreview(session.LastUserMessage(), 64)
+			fmt.Fprintf(
+				slash.streams.Out,
+				"%s  %s  tokens=%d  cost=%.6f  %s\n",
+				session.UpdatedAt.Format("2006-01-02 15:04"),
+				session.ID,
+				session.Usage.TotalTokens,
+				session.Usage.EstimatedCostUSD,
+				last,
+			)
+		}
+		return nil
+	default:
+		return fmt.Errorf("usage: /usage [summary|sessions] [<limit>]")
 	}
 }
 
@@ -796,6 +1284,395 @@ func setConfigValue(cfg *config.Config, key, value string) error {
 		return fmt.Errorf("unsupported config key %q", key)
 	}
 	return nil
+}
+
+func gitOutput(dir string, args ...string) string {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func gitChangedCount(dir string) int {
+	files, err := gitChangedFiles(dir)
+	if err != nil {
+		return -1
+	}
+	return len(files)
+}
+
+func gitTrackedFiles(dir string) ([]string, error) {
+	cmd := exec.Command("git", "ls-files")
+	cmd.Dir = dir
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	return splitNonEmptyLines(string(output)), nil
+}
+
+func gitChangedFiles(dir string) ([]string, error) {
+	cmd := exec.Command("git", "status", "--short")
+	cmd.Dir = dir
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, line := range splitNonEmptyLines(string(output)) {
+		if len(line) < 4 {
+			continue
+		}
+		path := strings.TrimSpace(line[3:])
+		if strings.Contains(path, " -> ") {
+			parts := strings.Split(path, " -> ")
+			path = parts[len(parts)-1]
+		}
+		if path != "" {
+			files = append(files, path)
+		}
+	}
+	return files, nil
+}
+
+func walkProjectFiles(root string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		name := entry.Name()
+		if entry.IsDir() {
+			switch name {
+			case ".git", ".claude", ".gocache", ".gomodcache", "node_modules", "vendor":
+				return filepath.SkipDir
+			default:
+				return nil
+			}
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return nil
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	return files, err
+}
+
+func splitNonEmptyLines(value string) []string {
+	lines := strings.Split(value, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func listPermissions(slash slashContext) error {
+	merged := appsettings.LoadMergedSettings(slash.defaultWorkDir)
+	if len(merged.Errors) > 0 {
+		return fmt.Errorf("cannot read invalid settings: %s", merged.Errors[0].Message)
+	}
+
+	perms := permissionDocument(merged.Settings)
+	var b strings.Builder
+	fmt.Fprintf(&b, "permission_mode: %s\n", slash.cfg.PermissionMode)
+	if defaultMode, ok := perms["defaultMode"].(string); ok && defaultMode != "" {
+		fmt.Fprintf(&b, "settings_default_mode: %s\n", defaultMode)
+	}
+	for _, behavior := range []string{"allow", "deny", "ask"} {
+		rules := stringSliceFromAny(perms[behavior])
+		b.WriteString(behavior + ":\n")
+		if len(rules) == 0 {
+			b.WriteString("  (none)\n")
+			continue
+		}
+		sort.Strings(rules)
+		for _, rule := range rules {
+			fmt.Fprintf(&b, "  - %s\n", rule)
+		}
+	}
+	_, err := fmt.Fprint(slash.streams.Out, b.String())
+	return err
+}
+
+func updateUserPermissionRules(workingDir string, behavior string, rule string, add bool) error {
+	userSettings := appsettings.LoadSettingsForSource(appsettings.SourceUser, workingDir)
+	if len(userSettings.Errors) > 0 {
+		return fmt.Errorf("cannot update invalid user settings: %s", userSettings.Errors[0].Message)
+	}
+
+	perms := permissionDocument(userSettings.Settings)
+	rules := stringSliceFromAny(perms[behavior])
+	seen := make(map[string]bool, len(rules)+1)
+	next := make([]any, 0, len(rules)+1)
+	for _, existing := range rules {
+		if existing == rule {
+			seen[existing] = true
+			if add {
+				next = append(next, existing)
+			}
+			continue
+		}
+		if !seen[existing] {
+			next = append(next, existing)
+			seen[existing] = true
+		}
+	}
+	if add && !seen[rule] {
+		next = append(next, rule)
+	}
+
+	update := appsettings.Document{
+		"permissions": appsettings.Document{
+			behavior: next,
+		},
+	}
+	return appsettings.UpdateSettingsForSource(appsettings.EditableUser, workingDir, update)
+}
+
+func permissionDocument(doc appsettings.Document) map[string]any {
+	if doc == nil {
+		return map[string]any{}
+	}
+	switch perms := doc["permissions"].(type) {
+	case map[string]any:
+		return perms
+	case appsettings.Document:
+		return map[string]any(perms)
+	default:
+		return map[string]any{}
+	}
+}
+
+func stringSliceFromAny(value any) []string {
+	switch typed := value.(type) {
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return nil
+	}
+}
+
+func isPermissionBehavior(value string) bool {
+	switch value {
+	case "allow", "deny", "ask":
+		return true
+	default:
+		return false
+	}
+}
+
+func pluginStatusCounts(slash slashContext) (int, int) {
+	loaded, _ := loadConfiguredPlugins(slash)
+	disabled := 0
+	for _, plugin := range loaded {
+		if !plugin.Enabled {
+			disabled++
+		}
+	}
+	return len(loaded), disabled
+}
+
+func listPlugins(slash slashContext) error {
+	loaded, err := loadConfiguredPlugins(slash)
+	if err != nil {
+		return err
+	}
+	if len(loaded) == 0 {
+		_, err = fmt.Fprintln(slash.streams.Out, "no plugins configured")
+		return err
+	}
+	lines := make([]string, 0, len(loaded))
+	for _, plugin := range loaded {
+		status := "enabled"
+		if !plugin.Enabled {
+			status = "disabled"
+		}
+		version := plugin.Manifest.Version
+		if version == "" {
+			version = "unversioned"
+		}
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s", plugin.Source, version, status, plugin.Path))
+	}
+	sort.Strings(lines)
+	_, err = fmt.Fprintln(slash.streams.Out, strings.Join(lines, "\n"))
+	return err
+}
+
+func loadConfiguredPlugins(slash slashContext) ([]*plugins.LoadedPlugin, error) {
+	enabled := enabledPluginSettings(slash.defaultWorkDir)
+	var loaded []*plugins.LoadedPlugin
+	if strings.TrimSpace(slash.cfg.PluginDir) != "" {
+		fromDir, err := plugins.NewLoader(slash.cfg.PluginDir).LoadDetailed(plugins.LoadOptions{
+			Marketplace:     InlinePluginMarketplaceForCLI(),
+			Repository:      "plugin_dir",
+			EnabledPlugins:  enabled,
+			IncludeDisabled: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		loaded = append(loaded, fromDir...)
+	}
+	registry, err := (plugins.InstalledPluginStore{Path: installedPluginsPath(slash.home)}).Load()
+	if err != nil {
+		return nil, err
+	}
+	installed, err := plugins.LoadInstalledPlugins(registry, enabled)
+	if err != nil {
+		return nil, err
+	}
+	loaded = append(loaded, installed...)
+	return loaded, nil
+}
+
+func enabledPluginSettings(workingDir string) map[string]bool {
+	merged := appsettings.LoadMergedSettings(workingDir)
+	raw, ok := merged.Settings["enabledPlugins"].(map[string]any)
+	if !ok {
+		if doc, ok := merged.Settings["enabledPlugins"].(appsettings.Document); ok {
+			raw = map[string]any(doc)
+		}
+	}
+	out := map[string]bool{}
+	for id, value := range raw {
+		if enabled, ok := value.(bool); ok {
+			out[id] = enabled
+		}
+	}
+	return out
+}
+
+func installedPluginsPath(home string) string {
+	return filepath.Join(home, "installed_plugins.json")
+}
+
+func gitCommandOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s failed: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
+}
+
+func parseExportArgs(args []string) (sessionToken string, format string, outputPath string, err error) {
+	sessionToken = "latest"
+	format = "json"
+	if len(args) == 0 {
+		return sessionToken, format, "", nil
+	}
+
+	if normalized, ok := normalizeExportFormat(args[0]); ok {
+		format = normalized
+		if len(args) > 1 {
+			outputPath = args[1]
+		}
+		if len(args) > 2 {
+			return "", "", "", fmt.Errorf("usage: /export [<session-id>|latest] [json|markdown] [<output-path>]")
+		}
+		return sessionToken, format, outputPath, nil
+	}
+
+	sessionToken = args[0]
+	if len(args) > 1 {
+		if normalized, ok := normalizeExportFormat(args[1]); ok {
+			format = normalized
+			if len(args) > 2 {
+				outputPath = args[2]
+			}
+			if len(args) > 3 {
+				return "", "", "", fmt.Errorf("usage: /export [<session-id>|latest] [json|markdown] [<output-path>]")
+			}
+			return sessionToken, format, outputPath, nil
+		}
+		outputPath = args[1]
+	}
+	if len(args) > 2 {
+		return "", "", "", fmt.Errorf("usage: /export [<session-id>|latest] [json|markdown] [<output-path>]")
+	}
+	return sessionToken, format, outputPath, nil
+}
+
+func normalizeExportFormat(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "json":
+		return "json", true
+	case "markdown", "md":
+		return "markdown", true
+	default:
+		return "", false
+	}
+}
+
+func formatSessionMarkdown(session *state.Session) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "# Claude Codex Session %s\n\n", session.ID)
+	fmt.Fprintf(&out, "- Working dir: %s\n", session.WorkingDir)
+	fmt.Fprintf(&out, "- Started: %s\n", session.StartedAt.Format(time.RFC3339))
+	fmt.Fprintf(&out, "- Updated: %s\n", session.UpdatedAt.Format(time.RFC3339))
+	fmt.Fprintf(&out, "- Messages: %d\n", len(session.Messages))
+	fmt.Fprintf(&out, "- Total tokens: %d\n", session.Usage.TotalTokens)
+	if len(session.Tags) > 0 {
+		fmt.Fprintf(&out, "- Tags: %s\n", strings.Join(session.Tags, ", "))
+	}
+	if session.Description != "" {
+		fmt.Fprintf(&out, "- Description: %s\n", session.Description)
+	}
+	out.WriteString("\n")
+
+	for i, msg := range session.Messages {
+		role := msg.Role
+		if msg.Hidden {
+			role += " hidden"
+		}
+		fmt.Fprintf(&out, "## %d. %s\n\n", i+1, role)
+		if msg.ToolName != "" {
+			fmt.Fprintf(&out, "Tool: %s\n\n", msg.ToolName)
+		}
+		content := msg.Content
+		if msg.Role == "tool" && content == "" {
+			content = msg.ToolOutput
+		}
+		content = strings.TrimSpace(content)
+		if content == "" {
+			content = "(empty)"
+		}
+		out.WriteString(content)
+		out.WriteString("\n\n")
+	}
+	return out.String()
+}
+
+func singleLinePreview(value string, max int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		return "(no user message)"
+	}
+	if len(value) <= max {
+		return value
+	}
+	if max <= 3 {
+		return value[:max]
+	}
+	return value[:max-3] + "..."
 }
 
 func formatToolCheck(name string) string {

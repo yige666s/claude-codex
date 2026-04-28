@@ -70,26 +70,48 @@ func TestAgentToolForwardsExtendedFields(t *testing.T) {
 	}
 }
 
-func TestAgentToolRejectsUnsupportedBackground(t *testing.T) {
-	tool := NewTool("/tmp/project", func(_ context.Context, request Request) (string, error) {
-		t.Fatalf("runner should not be called: %+v", request)
-		return "", nil
-	})
+func TestAgentToolStartsBackgroundTask(t *testing.T) {
+	done := make(chan struct{})
+	manager := NewBackgroundManager()
+	tool := NewToolWithBackgroundManager("/tmp/project", func(_ context.Context, request Request) (string, error) {
+		defer close(done)
+		if !request.RunInBackground {
+			t.Fatalf("expected background request: %+v", request)
+		}
+		return "background ok", nil
+	}, manager)
 
 	input, _ := json.Marshal(map[string]any{
 		"prompt":            "inspect files",
 		"run_in_background": true,
 	})
 
-	if _, err := tool.Execute(context.Background(), input); err == nil || err.Error() != "agent background execution is not implemented" {
-		t.Fatalf("unexpected error: %v", err)
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("agent execute: %v", err)
+	}
+	var payload struct {
+		AgentID string `json:"agent_id"`
+		Status  string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &payload); err != nil {
+		t.Fatalf("decode background payload: %v", err)
+	}
+	if payload.AgentID == "" || payload.Status != string(BackgroundRunning) {
+		t.Fatalf("unexpected background payload: %+v", payload)
+	}
+	<-done
+	task, ok := manager.Get(payload.AgentID)
+	if !ok || task.Status != BackgroundCompleted || task.Output != "background ok" {
+		t.Fatalf("unexpected background task: ok=%v task=%+v", ok, task)
 	}
 }
 
-func TestAgentToolRejectsUnsupportedIsolation(t *testing.T) {
+func TestAgentToolForwardsWorktreeIsolation(t *testing.T) {
+	var captured Request
 	tool := NewTool("/tmp/project", func(_ context.Context, request Request) (string, error) {
-		t.Fatalf("runner should not be called: %+v", request)
-		return "", nil
+		captured = request
+		return "ok", nil
 	})
 
 	input, _ := json.Marshal(map[string]any{
@@ -97,8 +119,11 @@ func TestAgentToolRejectsUnsupportedIsolation(t *testing.T) {
 		"isolation": "worktree",
 	})
 
-	if _, err := tool.Execute(context.Background(), input); err == nil || err.Error() != `agent isolation "worktree" is not implemented` {
-		t.Fatalf("unexpected error: %v", err)
+	if _, err := tool.Execute(context.Background(), input); err != nil {
+		t.Fatalf("agent execute: %v", err)
+	}
+	if captured.Isolation != "worktree" {
+		t.Fatalf("expected worktree isolation to be forwarded, got %+v", captured)
 	}
 }
 
@@ -208,25 +233,14 @@ func TestAgentToolRejectsUnsupportedExecutionModes(t *testing.T) {
 		return req.Prompt, nil
 	})
 
-	t.Run("background", func(t *testing.T) {
-		input, _ := json.Marshal(map[string]any{
-			"prompt":            "Inspect src/auth",
-			"run_in_background": true,
-		})
-		_, err := tool.Execute(context.Background(), input)
-		if err == nil || !strings.Contains(err.Error(), "background") {
-			t.Fatalf("expected background error, got %v", err)
-		}
-	})
-
-	t.Run("isolation", func(t *testing.T) {
+	t.Run("remote isolation", func(t *testing.T) {
 		input, _ := json.Marshal(map[string]any{
 			"prompt":    "Inspect src/auth",
-			"isolation": "worktree",
+			"isolation": "remote",
 		})
 		_, err := tool.Execute(context.Background(), input)
-		if err == nil || !strings.Contains(err.Error(), "isolation") {
-			t.Fatalf("expected isolation error, got %v", err)
+		if err == nil || !strings.Contains(err.Error(), "remote agent backend") {
+			t.Fatalf("expected remote isolation error, got %v", err)
 		}
 	})
 

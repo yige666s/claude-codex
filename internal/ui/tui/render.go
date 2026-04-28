@@ -855,7 +855,7 @@ func renderPermissionDialog(request permissions.Request) string {
 		}
 		lines := permissionDialogHeader(request, "Permission Request")
 		lines = appendPermissionDetails(lines, request.Metadata)
-		lines = append(lines, "", "[y] allow  [n] deny")
+		lines = append(lines, "", permissionDecisionKeys(request))
 		return strings.Join(lines, "\n")
 	}
 }
@@ -872,7 +872,7 @@ func renderBashPermissionDialog(request permissions.Request) string {
 	if label := shellSuggestionLabel(request); label != "" {
 		lines = append(lines, "", "Persisted allow hint:", "- "+label)
 	}
-	lines = append(lines, "", "Decision:", "- allow command execution", "- deny and return to prompt", "", "[y] allow  [n] deny")
+	lines = append(lines, "", "Decision:", "- allow command execution", "- deny and return to prompt", "", permissionDecisionKeys(request))
 	return strings.Join(lines, "\n")
 }
 
@@ -892,7 +892,7 @@ func renderFilePermissionDialog(request permissions.Request) string {
 		lines = append(lines, "New: "+newValue)
 	}
 	lines = appendPermissionDetails(lines, filterPermissionMetadata(request.Metadata, "path", "filename", "old", "new"))
-	lines = append(lines, "", "[y] allow  [n] deny")
+	lines = append(lines, "", permissionDecisionKeys(request))
 	return strings.Join(lines, "\n")
 }
 
@@ -903,7 +903,7 @@ func renderWebPermissionDialog(request permissions.Request) string {
 	}
 	lines = appendPermissionDetails(lines, filterPermissionMetadata(request.Metadata, "url"))
 	lines = append(lines, "", "Decision:", "- allow HTTP fetch", "- deny and return to prompt")
-	lines = append(lines, "", "[y] allow  [n] deny")
+	lines = append(lines, "", permissionDecisionKeys(request))
 	return strings.Join(lines, "\n")
 }
 
@@ -923,7 +923,7 @@ func renderAgentPermissionDialog(request permissions.Request) string {
 	}
 	lines = appendPermissionDetails(lines, filterPermissionMetadata(request.Metadata, "description", "team_name", "subagent_type", "model"))
 	lines = append(lines, "", "Decision:", "- run isolated subagent request", "- deny and return to prompt")
-	lines = append(lines, "", "[y] allow  [n] deny")
+	lines = append(lines, "", permissionDecisionKeys(request))
 	return strings.Join(lines, "\n")
 }
 
@@ -940,7 +940,7 @@ func renderMCPPermissionDialog(request permissions.Request) string {
 	}
 	lines = appendPermissionDetails(lines, filterPermissionMetadata(request.Metadata, "server", "mcp_tool", "uri"))
 	lines = append(lines, "", "Decision:", "- allow MCP tool invocation", "- deny and return to prompt")
-	lines = append(lines, "", "[y] allow  [n] deny")
+	lines = append(lines, "", permissionDecisionKeys(request))
 	return strings.Join(lines, "\n")
 }
 
@@ -954,7 +954,7 @@ func renderTeamPermissionDialog(request permissions.Request) string {
 	}
 	lines = appendPermissionDetails(lines, filterPermissionMetadata(request.Metadata, "team_name", "operation"))
 	lines = append(lines, "", "Decision:", "- allow team state change", "- deny and return to prompt")
-	lines = append(lines, "", "[y] allow  [n] deny")
+	lines = append(lines, "", permissionDecisionKeys(request))
 	return strings.Join(lines, "\n")
 }
 
@@ -969,6 +969,13 @@ func permissionDialogHeader(request permissions.Request, title string) []string 
 		lines = append(lines, "Summary: "+request.Summary)
 	}
 	return lines
+}
+
+func permissionDecisionKeys(request permissions.Request) string {
+	if len(request.Suggestions) > 0 {
+		return "[y] allow once  [a] always allow  [n] deny"
+	}
+	return "[y] allow once  [n] deny"
 }
 
 func appendPermissionDetails(lines []string, metadata map[string]string) []string {

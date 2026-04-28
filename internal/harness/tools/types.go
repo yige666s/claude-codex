@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"sync"
 
 	"claude-codex/internal/public/types"
 )
@@ -58,43 +59,97 @@ type ToolUseContext struct {
 
 	// MaxConcurrency limits concurrent tool execution
 	MaxConcurrency int
+
+	mu          *sync.RWMutex
+	toolsByName map[string]ToolExecutor
 }
 
 // NewToolUseContext creates a new tool use context.
 func NewToolUseContext(workingDir, sessionID string, tools []ToolExecutor) *ToolUseContext {
-	return &ToolUseContext{
+	ctx := &ToolUseContext{
 		WorkingDir:           workingDir,
 		SessionID:            sessionID,
 		InProgressToolUseIDs: make(map[string]bool),
-		Tools:                tools,
 		PermissionMode:       "normal",
 		MaxConcurrency:       10,
+		mu:                   &sync.RWMutex{},
 	}
+	ctx.SetTools(tools)
+	return ctx
+}
+
+func (ctx *ToolUseContext) mutex() *sync.RWMutex {
+	if ctx.mu == nil {
+		ctx.mu = &sync.RWMutex{}
+	}
+	return ctx.mu
+}
+
+// SetTools replaces the available tools and refreshes name lookup state.
+func (ctx *ToolUseContext) SetTools(tools []ToolExecutor) {
+	mu := ctx.mutex()
+	mu.Lock()
+	defer mu.Unlock()
+
+	ctx.Tools = append(ctx.Tools[:0], tools...)
+	ctx.toolsByName = make(map[string]ToolExecutor, len(ctx.Tools))
+	for _, tool := range ctx.Tools {
+		ctx.toolsByName[tool.Name()] = tool
+	}
+}
+
+// ToolExecutors returns a snapshot of the available tools.
+func (ctx *ToolUseContext) ToolExecutors() []ToolExecutor {
+	mu := ctx.mutex()
+	mu.RLock()
+	defer mu.RUnlock()
+
+	return append([]ToolExecutor(nil), ctx.Tools...)
 }
 
 // AddInProgressToolUse marks a tool as in progress.
 func (ctx *ToolUseContext) AddInProgressToolUse(toolUseID string) {
+	mu := ctx.mutex()
+	mu.Lock()
+	defer mu.Unlock()
 	ctx.InProgressToolUseIDs[toolUseID] = true
 }
 
 // RemoveInProgressToolUse marks a tool as complete.
 func (ctx *ToolUseContext) RemoveInProgressToolUse(toolUseID string) {
+	mu := ctx.mutex()
+	mu.Lock()
+	defer mu.Unlock()
 	delete(ctx.InProgressToolUseIDs, toolUseID)
 }
 
 // IsInProgress checks if a tool is currently executing.
 func (ctx *ToolUseContext) IsInProgress(toolUseID string) bool {
+	mu := ctx.mutex()
+	mu.RLock()
+	defer mu.RUnlock()
 	return ctx.InProgressToolUseIDs[toolUseID]
+}
+
+// GetInProgressToolUseIDs returns a snapshot of currently executing tool use IDs.
+func (ctx *ToolUseContext) GetInProgressToolUseIDs() []string {
+	mu := ctx.mutex()
+	mu.RLock()
+	defer mu.RUnlock()
+
+	ids := make([]string, 0, len(ctx.InProgressToolUseIDs))
+	for id := range ctx.InProgressToolUseIDs {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // FindToolByName finds a tool by name.
 func (ctx *ToolUseContext) FindToolByName(name string) ToolExecutor {
-	for _, tool := range ctx.Tools {
-		if tool.Name() == name {
-			return tool
-		}
-	}
-	return nil
+	mu := ctx.mutex()
+	mu.RLock()
+	defer mu.RUnlock()
+	return ctx.toolsByName[name]
 }
 
 // ToolUseBlock represents a tool use request from the assistant.

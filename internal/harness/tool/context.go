@@ -105,41 +105,41 @@ type ToolOptions struct {
 
 // ToolState manages mutable state during tool execution.
 type ToolState struct {
-	mu                          sync.RWMutex
-	InProgressToolUseIDs        map[string]bool
+	mu                             sync.RWMutex
+	InProgressToolUseIDs           map[string]bool
 	HasInterruptibleToolInProgress bool
-	ResponseLength              int
-	FileHistoryState            interface{}
-	AttributionState            interface{}
-	FileStateCache              interface{}
-	SDKStatus                   interface{}
+	ResponseLength                 int
+	FileHistoryState               interface{}
+	AttributionState               interface{}
+	FileStateCache                 interface{}
+	SDKStatus                      interface{}
 }
 
 // ToolCallbacks contains callback functions for tool operations.
 type ToolCallbacks struct {
-	GetWorkingDirectory         func() string
-	GetSessionID                func() string
-	GetMainThreadAgentType      func() string
-	SetAppState                 func(func(interface{}) interface{})
-	GetAppState                 func() interface{}
-	GetToolPermissionContext    func() (*ToolPermissionContext, error)
-	SetToolJSX                  func(interface{})
-	AddNotification             func(interface{})
-	AppendSystemMessage         func(interface{})
-	SendOSNotification          func(message, notificationType string)
-	SetInProgressToolUseIDs     func(func(map[string]bool) map[string]bool)
+	GetWorkingDirectory               func() string
+	GetSessionID                      func() string
+	GetMainThreadAgentType            func() string
+	SetAppState                       func(func(interface{}) interface{})
+	GetAppState                       func() interface{}
+	GetToolPermissionContext          func() (*ToolPermissionContext, error)
+	SetToolJSX                        func(interface{})
+	AddNotification                   func(interface{})
+	AppendSystemMessage               func(interface{})
+	SendOSNotification                func(message, notificationType string)
+	SetInProgressToolUseIDs           func(func(map[string]bool) map[string]bool)
 	SetHasInterruptibleToolInProgress func(bool)
-	SetResponseLength           func(func(int) int)
-	PushAPIMetricsEntry         func(ttftMs int)
-	SetStreamMode               func(mode string)
-	OnCompactProgress           func(event CompactProgressEvent)
-	SetSDKStatus                func(status interface{})
-	OpenMessageSelector         func()
-	UpdateFileHistoryState      func(func(interface{}) interface{})
-	UpdateAttributionState      func(func(interface{}) interface{})
-	SetConversationID           func(id string)
-	RequestPrompt               func(sourceName, toolInputSummary string) func(interface{}) (interface{}, error)
-	ElicitURL                   func(params interface{}, signal context.Context) (interface{}, error)
+	SetResponseLength                 func(func(int) int)
+	PushAPIMetricsEntry               func(ttftMs int)
+	SetStreamMode                     func(mode string)
+	OnCompactProgress                 func(event CompactProgressEvent)
+	SetSDKStatus                      func(status interface{})
+	OpenMessageSelector               func()
+	UpdateFileHistoryState            func(func(interface{}) interface{})
+	UpdateAttributionState            func(func(interface{}) interface{})
+	SetConversationID                 func(id string)
+	RequestPrompt                     func(sourceName, toolInputSummary string) func(interface{}) (interface{}, error)
+	ElicitURL                         func(params interface{}, signal context.Context) (interface{}, error)
 }
 
 // FileReadingLimits defines limits for file reading operations.
@@ -248,6 +248,21 @@ func (t *ToolUseContext) WithPermissionContext(permCtx *ToolPermissionContext) *
 	newCtx := *t
 	newCtx.PermissionContext = permCtx
 	return &newCtx
+}
+
+// SetTools replaces the configured tool list for this context.
+func (t *ToolUseContext) SetTools(tools []Tool) {
+	t.Options.Tools = append([]Tool(nil), tools...)
+}
+
+// Tools returns a snapshot of the configured tools.
+func (t *ToolUseContext) Tools() []Tool {
+	return append([]Tool(nil), t.Options.Tools...)
+}
+
+// FindToolByName looks up a configured tool by primary name or alias.
+func (t *ToolUseContext) FindToolByName(name string) Tool {
+	return FindToolByName(t.Options.Tools, name)
 }
 
 // Clone creates a shallow copy of the ToolUseContext.

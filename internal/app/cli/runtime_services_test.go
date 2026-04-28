@@ -153,3 +153,15 @@ func TestMakeSubagentRunnerReportsAgentSummary(t *testing.T) {
 		t.Fatalf("expected agent completed summary in events: %#v", collected)
 	}
 }
+
+func TestPrepareSubagentWorkingDirDefaults(t *testing.T) {
+	cwd := t.TempDir()
+	dir, cleanup, err := prepareSubagentWorkingDir(context.Background(), agenttool.Request{WorkingDir: cwd})
+	if err != nil {
+		t.Fatalf("prepare working dir: %v", err)
+	}
+	defer cleanup()
+	if dir != cwd {
+		t.Fatalf("unexpected dir: %q", dir)
+	}
+}

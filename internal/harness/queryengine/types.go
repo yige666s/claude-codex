@@ -7,7 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"claude-codex/internal/harness/plannerapi"
 	"claude-codex/internal/harness/tool"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 // QueryEngineConfig contains all configuration options for the QueryEngine.
@@ -15,8 +17,20 @@ type QueryEngineConfig struct {
 	// Working directory for the session
 	Cwd string
 
+	// Stable session identifier for this conversation
+	SessionID string
+
 	// Tools available for execution
 	Tools []tool.Tool
+
+	// Planner used by runtime-backed query execution
+	Planner plannerapi.Planner
+
+	// ToolDescriptors exposed to the planner for runtime-backed execution
+	ToolDescriptors []toolkit.Descriptor
+
+	// ExecuteTool executes a planned tool call when runtime-backed execution is enabled
+	ExecuteTool func(ctx context.Context, name string, input []byte) (string, error)
 
 	// Commands available (slash commands, etc.)
 	Commands []interface{}
@@ -63,6 +77,9 @@ type QueryEngineConfig struct {
 
 	// Task budget tracking
 	TaskBudget *TaskBudget
+
+	// TokenBudget controls TS-style auto-continuation until the turn reaches a token target.
+	TokenBudget *int
 
 	// JSON schema for structured output
 	JSONSchema map[string]interface{}
@@ -131,26 +148,26 @@ type OrphanedPermission struct {
 
 // Message represents a conversation message.
 type Message struct {
-	Type      string                 `json:"type"` // "user", "assistant", "system", "progress", "attachment", "stream_event", "tombstone"
-	UUID      string                 `json:"uuid"`
-	Timestamp time.Time              `json:"timestamp"`
-	Message   interface{}            `json:"message,omitempty"`
-	Content   interface{}            `json:"content,omitempty"`
-	Subtype   string                 `json:"subtype,omitempty"`
-	IsMeta    bool                   `json:"is_meta,omitempty"`
-	Data      interface{}            `json:"data,omitempty"`
-	Event     interface{}            `json:"event,omitempty"`
-	ToolUseID string                 `json:"tool_use_id,omitempty"`
-	Attachment interface{}           `json:"attachment,omitempty"`
+	Type       string      `json:"type"` // "user", "assistant", "system", "progress", "attachment", "stream_event", "tombstone"
+	UUID       string      `json:"uuid"`
+	Timestamp  time.Time   `json:"timestamp"`
+	Message    interface{} `json:"message,omitempty"`
+	Content    interface{} `json:"content,omitempty"`
+	Subtype    string      `json:"subtype,omitempty"`
+	IsMeta     bool        `json:"is_meta,omitempty"`
+	Data       interface{} `json:"data,omitempty"`
+	Event      interface{} `json:"event,omitempty"`
+	ToolUseID  string      `json:"tool_use_id,omitempty"`
+	Attachment interface{} `json:"attachment,omitempty"`
 
 	// Compact metadata
 	CompactMetadata *CompactMetadata `json:"compact_metadata,omitempty"`
 
 	// Additional fields
-	IsCompactSummary           bool   `json:"is_compact_summary,omitempty"`
-	IsVisibleInTranscriptOnly  bool   `json:"is_visible_in_transcript_only,omitempty"`
-	ToolUseResult              bool   `json:"tool_use_result,omitempty"`
-	IsApiErrorMessage          bool   `json:"is_api_error_message,omitempty"`
+	IsCompactSummary          bool `json:"is_compact_summary,omitempty"`
+	IsVisibleInTranscriptOnly bool `json:"is_visible_in_transcript_only,omitempty"`
+	ToolUseResult             bool `json:"tool_use_result,omitempty"`
+	IsApiErrorMessage         bool `json:"is_api_error_message,omitempty"`
 }
 
 // CompactMetadata contains metadata for compact boundary messages.
@@ -193,8 +210,8 @@ type SDKMessage struct {
 
 // Usage tracks token and cost usage.
 type Usage struct {
-	InputTokens        int `json:"input_tokens"`
-	OutputTokens       int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }

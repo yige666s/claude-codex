@@ -7,6 +7,7 @@ import (
 
 	"claude-codex/internal/harness/coordinator"
 	"claude-codex/internal/harness/permissions"
+	"claude-codex/internal/harness/swarm"
 	toolkit "claude-codex/internal/harness/tools"
 )
 
@@ -14,8 +15,11 @@ type createTool struct{ manager *coordinator.Manager }
 type deleteTool struct{ manager *coordinator.Manager }
 
 type createInput struct {
-	Name   string   `json:"name"`
-	Agents []string `json:"agents,omitempty"`
+	Name          string   `json:"name"`
+	Description   string   `json:"description,omitempty"`
+	LeadAgentID   string   `json:"lead_agent_id,omitempty"`
+	LeadSessionID string   `json:"lead_session_id,omitempty"`
+	Agents        []string `json:"agents,omitempty"`
 }
 
 type deleteInput struct {
@@ -30,7 +34,7 @@ func NewTeamDeleteTool(manager *coordinator.Manager) toolkit.Tool { return NewDe
 func (t *createTool) Name() string        { return "team_create" }
 func (t *createTool) Description() string { return "Create a persisted team definition." }
 func (t *createTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"agents":{"type":"array","items":{"type":"string"}}},"required":["name"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"lead_agent_id":{"type":"string"},"lead_session_id":{"type":"string"},"agents":{"type":"array","items":{"type":"string"}}},"required":["name"]}`)
 }
 func (t *createTool) Permission() permissions.Level { return permissions.LevelWrite }
 
@@ -48,6 +52,14 @@ func (t *createTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Re
 	}
 	team, err := t.manager.Create(in.Name)
 	if err != nil {
+		return toolkit.Result{}, err
+	}
+	leadAgentID := in.LeadAgentID
+	if leadAgentID == "" {
+		leadAgentID = swarm.TeamLeadName
+	}
+	if _, err := swarm.CreateTeamFile(team.Name, in.Description, leadAgentID, in.LeadSessionID); err != nil {
+		_, _ = t.manager.Delete(in.Name)
 		return toolkit.Result{}, err
 	}
 	return toolkit.Result{Output: fmt.Sprintf("Created team %q (id: %s).", team.Name, team.ID)}, nil
@@ -77,6 +89,9 @@ func (t *deleteTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Re
 	}
 	if !removed {
 		return toolkit.Result{}, fmt.Errorf("team not found: %s", in.Name)
+	}
+	if err := swarm.DeleteTeamFile(in.Name); err != nil {
+		return toolkit.Result{}, err
 	}
 	return toolkit.Result{Output: fmt.Sprintf("Deleted team %q.", in.Name)}, nil
 }

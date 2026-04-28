@@ -2,11 +2,34 @@ package query
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
+	"claude-codex/internal/harness/plannerapi"
+	"claude-codex/internal/harness/state"
+	htool "claude-codex/internal/harness/tool"
+	toolkit "claude-codex/internal/harness/tools"
 	"claude-codex/internal/public/types"
 )
+
+type runtimePlanner struct {
+	call plannerapi.ToolCall
+}
+
+func (p runtimePlanner) Next(_ context.Context, session *state.Session, _ []toolkit.Descriptor) (plannerapi.Plan, error) {
+	last := session.LastMessage()
+	if last != nil && last.Role == "tool" {
+		return plannerapi.Plan{
+			AssistantText: "handled: " + last.ToolOutput,
+			StopReason:    "end_turn",
+		}, nil
+	}
+	return plannerapi.Plan{
+		ToolCalls:  []plannerapi.ToolCall{p.call},
+		StopReason: "tool_use",
+	}, nil
+}
 
 func TestNewQueryEngine(t *testing.T) {
 	config := &QueryEngineConfig{
@@ -283,6 +306,154 @@ done:
 	userMsg := messages[0]
 	if !userMsg.IsMeta {
 		t.Error("Expected IsMeta to be true")
+	}
+}
+
+func TestQueryEngine_SubmitMessage_ExecutesOrphanedPermissionTool(t *testing.T) {
+	config := &QueryEngineConfig{
+		WorkingDir:     t.TempDir(),
+		SessionID:      "orphan-session",
+		FallbackModel:  "claude-sonnet-4-6",
+		PermissionMode: "normal",
+		Tools:          []htool.Tool{htool.NewToolBuilder("fake_tool").Build()},
+		InitialMessages: []types.Message{{
+			Type: types.MessageTypeAssistant,
+			Content: []types.ContentBlock{{
+				Type:  "tool_use",
+				ID:    "tool-1",
+				Name:  "fake_tool",
+				Input: map[string]interface{}{"path": "old"},
+			}},
+		}},
+		OrphanedPermission: &OrphanedPermission{
+			ToolName:  "fake_tool",
+			ToolUseID: "tool-1",
+			Input:     map[string]any{"path": "approved"},
+		},
+		ExecuteTool: func(ctx context.Context, name string, input json.RawMessage) (string, error) {
+			if name != "fake_tool" {
+				t.Fatalf("unexpected tool name %q", name)
+			}
+			var decoded map[string]string
+			if err := json.Unmarshal(input, &decoded); err != nil {
+				t.Fatalf("invalid input: %v", err)
+			}
+			if decoded["path"] != "approved" {
+				t.Fatalf("orphaned permission input was not used: %#v", decoded)
+			}
+			return "executed orphaned tool", nil
+		},
+	}
+
+	engine, err := NewQueryEngine(config)
+	if err != nil {
+		t.Fatalf("NewQueryEngine failed: %v", err)
+	}
+
+	ch, err := engine.SubmitMessage(context.Background(), "resume", nil)
+	if err != nil {
+		t.Fatalf("SubmitMessage failed: %v", err)
+	}
+	for range ch {
+	}
+
+	messages := engine.GetMessages()
+	var result *types.Message
+	for i := range messages {
+		for _, block := range messages[i].Content {
+			if block.Type == "tool_result" && block.ToolUseID == "tool-1" {
+				result = &messages[i]
+			}
+		}
+	}
+	if result == nil {
+		t.Fatalf("expected tool_result message, got %#v", messages)
+	}
+	if got := result.Content[0].Content; got != "executed orphaned tool" {
+		t.Fatalf("unexpected tool result content %q", got)
+	}
+}
+
+func TestQueryEngine_SubmitMessage_UsesPlannerRuntime(t *testing.T) {
+	config := &QueryEngineConfig{
+		WorkingDir:     t.TempDir(),
+		SessionID:      "runtime-session",
+		FallbackModel:  "claude-sonnet-4-6",
+		PermissionMode: "normal",
+		Planner: runtimePlanner{
+			call: plannerapi.ToolCall{
+				ID:    "tool-1",
+				Name:  "fake_tool",
+				Input: json.RawMessage(`{"path":"README.md"}`),
+			},
+		},
+		ToolDescriptors: []toolkit.Descriptor{{Name: "fake_tool"}},
+		ExecuteTool: func(context.Context, string, json.RawMessage) (string, error) {
+			return "tool output", nil
+		},
+		MaxTurns: 3,
+	}
+
+	engine, err := NewQueryEngine(config)
+	if err != nil {
+		t.Fatalf("NewQueryEngine failed: %v", err)
+	}
+
+	ch, err := engine.SubmitMessage(context.Background(), "run tool", nil)
+	if err != nil {
+		t.Fatalf("SubmitMessage failed: %v", err)
+	}
+
+	for range ch {
+	}
+
+	messages := engine.GetMessages()
+	if len(messages) < 4 {
+		t.Fatalf("expected planner runtime to append assistant/tool messages, got %#v", messages)
+	}
+
+	last := messages[len(messages)-1]
+	if last.Type != types.MessageTypeAssistant {
+		t.Fatalf("expected final assistant message, got %#v", last)
+	}
+	if got := last.Content[0].Text; got != "handled: tool output" {
+		t.Fatalf("unexpected final assistant content %q", got)
+	}
+}
+
+func TestQueryEngine_RuntimeToolsFromDescriptors(t *testing.T) {
+	config := &QueryEngineConfig{
+		WorkingDir:    t.TempDir(),
+		SessionID:     "runtime-tools",
+		FallbackModel: "claude-sonnet-4-6",
+		ToolDescriptors: []toolkit.Descriptor{{
+			Name:        "fake_tool",
+			Description: "Fake tool description",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+		}},
+	}
+
+	engine, err := NewQueryEngine(config)
+	if err != nil {
+		t.Fatalf("NewQueryEngine failed: %v", err)
+	}
+
+	tools := engine.runtimeTools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 runtime tool, got %d", len(tools))
+	}
+	if tools[0].Name() != "fake_tool" {
+		t.Fatalf("unexpected runtime tool name %q", tools[0].Name())
+	}
+	desc, err := tools[0].Description(nil, htool.DescriptionOptions{})
+	if err != nil {
+		t.Fatalf("runtime tool description error: %v", err)
+	}
+	if desc != "Fake tool description" {
+		t.Fatalf("unexpected runtime tool description %q", desc)
+	}
+	if schema := tools[0].InputSchema(); schema == nil || schema.Type != "object" {
+		t.Fatalf("expected runtime tool schema to be preserved, got %#v", schema)
 	}
 }
 

@@ -55,12 +55,12 @@ const (
 
 // DecisionReason explains why a permission decision was made.
 type DecisionReason struct {
-	Type               DecisionReasonType
-	Rule               *Rule
-	PermissionMode     Mode
-	HookName           string
-	HookSource         string
-	Reason             string
+	Type                 DecisionReasonType
+	Rule                 *Rule
+	PermissionMode       Mode
+	HookName             string
+	HookSource           string
+	Reason               string
 	ClassifierApprovable bool
 }
 
@@ -78,10 +78,12 @@ type PermissionResult struct {
 	BlockedPath string
 }
 
-func Allow() PermissionResult                            { return PermissionResult{Behavior: BehaviorAllow} }
-func Deny(msg string) PermissionResult                  { return PermissionResult{Behavior: BehaviorDeny, Message: msg} }
-func Ask(msg string) PermissionResult                   { return PermissionResult{Behavior: BehaviorAsk, Message: msg} }
-func Passthrough(msg string) PermissionResult           { return PermissionResult{Behavior: BehaviorPassthrough, Message: msg} }
+func Allow() PermissionResult          { return PermissionResult{Behavior: BehaviorAllow} }
+func Deny(msg string) PermissionResult { return PermissionResult{Behavior: BehaviorDeny, Message: msg} }
+func Ask(msg string) PermissionResult  { return PermissionResult{Behavior: BehaviorAsk, Message: msg} }
+func Passthrough(msg string) PermissionResult {
+	return PermissionResult{Behavior: BehaviorPassthrough, Message: msg}
+}
 func AskMisparsing(msg string) PermissionResult {
 	return PermissionResult{Behavior: BehaviorAsk, Message: msg, IsBashSecurityCheckForMisparsing: true}
 }
@@ -93,11 +95,11 @@ type RulesBySource map[RuleSource][]string
 type PermissionUpdateType string
 
 const (
-	UpdateAddRules         PermissionUpdateType = "addRules"
-	UpdateReplaceRules     PermissionUpdateType = "replaceRules"
-	UpdateRemoveRules      PermissionUpdateType = "removeRules"
-	UpdateSetMode          PermissionUpdateType = "setMode"
-	UpdateAddDirectories   PermissionUpdateType = "addDirectories"
+	UpdateAddRules          PermissionUpdateType = "addRules"
+	UpdateReplaceRules      PermissionUpdateType = "replaceRules"
+	UpdateRemoveRules       PermissionUpdateType = "removeRules"
+	UpdateSetMode           PermissionUpdateType = "setMode"
+	UpdateAddDirectories    PermissionUpdateType = "addDirectories"
 	UpdateRemoveDirectories PermissionUpdateType = "removeDirectories"
 )
 
@@ -113,19 +115,20 @@ type PermissionUpdate struct {
 
 // ToolContext holds the runtime permission rules and mode for a session.
 type ToolContext struct {
-	PermissionMode    Mode
-	AlwaysAllowRules  RulesBySource
-	AlwaysDenyRules   RulesBySource
-	AlwaysAskRules    RulesBySource
-	WorkingDirectories map[string]string // path → source
+	PermissionMode         Mode
+	AlwaysAllowRules       RulesBySource
+	AlwaysDenyRules        RulesBySource
+	AlwaysAskRules         RulesBySource
+	WorkingDirectories     map[string]string // path → source
+	StrippedDangerousRules RulesBySource
 }
 
 func NewToolContext(mode Mode) *ToolContext {
 	return &ToolContext{
-		PermissionMode:    mode,
-		AlwaysAllowRules:  make(RulesBySource),
-		AlwaysDenyRules:   make(RulesBySource),
-		AlwaysAskRules:    make(RulesBySource),
+		PermissionMode:     mode,
+		AlwaysAllowRules:   make(RulesBySource),
+		AlwaysDenyRules:    make(RulesBySource),
+		AlwaysAskRules:     make(RulesBySource),
 		WorkingDirectories: make(map[string]string),
 	}
 }
@@ -150,11 +153,12 @@ func flattenRules(m RulesBySource) []string {
 // ApplyUpdate applies a PermissionUpdate to the context, returning a new context.
 func (c *ToolContext) ApplyUpdate(u PermissionUpdate) *ToolContext {
 	next := &ToolContext{
-		PermissionMode:    c.PermissionMode,
-		AlwaysAllowRules:  cloneRulesBySource(c.AlwaysAllowRules),
-		AlwaysDenyRules:   cloneRulesBySource(c.AlwaysDenyRules),
-		AlwaysAskRules:    cloneRulesBySource(c.AlwaysAskRules),
-		WorkingDirectories: cloneStringMap(c.WorkingDirectories),
+		PermissionMode:         c.PermissionMode,
+		AlwaysAllowRules:       cloneRulesBySource(c.AlwaysAllowRules),
+		AlwaysDenyRules:        cloneRulesBySource(c.AlwaysDenyRules),
+		AlwaysAskRules:         cloneRulesBySource(c.AlwaysAskRules),
+		WorkingDirectories:     cloneStringMap(c.WorkingDirectories),
+		StrippedDangerousRules: cloneRulesBySource(c.StrippedDangerousRules),
 	}
 
 	target := func() RulesBySource {
@@ -209,7 +213,63 @@ func (c *ToolContext) ApplyUpdate(u PermissionUpdate) *ToolContext {
 	return next
 }
 
+// ApplyUpdates applies permission updates in order, returning the final context.
+func (c *ToolContext) ApplyUpdates(updates []PermissionUpdate) *ToolContext {
+	next := c
+	for _, update := range updates {
+		next = next.ApplyUpdate(update)
+	}
+	return next
+}
+
+// ApplyPermissionUpdates applies permission updates to a context in order.
+func ApplyPermissionUpdates(ctx *ToolContext, updates []PermissionUpdate) *ToolContext {
+	if ctx == nil {
+		ctx = NewToolContext(ModeDefault)
+	}
+	return ctx.ApplyUpdates(updates)
+}
+
+// ExtractRules returns rule values from addRules permission updates.
+func ExtractRules(updates []PermissionUpdate) []RuleValue {
+	var rules []RuleValue
+	for _, update := range updates {
+		if update.Type == UpdateAddRules {
+			rules = append(rules, update.Rules...)
+		}
+	}
+	return rules
+}
+
+// HasRules reports whether updates contain at least one addRules rule.
+func HasRules(updates []PermissionUpdate) bool {
+	return len(ExtractRules(updates)) > 0
+}
+
+// SupportsPermissionUpdate reports whether a source can be used as an update destination.
+func SupportsPermissionUpdate(source RuleSource) bool {
+	switch source {
+	case SourceUserSettings, SourceProjectSettings, SourceLocalSettings, SourceSession, SourceCLIArg:
+		return true
+	default:
+		return false
+	}
+}
+
+// SupportsPersistence reports whether updates for a source can be written to settings.
+func SupportsPersistence(source RuleSource) bool {
+	switch source {
+	case SourceUserSettings, SourceProjectSettings, SourceLocalSettings:
+		return true
+	default:
+		return false
+	}
+}
+
 func cloneRulesBySource(m RulesBySource) RulesBySource {
+	if m == nil {
+		return nil
+	}
 	out := make(RulesBySource, len(m))
 	for k, v := range m {
 		cp := make([]string, len(v))

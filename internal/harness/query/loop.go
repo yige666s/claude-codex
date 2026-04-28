@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -85,9 +86,10 @@ func queryLoop(
 	}
 
 	var budgetTracker *BudgetTracker
-	if isTokenBudgetEnabled() {
+	if params.TokenBudget != nil && *params.TokenBudget > 0 {
 		budgetTracker = createBudgetTracker()
 	}
+	totalTurnOutputTokens := 0
 
 	// task_budget.remaining tracking across compaction boundaries
 	var taskBudgetRemaining *int
@@ -201,7 +203,6 @@ func queryLoop(
 		var streamingToolExecutor *tool.StreamingExecutor
 		if config.Gates.StreamingToolExecution {
 			streamingToolExecutor = tool.NewStreamingExecutor(
-				toolUseContext.Options.Tools,
 				canUseTool,
 				toolUseContext,
 			)
@@ -229,7 +230,7 @@ func queryLoop(
 				SystemPrompt:   appendSystemContext(SystemPrompt, systemContext),
 				Model:          currentModel,
 				MaxTokens:      getMaxTokens(maxOutputTokensOverride),
-				Tools:          nil, // TODO: Convert tool.Tool to types.Tool
+				Tools:          toolUseContext.Tools(),
 				SkipCacheWrite: skipCacheWrite,
 				TaskBudget:     buildTaskBudgetParam(params.TaskBudget, taskBudgetRemaining),
 			}
@@ -256,7 +257,6 @@ func queryLoop(
 					if streamingToolExecutor != nil {
 						streamingToolExecutor.Discard()
 						streamingToolExecutor = tool.NewStreamingExecutor(
-							toolUseContext.Options.Tools,
 							canUseTool,
 							toolUseContext,
 						)
@@ -401,7 +401,7 @@ func queryLoop(
 
 			// Handle stop hook results
 			if stopHookResult.PreventContinuation {
-				return Terminal{Reason: TerminalReasonStopHookPrevented}, nil
+				return Terminal{Reason: TerminalReasonStopHookPrevented, Messages: append(messagesForQuery, convertToMessages(assistantMessages)...)}, nil
 			}
 
 			if len(stopHookResult.BlockingErrors) > 0 {
@@ -419,16 +419,15 @@ func queryLoop(
 
 			// Check token budget
 			if budgetTracker != nil {
+				totalTurnOutputTokens += estimateMessageTokens(convertToMessages(assistantMessages))
 				decision := checkTokenBudget(
 					budgetTracker,
 					toolUseContext.AgentID,
-					getCurrentTurnTokenBudget(),
-					getTurnOutputTokens(),
+					params.TokenBudget,
+					totalTurnOutputTokens,
 				)
 
 				if decision.Action == "continue" {
-					incrementBudgetContinuationCount()
-
 					nudgeMsg := createUserMessage(decision.NudgeMessage, true)
 					state.Messages = append(messagesForQuery, convertToMessages(assistantMessages)...)
 					state.Messages = append(state.Messages, nudgeMsg)
@@ -442,7 +441,7 @@ func queryLoop(
 				}
 			}
 
-			return Terminal{Reason: TerminalReasonCompleted}, nil
+			return Terminal{Reason: TerminalReasonCompleted, Messages: append(messagesForQuery, convertToMessages(assistantMessages)...)}, nil
 		}
 
 		// Execute tools
@@ -457,19 +456,17 @@ func queryLoop(
 		}
 
 		for update := range toolUpdates {
-			if update.Message != nil {
-				eventChan <- update.Message
+			if msg := messageFromToolUpdate(update); msg != nil {
+				eventChan <- *msg
 
 				// Type assert to check message type
-				if msg, ok := update.Message.(types.Message); ok {
-					if isHookStoppedContinuation(msg) {
-						shouldPreventContinuation = true
-					}
+				if isHookStoppedContinuation(*msg) {
+					shouldPreventContinuation = true
+				}
 
-					// Add to tool results if it's a user message
-					if msg.Type == "user" {
-						toolResults = append(toolResults, msg)
-					}
+				// Add to tool results if it's a user message
+				if msg.Type == types.MessageTypeUser {
+					toolResults = append(toolResults, *msg)
 				}
 			}
 			if update.NewContext != nil {
@@ -499,7 +496,7 @@ func queryLoop(
 
 		// Check if hooks prevented continuation
 		if shouldPreventContinuation {
-			return Terminal{Reason: TerminalReasonHookStopped}, nil
+			return Terminal{Reason: TerminalReasonHookStopped, Messages: append(append(messagesForQuery, convertToMessages(assistantMessages)...), toolResults...)}, nil
 		}
 
 		// Memory prefetch consume: only if settled and not already consumed.
@@ -573,21 +570,25 @@ func getLastMessage(messages []types.AssistantMessage) *types.AssistantMessage {
 	return &messages[len(messages)-1]
 }
 
-func isTokenBudgetEnabled() bool {
-	// TODO: Implement feature flag check
-	return false
-}
-
 func getQueuedCommands(messages []types.Message) []QueuedCommand {
-	// TODO: Implement queued command retrieval
-	return nil
+	return drainQueuedCommands()
 }
 
 func processQueuedCommands(messages []types.Message, commands []QueuedCommand) ([]types.Message, []types.Message) {
-	// TODO: Implement command processing
-	return messages, nil
+	if len(commands) == 0 {
+		return messages, nil
+	}
+	commandMessages := make([]types.Message, 0, len(commands))
+	for _, cmd := range commands {
+		msg := createUserMessage(cmd.Content, true)
+		if cmd.UUID != "" {
+			msg.UUID = cmd.UUID
+		}
+		commandMessages = append(commandMessages, msg)
+	}
+	updated := append(append([]types.Message(nil), messages...), commandMessages...)
+	return updated, commandMessages
 }
-
 
 func finalContextTokensFromLastResponse(messages []types.Message) int {
 	// TODO: Implement token counting
@@ -595,18 +596,31 @@ func finalContextTokensFromLastResponse(messages []types.Message) int {
 }
 
 func getRuntimeMainLoopModel(ctx *tool.ToolUseContext, messages []types.Message) string {
-	// TODO: Implement model selection
+	if ctx != nil && strings.TrimSpace(ctx.Options.MainLoopModel) != "" {
+		return ctx.Options.MainLoopModel
+	}
 	return "claude-3-5-sonnet-20241022"
 }
 
 func shouldCheckBlockingLimit(compactionResult *CompactionResult, querySource string, snipTokensFreed int) bool {
-	// TODO: Implement blocking limit check logic
-	return false
+	if compactionResult != nil {
+		return false
+	}
+	switch querySource {
+	case "compact", "session_memory":
+		return false
+	default:
+		return true
+	}
 }
 
 func checkBlockingLimit(messages []types.Message, snipTokensFreed int, ctx *tool.ToolUseContext) bool {
-	// TODO: Implement blocking limit check
-	return false
+	tokenCount := estimateMessageTokens(messages) - snipTokensFreed
+	model := ""
+	if ctx != nil {
+		model = ctx.Options.MainLoopModel
+	}
+	return calculateTokenWarningState(tokenCount, model).IsAtBlockingLimit
 }
 
 func prependUserContext(messages []types.Message, userContext map[string]string) []types.Message {
@@ -714,49 +728,147 @@ func buildTaskBudgetParam(budget *TaskBudget, remaining *int) *TaskBudget {
 }
 
 func isFallbackError(msg types.Message) bool {
-	// TODO: Implement fallback error detection
-	return false
+	if !msg.IsApiErrorMessage {
+		return false
+	}
+	subtype := strings.ToLower(msg.Subtype)
+	if subtype == "overloaded_error" || subtype == "rate_limit_error" || subtype == "fallback" {
+		return true
+	}
+	text := strings.ToLower(messageText(msg))
+	return strings.Contains(text, "overloaded") ||
+		strings.Contains(text, "high demand") ||
+		strings.Contains(text, "rate limit")
 }
 
 func yieldMissingToolResultBlocks(assistantMessages []types.AssistantMessage, errorMessage string, eventChan chan<- interface{}) {
-	// TODO: Implement missing tool result block generation
+	for _, assistant := range assistantMessages {
+		for _, block := range assistant.Message.Content {
+			if block.Type != "tool_use" || block.ID == "" {
+				continue
+			}
+			eventChan <- createToolResultMessage(block.ID, errorMessage, true)
+		}
+	}
 }
 
 func stripSignatureBlocks(messages []types.Message) []types.Message {
-	// TODO: Implement signature block stripping
-	return messages
+	out := make([]types.Message, 0, len(messages))
+	for _, msg := range messages {
+		if len(msg.Content) == 0 {
+			out = append(out, msg)
+			continue
+		}
+		clone := msg
+		clone.Content = clone.Content[:0]
+		for _, block := range msg.Content {
+			switch block.Type {
+			case "signature", "redacted_signature":
+				continue
+			default:
+				clone.Content = append(clone.Content, block)
+			}
+		}
+		out = append(out, clone)
+	}
+	return out
 }
 
 func createSystemMessage(content, level string) types.Message {
-	// TODO: Implement system message creation
-	return types.Message{}
+	return types.Message{
+		Type:      types.MessageTypeSystem,
+		UUID:      types.UUID(),
+		Timestamp: time.Now().UTC(),
+		Subtype:   level,
+		Content:   []types.ContentBlock{{Type: "text", Text: content}},
+	}
 }
 
 func createUserInterruptionMessage(toolUse bool) types.Message {
-	// TODO: Implement user interruption message creation
-	return types.Message{}
+	content := "User interrupted the response."
+	if toolUse {
+		content = "User interrupted tool execution."
+	}
+	return createUserMessage(content, true)
 }
 
 func isWithheldPromptTooLong(msg *types.AssistantMessage) bool {
-	// TODO: Implement prompt too long detection
-	return false
+	if msg == nil {
+		return false
+	}
+	if msg.APIError == "prompt_too_long" {
+		return true
+	}
+	return msg.Message.IsApiErrorMessage && strings.Contains(strings.ToLower(messageText(msg.Message)), "prompt too long")
 }
 
 func isMaxOutputTokensError(msg *types.AssistantMessage) bool {
-	// TODO: Implement max output tokens error detection
-	return false
+	if msg == nil {
+		return false
+	}
+	if msg.APIError == "max_output_tokens" || msg.Message.StopReason == "max_tokens" || msg.Message.StopReason == "max_output_tokens" {
+		return true
+	}
+	return msg.Message.IsApiErrorMessage && strings.Contains(strings.ToLower(messageText(msg.Message)), "max output")
 }
 
-
 func isHookStoppedContinuation(msg types.Message) bool {
-	// TODO: Implement hook stopped continuation detection
+	if msg.Type != types.MessageTypeAttachment {
+		return false
+	}
+	if msg.Subtype == "hook_stopped_continuation" {
+		return true
+	}
+	if attachment, ok := msg.Attachment.(map[string]interface{}); ok {
+		return attachment["type"] == "hook_stopped_continuation"
+	}
 	return false
 }
 
 func runTools(toolUseBlocks []types.ToolUseBlock, assistantMessages []types.AssistantMessage, canUseTool tool.CanUseToolFn, ctx *tool.ToolUseContext) <-chan *tool.Update {
-	// TODO: Implement tool execution
-	ch := make(chan *tool.Update)
-	close(ch)
+	ch := make(chan *tool.Update, len(toolUseBlocks))
+	go func() {
+		defer close(ch)
+		for _, block := range toolUseBlocks {
+			toolDef := ctx.FindToolByName(block.Name)
+			if toolDef == nil {
+				ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "failed", Error: tool.ErrToolNotFound}
+				continue
+			}
+			input := block.Input
+			if input == nil {
+				input = map[string]interface{}{}
+			}
+			if canUseTool != nil {
+				permission, err := canUseTool(toolDef, input, ctx, assistantMessages, block.ID, nil)
+				if err != nil {
+					ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "failed", Error: err}
+					continue
+				}
+				if permission != nil {
+					if permission.UpdatedInput != nil {
+						input = permission.UpdatedInput
+					}
+					if permission.Behavior == tool.PermissionDeny {
+						ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "failed", Error: fmt.Errorf("permission denied: %s", permission.Reason)}
+						continue
+					}
+				}
+			}
+			result, err := toolDef.Call(ctx.Ctx, input, ctx)
+			if err != nil {
+				ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "failed", Error: err}
+				continue
+			}
+			if result != nil && result.ContextModifier != nil {
+				nextCtx := *ctx
+				result.ContextModifier(&nextCtx)
+				ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "completed", Result: result, NewContext: &nextCtx}
+				continue
+			}
+			ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "completed", Result: result}
+		}
+	}()
 	return ch
 }
 
@@ -768,36 +880,142 @@ func generateToolUseSummaryAsync(toolUseBlocks []types.ToolUseBlock, toolResults
 }
 
 func createAttachmentMessage(msgType string, maxTurns, turnCount int) types.Message {
-	// TODO: Implement attachment message creation
-	return types.Message{}
+	return types.Message{
+		Type:      types.MessageTypeAttachment,
+		UUID:      types.UUID(),
+		Timestamp: time.Now().UTC(),
+		Subtype:   msgType,
+		Attachment: map[string]interface{}{
+			"type":       msgType,
+			"max_turns":  maxTurns,
+			"turn_count": turnCount,
+		},
+	}
 }
 
 func createAssistantAPIErrorMessage(content, errorType string) types.Message {
-	// TODO: Implement API error message creation
-	return types.Message{}
+	return types.Message{
+		Type:              types.MessageTypeAssistant,
+		UUID:              types.UUID(),
+		Timestamp:         time.Now().UTC(),
+		Subtype:           errorType,
+		IsApiErrorMessage: true,
+		Content:           []types.ContentBlock{{Type: "text", Text: content}},
+	}
 }
 
 func createUserMessage(content string, isMeta bool) types.Message {
-	// TODO: Implement user message creation
-	return types.Message{}
-}
-
-func getCurrentTurnTokenBudget() *int {
-	// TODO: Implement token budget retrieval
-	return nil
-}
-
-func getTurnOutputTokens() int {
-	// TODO: Implement output token counting
-	return 0
-}
-
-func incrementBudgetContinuationCount() {
-	// TODO: Implement budget continuation count increment
+	return types.Message{
+		Type:      types.MessageTypeUser,
+		UUID:      types.UUID(),
+		Timestamp: time.Now().UTC(),
+		IsMeta:    isMeta,
+		Content:   []types.ContentBlock{{Type: "text", Text: content}},
+	}
 }
 
 // QueuedCommand represents a queued command
 type QueuedCommand struct {
 	UUID    string
 	Content string
+}
+
+func messageFromToolUpdate(update *tool.Update) *types.Message {
+	if update == nil {
+		return nil
+	}
+	if update.Message != nil {
+		switch msg := update.Message.(type) {
+		case types.Message:
+			return &msg
+		case *types.Message:
+			return msg
+		}
+	}
+	if update.Error != nil {
+		msg := createToolResultMessage(update.ToolUseID, update.Error.Error(), true)
+		msg.Message = map[string]interface{}{"tool_name": update.ToolName}
+		return &msg
+	}
+	if update.Result != nil {
+		msg := createToolResultMessage(update.ToolUseID, toolResultContent(update.Result), false)
+		msg.Message = map[string]interface{}{"tool_name": update.ToolName}
+		return &msg
+	}
+	return nil
+}
+
+func createToolResultMessage(toolUseID, content string, isError bool) types.Message {
+	return types.Message{
+		Type:      types.MessageTypeUser,
+		UUID:      types.UUID(),
+		Timestamp: time.Now().UTC(),
+		Content: []types.ContentBlock{{
+			Type:      "tool_result",
+			ToolUseID: toolUseID,
+			Content:   content,
+			IsError:   isError,
+		}},
+	}
+}
+
+func toolResultContent(result *tool.ToolResult) string {
+	if result == nil || result.Data == nil {
+		return ""
+	}
+	switch data := result.Data.(type) {
+	case string:
+		return data
+	case fmt.Stringer:
+		return data.String()
+	default:
+		encoded, err := json.Marshal(data)
+		if err != nil {
+			return fmt.Sprint(data)
+		}
+		return string(encoded)
+	}
+}
+
+func messageText(msg types.Message) string {
+	var b strings.Builder
+	for _, block := range msg.Content {
+		if block.Text != "" {
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(block.Text)
+		}
+		if block.Content != "" {
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(block.Content)
+		}
+	}
+	if b.Len() == 0 && msg.Message != nil {
+		return fmt.Sprint(msg.Message)
+	}
+	return b.String()
+}
+
+func estimateMessageTokens(messages []types.Message) int {
+	chars := 0
+	for _, msg := range messages {
+		chars += len(messageText(msg))
+		for _, block := range msg.Content {
+			if block.Name != "" {
+				chars += len(block.Name)
+			}
+			if len(block.Input) > 0 {
+				if encoded, err := json.Marshal(block.Input); err == nil {
+					chars += len(encoded)
+				}
+			}
+		}
+	}
+	if chars == 0 {
+		return 0
+	}
+	return max(1, chars/4)
 }

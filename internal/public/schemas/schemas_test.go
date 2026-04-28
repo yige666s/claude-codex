@@ -277,12 +277,12 @@ func TestValidateSettings(t *testing.T) {
 
 func TestFilterInvalidPermissionRules(t *testing.T) {
 	rules := []PermissionRule{
-		"Read",           // valid
-		"read",           // invalid (lowercase)
-		"Write(*.go)",    // valid
-		"Write(",         // invalid (unmatched)
-		"Bash:ls",        // valid
-		"mcp:server:*",   // invalid (wildcard)
+		"Read",         // valid
+		"read",         // invalid (lowercase)
+		"Write(*.go)",  // valid
+		"Write(",       // invalid (unmatched)
+		"Bash:ls",      // valid
+		"mcp:server:*", // invalid (wildcard)
 	}
 
 	filtered := FilterInvalidPermissionRules(rules)

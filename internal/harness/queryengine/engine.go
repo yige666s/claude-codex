@@ -1,262 +1,461 @@
-// Package engine provides the QueryEngine for managing conversation lifecycle.
+// Package engine provides a TS-aligned QueryEngine facade over the Go query runtime.
 package engine
 
 import (
 	"context"
-	"sync"
+	"encoding/json"
+	"fmt"
 	"time"
 
+	"claude-codex/internal/harness/budget"
+	"claude-codex/internal/harness/mcp"
+	"claude-codex/internal/harness/query"
 	"claude-codex/internal/harness/tool"
+	publictypes "claude-codex/internal/public/types"
 	"github.com/google/uuid"
 )
 
-// QueryEngine owns the query lifecycle and session state for a conversation.
-// It extracts the core logic into a standalone struct that can be used by both
-// the headless/SDK path and the REPL.
+// QueryEngine is the TS-aligned conversation engine facade.
 //
-// One QueryEngine per conversation. Each SubmitMessage() call starts a new
-// turn within the same conversation. State (messages, file cache, usage, etc.)
-// persists across turns.
+// The concrete query lifecycle lives in internal/harness/query. This package
+// keeps the QueryEngine surface stable and SDK-shaped while delegating the
+// actual turn execution to the shared query runtime.
 type QueryEngine struct {
-	config                      QueryEngineConfig
-	mutableMessages             []Message
-	abortCtx                    context.Context
-	abortCancel                 context.CancelFunc
-	permissionDenials           []PermissionDenial
-	totalUsage                  *Usage
-	hasHandledOrphanedPermission bool
-	readFileState               interface{}
-
-	// Turn-scoped skill discovery tracking (feeds was_discovered on
-	// tengu_skill_tool_invocation). Must persist across the two
-	// processUserInputContext rebuilds inside SubmitMessage, but is cleared
-	// at the start of each SubmitMessage to avoid unbounded growth across
-	// many turns in SDK mode.
-	discoveredSkillNames    map[string]bool
-	loadedNestedMemoryPaths map[string]bool
-
-	mu sync.RWMutex
+	config        QueryEngineConfig
+	innerConfig   *query.QueryEngineConfig
+	inner         *query.QueryEngine
+	initErr       error
+	sessionID     string
+	readFileState interface{}
 }
 
-// NewQueryEngine creates a new QueryEngine with the given configuration.
+// NewQueryEngine creates a new QueryEngine.
 func NewQueryEngine(config QueryEngineConfig) *QueryEngine {
-	ctx := context.Background()
-	if config.AbortController != nil {
-		// If a cancel func is provided, we need to create a context that uses it
-		ctx, _ = context.WithCancel(ctx)
-	}
+	sessionID := configSessionID(config)
+	innerConfig := toQueryConfig(config, sessionID)
 
-	abortCtx, abortCancel := context.WithCancel(ctx)
-
-	initialMessages := config.InitialMessages
-	if initialMessages == nil {
-		initialMessages = []Message{}
-	}
-
+	inner, err := query.NewQueryEngine(innerConfig)
 	return &QueryEngine{
-		config:                   config,
-		mutableMessages:          initialMessages,
-		abortCtx:                 abortCtx,
-		abortCancel:              abortCancel,
-		permissionDenials:        []PermissionDenial{},
-		totalUsage:               EmptyUsage(),
-		readFileState:            config.ReadFileCache,
-		discoveredSkillNames:     make(map[string]bool),
-		loadedNestedMemoryPaths:  make(map[string]bool),
+		config:        config,
+		innerConfig:   innerConfig,
+		inner:         inner,
+		initErr:       err,
+		sessionID:     sessionID,
+		readFileState: config.ReadFileCache,
 	}
 }
 
-// SubmitMessage submits a new message to the conversation and streams back responses.
-// This is the main entry point for each turn in the conversation.
+// SubmitMessage submits a new message and yields SDK-shaped events.
 func (qe *QueryEngine) SubmitMessage(
 	ctx context.Context,
-	prompt interface{}, // string or []ContentBlockParam
+	prompt interface{},
 	options *SubmitOptions,
 ) (<-chan SDKMessage, error) {
-	qe.mu.Lock()
-	// Clear turn-scoped tracking
-	qe.discoveredSkillNames = make(map[string]bool)
-	qe.mu.Unlock()
+	if qe.initErr != nil {
+		return errorResultChannel(qe.sessionID, qe.initErr), nil
+	}
+	if qe.inner == nil {
+		return nil, fmt.Errorf("query engine is not initialized")
+	}
 
 	if options == nil {
 		options = &SubmitOptions{}
 	}
 
-	// Create output channel for streaming messages
-	out := make(chan SDKMessage, 100)
-
-	// Start async processing
-	go qe.submitMessageAsync(ctx, prompt, options, out)
-
-	return out, nil
-}
-
-// submitMessageAsync handles the actual message submission and streaming.
-func (qe *QueryEngine) submitMessageAsync(
-	ctx context.Context,
-	prompt interface{},
-	options *SubmitOptions,
-	out chan<- SDKMessage,
-) {
-	defer close(out)
-
-	startTime := time.Now()
-
-	// Merge contexts for cancellation
-	mergedCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	go func() {
-		select {
-		case <-qe.abortCtx.Done():
-			cancel()
-		case <-mergedCtx.Done():
-		}
-	}()
-
-	// TODO: Implement the full submission logic
-	// This is a placeholder that shows the structure
-
-	// 1. Process user input (handle slash commands, etc.)
-	// 2. Handle orphaned permissions if present
-	// 3. Build SystemPrompt and context
-	// 4. Yield system init message
-	// 5. Enter query loop
-	// 6. Stream responses
-	// 7. Handle snip replay if configured
-	// 8. Track usage and permissions
-	// 9. Yield final result
-
-	// Placeholder result
-	out <- SDKMessage{
-		Type:         "result",
-		Subtype:      "success",
-		SessionID:    qe.GetSessionID(),
-		UUID:         uuid.New().String(),
-		DurationMS:   time.Since(startTime).Milliseconds(),
-		Result:       "Not yet implemented",
-		Usage:        qe.totalUsage,
-		NumTurns:     1,
+	innerOptions := &query.SubmitMessageOptions{
+		UUID:   options.UUID,
+		IsMeta: options.IsMeta,
 	}
-}
+	if qe.innerConfig != nil && qe.innerConfig.TokenBudget == nil {
+		if promptText, ok := prompt.(string); ok {
+			if parsed := budget.ParseTokenBudget(promptText); parsed > 0 {
+				qe.innerConfig.TokenBudget = &parsed
+			}
+		}
+	}
 
-// Interrupt aborts the current query execution.
-func (qe *QueryEngine) Interrupt() {
-	qe.abortCancel()
-}
-
-// GetMessages returns a read-only view of the conversation messages.
-func (qe *QueryEngine) GetMessages() []Message {
-	qe.mu.RLock()
-	defer qe.mu.RUnlock()
-
-	// Return a copy to prevent external modification
-	messages := make([]Message, len(qe.mutableMessages))
-	copy(messages, qe.mutableMessages)
-	return messages
-}
-
-// GetReadFileState returns the current file state cache.
-func (qe *QueryEngine) GetReadFileState() interface{} {
-	qe.mu.RLock()
-	defer qe.mu.RUnlock()
-	return qe.readFileState
-}
-
-// GetSessionID returns the current session ID.
-func (qe *QueryEngine) GetSessionID() string {
-	// TODO: Integrate with actual session management
-	return "session-" + uuid.New().String()
-}
-
-// SetModel updates the model configuration.
-func (qe *QueryEngine) SetModel(model string) {
-	qe.mu.Lock()
-	defer qe.mu.Unlock()
-	qe.config.UserSpecifiedModel = model
-}
-
-// GetTotalUsage returns the accumulated usage across all turns.
-func (qe *QueryEngine) GetTotalUsage() *Usage {
-	qe.mu.RLock()
-	defer qe.mu.RUnlock()
-	return qe.totalUsage
-}
-
-// GetPermissionDenials returns all permission denials in this session.
-func (qe *QueryEngine) GetPermissionDenials() []PermissionDenial {
-	qe.mu.RLock()
-	defer qe.mu.RUnlock()
-
-	denials := make([]PermissionDenial, len(qe.permissionDenials))
-	copy(denials, qe.permissionDenials)
-	return denials
-}
-
-// addMessage appends a message to the conversation history (thread-safe).
-func (qe *QueryEngine) addMessage(msg Message) {
-	qe.mu.Lock()
-	defer qe.mu.Unlock()
-	qe.mutableMessages = append(qe.mutableMessages, msg)
-}
-
-// addPermissionDenial records a permission denial (thread-safe).
-func (qe *QueryEngine) addPermissionDenial(denial PermissionDenial) {
-	qe.mu.Lock()
-	defer qe.mu.Unlock()
-	qe.permissionDenials = append(qe.permissionDenials, denial)
-}
-
-// updateUsage accumulates usage statistics (thread-safe).
-func (qe *QueryEngine) updateUsage(usage *Usage) {
-	qe.mu.Lock()
-	defer qe.mu.Unlock()
-	qe.totalUsage = AccumulateUsage(qe.totalUsage, usage)
-}
-
-// wrapCanUseTool wraps the permission checker to track denials.
-func (qe *QueryEngine) wrapCanUseTool(
-	tool tool.Tool,
-	input map[string]interface{},
-	toolCtx *tool.ToolUseContext,
-	assistantMessage interface{},
-	toolUseID string,
-	forceDecision bool,
-) (*PermissionResult, error) {
-	result, err := qe.config.CanUseTool(
-		tool,
-		input,
-		toolCtx,
-		assistantMessage,
-		toolUseID,
-		forceDecision,
-	)
-
+	queryChan, err := qe.inner.SubmitMessage(ctx, normalizePrompt(prompt), innerOptions)
 	if err != nil {
 		return nil, err
 	}
 
-	// Track denials for SDK reporting
-	if result.Behavior != "allow" {
-		qe.addPermissionDenial(PermissionDenial{
-			ToolName:  sdkCompatToolName(tool.Name()),
-			ToolUseID: toolUseID,
-			ToolInput: input,
-		})
-	}
+	out := make(chan SDKMessage, 100)
+	startedAt := time.Now()
 
-	return result, nil
+	go func() {
+		defer close(out)
+
+		turnCount := 0
+		for msg := range queryChan {
+			normalized := qe.normalizeSDKMessage(msg)
+			if normalized.Type == "user" {
+				turnCount++
+			}
+
+			select {
+			case out <- normalized:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		result := SDKMessage{
+			Type:              "result",
+			Subtype:           "success",
+			SessionID:         qe.sessionID,
+			UUID:              uuid.New().String(),
+			DurationMS:        time.Since(startedAt).Milliseconds(),
+			NumTurns:          turnCount,
+			Usage:             qe.GetTotalUsage(),
+			PermissionDenials: qe.GetPermissionDenials(),
+		}
+
+		select {
+		case out <- result:
+		case <-ctx.Done():
+		}
+	}()
+
+	return out, nil
 }
 
-// sdkCompatToolName converts internal tool names to SDK-compatible names.
-func sdkCompatToolName(name string) string {
-	// TODO: Implement any necessary name transformations
-	return name
+// Interrupt aborts the current query execution.
+func (qe *QueryEngine) Interrupt() {
+	if qe.inner != nil {
+		qe.inner.Abort()
+	}
+}
+
+// GetMessages returns a copy of the current message history.
+func (qe *QueryEngine) GetMessages() []Message {
+	if qe.inner == nil {
+		return cloneMessages(qe.config.InitialMessages)
+	}
+
+	publicMessages := qe.inner.GetMessages()
+	out := make([]Message, 0, len(publicMessages))
+	for _, msg := range publicMessages {
+		out = append(out, fromPublicMessage(msg))
+	}
+	return out
+}
+
+// GetReadFileState returns the tracked read file cache reference.
+func (qe *QueryEngine) GetReadFileState() interface{} {
+	return qe.readFileState
+}
+
+// GetSessionID returns the stable session ID for this engine.
+func (qe *QueryEngine) GetSessionID() string {
+	return qe.sessionID
+}
+
+// SetModel updates the user-specified model override.
+func (qe *QueryEngine) SetModel(model string) {
+	qe.config.UserSpecifiedModel = model
+	if qe.innerConfig != nil {
+		qe.innerConfig.UserSpecifiedModel = model
+	}
+}
+
+// GetTotalUsage returns accumulated usage in SDK-facing shape.
+func (qe *QueryEngine) GetTotalUsage() *Usage {
+	if qe.inner == nil {
+		return EmptyUsage()
+	}
+
+	usage := qe.inner.GetUsage()
+	return &Usage{
+		InputTokens:              usage.InputTokens,
+		OutputTokens:             usage.OutputTokens,
+		CacheCreationInputTokens: usage.CacheWrites,
+		CacheReadInputTokens:     usage.CacheReads,
+	}
+}
+
+// GetPermissionDenials returns permission denials in SDK-facing shape.
+func (qe *QueryEngine) GetPermissionDenials() []PermissionDenial {
+	if qe.inner == nil {
+		return nil
+	}
+
+	denials := qe.inner.GetPermissionDenials()
+	out := make([]PermissionDenial, 0, len(denials))
+	for _, denial := range denials {
+		out = append(out, PermissionDenial{
+			ToolName:  denial.ToolName,
+			ToolUseID: denial.ToolUseID,
+			ToolInput: denial.ToolInput,
+		})
+	}
+	return out
 }
 
 // Ask is a convenience wrapper around QueryEngine for one-shot usage.
-// It creates a new QueryEngine, submits a single message, and returns the response stream.
 func Ask(ctx context.Context, config QueryEngineConfig, prompt interface{}) (<-chan SDKMessage, error) {
 	engine := NewQueryEngine(config)
 	return engine.SubmitMessage(ctx, prompt, nil)
+}
+
+func (qe *QueryEngine) normalizeSDKMessage(msg publictypes.Message) SDKMessage {
+	normalized := SDKMessage{
+		Type:      string(msg.Type),
+		Subtype:   msg.Subtype,
+		SessionID: qe.sessionID,
+		UUID:      msg.UUID,
+		Timestamp: timestampPtr(msg.Timestamp),
+		Message:   fromPublicMessage(msg),
+		Event:     msg.Event,
+	}
+
+	if msg.Type == publictypes.MessageTypeStreamEvent {
+		normalized.Type = "stream_event"
+	}
+
+	return normalized
+}
+
+func configSessionID(config QueryEngineConfig) string {
+	if config.SessionID != "" {
+		return config.SessionID
+	}
+	return "session-" + uuid.NewString()
+}
+
+func toQueryConfig(config QueryEngineConfig, sessionID string) *query.QueryEngineConfig {
+	queryConfig := &query.QueryEngineConfig{
+		WorkingDir:             config.Cwd,
+		InitialMessages:        toPublicMessages(config.InitialMessages),
+		ReadFileCache:          asQueryFileStateCache(config.ReadFileCache),
+		Planner:                config.Planner,
+		ToolDescriptors:        config.ToolDescriptors,
+		CustomSystemPrompt:     config.CustomSystemPrompt,
+		AppendSystemPrompt:     config.AppendSystemPrompt,
+		UserSpecifiedModel:     config.UserSpecifiedModel,
+		FallbackModel:          config.FallbackModel,
+		MaxTurns:               config.MaxTurns,
+		JSONSchema:             config.JSONSchema,
+		Verbose:                config.Verbose,
+		ReplayUserMessages:     config.ReplayUserMessages,
+		IncludePartialMessages: config.IncludePartialMessages,
+		SessionID:              sessionID,
+		PermissionMode:         "default",
+	}
+
+	if config.MaxBudgetUSD != nil {
+		queryConfig.MaxBudgetUSD = *config.MaxBudgetUSD
+	}
+	if config.TaskBudget != nil {
+		queryConfig.TaskBudget = &query.TaskBudget{Total: int(config.TaskBudget.Total)}
+	}
+	if config.TokenBudget != nil {
+		queryConfig.TokenBudget = config.TokenBudget
+	}
+	if config.ThinkingConfig != nil {
+		queryConfig.ThinkingConfig = &query.ThinkingConfig{Type: extractThinkingType(config.ThinkingConfig)}
+	}
+	if config.OrphanedPermission != nil {
+		queryConfig.OrphanedPermission = &query.OrphanedPermission{
+			ToolName:  config.OrphanedPermission.ToolName,
+			ToolUseID: "",
+			Input:     config.OrphanedPermission.Input,
+		}
+	}
+
+	queryConfig.Tools = append([]tool.Tool(nil), config.Tools...)
+	queryConfig.MCPClients = toQueryMCPClients(config.MCPClients)
+	queryConfig.CanUseTool = wrapCanUseTool(config)
+	if config.ExecuteTool != nil {
+		queryConfig.ExecuteTool = func(ctx context.Context, name string, input json.RawMessage) (string, error) {
+			return config.ExecuteTool(ctx, name, input)
+		}
+	}
+
+	return queryConfig
+}
+
+func wrapCanUseTool(config QueryEngineConfig) query.CanUseToolFunc {
+	if config.CanUseTool == nil {
+		return func(ctx context.Context, toolDef tool.Tool, input map[string]interface{}, toolUseID string) (query.PermissionResult, error) {
+			return query.PermissionResult{Behavior: "allow"}, nil
+		}
+	}
+
+	return func(ctx context.Context, toolDef tool.Tool, input map[string]interface{}, toolUseID string) (query.PermissionResult, error) {
+		result, err := config.CanUseTool(toolDef, input, nil, nil, toolUseID, false)
+		if err != nil {
+			return query.PermissionResult{}, err
+		}
+		if result == nil {
+			return query.PermissionResult{Behavior: "allow"}, nil
+		}
+		return query.PermissionResult{
+			Behavior: result.Behavior,
+			Reason:   result.Reason,
+		}, nil
+	}
+}
+
+func toQueryMCPClients(clients []interface{}) []*mcp.Client {
+	out := make([]*mcp.Client, 0, len(clients))
+	for _, client := range clients {
+		if typed, ok := client.(*mcp.Client); ok {
+			out = append(out, typed)
+		}
+	}
+	return out
+}
+
+func asQueryFileStateCache(cache interface{}) *query.FileStateCache {
+	typed, _ := cache.(*query.FileStateCache)
+	return typed
+}
+
+func normalizePrompt(prompt interface{}) interface{} {
+	switch v := prompt.(type) {
+	case string:
+		return v
+	case []publictypes.ContentBlock:
+		return v
+	default:
+		return prompt
+	}
+}
+
+func toPublicMessages(messages []Message) []publictypes.Message {
+	out := make([]publictypes.Message, 0, len(messages))
+	for _, msg := range messages {
+		out = append(out, toPublicMessage(msg))
+	}
+	return out
+}
+
+func cloneMessages(messages []Message) []Message {
+	out := make([]Message, len(messages))
+	copy(out, messages)
+	return out
+}
+
+func toPublicMessage(msg Message) publictypes.Message {
+	return publictypes.Message{
+		Type:                      publictypes.MessageType(msg.Type),
+		UUID:                      msg.UUID,
+		Timestamp:                 msg.Timestamp,
+		Message:                   msg.Message,
+		Content:                   toPublicContentBlocks(msg.Content),
+		Subtype:                   msg.Subtype,
+		IsMeta:                    msg.IsMeta,
+		Data:                      msg.Data,
+		Event:                     msg.Event,
+		ToolUseID:                 msg.ToolUseID,
+		Attachment:                msg.Attachment,
+		CompactMetadata:           toPublicCompactMetadata(msg.CompactMetadata),
+		IsCompactSummary:          msg.IsCompactSummary,
+		IsVisibleInTranscriptOnly: msg.IsVisibleInTranscriptOnly,
+		ToolUseResult:             msg.ToolUseResult,
+		IsApiErrorMessage:         msg.IsApiErrorMessage,
+	}
+}
+
+func fromPublicMessage(msg publictypes.Message) Message {
+	return Message{
+		Type:                      string(msg.Type),
+		UUID:                      msg.UUID,
+		Timestamp:                 msg.Timestamp,
+		Message:                   msg.Message,
+		Content:                   fromPublicContentBlocks(msg.Content),
+		Subtype:                   msg.Subtype,
+		IsMeta:                    msg.IsMeta,
+		Data:                      msg.Data,
+		Event:                     msg.Event,
+		ToolUseID:                 msg.ToolUseID,
+		Attachment:                msg.Attachment,
+		CompactMetadata:           fromPublicCompactMetadata(msg.CompactMetadata),
+		IsCompactSummary:          msg.IsCompactSummary,
+		IsVisibleInTranscriptOnly: msg.IsVisibleInTranscriptOnly,
+		ToolUseResult:             msg.ToolUseResult,
+		IsApiErrorMessage:         msg.IsApiErrorMessage,
+	}
+}
+
+func toPublicContentBlocks(content interface{}) []publictypes.ContentBlock {
+	switch typed := content.(type) {
+	case nil:
+		return nil
+	case string:
+		return []publictypes.ContentBlock{{Type: "text", Text: typed}}
+	case []publictypes.ContentBlock:
+		return typed
+	default:
+		return nil
+	}
+}
+
+func fromPublicContentBlocks(content []publictypes.ContentBlock) interface{} {
+	if len(content) == 0 {
+		return nil
+	}
+	if len(content) == 1 && content[0].Type == "text" && content[0].Text != "" {
+		return content[0].Text
+	}
+	return content
+}
+
+func toPublicCompactMetadata(meta *CompactMetadata) *publictypes.CompactMetadata {
+	if meta == nil {
+		return nil
+	}
+	result := &publictypes.CompactMetadata{}
+	if meta.PreservedSegment != nil {
+		result.PreservedSegment = &publictypes.PreservedSegment{
+			TailUUID: meta.PreservedSegment.TailUUID,
+		}
+	}
+	return result
+}
+
+func fromPublicCompactMetadata(meta *publictypes.CompactMetadata) *CompactMetadata {
+	if meta == nil {
+		return nil
+	}
+	result := &CompactMetadata{}
+	if meta.PreservedSegment != nil {
+		result.PreservedSegment = &PreservedSegment{
+			TailUUID: meta.PreservedSegment.TailUUID,
+		}
+	}
+	return result
+}
+
+func extractThinkingType(value interface{}) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case map[string]interface{}:
+		if kind, ok := typed["type"].(string); ok {
+			return kind
+		}
+	}
+	return ""
+}
+
+func timestampPtr(ts time.Time) *time.Time {
+	if ts.IsZero() {
+		return nil
+	}
+	return &ts
+}
+
+func errorResultChannel(sessionID string, err error) <-chan SDKMessage {
+	out := make(chan SDKMessage, 1)
+	out <- SDKMessage{
+		Type:      "result",
+		Subtype:   "error_during_execution",
+		SessionID: sessionID,
+		UUID:      uuid.New().String(),
+		IsError:   true,
+		Errors:    []string{err.Error()},
+	}
+	close(out)
+	return out
 }

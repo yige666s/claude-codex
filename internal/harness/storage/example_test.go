@@ -12,8 +12,8 @@ import (
 func Example_basicUsage() {
 	// Create temp directories for the example
 	tmpDir := "/tmp/claude-example"
-	homeDir := filepath.Join(tmpDir, ".claude")
-	projectDir := filepath.Join(homeDir, "projects", "my-project")
+	homeDir := filepath.Join(tmpDir, ".claude-codex")
+	projectDir := filepath.Join(tmpDir, "workspace", "my-project")
 	sessionID := "session-123"
 
 	store, err := storage.NewSessionStorage(homeDir, sessionID, projectDir)
@@ -61,8 +61,8 @@ func Example_basicUsage() {
 // Example demonstrates loading and resuming a session
 func Example_loadSession() {
 	tmpDir := "/tmp/claude-example"
-	homeDir := filepath.Join(tmpDir, ".claude")
-	projectDir := filepath.Join(homeDir, "projects", "my-project")
+	homeDir := filepath.Join(tmpDir, ".claude-codex")
+	projectDir := filepath.Join(tmpDir, "workspace", "my-project")
 	sessionID := "session-123"
 
 	// Create storage instance
@@ -98,8 +98,8 @@ func Example_loadSession() {
 // Example demonstrates snapshot management
 func Example_snapshots() {
 	tmpDir := "/tmp/claude-example"
-	homeDir := filepath.Join(tmpDir, ".claude")
-	projectDir := filepath.Join(homeDir, "projects", "my-project")
+	homeDir := filepath.Join(tmpDir, ".claude-codex")
+	projectDir := filepath.Join(tmpDir, "workspace", "my-project")
 	sessionID := "session-123"
 
 	// Create session storage
@@ -156,8 +156,8 @@ func Example_snapshots() {
 // Example demonstrates concurrent writes
 func Example_concurrentWrites() {
 	tmpDir := "/tmp/claude-example"
-	homeDir := filepath.Join(tmpDir, ".claude")
-	projectDir := filepath.Join(homeDir, "projects", "my-project")
+	homeDir := filepath.Join(tmpDir, ".claude-codex")
+	projectDir := filepath.Join(tmpDir, "workspace", "my-project")
 	sessionID := "session-concurrent"
 
 	store, err := storage.NewSessionStorage(homeDir, sessionID, projectDir)
@@ -197,8 +197,8 @@ func Example_concurrentWrites() {
 // Example demonstrates working with different entry types
 func Example_entryTypes() {
 	tmpDir := "/tmp/claude-example"
-	homeDir := filepath.Join(tmpDir, ".claude")
-	projectDir := filepath.Join(homeDir, "projects", "my-project")
+	homeDir := filepath.Join(tmpDir, ".claude-codex")
+	projectDir := filepath.Join(tmpDir, "workspace", "my-project")
 	sessionID := "session-types"
 
 	store, err := storage.NewSessionStorage(homeDir, sessionID, projectDir)
@@ -221,8 +221,8 @@ func Example_entryTypes() {
 		Content: "I'll help you with that.",
 		ToolCalls: []storage.ToolCall{
 			{
-				ID:   "call-001",
-				Name: "read_file",
+				ID:    "call-001",
+				Name:  "read_file",
 				Input: []byte(`{"path": "/path/to/file"}`),
 			},
 		},
@@ -261,11 +261,17 @@ func Example_entryTypes() {
 // Example demonstrates reading transcript tail for metadata
 func Example_readTail() {
 	tmpDir := "/tmp/claude-example"
-	homeDir := filepath.Join(tmpDir, ".claude")
-	projectDir := filepath.Join(homeDir, "projects", "my-project")
+	homeDir := filepath.Join(tmpDir, ".claude-codex")
+	projectDir := filepath.Join(tmpDir, "workspace", "my-project")
 	sessionID := "session-123"
 
-	transcriptPath := filepath.Join(projectDir, sessionID+".jsonl")
+	store, err := storage.NewSessionStorage(homeDir, sessionID, projectDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer store.Close()
+
+	transcriptPath := store.GetTranscriptPath()
 	reader := storage.NewTranscriptReader(transcriptPath)
 
 	// Read last 64KB for quick metadata access
@@ -279,10 +285,11 @@ func Example_readTail() {
 
 // Example demonstrates session listing and management
 func Example_sessionManagement() {
-	projectDir := "/tmp/claude-example/.claude/projects/my-project"
+	homeDir := "/tmp/claude-example/.claude-codex"
+	projectDir := "/tmp/claude-example/workspace/my-project"
 
 	// List all sessions
-	sessions, err := storage.ListSessions(projectDir)
+	sessions, err := storage.ListSessions(homeDir, projectDir)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -291,12 +298,12 @@ func Example_sessionManagement() {
 
 	// Check if a specific session exists
 	sessionID := "session-123"
-	if storage.SessionExists(projectDir, sessionID) {
+	if storage.SessionExists(homeDir, projectDir, sessionID) {
 		fmt.Printf("Session %s exists\n", sessionID)
 	}
 
 	// Delete a session
-	if err := storage.DeleteSession(projectDir, sessionID); err != nil {
+	if err := storage.DeleteSession(homeDir, projectDir, sessionID); err != nil {
 		log.Fatal(err)
 	}
 
@@ -305,7 +312,7 @@ func Example_sessionManagement() {
 
 // Example demonstrates snapshot compaction
 func Example_snapshotCompaction() {
-	homeDir := "/tmp/claude-example/.claude"
+	homeDir := "/tmp/claude-example/.claude-codex"
 	sessionID := "session-123"
 
 	snapshotMgr := storage.NewSnapshotManager(homeDir)

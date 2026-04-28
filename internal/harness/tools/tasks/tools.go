@@ -1,16 +1,17 @@
-// Package tasks implements the task management tools: TaskCreate, TaskGet,
-// TaskList, TaskUpdate, TaskStop, TaskOutput.
-//
-// Tasks are stored in a package-level in-memory store. In a real deployment
-// this would be backed by the tasks.Manager from internal/harness/tasks.
+// Package tasks implements the TaskCreate, TaskGet, TaskList, TaskUpdate,
+// TaskStop, and TaskOutput tools.
 package tasks
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"os"
+	"path/filepath"
+	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,38 +20,372 @@ import (
 	toolkit "claude-codex/internal/harness/tools"
 )
 
-// ---- Task model ----
+type TaskStatus string
+
+const (
+	TaskStatusPending    TaskStatus = "pending"
+	TaskStatusInProgress TaskStatus = "in_progress"
+	TaskStatusCompleted  TaskStatus = "completed"
+)
 
 type Task struct {
-	ID          string
-	Subject     string
-	Description string
-	ActiveForm  string
-	Status      string // "pending"|"in_progress"|"completed"|"deleted"
-	Owner       string
-	Blocks      []string
-	BlockedBy   []string
-	Output      string
-	CreatedAt   time.Time
+	ID          string         `json:"id"`
+	Subject     string         `json:"subject"`
+	Description string         `json:"description"`
+	ActiveForm  string         `json:"activeForm,omitempty"`
+	Status      TaskStatus     `json:"status"`
+	Owner       string         `json:"owner,omitempty"`
+	Blocks      []string       `json:"blocks"`
+	BlockedBy   []string       `json:"blockedBy"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
-// ---- In-memory store ----
+const highWaterMarkFile = ".highwatermark"
 
-var store = struct {
-	mu    sync.RWMutex
-	tasks map[string]*Task
-}{tasks: make(map[string]*Task)}
+var taskFileMu sync.Mutex
 
-func newTaskID() string {
-	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, 6)
-	for i := range b {
-		b[i] = chars[rand.Intn(len(chars))]
+func currentTaskListID() string {
+	if id := strings.TrimSpace(os.Getenv("CLAUDE_CODE_TASK_LIST_ID")); id != "" {
+		return id
 	}
-	return string(b)
+	if id := strings.TrimSpace(os.Getenv("CLAUDE_CODE_TEAM_NAME")); id != "" {
+		return id
+	}
+	return "default"
 }
 
-// ---- TaskCreate ----
+func sanitizePathComponent(input string) string {
+	var b strings.Builder
+	for _, r := range input {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_' || r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	if b.Len() == 0 {
+		return "default"
+	}
+	return b.String()
+}
+
+func tasksDir(taskListID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".claude", "tasks", sanitizePathComponent(taskListID)), nil
+}
+
+func ensureTasksDir(taskListID string) (string, error) {
+	dir, err := tasksDir(taskListID)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func taskPath(taskListID, taskID string) (string, error) {
+	dir, err := ensureTasksDir(taskListID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, sanitizePathComponent(taskID)+".json"), nil
+}
+
+func highWaterMarkPath(taskListID string) (string, error) {
+	dir, err := ensureTasksDir(taskListID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, highWaterMarkFile), nil
+}
+
+func readHighWaterMark(taskListID string) int {
+	path, err := highWaterMarkPath(taskListID)
+	if err != nil {
+		return 0
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func writeHighWaterMark(taskListID string, value int) error {
+	path, err := highWaterMarkPath(taskListID)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strconv.Itoa(value)), 0o644)
+}
+
+func findHighestTaskIDFromFiles(taskListID string) int {
+	dir, err := ensureTasksDir(taskListID)
+	if err != nil {
+		return 0
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	highest := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasPrefix(name, ".") {
+			continue
+		}
+		id := strings.TrimSuffix(name, ".json")
+		value, err := strconv.Atoi(id)
+		if err == nil && value > highest {
+			highest = value
+		}
+	}
+	return highest
+}
+
+func findHighestTaskID(taskListID string) int {
+	fromFiles := findHighestTaskIDFromFiles(taskListID)
+	fromMark := readHighWaterMark(taskListID)
+	if fromMark > fromFiles {
+		return fromMark
+	}
+	return fromFiles
+}
+
+func readTask(taskListID, taskID string) (*Task, error) {
+	path, err := taskPath(taskListID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var task Task
+	if err := json.Unmarshal(data, &task); err != nil {
+		return nil, err
+	}
+	normalizeTask(&task)
+	return &task, nil
+}
+
+func normalizeTask(task *Task) {
+	if task.Blocks == nil {
+		task.Blocks = []string{}
+	}
+	if task.BlockedBy == nil {
+		task.BlockedBy = []string{}
+	}
+	if task.Status == "" {
+		task.Status = TaskStatusPending
+	}
+}
+
+func writeTask(taskListID string, task *Task) error {
+	normalizeTask(task)
+	path, err := taskPath(taskListID, task.ID)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(task, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+func createTask(taskListID string, task Task) (*Task, error) {
+	taskFileMu.Lock()
+	defer taskFileMu.Unlock()
+
+	id := strconv.Itoa(findHighestTaskID(taskListID) + 1)
+	task.ID = id
+	task.Status = TaskStatusPending
+	normalizeTask(&task)
+	if err := writeTask(taskListID, &task); err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
+func listTasks(taskListID string) ([]*Task, error) {
+	dir, err := ensureTasksDir(taskListID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	tasks := make([]*Task, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasPrefix(name, ".") {
+			continue
+		}
+		task, err := readTask(taskListID, strings.TrimSuffix(name, ".json"))
+		if err != nil || task == nil {
+			continue
+		}
+		tasks = append(tasks, task)
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		left, leftErr := strconv.Atoi(tasks[i].ID)
+		right, rightErr := strconv.Atoi(tasks[j].ID)
+		if leftErr == nil && rightErr == nil {
+			return left < right
+		}
+		return tasks[i].ID < tasks[j].ID
+	})
+	return tasks, nil
+}
+
+func updateTask(taskListID, taskID string, apply func(task *Task) (bool, error)) (*Task, bool, error) {
+	taskFileMu.Lock()
+	defer taskFileMu.Unlock()
+
+	task, err := readTask(taskListID, taskID)
+	if err != nil || task == nil {
+		return nil, false, err
+	}
+	changed, err := apply(task)
+	if err != nil {
+		return nil, false, err
+	}
+	if changed {
+		if err := writeTask(taskListID, task); err != nil {
+			return nil, false, err
+		}
+	}
+	return task, true, nil
+}
+
+func deleteTask(taskListID, taskID string) (bool, error) {
+	taskFileMu.Lock()
+	defer taskFileMu.Unlock()
+
+	numericID, err := strconv.Atoi(taskID)
+	if err == nil && numericID > readHighWaterMark(taskListID) {
+		if err := writeHighWaterMark(taskListID, numericID); err != nil {
+			return false, err
+		}
+	}
+	path, err := taskPath(taskListID, taskID)
+	if err != nil {
+		return false, err
+	}
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	allTasks, err := listTasks(taskListID)
+	if err != nil {
+		return true, err
+	}
+	for _, task := range allTasks {
+		newBlocks := removeString(task.Blocks, taskID)
+		newBlockedBy := removeString(task.BlockedBy, taskID)
+		if len(newBlocks) != len(task.Blocks) || len(newBlockedBy) != len(task.BlockedBy) {
+			task.Blocks = newBlocks
+			task.BlockedBy = newBlockedBy
+			if err := writeTask(taskListID, task); err != nil {
+				return true, err
+			}
+		}
+	}
+	return true, nil
+}
+
+func blockTask(taskListID, fromTaskID, toTaskID string) (bool, error) {
+	taskFileMu.Lock()
+	defer taskFileMu.Unlock()
+
+	fromTask, err := readTask(taskListID, fromTaskID)
+	if err != nil || fromTask == nil {
+		return false, err
+	}
+	toTask, err := readTask(taskListID, toTaskID)
+	if err != nil || toTask == nil {
+		return false, err
+	}
+	changed := false
+	if !containsString(fromTask.Blocks, toTaskID) {
+		fromTask.Blocks = append(fromTask.Blocks, toTaskID)
+		changed = true
+	}
+	if !containsString(toTask.BlockedBy, fromTaskID) {
+		toTask.BlockedBy = append(toTask.BlockedBy, fromTaskID)
+		changed = true
+	}
+	if changed {
+		if err := writeTask(taskListID, fromTask); err != nil {
+			return false, err
+		}
+		if err := writeTask(taskListID, toTask); err != nil {
+			return false, err
+		}
+	}
+	return changed, nil
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(items []string, target string) []string {
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		if item != target {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func validTaskStatus(status TaskStatus) bool {
+	return status == TaskStatusPending || status == TaskStatusInProgress || status == TaskStatusCompleted
+}
+
+func writeJSON(value any) (toolkit.Result, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	return toolkit.Result{Output: string(data)}, nil
+}
+
+func decodeStrict(raw json.RawMessage, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(target)
+}
 
 type taskCreateTool struct{}
 
@@ -58,65 +393,47 @@ func NewTaskCreateTool() toolkit.Tool { return &taskCreateTool{} }
 
 func (t *taskCreateTool) Name() string { return "TaskCreate" }
 func (t *taskCreateTool) Description() string {
-	return `Use this tool to create a structured task list for your current coding session. This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user.
-
-Use this tool proactively in these scenarios:
-- Complex multi-step tasks requiring 3 or more distinct steps
-- Non-trivial tasks that require careful planning or multiple operations
-- When the user provides multiple tasks (numbered or comma-separated)
-- After receiving new instructions — immediately capture requirements as tasks
-- When you start working on a task — mark it as in_progress BEFORE beginning work
-- After completing a task — mark it as completed and add any new follow-up tasks
-
-All tasks are created with status 'pending'.`
+	return `Use this tool to create a structured task list for your current coding session.`
 }
 func (t *taskCreateTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "subject": {"type": "string", "description": "A brief title for the task"},
-    "description": {"type": "string", "description": "What needs to be done"},
-    "activeForm": {"type": "string", "description": "Present continuous form shown in spinner when in_progress (e.g., \"Running tests\")"}
-  },
-  "required": ["subject", "description"]
-}`)
+	return json.RawMessage(`{"type":"object","properties":{"subject":{"type":"string"},"description":{"type":"string"},"activeForm":{"type":"string"},"metadata":{"type":"object"}},"required":["subject","description"],"additionalProperties":false}`)
 }
 func (t *taskCreateTool) Permission() permissions.Level { return permissions.LevelWrite }
-func (t *taskCreateTool) IsConcurrencySafe() bool       { return false }
+func (t *taskCreateTool) IsConcurrencySafe() bool       { return true }
 
 func (t *taskCreateTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Result, error) {
 	var in struct {
-		Subject     string `json:"subject"`
-		Description string `json:"description"`
-		ActiveForm  string `json:"activeForm"`
+		Subject     string         `json:"subject"`
+		Description string         `json:"description"`
+		ActiveForm  string         `json:"activeForm"`
+		Metadata    map[string]any `json:"metadata"`
 	}
-	if err := json.Unmarshal(raw, &in); err != nil {
+	if err := decodeStrict(raw, &in); err != nil {
 		return toolkit.Result{}, err
 	}
 	if strings.TrimSpace(in.Subject) == "" {
 		return toolkit.Result{}, fmt.Errorf("subject is required")
 	}
+	if strings.TrimSpace(in.Description) == "" {
+		return toolkit.Result{}, fmt.Errorf("description is required")
+	}
 
-	task := &Task{
-		ID:          newTaskID(),
+	task, err := createTask(currentTaskListID(), Task{
 		Subject:     in.Subject,
 		Description: in.Description,
 		ActiveForm:  in.ActiveForm,
-		Status:      "pending",
-		CreatedAt:   time.Now(),
+		Owner:       "",
+		Blocks:      []string{},
+		BlockedBy:   []string{},
+		Metadata:    in.Metadata,
+	})
+	if err != nil {
+		return toolkit.Result{}, err
 	}
-
-	store.mu.Lock()
-	store.tasks[task.ID] = task
-	store.mu.Unlock()
-
-	out, _ := json.Marshal(map[string]interface{}{
+	return writeJSON(map[string]any{
 		"task": map[string]string{"id": task.ID, "subject": task.Subject},
 	})
-	return toolkit.Result{Output: string(out)}, nil
 }
-
-// ---- TaskGet ----
 
 type taskGetTool struct{}
 
@@ -124,21 +441,10 @@ func NewTaskGetTool() toolkit.Tool { return &taskGetTool{} }
 
 func (t *taskGetTool) Name() string { return "TaskGet" }
 func (t *taskGetTool) Description() string {
-	return `Use this tool to retrieve a task by its ID from the task list.
-
-Use when:
-- You need the full description and context before starting work on a task
-- To understand task dependencies (what it blocks, what blocks it)
-- After being assigned a task, to get complete requirements`
+	return `Use this tool to retrieve a task by its ID from the task list.`
 }
 func (t *taskGetTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "taskId": {"type": "string", "description": "The ID of the task to retrieve"}
-  },
-  "required": ["taskId"]
-}`)
+	return json.RawMessage(`{"type":"object","properties":{"taskId":{"type":"string"}},"required":["taskId"],"additionalProperties":false}`)
 }
 func (t *taskGetTool) Permission() permissions.Level { return permissions.LevelRead }
 func (t *taskGetTool) IsConcurrencySafe() bool       { return true }
@@ -147,32 +453,27 @@ func (t *taskGetTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.R
 	var in struct {
 		TaskID string `json:"taskId"`
 	}
-	if err := json.Unmarshal(raw, &in); err != nil {
+	if err := decodeStrict(raw, &in); err != nil {
 		return toolkit.Result{}, err
 	}
-
-	store.mu.RLock()
-	task, ok := store.tasks[in.TaskID]
-	store.mu.RUnlock()
-
-	if !ok {
-		return toolkit.Result{}, fmt.Errorf("task not found: %s", in.TaskID)
+	task, err := readTask(currentTaskListID(), in.TaskID)
+	if err != nil {
+		return toolkit.Result{}, err
 	}
-
-	out, _ := json.Marshal(map[string]interface{}{
-		"id":          task.ID,
-		"subject":     task.Subject,
-		"description": task.Description,
-		"activeForm":  task.ActiveForm,
-		"status":      task.Status,
-		"owner":       task.Owner,
-		"blocks":      task.Blocks,
-		"blockedBy":   task.BlockedBy,
+	if task == nil {
+		return writeJSON(map[string]any{"task": nil})
+	}
+	return writeJSON(map[string]any{
+		"task": map[string]any{
+			"id":          task.ID,
+			"subject":     task.Subject,
+			"description": task.Description,
+			"status":      task.Status,
+			"blocks":      task.Blocks,
+			"blockedBy":   task.BlockedBy,
+		},
 	})
-	return toolkit.Result{Output: string(out)}, nil
 }
-
-// ---- TaskList ----
 
 type taskListTool struct{}
 
@@ -180,54 +481,59 @@ func NewTaskListTool() toolkit.Tool { return &taskListTool{} }
 
 func (t *taskListTool) Name() string { return "TaskList" }
 func (t *taskListTool) Description() string {
-	return `Use this tool to list all tasks in the task list.
-
-Use to:
-- See what tasks are available to work on (status: 'pending', no owner, not blocked)
-- Check overall progress on the project
-- Find tasks that are blocked and need dependencies resolved
-- After completing a task, to check for newly unblocked work`
+	return `Use this tool to list all tasks in the task list.`
 }
 func (t *taskListTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type": "object", "properties": {}}`)
+	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
 }
 func (t *taskListTool) Permission() permissions.Level { return permissions.LevelRead }
 func (t *taskListTool) IsConcurrencySafe() bool       { return true }
 
-func (t *taskListTool) Execute(_ context.Context, _ json.RawMessage) (toolkit.Result, error) {
-	store.mu.RLock()
-	tasks := make([]*Task, 0, len(store.tasks))
-	for _, task := range store.tasks {
-		if task.Status != "deleted" {
-			tasks = append(tasks, task)
+func (t *taskListTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Result, error) {
+	var in struct{}
+	if len(raw) > 0 {
+		if err := decodeStrict(raw, &in); err != nil {
+			return toolkit.Result{}, err
 		}
 	}
-	store.mu.RUnlock()
-
-	sort.Slice(tasks, func(i, j int) bool {
-		return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
-	})
-
-	if len(tasks) == 0 {
-		return toolkit.Result{Output: "No tasks."}, nil
+	allTasks, err := listTasks(currentTaskListID())
+	if err != nil {
+		return toolkit.Result{}, err
 	}
-
-	var sb strings.Builder
-	for _, task := range tasks {
-		blocked := ""
-		if len(task.BlockedBy) > 0 {
-			blocked = fmt.Sprintf(" [blocked by: %s]", strings.Join(task.BlockedBy, ", "))
+	resolved := make(map[string]struct{}, len(allTasks))
+	for _, task := range allTasks {
+		if task.Status == TaskStatusCompleted {
+			resolved[task.ID] = struct{}{}
 		}
-		owner := ""
-		if task.Owner != "" {
-			owner = fmt.Sprintf(" (owner: %s)", task.Owner)
-		}
-		fmt.Fprintf(&sb, "#%s [%s] %s%s%s\n", task.ID, task.Status, task.Subject, owner, blocked)
 	}
-	return toolkit.Result{Output: strings.TrimRight(sb.String(), "\n")}, nil
+	type listedTask struct {
+		ID        string     `json:"id"`
+		Subject   string     `json:"subject"`
+		Status    TaskStatus `json:"status"`
+		Owner     string     `json:"owner,omitempty"`
+		BlockedBy []string   `json:"blockedBy"`
+	}
+	output := make([]listedTask, 0, len(allTasks))
+	for _, task := range allTasks {
+		if internal, _ := task.Metadata["_internal"].(bool); internal {
+			continue
+		}
+		blockedBy := make([]string, 0, len(task.BlockedBy))
+		for _, blocker := range task.BlockedBy {
+			if _, ok := resolved[blocker]; !ok {
+				blockedBy = append(blockedBy, blocker)
+			}
+		}
+		output = append(output, listedTask{
+			ID:        task.ID,
+			Subject:   task.Subject,
+			Status:    task.Status,
+			Owner:     task.Owner,
+			BlockedBy: blockedBy,
+		})
+	}
+	return writeJSON(map[string]any{"tasks": output})
 }
-
-// ---- TaskUpdate ----
 
 type taskUpdateTool struct{}
 
@@ -235,94 +541,171 @@ func NewTaskUpdateTool() toolkit.Tool { return &taskUpdateTool{} }
 
 func (t *taskUpdateTool) Name() string { return "TaskUpdate" }
 func (t *taskUpdateTool) Description() string {
-	return `Use this tool to update a task in the task list.
-
-Use to:
-- Mark tasks as resolved: set status to "completed" when done, "deleted" to remove
-- Update task details when requirements change
-- Set up dependencies with addBlocks/addBlockedBy
-- Claim tasks by setting owner
-
-IMPORTANT: Only mark a task as completed when you have FULLY accomplished it.
-Status progresses: pending → in_progress → completed`
+	return `Use this tool to update a task in the task list.`
 }
 func (t *taskUpdateTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "taskId": {"type": "string", "description": "The ID of the task to update"},
-    "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "deleted"]},
-    "subject": {"type": "string"},
-    "description": {"type": "string"},
-    "activeForm": {"type": "string"},
-    "owner": {"type": "string"},
-    "addBlocks": {"type": "array", "items": {"type": "string"}, "description": "Task IDs that this task blocks"},
-    "addBlockedBy": {"type": "array", "items": {"type": "string"}, "description": "Task IDs that block this task"}
-  },
-  "required": ["taskId"]
-}`)
+	return json.RawMessage(`{"type":"object","properties":{"taskId":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed","deleted"]},"subject":{"type":"string"},"description":{"type":"string"},"activeForm":{"type":"string"},"owner":{"type":"string"},"addBlocks":{"type":"array","items":{"type":"string"}},"addBlockedBy":{"type":"array","items":{"type":"string"}},"metadata":{"type":"object"}},"required":["taskId"],"additionalProperties":false}`)
 }
 func (t *taskUpdateTool) Permission() permissions.Level { return permissions.LevelWrite }
-func (t *taskUpdateTool) IsConcurrencySafe() bool       { return false }
+func (t *taskUpdateTool) IsConcurrencySafe() bool       { return true }
 
 func (t *taskUpdateTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Result, error) {
 	var in struct {
-		TaskID      string   `json:"taskId"`
-		Status      *string  `json:"status"`
-		Subject     *string  `json:"subject"`
-		Description *string  `json:"description"`
-		ActiveForm  *string  `json:"activeForm"`
-		Owner       *string  `json:"owner"`
-		AddBlocks   []string `json:"addBlocks"`
-		AddBlockedBy []string `json:"addBlockedBy"`
+		TaskID       string                     `json:"taskId"`
+		Status       *string                    `json:"status"`
+		Subject      *string                    `json:"subject"`
+		Description  *string                    `json:"description"`
+		ActiveForm   *string                    `json:"activeForm"`
+		Owner        *string                    `json:"owner"`
+		AddBlocks    []string                   `json:"addBlocks"`
+		AddBlockedBy []string                   `json:"addBlockedBy"`
+		Metadata     map[string]json.RawMessage `json:"metadata"`
 	}
-	if err := json.Unmarshal(raw, &in); err != nil {
+	if err := decodeStrict(raw, &in); err != nil {
 		return toolkit.Result{}, err
 	}
+	taskListID := currentTaskListID()
+	existing, err := readTask(taskListID, in.TaskID)
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	if existing == nil {
+		return writeJSON(map[string]any{
+			"success":       false,
+			"taskId":        in.TaskID,
+			"updatedFields": []string{},
+			"error":         "Task not found",
+		})
+	}
 
-	store.mu.Lock()
-	task, ok := store.tasks[in.TaskID]
+	if in.Status != nil && *in.Status == "deleted" {
+		deleted, err := deleteTask(taskListID, in.TaskID)
+		if err != nil {
+			return toolkit.Result{}, err
+		}
+		result := map[string]any{
+			"success":       deleted,
+			"taskId":        in.TaskID,
+			"updatedFields": []string{},
+		}
+		if deleted {
+			result["updatedFields"] = []string{"deleted"}
+			result["statusChange"] = map[string]string{"from": string(existing.Status), "to": "deleted"}
+		} else {
+			result["error"] = "Failed to delete task"
+		}
+		return writeJSON(result)
+	}
+
+	updatedFields := make([]string, 0)
+	var statusChange map[string]string
+	_, ok, err := updateTask(taskListID, in.TaskID, func(task *Task) (bool, error) {
+		changed := false
+		if in.Subject != nil && *in.Subject != task.Subject {
+			task.Subject = *in.Subject
+			updatedFields = append(updatedFields, "subject")
+			changed = true
+		}
+		if in.Description != nil && *in.Description != task.Description {
+			task.Description = *in.Description
+			updatedFields = append(updatedFields, "description")
+			changed = true
+		}
+		if in.ActiveForm != nil && *in.ActiveForm != task.ActiveForm {
+			task.ActiveForm = *in.ActiveForm
+			updatedFields = append(updatedFields, "activeForm")
+			changed = true
+		}
+		if in.Owner != nil && *in.Owner != task.Owner {
+			task.Owner = *in.Owner
+			updatedFields = append(updatedFields, "owner")
+			changed = true
+		}
+		if len(in.Metadata) > 0 {
+			merged := map[string]any{}
+			for key, value := range task.Metadata {
+				merged[key] = value
+			}
+			for key, rawValue := range in.Metadata {
+				if string(rawValue) == "null" {
+					delete(merged, key)
+					continue
+				}
+				var value any
+				if err := json.Unmarshal(rawValue, &value); err != nil {
+					return false, err
+				}
+				merged[key] = value
+			}
+			if !reflect.DeepEqual(task.Metadata, merged) {
+				task.Metadata = merged
+				updatedFields = append(updatedFields, "metadata")
+				changed = true
+			}
+		}
+		if in.Status != nil {
+			status := TaskStatus(*in.Status)
+			if !validTaskStatus(status) {
+				return false, fmt.Errorf("invalid status: %s", *in.Status)
+			}
+			if status != task.Status {
+				statusChange = map[string]string{"from": string(task.Status), "to": string(status)}
+				task.Status = status
+				updatedFields = append(updatedFields, "status")
+				changed = true
+			}
+		}
+		return changed, nil
+	})
+	if err != nil {
+		return toolkit.Result{}, err
+	}
 	if !ok {
-		store.mu.Unlock()
-		return toolkit.Result{}, fmt.Errorf("task not found: %s", in.TaskID)
+		return writeJSON(map[string]any{
+			"success":       false,
+			"taskId":        in.TaskID,
+			"updatedFields": []string{},
+			"error":         "Task not found",
+		})
 	}
 
-	if in.Status != nil {
-		task.Status = *in.Status
-	}
-	if in.Subject != nil {
-		task.Subject = *in.Subject
-	}
-	if in.Description != nil {
-		task.Description = *in.Description
-	}
-	if in.ActiveForm != nil {
-		task.ActiveForm = *in.ActiveForm
-	}
-	if in.Owner != nil {
-		task.Owner = *in.Owner
-	}
-	for _, id := range in.AddBlocks {
-		task.Blocks = appendUnique(task.Blocks, id)
-	}
-	for _, id := range in.AddBlockedBy {
-		task.BlockedBy = appendUnique(task.BlockedBy, id)
-	}
-	store.mu.Unlock()
-
-	return toolkit.Result{Output: fmt.Sprintf("Task %s updated (status: %s).", in.TaskID, task.Status)}, nil
-}
-
-func appendUnique(s []string, v string) []string {
-	for _, x := range s {
-		if x == v {
-			return s
+	if len(in.AddBlocks) > 0 {
+		changed := false
+		for _, id := range in.AddBlocks {
+			didChange, err := blockTask(taskListID, in.TaskID, id)
+			if err != nil {
+				return toolkit.Result{}, err
+			}
+			changed = changed || didChange
+		}
+		if changed {
+			updatedFields = append(updatedFields, "blocks")
 		}
 	}
-	return append(s, v)
-}
+	if len(in.AddBlockedBy) > 0 {
+		changed := false
+		for _, id := range in.AddBlockedBy {
+			didChange, err := blockTask(taskListID, id, in.TaskID)
+			if err != nil {
+				return toolkit.Result{}, err
+			}
+			changed = changed || didChange
+		}
+		if changed {
+			updatedFields = append(updatedFields, "blockedBy")
+		}
+	}
 
-// ---- TaskStop ----
+	result := map[string]any{
+		"success":       true,
+		"taskId":        in.TaskID,
+		"updatedFields": updatedFields,
+	}
+	if statusChange != nil {
+		result["statusChange"] = statusChange
+	}
+	return writeJSON(result)
+}
 
 type taskStopTool struct{}
 
@@ -330,44 +713,53 @@ func NewTaskStopTool() toolkit.Tool { return &taskStopTool{} }
 
 func (t *taskStopTool) Name() string { return "TaskStop" }
 func (t *taskStopTool) Description() string {
-	return `Stop a running background task by its ID. Returns a success or failure status.
-
-Use this when you need to terminate a long-running task.`
+	return `Stop an in-progress task by its ID.`
 }
 func (t *taskStopTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "task_id": {"type": "string", "description": "The ID of the background task to stop"}
-  },
-  "required": ["task_id"]
-}`)
+	return json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string"},"shell_id":{"type":"string"}},"additionalProperties":false}`)
 }
 func (t *taskStopTool) Permission() permissions.Level { return permissions.LevelWrite }
-func (t *taskStopTool) IsConcurrencySafe() bool       { return false }
+func (t *taskStopTool) IsConcurrencySafe() bool       { return true }
 
 func (t *taskStopTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Result, error) {
 	var in struct {
-		TaskID string `json:"task_id"`
+		TaskID  string `json:"task_id"`
+		ShellID string `json:"shell_id"`
 	}
-	if err := json.Unmarshal(raw, &in); err != nil {
+	if err := decodeStrict(raw, &in); err != nil {
 		return toolkit.Result{}, err
 	}
-
-	store.mu.Lock()
-	task, ok := store.tasks[in.TaskID]
-	if ok {
-		task.Status = "killed"
+	id := strings.TrimSpace(in.TaskID)
+	if id == "" {
+		id = strings.TrimSpace(in.ShellID)
 	}
-	store.mu.Unlock()
-
-	if !ok {
-		return toolkit.Result{}, fmt.Errorf("task not found: %s", in.TaskID)
+	if id == "" {
+		return toolkit.Result{}, fmt.Errorf("missing required parameter: task_id")
 	}
-	return toolkit.Result{Output: fmt.Sprintf("Task %s stopped.", in.TaskID)}, nil
+	task, err := readTask(currentTaskListID(), id)
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	if task == nil {
+		return toolkit.Result{}, fmt.Errorf("no task found with ID: %s", id)
+	}
+	if task.Status != TaskStatusInProgress {
+		return toolkit.Result{}, fmt.Errorf("task %s is not running (status: %s)", id, task.Status)
+	}
+	_, _, err = updateTask(currentTaskListID(), id, func(task *Task) (bool, error) {
+		task.Status = TaskStatusCompleted
+		return true, nil
+	})
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	return writeJSON(map[string]any{
+		"message":   fmt.Sprintf("Successfully stopped task: %s (%s)", id, task.Subject),
+		"task_id":   id,
+		"task_type": "task",
+		"command":   task.Subject,
+	})
 }
-
-// ---- TaskOutput ----
 
 type taskOutputTool struct{}
 
@@ -375,35 +767,23 @@ func NewTaskOutputTool() toolkit.Tool { return &taskOutputTool{} }
 
 func (t *taskOutputTool) Name() string { return "TaskOutput" }
 func (t *taskOutputTool) Description() string {
-	return `Retrieves output from a running or completed task.
-
-Use block=true (default) to wait for task completion.
-Use block=false for non-blocking check of current status.`
+	return `Retrieves status and output for a task.`
 }
 func (t *taskOutputTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "task_id": {"type": "string", "description": "The task ID to get output from"},
-    "block": {"type": "boolean", "default": true, "description": "Whether to wait for completion"},
-    "timeout": {"type": "number", "default": 30000, "description": "Max wait time in ms"}
-  },
-  "required": ["task_id"]
-}`)
+	return json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string"},"block":{"type":"boolean","default":true},"timeout":{"type":"number","default":30000}},"required":["task_id"],"additionalProperties":false}`)
 }
 func (t *taskOutputTool) Permission() permissions.Level { return permissions.LevelRead }
 func (t *taskOutputTool) IsConcurrencySafe() bool       { return true }
 
 func (t *taskOutputTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result, error) {
 	var in struct {
-		TaskID  string  `json:"task_id"`
-		Block   *bool   `json:"block"`
-		Timeout *int    `json:"timeout"`
+		TaskID  string `json:"task_id"`
+		Block   *bool  `json:"block"`
+		Timeout *int   `json:"timeout"`
 	}
-	if err := json.Unmarshal(raw, &in); err != nil {
+	if err := decodeStrict(raw, &in); err != nil {
 		return toolkit.Result{}, err
 	}
-
 	block := true
 	if in.Block != nil {
 		block = *in.Block
@@ -412,35 +792,48 @@ func (t *taskOutputTool) Execute(ctx context.Context, raw json.RawMessage) (tool
 	if in.Timeout != nil {
 		timeoutMs = *in.Timeout
 	}
-
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
-
 	for {
-		store.mu.RLock()
-		task, ok := store.tasks[in.TaskID]
-		store.mu.RUnlock()
-
-		if !ok {
-			return toolkit.Result{}, fmt.Errorf("task not found: %s", in.TaskID)
+		task, err := readTask(currentTaskListID(), in.TaskID)
+		if err != nil {
+			return toolkit.Result{}, err
 		}
-
-		terminal := task.Status == "completed" || task.Status == "failed" || task.Status == "killed"
-		if terminal || !block {
-			out := task.Output
-			if out == "" {
-				out = fmt.Sprintf("Task %s: status=%s", in.TaskID, task.Status)
+		if task == nil {
+			return toolkit.Result{}, fmt.Errorf("no task found with ID: %s", in.TaskID)
+		}
+		ready := task.Status == TaskStatusCompleted
+		if ready || !block {
+			status := "not_ready"
+			if ready {
+				status = "success"
 			}
-			return toolkit.Result{Output: out}, nil
+			return writeJSON(map[string]any{
+				"retrieval_status": status,
+				"task": map[string]any{
+					"task_id":     task.ID,
+					"task_type":   "task",
+					"status":      task.Status,
+					"description": task.Description,
+					"output":      "",
+				},
+			})
 		}
-
+		if time.Now().After(deadline) {
+			return writeJSON(map[string]any{
+				"retrieval_status": "timeout",
+				"task": map[string]any{
+					"task_id":     task.ID,
+					"task_type":   "task",
+					"status":      task.Status,
+					"description": task.Description,
+					"output":      "",
+				},
+			})
+		}
 		select {
 		case <-ctx.Done():
 			return toolkit.Result{}, ctx.Err()
-		case <-time.After(200 * time.Millisecond):
-		}
-
-		if time.Now().After(deadline) {
-			return toolkit.Result{Output: fmt.Sprintf("Task %s: timeout waiting for completion (status: %s)", in.TaskID, task.Status)}, nil
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }

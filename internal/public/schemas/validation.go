@@ -125,6 +125,10 @@ func validatePermissions(perms *Permissions, validator *Validator) {
 	// Validate default mode
 	if perms.DefaultMode != "" {
 		validModes := []PermissionMode{
+			PermissionModeDefault,
+			PermissionModePlan,
+			PermissionModeAcceptEdits,
+			PermissionModeDontAsk,
 			PermissionModeAsk,
 			PermissionModeAllow,
 			PermissionModeAuto,
@@ -144,6 +148,13 @@ func validatePermissions(perms *Permissions, validator *Validator) {
 				fmt.Sprintf("invalid permission mode: %s", perms.DefaultMode),
 			)
 		}
+	}
+
+	if perms.DisableBypassPermissionsMode != "" && perms.DisableBypassPermissionsMode != "disable" {
+		validator.AddError("permissions.disableBypassPermissionsMode", "must be \"disable\"")
+	}
+	if perms.DisableAutoMode != "" && perms.DisableAutoMode != "disable" {
+		validator.AddError("permissions.disableAutoMode", "must be \"disable\"")
 	}
 }
 
@@ -176,17 +187,13 @@ func validateHooks(hooks map[HookEvent][]HookMatcher, validator *Validator) {
 }
 
 // validateMCPServers validates MCP server configuration
-func validateMCPServers(servers map[string]MCPServerConfig, validator *Validator) {
+func validateMCPServers(servers map[string]any, validator *Validator) {
 	for name, config := range servers {
 		path := fmt.Sprintf("mcpServers.%s", name)
 
 		if config == nil {
 			validator.AddError(path, "server config is required")
 			continue
-		}
-
-		if err := config.Validate(); err != nil {
-			validator.AddError(path, err.Error())
 		}
 	}
 }
@@ -203,7 +210,7 @@ func validateMarketplaces(marketplaces map[string]MarketplaceSource, validator *
 			if strings.EqualFold(name, official) {
 				// Must be from anthropics GitHub org
 				if source.Type != MarketplaceSourceGitHub ||
-				   !strings.EqualFold(source.Owner, "anthropics") {
+					!strings.EqualFold(source.Owner, "anthropics") {
 					validator.AddError(
 						path,
 						fmt.Sprintf("marketplace name '%s' is reserved for official sources", name),

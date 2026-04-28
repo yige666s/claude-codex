@@ -84,6 +84,17 @@ func CreateTeamFile(teamName, description, leadAgentID, leadSessionID string) (*
 	return tf, nil
 }
 
+// DeleteTeamFile removes a team coordination directory.
+func DeleteTeamFile(teamName string) error {
+	if strings.TrimSpace(teamName) == "" {
+		return fmt.Errorf("DeleteTeamFile: team name is required")
+	}
+	if err := os.RemoveAll(GetTeamDir(teamName)); err != nil {
+		return fmt.Errorf("DeleteTeamFile: %w", err)
+	}
+	return nil
+}
+
 // AddMember appends a member to the team config and saves it.
 func AddMember(teamName string, member TeamMember) error {
 	tf, err := ReadTeamFile(teamName)
@@ -95,6 +106,55 @@ func AddMember(teamName string, member TeamMember) error {
 	}
 	tf.Members = append(tf.Members, member)
 	return WriteTeamFile(teamName, tf)
+}
+
+// UpsertMember inserts or replaces a member by agentId/name.
+func UpsertMember(teamName string, member TeamMember) error {
+	tf, err := ReadTeamFile(teamName)
+	if err != nil {
+		return err
+	}
+	if tf == nil {
+		return fmt.Errorf("UpsertMember: team %q not found", teamName)
+	}
+	for i := range tf.Members {
+		if tf.Members[i].AgentID == member.AgentID || (member.AgentID == "" && tf.Members[i].Name == member.Name) {
+			tf.Members[i] = member
+			return WriteTeamFile(teamName, tf)
+		}
+	}
+	tf.Members = append(tf.Members, member)
+	return WriteTeamFile(teamName, tf)
+}
+
+// FindMemberByAgentID returns a copy of the member with the given agentId.
+func FindMemberByAgentID(teamName, agentID string) (*TeamMember, error) {
+	tf, err := ReadTeamFile(teamName)
+	if err != nil || tf == nil {
+		return nil, err
+	}
+	for i := range tf.Members {
+		if tf.Members[i].AgentID == agentID {
+			member := tf.Members[i]
+			return &member, nil
+		}
+	}
+	return nil, nil
+}
+
+// FindMemberByName returns a copy of the member with the given display name.
+func FindMemberByName(teamName, memberName string) (*TeamMember, error) {
+	tf, err := ReadTeamFile(teamName)
+	if err != nil || tf == nil {
+		return nil, err
+	}
+	for i := range tf.Members {
+		if tf.Members[i].Name == memberName {
+			member := tf.Members[i]
+			return &member, nil
+		}
+	}
+	return nil, nil
 }
 
 // RemoveMemberByAgentID removes an in-process member by agentId.

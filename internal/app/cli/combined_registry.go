@@ -26,10 +26,24 @@ func NewCombinedRegistryAdapter(slashRegistry *Registry, skillManager *skills.Sk
 
 // List returns all commands (slash commands + skills) as TUI Command structs
 func (a *CombinedRegistryAdapter) List() []tui.Command {
-	// Get slash commands
-	cliCommands := a.slashRegistry.List()
-	tuiCommands := make([]tui.Command, 0, len(cliCommands))
+	matrix, err := BuildCommandMatrix(a.slashRegistry, a.skillRegistry.skillManager, a.skillRegistry.workingDir)
+	if err == nil {
+		defs := matrix.ListVisible()
+		tuiCommands := make([]tui.Command, 0, len(defs))
+		for _, def := range defs {
+			tuiCommands = append(tuiCommands, tui.Command{
+				Name:        "/" + def.Name,
+				Aliases:     slashCommandAliases(def.Aliases),
+				Description: FormatDescriptionWithSource(def),
+				Usage:       def.Usage,
+			})
+		}
+		return tuiCommands
+	}
 
+	cliCommands := a.slashRegistry.List()
+	skillCommands := a.skillRegistry.List()
+	tuiCommands := make([]tui.Command, 0, len(cliCommands)+len(skillCommands))
 	for _, cmd := range cliCommands {
 		tuiCommands = append(tuiCommands, tui.Command{
 			Name:        cmd.Name,
@@ -38,9 +52,6 @@ func (a *CombinedRegistryAdapter) List() []tui.Command {
 			Usage:       cmd.Usage,
 		})
 	}
-
-	// Get skill commands
-	skillCommands := a.skillRegistry.List()
 	for _, cmd := range skillCommands {
 		tuiCommands = append(tuiCommands, tui.Command{
 			Name:        cmd.Name,
@@ -48,8 +59,18 @@ func (a *CombinedRegistryAdapter) List() []tui.Command {
 			Usage:       cmd.Usage,
 		})
 	}
-
 	return tuiCommands
+}
+
+func slashCommandAliases(aliases []string) []string {
+	if len(aliases) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		out = append(out, "/"+alias)
+	}
+	return out
 }
 
 // Execute runs a command (slash command or skill) and captures its output

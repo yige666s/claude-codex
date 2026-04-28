@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -213,13 +214,11 @@ func makeSubagentRunner(
 	tracer telemetry.SessionTracer,
 ) agenttool.Runner {
 	return func(ctx context.Context, request agenttool.Request) (string, error) {
-		targetDir := request.WorkingDir
-		if targetDir == "" {
-			targetDir = request.Cwd
+		targetDir, cleanup, err := prepareSubagentWorkingDir(ctx, request)
+		if err != nil {
+			return "", err
 		}
-		if targetDir == "" {
-			targetDir, _ = os.Getwd()
-		}
+		defer cleanup()
 
 		childCfg := cfg
 		if request.Model != "" {
@@ -314,6 +313,46 @@ func makeSubagentRunner(
 		}
 		return result.Output, nil
 	}
+}
+
+func prepareSubagentWorkingDir(ctx context.Context, request agenttool.Request) (string, func(), error) {
+	targetDir := request.WorkingDir
+	if targetDir == "" {
+		targetDir = request.Cwd
+	}
+	if targetDir == "" {
+		targetDir, _ = os.Getwd()
+	}
+	cleanup := func() {}
+	if request.Isolation != "worktree" {
+		return targetDir, cleanup, nil
+	}
+
+	rootOutput, err := exec.CommandContext(ctx, "git", "-C", targetDir, "rev-parse", "--show-toplevel").CombinedOutput()
+	if err != nil {
+		return "", cleanup, fmt.Errorf("agent worktree isolation requires a git repository: %s", strings.TrimSpace(string(rootOutput)))
+	}
+	root := strings.TrimSpace(string(rootOutput))
+	parent := filepath.Join(os.TempDir(), "claude-codex-agent-worktrees")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return "", cleanup, err
+	}
+	worktreeDir, err := os.MkdirTemp(parent, "agent-*")
+	if err != nil {
+		return "", cleanup, err
+	}
+	_ = os.Remove(worktreeDir)
+
+	output, err := exec.CommandContext(ctx, "git", "-C", root, "worktree", "add", "--detach", worktreeDir, "HEAD").CombinedOutput()
+	if err != nil {
+		_ = os.RemoveAll(worktreeDir)
+		return "", cleanup, fmt.Errorf("create agent worktree: %s", strings.TrimSpace(string(output)))
+	}
+	cleanup = func() {
+		_ = exec.Command("git", "-C", root, "worktree", "remove", "--force", worktreeDir).Run()
+		_ = os.RemoveAll(worktreeDir)
+	}
+	return worktreeDir, cleanup, nil
 }
 
 func agentInitialSummary(request agenttool.Request) string {

@@ -21,7 +21,10 @@ type QueryParams struct {
 	QuerySource             string
 	MaxOutputTokensOverride *int
 	MaxTurns                *int
-	SkipCacheWrite          bool
+	// TokenBudget is the auto-continuation budget from prompts such as +500k.
+	// It is distinct from API TaskBudget.
+	TokenBudget    *int
+	SkipCacheWrite bool
 	// API task_budget (output_config.task_budget, beta task-budgets-2026-03-13).
 	// Distinct from the tokenBudget +500k auto-continue feature.
 	TaskBudget *TaskBudget
@@ -39,25 +42,25 @@ type TaskBudget struct {
 
 // State represents mutable state carried between loop iterations.
 type State struct {
-	Messages                      []types.Message
-	ToolUseContext                *tool.ToolUseContext
-	AutoCompactTracking           *AutoCompactTrackingState
-	MaxOutputTokensRecoveryCount  int
-	HasAttemptedReactiveCompact   bool
-	MaxOutputTokensOverride       *int
-	PendingToolUseSummary         chan *types.ToolUseSummaryMessage
-	StopHookActive                *bool
-	TurnCount                     int
+	Messages                     []types.Message
+	ToolUseContext               *tool.ToolUseContext
+	AutoCompactTracking          *AutoCompactTrackingState
+	MaxOutputTokensRecoveryCount int
+	HasAttemptedReactiveCompact  bool
+	MaxOutputTokensOverride      *int
+	PendingToolUseSummary        chan *types.ToolUseSummaryMessage
+	StopHookActive               *bool
+	TurnCount                    int
 	// Why the previous iteration continued. Nil on first iteration.
 	Transition *Continue
 }
 
 // AutoCompactTrackingState tracks auto-compaction state across iterations.
 type AutoCompactTrackingState struct {
-	Compacted            bool
-	TurnID               string
-	TurnCounter          int
-	ConsecutiveFailures  int
+	Compacted           bool
+	TurnID              string
+	TurnCounter         int
+	ConsecutiveFailures int
 }
 
 // QueryConfig contains immutable configuration snapshotted at query entry.
@@ -79,6 +82,7 @@ type Terminal struct {
 	Reason    string
 	Error     error
 	TurnCount int
+	Messages  []types.Message
 }
 
 // Continue represents why the loop continued to the next iteration.
@@ -100,20 +104,23 @@ type QueryDeps struct {
 	APIService     APIService
 }
 
+// CommandLifecycleListener observes queued command consumption.
+type CommandLifecycleListener func(uuid string, event string)
+
 // ModelCaller is the interface for calling the AI model.
 type ModelCaller func(ctx context.Context, params *ModelCallParams) (<-chan types.Message, error)
 
 // ModelCallParams contains parameters for a model call.
 type ModelCallParams struct {
-	Messages              []types.Message
-	SystemPrompt          types.SystemPrompt
-	Model                 string
-	MaxTokens             int
-	Temperature           float64
-	Tools                 []types.Tool
-	SkipCacheWrite        bool
-	TaskBudget            *TaskBudget
-	DumpPromptsFetch      interface{}
+	Messages         []types.Message
+	SystemPrompt     types.SystemPrompt
+	Model            string
+	MaxTokens        int
+	Temperature      float64
+	Tools            []tool.Tool
+	SkipCacheWrite   bool
+	TaskBudget       *TaskBudget
+	DumpPromptsFetch interface{}
 }
 
 // CompactService handles message compaction.
@@ -142,11 +149,11 @@ type APIService interface {
 
 // BudgetTracker tracks token budget across continuations.
 type BudgetTracker struct {
-	mu                    sync.Mutex
-	ContinuationCount     int
-	LastDeltaTokens       int
-	LastGlobalTurnTokens  int
-	StartedAt             int64
+	mu                   sync.Mutex
+	ContinuationCount    int
+	LastDeltaTokens      int
+	LastGlobalTurnTokens int
+	StartedAt            int64
 }
 
 // TokenBudgetDecision represents a decision about token budget continuation.
@@ -162,12 +169,12 @@ type TokenBudgetDecision struct {
 
 // CompletionEvent represents a token budget completion event.
 type CompletionEvent struct {
-	ContinuationCount   int
-	Pct                 int
-	TurnTokens          int
-	Budget              int
-	DiminishingReturns  bool
-	DurationMs          int64
+	ContinuationCount  int
+	Pct                int
+	TurnTokens         int
+	Budget             int
+	DiminishingReturns bool
+	DurationMs         int64
 }
 
 // StopHookResult represents the result of stop hook execution.
@@ -178,16 +185,16 @@ type StopHookResult struct {
 
 // Constants for terminal reasons
 const (
-	TerminalReasonCompleted          = "completed"
-	TerminalReasonBlockingLimit      = "blocking_limit"
-	TerminalReasonImageError         = "image_error"
-	TerminalReasonModelError         = "model_error"
-	TerminalReasonAbortedStreaming   = "aborted_streaming"
-	TerminalReasonAbortedTools       = "aborted_tools"
-	TerminalReasonPromptTooLong      = "prompt_too_long"
-	TerminalReasonStopHookPrevented  = "stop_hook_prevented"
-	TerminalReasonHookStopped        = "hook_stopped"
-	TerminalReasonMaxTurns           = "max_turns"
+	TerminalReasonCompleted         = "completed"
+	TerminalReasonBlockingLimit     = "blocking_limit"
+	TerminalReasonImageError        = "image_error"
+	TerminalReasonModelError        = "model_error"
+	TerminalReasonAbortedStreaming  = "aborted_streaming"
+	TerminalReasonAbortedTools      = "aborted_tools"
+	TerminalReasonPromptTooLong     = "prompt_too_long"
+	TerminalReasonStopHookPrevented = "stop_hook_prevented"
+	TerminalReasonHookStopped       = "hook_stopped"
+	TerminalReasonMaxTurns          = "max_turns"
 )
 
 // Constants for continue reasons

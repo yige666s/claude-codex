@@ -14,6 +14,10 @@ type FileValidationResult struct {
 }
 
 func ValidateSettingsFileContent(content string) FileValidationResult {
+	return validateSettingsFileContent(content, true)
+}
+
+func validateSettingsFileContent(content string, strict bool) FileValidationResult {
 	var raw any
 	if err := json.Unmarshal([]byte(content), &raw); err != nil {
 		return FileValidationResult{
@@ -24,6 +28,16 @@ func ValidateSettingsFileContent(content string) FileValidationResult {
 	}
 
 	filtered, warnings := FilterInvalidPermissionRules(raw, "settings")
+	doc, ok := filtered.(map[string]any)
+	if !ok {
+		return FileValidationResult{
+			IsValid:    false,
+			Error:      "Settings validation failed:\n- root: Expected object",
+			FullSchema: GenerateSettingsJSONSchema(),
+		}
+	}
+
+	settingsErrs := ValidateSettingsDocument(Document(doc), strict)
 	payload, err := json.Marshal(filtered)
 	if err != nil {
 		return FileValidationResult{
@@ -34,7 +48,7 @@ func ValidateSettingsFileContent(content string) FileValidationResult {
 	}
 
 	result := schemas.ValidateSettingsJSON(payload)
-	if result.Valid && len(validateStrictPluginOnlyCustomization(filtered)) == 0 {
+	if result.Valid && len(settingsErrs) == 0 {
 		return FileValidationResult{IsValid: true}
 	}
 
@@ -45,7 +59,7 @@ func ValidateSettingsFileContent(content string) FileValidationResult {
 	for _, validationErr := range result.Errors {
 		errMsg += "\n- " + validationErr.Path + ": " + validationErr.Message
 	}
-	for _, validationErr := range validateStrictPluginOnlyCustomization(filtered) {
+	for _, validationErr := range settingsErrs {
 		errMsg += "\n- " + validationErr.Path + ": " + validationErr.Message
 	}
 	return FileValidationResult{

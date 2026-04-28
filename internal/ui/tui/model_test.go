@@ -64,6 +64,47 @@ func TestModelThemeToggleStaysInInsertOnlyFlow(t *testing.T) {
 	}
 }
 
+func TestEmptyInputPlaceholderRenderedOnce(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	model := newModel(Options{
+		Title:      "Claude Go",
+		WorkingDir: session.WorkingDir,
+		Theme:      "dark",
+		Session:    session,
+		Runner: func(context.Context, *state.Session, string) (engine.Result, error) {
+			return engine.Result{Session: session}, nil
+		},
+		Input:  strings.NewReader(""),
+		Output: new(bytes.Buffer),
+	})
+
+	view := model.View()
+	if got := strings.Count(view, "Describe what to do"); got != 1 {
+		t.Fatalf("expected placeholder to render once, got %d in %q", got, view)
+	}
+}
+
+func TestIdleDisplayStatusDoesNotLeakRunning(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	model := newModel(Options{
+		Title:      "Claude Go",
+		WorkingDir: session.WorkingDir,
+		Theme:      "dark",
+		Session:    session,
+		Runner: func(context.Context, *state.Session, string) (engine.Result, error) {
+			return engine.Result{Session: session}, nil
+		},
+		Input:  strings.NewReader(""),
+		Output: new(bytes.Buffer),
+	})
+	model.busy = false
+	model.lastStatus = "running"
+
+	if got := model.displayStatus(); got != "idle" {
+		t.Fatalf("expected idle display status, got %q", got)
+	}
+}
+
 func TestRenderTranscriptIncludesRoles(t *testing.T) {
 	session := state.NewSession(t.TempDir())
 	session.AddUserMessage("hello")
@@ -418,6 +459,56 @@ func TestPermissionDialogUsesBashSpecificRendering(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected %q in bash permission view, got %q", want, view)
 		}
+	}
+}
+
+func TestPermissionDecisionKeysReturnTypedDecision(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	model := newModel(Options{
+		Session:        session,
+		PermissionMode: "default",
+		Input:          strings.NewReader(""),
+		Output:         new(bytes.Buffer),
+	})
+	reply := make(chan permissionResult, 1)
+	model.permission = &permissionEnvelope{
+		request: permissions.Request{
+			ToolName: "Bash",
+			Level:    permissions.LevelExecute,
+			Summary:  "npm publish --dry-run",
+			Suggestions: []permissions.PermissionUpdate{{
+				Type:        permissions.UpdateAddRules,
+				Destination: permissions.SourceSession,
+				Behavior:    permissions.BehaviorAllow,
+				Rules:       []permissions.RuleValue{{ToolName: "Bash", RuleContent: "npm publish:*"}},
+			}},
+		},
+		reply: reply,
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	model = updated.(appModel)
+	if model.permission != nil {
+		t.Fatal("expected permission dialog to close")
+	}
+	result := <-reply
+	if result.err != nil {
+		t.Fatalf("unexpected permission result error: %v", result.err)
+	}
+	if result.decision.Behavior != permissions.BehaviorAllow || !result.decision.Remember {
+		t.Fatalf("expected remembered allow decision, got %+v", result.decision)
+	}
+	if len(result.decision.Updates) != 1 || result.decision.Updates[0].Rules[0].RuleContent != "npm publish:*" {
+		t.Fatalf("expected suggested update to be returned, got %+v", result.decision.Updates)
+	}
+
+	view := renderPermissionDialog(permissions.Request{
+		ToolName:    "Bash",
+		Level:       permissions.LevelExecute,
+		Suggestions: result.decision.Updates,
+	})
+	if !strings.Contains(view, "[a] always allow") {
+		t.Fatalf("expected always-allow key hint, got %q", view)
 	}
 }
 

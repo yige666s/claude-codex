@@ -2,12 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"claude-codex/internal/app/config"
+	"claude-codex/internal/harness/state"
 	agenttool "claude-codex/internal/harness/tools/agent"
 	"claude-codex/internal/ui/tui"
 )
@@ -61,6 +65,204 @@ func TestRootCommandCreatesHelloGoFile(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected exactly one saved session, got %d", len(entries))
+	}
+}
+
+func TestRootCommandStatusFilesPermissionsAndPlugin(t *testing.T) {
+	projectRoot := t.TempDir()
+	homeRoot := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("CLAUDE_GO_HOME", homeRoot)
+	t.Setenv("CLAUDE_CONFIG_HOME", configHome)
+
+	if err := os.WriteFile(filepath.Join(projectRoot, "tracked.go"), []byte("package tracked\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runGit(t, projectRoot, "init")
+	runGit(t, projectRoot, "config", "user.email", "test@example.com")
+	runGit(t, projectRoot, "config", "user.name", "Test User")
+	runGit(t, projectRoot, "add", "tracked.go")
+	runGit(t, projectRoot, "commit", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(projectRoot, "changed.go"), []byte("package changed\n"), 0o644); err != nil {
+		t.Fatalf("write changed file: %v", err)
+	}
+
+	pluginRoot := filepath.Join(projectRoot, "plugins", "demo")
+	if err := os.MkdirAll(pluginRoot, 0o755); err != nil {
+		t.Fatalf("mkdir plugin: %v", err)
+	}
+	manifest := map[string]any{
+		"name":        "demo",
+		"version":     "1.0.0",
+		"description": "Demo plugin",
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, "plugin.json"), data, 0o644); err != nil {
+		t.Fatalf("write plugin manifest: %v", err)
+	}
+
+	runCommand := func(args ...string) string {
+		t.Helper()
+		stdout := new(bytes.Buffer)
+		stderr := new(bytes.Buffer)
+		command := NewRootCommandWithIO(IO{
+			In:  strings.NewReader(""),
+			Out: stdout,
+			Err: stderr,
+		})
+		command.SetArgs(args)
+		if err := command.Execute(); err != nil {
+			t.Fatalf("execute %v: %v\nstderr: %s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	output := runCommand("--backend", "simple", "--permission-mode", "bypass", "--cwd", projectRoot, "/status")
+	for _, want := range []string{"cwd: " + projectRoot, "backend: simple", "permission_mode: bypass", "git_branch:"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected /status output to contain %q, got %q", want, output)
+		}
+	}
+
+	output = runCommand("--cwd", projectRoot, "/files")
+	if !strings.Contains(output, "tracked.go") {
+		t.Fatalf("expected /files output to include tracked file, got %q", output)
+	}
+
+	output = runCommand("--cwd", projectRoot, "/files", "changed")
+	if !strings.Contains(output, "changed.go") {
+		t.Fatalf("expected /files changed output to include changed file, got %q", output)
+	}
+
+	output = runCommand("--cwd", projectRoot, "/permissions", "add", "allow", "Read")
+	if !strings.Contains(output, "added allow permission: Read") {
+		t.Fatalf("expected add permission output, got %q", output)
+	}
+	output = runCommand("--cwd", projectRoot, "/permissions")
+	if !strings.Contains(output, "allow:\n  - Read") {
+		t.Fatalf("expected permissions list to include Read allow rule, got %q", output)
+	}
+	output = runCommand("--cwd", projectRoot, "/permissions", "remove", "allow", "Read")
+	if !strings.Contains(output, "removed allow permission: Read") {
+		t.Fatalf("expected remove permission output, got %q", output)
+	}
+
+	output = runCommand("--cwd", projectRoot, "/plugin", "install-local", "demo@local", pluginRoot)
+	if !strings.Contains(output, "installed plugin demo@local") {
+		t.Fatalf("expected plugin install output, got %q", output)
+	}
+	output = runCommand("--cwd", projectRoot, "/plugin", "list")
+	if !strings.Contains(output, "demo@local") || !strings.Contains(output, "1.0.0") {
+		t.Fatalf("expected plugin list to include installed plugin, got %q", output)
+	}
+	output = runCommand("--cwd", projectRoot, "/plugin", "disable", "demo@local")
+	if !strings.Contains(output, "disabled plugin demo@local") {
+		t.Fatalf("expected plugin disable output, got %q", output)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, output)
+	}
+}
+
+func TestRootCommandBranchTagExportAndUsage(t *testing.T) {
+	projectRoot := t.TempDir()
+	homeRoot := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("CLAUDE_GO_HOME", homeRoot)
+	t.Setenv("CLAUDE_CONFIG_HOME", configHome)
+
+	if err := os.WriteFile(filepath.Join(projectRoot, "tracked.go"), []byte("package tracked\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runGit(t, projectRoot, "init")
+	runGit(t, projectRoot, "config", "user.email", "test@example.com")
+	runGit(t, projectRoot, "config", "user.name", "Test User")
+	runGit(t, projectRoot, "add", "tracked.go")
+	runGit(t, projectRoot, "commit", "-m", "initial")
+
+	session := state.NewSession(projectRoot)
+	session.Description = "root command export fixture"
+	session.AddUserMessage("hello from the saved session")
+	session.AddAssistantMessage("saved session reply")
+	if _, err := session.Save(homeRoot); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	runCommand := func(args ...string) string {
+		t.Helper()
+		stdout := new(bytes.Buffer)
+		stderr := new(bytes.Buffer)
+		command := NewRootCommandWithIO(IO{
+			In:  strings.NewReader(""),
+			Out: stdout,
+			Err: stderr,
+		})
+		command.SetArgs(args)
+		if err := command.Execute(); err != nil {
+			t.Fatalf("execute %v: %v\nstderr: %s", args, err, stderr.String())
+		}
+		return stdout.String()
+	}
+
+	output := runCommand("--cwd", projectRoot, "/branch")
+	if !strings.Contains(output, "current_branch:") {
+		t.Fatalf("expected /branch to show current branch, got %q", output)
+	}
+	output = runCommand("--cwd", projectRoot, "/branch", "create", "codex-test")
+	if !strings.Contains(output, "created branch codex-test") {
+		t.Fatalf("expected branch create output, got %q", output)
+	}
+	output = runCommand("--cwd", projectRoot, "/branch", "list")
+	if !strings.Contains(output, "codex-test") {
+		t.Fatalf("expected branch list to include created branch, got %q", output)
+	}
+
+	output = runCommand("--cwd", projectRoot, "/tag", "add", "important", "latest")
+	if !strings.Contains(output, "added tag important") {
+		t.Fatalf("expected tag add output, got %q", output)
+	}
+	output = runCommand("--cwd", projectRoot, "/tag", "list", "latest")
+	if !strings.Contains(output, "tags: important") {
+		t.Fatalf("expected tag list output, got %q", output)
+	}
+	output = runCommand("--cwd", projectRoot, "/tag", "remove", "important", "latest")
+	if !strings.Contains(output, "removed tag important") {
+		t.Fatalf("expected tag remove output, got %q", output)
+	}
+
+	output = runCommand("--cwd", projectRoot, "/export", "latest", "markdown")
+	if !strings.Contains(output, "# Claude Codex Session") || !strings.Contains(output, "hello from the saved session") {
+		t.Fatalf("expected markdown export to include session transcript, got %q", output)
+	}
+	exportPath := filepath.Join(homeRoot, "exports", "session.json")
+	output = runCommand("--cwd", projectRoot, "/export", "latest", "json", exportPath)
+	if !strings.Contains(output, "exported session") {
+		t.Fatalf("expected export file output, got %q", output)
+	}
+	exported, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("read exported session: %v", err)
+	}
+	if !strings.Contains(string(exported), session.ID) {
+		t.Fatalf("expected exported json to include session id, got %s", exported)
+	}
+
+	output = runCommand("--cwd", projectRoot, "/usage")
+	if !strings.Contains(output, "sessions: 1") || !strings.Contains(output, "total_tokens:") {
+		t.Fatalf("expected usage summary output, got %q", output)
+	}
+	output = runCommand("--cwd", projectRoot, "/usage", "sessions", "5")
+	if !strings.Contains(output, session.ID) || !strings.Contains(output, "tokens=") {
+		t.Fatalf("expected usage sessions output, got %q", output)
 	}
 }
 
@@ -328,5 +530,19 @@ func TestBuildSubagentPromptWithoutMetadata(t *testing.T) {
 	prompt := buildSubagentPrompt(agenttool.Request{Prompt: "Inspect src/auth for session bugs."})
 	if prompt != "Inspect src/auth for session bugs." {
 		t.Fatalf("unexpected prompt: %q", prompt)
+	}
+}
+
+func TestBuildRegistryIncludesDelegationTools(t *testing.T) {
+	registry, err := buildRegistry(config.Config{}, t.TempDir(), func(context.Context, agenttool.Request) (string, error) {
+		return "ok", nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("build registry: %v", err)
+	}
+	for _, name := range []string{"agent", "TaskCreate", "TaskOutput", "TaskStop", "SendMessage"} {
+		if _, err := registry.Get(name); err != nil {
+			t.Fatalf("expected %s in registry: %v", name, err)
+		}
 	}
 }

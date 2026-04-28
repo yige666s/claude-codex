@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"golang.org/x/sync/errgroup"
 
-	workctx "claude-codex/internal/harness/context"
 	"claude-codex/internal/harness/messages"
 	"claude-codex/internal/harness/permissions"
 	"claude-codex/internal/harness/skills"
@@ -30,6 +28,7 @@ type Engine struct {
 	skillListingManager *messages.SkillListingManager
 	progressCallback    func(toolkit.ProgressEvent)
 	telemetryTracer     telemetry.SessionTracer
+	runner              engineRuntime
 }
 
 type Result struct {
@@ -41,12 +40,14 @@ func New(planner Planner, registry *toolkit.Registry, checker *permissions.Check
 	if maxTurns < 0 {
 		maxTurns = 0
 	}
-	return &Engine{
+	engine := &Engine{
 		planner:     planner,
 		registry:    registry,
 		permissions: checker,
 		maxTurns:    maxTurns,
 	}
+	engine.runner = newQueryRuntime(engine)
+	return engine
 }
 
 func NewWithDir(planner Planner, registry *toolkit.Registry, checker *permissions.Checker, maxTurns int, workingDir string) *Engine {
@@ -73,185 +74,31 @@ func (e *Engine) SetSkillManager(sm *skills.SkillManager) {
 	e.skillManager = sm
 }
 
+// UseLegacyRuntime keeps Engine on the existing planner-driven runtime.
+func (e *Engine) UseLegacyRuntime() {
+	e.runner = newLegacyRuntime(e)
+}
+
+// UseQueryRuntime switches Engine onto the TS-aligned queryengine -> query chain.
+// This is opt-in while the query runtime is still being brought to feature parity.
+func (e *Engine) UseQueryRuntime() {
+	e.runner = newQueryRuntime(e)
+}
+
 func (e *Engine) Descriptors() []toolkit.Descriptor {
-	return e.registry.Descriptors()
+	return e.runner.Descriptors()
 }
 
 func (e *Engine) ExecuteTool(ctx context.Context, name string, input json.RawMessage) (toolkit.Result, error) {
-	tool, err := e.registry.Get(name)
-	if err != nil {
-		return toolkit.Result{}, err
-	}
-	if e.permissions != nil {
-		if err := e.permissions.AuthorizeRequest(ctx, buildPermissionRequest(tool.Name(), tool.Permission(), input)); err != nil {
-			return toolkit.Result{}, err
-		}
-	}
-	return tool.Execute(ctx, input)
+	return e.runner.ExecuteTool(ctx, name, input)
 }
 
 func (e *Engine) Run(ctx context.Context, session *state.Session, prompt string) (Result, error) {
-	return e.run(ctx, session, prompt, true)
+	return e.runner.Run(ctx, session, prompt, true)
 }
 
 func (e *Engine) RunGeneratedPrompt(ctx context.Context, session *state.Session, prompt string) (Result, error) {
-	return e.run(ctx, session, prompt, false)
-}
-
-func (e *Engine) run(ctx context.Context, session *state.Session, prompt string, recordUserMessage bool) (Result, error) {
-	if session == nil {
-		return Result{}, fmt.Errorf("session is required")
-	}
-	interactionID := fmt.Sprintf("interaction-%d", time.Now().UnixNano())
-	e.recordTrace(session.ID, "interaction.start", "interaction", map[string]any{
-		"span_id":       interactionID,
-		"prompt":        prompt,
-		"prompt_length": len(prompt),
-		"prompt_source": promptSource(recordUserMessage),
-		"working_dir":   session.WorkingDir,
-	})
-
-	// Inject workspace context as first system message if session is new
-	if len(session.Messages) == 0 && e.workingDir != "" {
-		wsCtx := workctx.Collect(e.workingDir)
-		session.AddSystemContext(wsCtx.SystemPrompt())
-		session.AddAssistantMessage("Understood. I have the workspace context.")
-
-		// Inject skill listing if skill manager is available
-		if e.skillManager != nil {
-			if e.skillListingManager == nil {
-				e.skillListingManager = messages.NewSkillListingManager()
-			}
-
-			allSkills := e.skillManager.ListUserInvocableSkills()
-			attachment := e.skillListingManager.GetSkillListingAttachment(allSkills, 200000)
-
-			if attachment != nil {
-				systemReminder := attachment.ToSystemReminder()
-				session.AddSystemContext(systemReminder)
-			}
-		}
-	}
-
-	// Generated prompts should still be injected into model context, but not as
-	// visible user-authored transcript entries.
-	if recordUserMessage {
-		if last := session.LastUserMessage(); last != prompt {
-			session.AddUserMessage(prompt)
-		}
-	} else if strings.TrimSpace(prompt) != "" {
-		session.AddSystemContext(prompt)
-	}
-
-	// Check if compression is needed before starting the loop
-	compressionConfig := state.DefaultCompressionConfig()
-	if session.NeedsCompression(compressionConfig) {
-		e.recordTrace(session.ID, "session.compression", "session", map[string]any{
-			"span_id":  interactionID + ":compression:pre",
-			"messages": len(session.Messages),
-		})
-		if err := session.Compress(compressionConfig); err != nil {
-			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
-				"span_id": interactionID,
-				"status":  "error",
-				"error":   err.Error(),
-			})
-			return Result{}, fmt.Errorf("failed to compress session: %w", err)
-		}
-	}
-
-	for turn := 0; e.maxTurns <= 0 || turn < e.maxTurns; turn++ {
-		turnSpanID := fmt.Sprintf("%s:turn:%d", interactionID, turn)
-		e.recordTrace(session.ID, "planner.turn.start", "planner", map[string]any{
-			"span_id": turnSpanID,
-			"turn":    turn,
-			"tools":   len(e.registry.Descriptors()),
-		})
-		plan, err := e.planner.Next(ctx, session, e.registry.Descriptors())
-		if err != nil {
-			e.recordTrace(session.ID, "planner.turn.end", "planner", map[string]any{
-				"span_id": turnSpanID,
-				"turn":    turn,
-				"status":  "error",
-				"error":   err.Error(),
-			})
-			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
-				"span_id": interactionID,
-				"status":  "error",
-				"error":   err.Error(),
-			})
-			return Result{}, err
-		}
-		e.recordTrace(session.ID, "planner.turn.end", "planner", map[string]any{
-			"span_id":         turnSpanID,
-			"turn":            turn,
-			"status":          "ok",
-			"tool_call_count": len(plan.ToolCalls),
-			"assistant_chars": len(plan.AssistantText),
-			"stop_reason":     plan.StopReason,
-		})
-
-		if len(plan.ToolCalls) == 0 {
-			if plan.AssistantText != "" {
-				session.AddAssistantMessage(plan.AssistantText)
-			}
-			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
-				"span_id":         interactionID,
-				"status":          "ok",
-				"tool_call_count": 0,
-				"output_chars":    len(plan.AssistantText),
-			})
-			return Result{
-				Output:  plan.AssistantText,
-				Session: session,
-			}, nil
-		}
-
-		// Save the assistant's tool-use intent before executing so the conversation
-		// history is complete when we call Next again.
-		// Convert engine.ToolCall to state.ToolCall
-		stateToolCalls := make([]state.ToolCall, len(plan.ToolCalls))
-		for i, tc := range plan.ToolCalls {
-			stateToolCalls[i] = state.ToolCall{
-				ID:    tc.ID,
-				Name:  tc.Name,
-				Input: tc.Input,
-			}
-		}
-		session.AddAssistantMessageWithTools(plan.AssistantText, stateToolCalls)
-
-		if err := e.executeToolCalls(ctx, session, plan.ToolCalls, interactionID); err != nil {
-			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
-				"span_id": interactionID,
-				"status":  "error",
-				"error":   err.Error(),
-			})
-			return Result{}, err
-		}
-
-		// Check if compression is needed after tool execution
-		if session.NeedsCompression(compressionConfig) {
-			e.recordTrace(session.ID, "session.compression", "session", map[string]any{
-				"span_id":  fmt.Sprintf("%s:compression:post:%d", interactionID, turn),
-				"messages": len(session.Messages),
-			})
-			if err := session.Compress(compressionConfig); err != nil {
-				e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
-					"span_id": interactionID,
-					"status":  "error",
-					"error":   err.Error(),
-				})
-				return Result{}, fmt.Errorf("failed to compress session: %w", err)
-			}
-		}
-	}
-
-	e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
-		"span_id": interactionID,
-		"status":  "error",
-		"error":   fmt.Sprintf("planner exceeded max turns (%d)", e.maxTurns),
-	})
-	return Result{}, fmt.Errorf("planner exceeded max turns (%d)", e.maxTurns)
+	return e.runner.Run(ctx, session, prompt, false)
 }
 
 func toolFailureMessage(call ToolCall, output string) state.Message {
@@ -448,8 +295,9 @@ func buildPermissionRequest(toolName string, level permissions.Level, input json
 		if command, ok := payload["command"].(string); ok {
 			request.Summary = summarizeText(command, 120)
 			metadata["command"] = summarizeText(command, 240)
-			fields := strings.Fields(command)
-			if len(fields) > 0 {
+			if prefix := permissions.SimpleShellCommandPrefix(command); prefix != "" {
+				metadata["command_prefix"] = prefix
+			} else if fields := strings.Fields(command); len(fields) > 0 {
 				metadata["command_prefix"] = fields[0]
 			}
 			analysis := bashtool.AnalyzeCommand(command)

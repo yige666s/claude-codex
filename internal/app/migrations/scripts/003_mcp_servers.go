@@ -2,9 +2,9 @@ package scripts
 
 import (
 	"context"
-	"fmt"
 
 	"claude-codex/internal/app/migrations"
+	"claude-codex/internal/app/settings"
 )
 
 func init() {
@@ -18,13 +18,22 @@ func init() {
 
 // migrateEnableAllProjectMcpServersToSettings moves MCP approval fields to settings
 func migrateEnableAllProjectMcpServersToSettings(ctx context.Context) error {
-	// TODO: Implement when config and settings modules are available
-
-	// The migration should:
-	// 1. Check projectConfig for enableAllProjectMcpServers, enabledMcpjsonServers, disabledMcpjsonServers
-	// 2. Migrate to localSettings (merge arrays, avoid duplicates)
-	// 3. Remove fields from projectConfig
-	// 4. Log analytics event
-
-	return fmt.Errorf("migration not yet implemented - requires config module")
+	workingDir := workingDirFromContext()
+	project, projectPath, err := loadSettings(settings.SourceProject, workingDir)
+	if err != nil {
+		return err
+	}
+	updates := settings.Document{}
+	for _, key := range []string{"enableAllProjectMcpServers", "enabledMcpjsonServers", "disabledMcpjsonServers"} {
+		if value, ok := project[key]; ok {
+			updates[key] = value
+			delete(project, key)
+		}
+	}
+	if len(updates) > 0 {
+		if err := setLocalSetting(updates); err != nil {
+			return err
+		}
+	}
+	return saveSettings(projectPath, project)
 }

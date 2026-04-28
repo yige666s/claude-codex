@@ -54,16 +54,61 @@ func ParseSkillFile(content string) (*ParsedSkillFile, error) {
 		}, nil
 	}
 
-	// Parse YAML frontmatter
+	// Parse YAML frontmatter. Claude Code tolerates common unquoted glob
+	// frontmatter values, so retry with problematic scalar values quoted.
 	var fm Frontmatter
 	if err := yaml.Unmarshal([]byte(matches[1]), &fm); err != nil {
-		return nil, fmt.Errorf("failed to parse frontmatter: %w", err)
+		quoted := quoteProblematicFrontmatterValues(matches[1])
+		if quoted == matches[1] {
+			return nil, fmt.Errorf("failed to parse frontmatter: %w", err)
+		}
+		if retryErr := yaml.Unmarshal([]byte(quoted), &fm); retryErr != nil {
+			return nil, fmt.Errorf("failed to parse frontmatter: %w", err)
+		}
 	}
 
 	return &ParsedSkillFile{
 		Frontmatter: &fm,
 		Content:     strings.TrimSpace(matches[2]),
 	}, nil
+}
+
+func quoteProblematicFrontmatterValues(input string) string {
+	var changed bool
+	lines := strings.Split(input, "\n")
+	keyValuePattern := regexp.MustCompile(`^([A-Za-z_-][A-Za-z0-9_-]*):\s+(.+)$`)
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") || strings.HasPrefix(strings.TrimSpace(line), "-") {
+			continue
+		}
+		matches := keyValuePattern.FindStringSubmatch(line)
+		if len(matches) != 3 {
+			continue
+		}
+		value := strings.TrimSpace(matches[2])
+		if value == "" || strings.HasPrefix(value, "\"") || strings.HasPrefix(value, "'") || strings.HasPrefix(value, "[") || strings.HasPrefix(value, "{") {
+			continue
+		}
+		if !isProblematicYAMLScalar(value) {
+			continue
+		}
+		lines[i] = matches[1] + ": " + strconv.Quote(value)
+		changed = true
+	}
+	if !changed {
+		return input
+	}
+	return strings.Join(lines, "\n")
+}
+
+func isProblematicYAMLScalar(value string) bool {
+	if strings.Contains(value, ": ") {
+		return true
+	}
+	return strings.ContainsAny(value, "{}[]*&#!|>%@`")
 }
 
 // CoerceDescriptionToString converts description to string
@@ -164,12 +209,38 @@ func ParseAllowedTools(value interface{}) []string {
 
 // ParseArgumentNames parses arguments field into argument names
 func ParseArgumentNames(value interface{}) []string {
-	return ParseStringArray(value)
+	items := make([]string, 0)
+	switch v := value.(type) {
+	case string:
+		items = strings.Fields(v)
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				items = append(items, strings.Fields(s)...)
+			}
+		}
+	case []string:
+		for _, item := range v {
+			items = append(items, strings.Fields(item)...)
+		}
+	default:
+		return nil
+	}
+
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" || isNumericOnly(item) {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result
 }
 
 // ParsePaths parses paths field into path patterns
 func ParsePaths(value interface{}) []string {
-	patterns := ParseStringArray(value)
+	patterns := parsePathPatterns(value)
 	if patterns == nil {
 		return nil
 	}
@@ -185,7 +256,7 @@ func ParsePaths(value interface{}) []string {
 		// Remove /** suffix
 		pattern = strings.TrimSuffix(pattern, "/**")
 
-		result = append(result, pattern)
+		result = append(result, expandBracePattern(pattern)...)
 	}
 
 	// If all patterns are ** (match-all), return nil
@@ -202,6 +273,146 @@ func ParsePaths(value interface{}) []string {
 		}
 	}
 
+	return result
+}
+
+func isNumericOnly(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func parsePathPatterns(value interface{}) []string {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return splitPathFrontmatter(v)
+	case []interface{}:
+		var result []string
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				result = append(result, splitPathFrontmatter(s)...)
+			}
+		}
+		return result
+	case []string:
+		var result []string
+		for _, item := range v {
+			result = append(result, splitPathFrontmatter(item)...)
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+func splitPathFrontmatter(value string) []string {
+	var result []string
+	var current strings.Builder
+	braceDepth := 0
+	for _, r := range value {
+		switch r {
+		case '{':
+			braceDepth++
+			current.WriteRune(r)
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+			current.WriteRune(r)
+		case ',':
+			if braceDepth == 0 {
+				appendTrimmedPath(&result, current.String())
+				current.Reset()
+			} else {
+				current.WriteRune(r)
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	appendTrimmedPath(&result, current.String())
+	return result
+}
+
+func appendTrimmedPath(result *[]string, value string) {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		*result = append(*result, value)
+	}
+}
+
+func expandBracePattern(pattern string) []string {
+	start := strings.Index(pattern, "{")
+	if start == -1 {
+		return []string{pattern}
+	}
+	end := findMatchingBrace(pattern, start)
+	if end == -1 {
+		return []string{pattern}
+	}
+	options := splitBraceOptions(pattern[start+1 : end])
+	if len(options) == 0 {
+		return []string{pattern}
+	}
+	result := make([]string, 0, len(options))
+	prefix := pattern[:start]
+	suffix := pattern[end+1:]
+	for _, option := range options {
+		result = append(result, expandBracePattern(prefix+option+suffix)...)
+	}
+	return result
+}
+
+func findMatchingBrace(pattern string, start int) int {
+	depth := 0
+	for i := start; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func splitBraceOptions(value string) []string {
+	var result []string
+	var current strings.Builder
+	depth := 0
+	for _, r := range value {
+		switch r {
+		case '{':
+			depth++
+			current.WriteRune(r)
+		case '}':
+			if depth > 0 {
+				depth--
+			}
+			current.WriteRune(r)
+		case ',':
+			if depth == 0 {
+				appendTrimmedPath(&result, current.String())
+				current.Reset()
+			} else {
+				current.WriteRune(r)
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	appendTrimmedPath(&result, current.String())
 	return result
 }
 
@@ -227,6 +438,7 @@ func ParseEffort(value interface{}) *int {
 			"low":        2,
 			"medium":     3,
 			"high":       4,
+			"max":        5,
 			"exhaustive": 5,
 		}
 		if level, ok := effortMap[lower]; ok {

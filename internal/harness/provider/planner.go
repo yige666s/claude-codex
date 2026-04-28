@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"claude-codex/internal/harness/engine"
+	"claude-codex/internal/harness/plannerapi"
 	"claude-codex/internal/harness/state"
 	toolkit "claude-codex/internal/harness/tools"
 )
@@ -18,7 +18,7 @@ func NewPlanner(provider Provider, model string) *Planner {
 	return &Planner{provider: provider, model: model}
 }
 
-func (p *Planner) Next(ctx context.Context, session *state.Session, tools []toolkit.Descriptor) (engine.Plan, error) {
+func (p *Planner) Next(ctx context.Context, session *state.Session, tools []toolkit.Descriptor) (plannerapi.Plan, error) {
 	request := MessageRequest{
 		Model:     p.model,
 		MaxTokens: 8096,
@@ -28,7 +28,7 @@ func (p *Planner) Next(ctx context.Context, session *state.Session, tools []tool
 
 	response, err := p.provider.CreateMessage(ctx, request)
 	if err != nil {
-		return engine.Plan{}, err
+		return plannerapi.Plan{}, err
 	}
 
 	return planFromResponse(response), nil
@@ -98,13 +98,13 @@ func toProviderTools(descs []toolkit.Descriptor) []Tool {
 	return tools
 }
 
-func planFromResponse(resp *MessageResponse) engine.Plan {
+func planFromResponse(resp *MessageResponse) plannerapi.Plan {
 	if resp == nil {
-		return engine.Plan{}
+		return plannerapi.Plan{}
 	}
-	toolCalls := make([]engine.ToolCall, len(resp.ToolCalls))
+	toolCalls := make([]plannerapi.ToolCall, len(resp.ToolCalls))
 	for i, tc := range resp.ToolCalls {
-		toolCalls[i] = engine.ToolCall{
+		toolCalls[i] = plannerapi.ToolCall{
 			ID:    tc.ID,
 			Name:  tc.Name,
 			Input: tc.Input,
@@ -129,7 +129,7 @@ func planFromResponse(resp *MessageResponse) engine.Plan {
 		stopReason = "end_turn"
 	}
 
-	return engine.Plan{
+	return plannerapi.Plan{
 		AssistantText: text,
 		ToolCalls:     toolCalls,
 		StopReason:    stopReason,

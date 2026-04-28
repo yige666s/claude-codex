@@ -2,9 +2,11 @@ package scripts
 
 import (
 	"context"
-	"fmt"
+	"strings"
+	"time"
 
 	"claude-codex/internal/app/migrations"
+	"claude-codex/internal/app/settings"
 )
 
 func init() {
@@ -18,19 +20,26 @@ func init() {
 
 // migrateSonnet45ToSonnet46 migrates sonnet 4.5 to sonnet 4.6 alias
 func migrateSonnet45ToSonnet46(ctx context.Context) error {
-	// TODO: Implement when config and settings modules are available
-
-	// The migration should:
-	// 1. Check API provider === "firstParty"
-	// 2. Check user is Pro/Max/Team Premium subscriber
-	// 3. Check userSettings.model for Sonnet 4.5 strings:
-	//    - claude-sonnet-4-5-20250929
-	//    - claude-sonnet-4-5-20250929[1m]
-	//    - sonnet-4-5-20250929
-	//    - sonnet-4-5-20250929[1m]
-	// 4. Update to "sonnet" or "sonnet[1m]" alias
-	// 5. Set globalConfig.sonnet45To46MigrationTimestamp (skip for new users)
-	// 6. Log analytics event with from_model and has_1m
-
-	return fmt.Errorf("migration not yet implemented - requires config module")
+	user, userPath, err := loadSettings(settings.SourceUser, workingDirFromContext())
+	if err != nil {
+		return err
+	}
+	model := strings.ToLower(stringValue(user, "model"))
+	switch model {
+	case "claude-sonnet-4-5-20250929", "sonnet-4-5-20250929", "sonnet-4-5":
+		user["model"] = "sonnet"
+	case "claude-sonnet-4-5-20250929[1m]", "sonnet-4-5-20250929[1m]", "sonnet-4-5[1m]":
+		user["model"] = "sonnet[1m]"
+	default:
+		return nil
+	}
+	if err := saveSettings(userPath, user); err != nil {
+		return err
+	}
+	cfg, cfgPath, err := loadRawConfig()
+	if err != nil {
+		return err
+	}
+	cfg["sonnet45To46MigrationTimestamp"] = time.Now().UnixMilli()
+	return saveRawConfig(cfgPath, cfg)
 }

@@ -10,8 +10,8 @@ type HookEvent string
 
 const (
 	// Tool-related events
-	EventPreToolUse        HookEvent = "PreToolUse"
-	EventPostToolUse       HookEvent = "PostToolUse"
+	EventPreToolUse         HookEvent = "PreToolUse"
+	EventPostToolUse        HookEvent = "PostToolUse"
 	EventPostToolUseFailure HookEvent = "PostToolUseFailure"
 
 	// Session events
@@ -163,12 +163,12 @@ type HookResult struct {
 
 // PermissionDecision represents a permission decision.
 type PermissionDecision struct {
-	Behavior               string // "allow", "deny", "ask", "passthrough"
-	Reason                 string
-	UpdatedInput           map[string]any
-	UpdatedPermissions     []PermissionUpdate
-	Message                string
-	Interrupt              bool
+	Behavior           string // "allow", "deny", "ask", "passthrough"
+	Reason             string
+	UpdatedInput       map[string]any
+	UpdatedPermissions []PermissionUpdate
+	Message            string
+	Interrupt          bool
 }
 
 // PermissionUpdate represents a permission update.
@@ -197,6 +197,9 @@ type AggregatedResult struct {
 
 	// PermissionDecisionReason is the reason for the permission decision.
 	PermissionDecisionReason string
+
+	// PermissionUpdates are rule updates suggested by permission hooks.
+	PermissionUpdates []PermissionUpdate
 
 	// UpdatedInput contains the final modified input.
 	UpdatedInput map[string]any

@@ -20,12 +20,13 @@ import (
 const endpointPath = "/api/claude_code/settings"
 
 type FetchResult struct {
-	Success     bool
-	Settings    appsettings.Document
-	Checksum    string
-	NotModified bool
-	Error       string
-	SkipRetry   bool
+	Success        bool
+	Settings       appsettings.Document
+	Checksum       string
+	NotModified    bool
+	Error          string
+	SkipRetry      bool
+	SecurityReview appsettings.ManagedSettingsSecurityReview
 }
 
 type Service struct {
@@ -117,11 +118,21 @@ func (s *Service) Fetch(ctx context.Context, cachedChecksum string) FetchResult 
 	if checksum == "" {
 		checksum = ComputeChecksum(payload.Settings)
 	}
+	review := appsettings.ReviewManagedSettingsSecurity(payload.Settings)
+	if review.RequiresApproval {
+		return FetchResult{
+			Success:        true,
+			Settings:       payload.Settings,
+			Checksum:       checksum,
+			SecurityReview: review,
+		}
+	}
 	appsettings.SetRemoteManagedSettingsCache(payload.Settings)
 	return FetchResult{
-		Success:  true,
-		Settings: payload.Settings,
-		Checksum: checksum,
+		Success:        true,
+		Settings:       payload.Settings,
+		Checksum:       checksum,
+		SecurityReview: review,
 	}
 }
 

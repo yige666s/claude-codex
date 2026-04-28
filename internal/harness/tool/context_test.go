@@ -204,6 +204,31 @@ func TestToolUseContext_Clone(t *testing.T) {
 	}
 }
 
+func TestToolUseContext_Tools(t *testing.T) {
+	toolCtx := NewToolUseContext(context.Background())
+	toolA := NewToolBuilder("tool-a").Build()
+	toolB := NewToolBuilder("tool-b").Build()
+
+	toolCtx.SetTools([]Tool{toolA, toolB})
+
+	if got := toolCtx.FindToolByName("tool-a"); got == nil || got.Name() != "tool-a" {
+		t.Fatalf("expected to find tool-a, got %#v", got)
+	}
+	if got := toolCtx.FindToolByName("missing"); got != nil {
+		t.Fatalf("expected missing tool lookup to return nil, got %#v", got)
+	}
+
+	snapshot := toolCtx.Tools()
+	if len(snapshot) != 2 {
+		t.Fatalf("expected 2 tools in snapshot, got %d", len(snapshot))
+	}
+
+	snapshot[0] = toolB
+	if got := toolCtx.FindToolByName("tool-a"); got == nil || got.Name() != "tool-a" {
+		t.Fatalf("expected context lookup to remain stable after snapshot mutation, got %#v", got)
+	}
+}
+
 func TestFileReadingLimits(t *testing.T) {
 	maxTokens := 1000
 	maxBytes := int64(10000)
@@ -237,12 +262,12 @@ func TestGlobLimits(t *testing.T) {
 func TestToolOptions(t *testing.T) {
 	maxBudget := 10.0
 	opts := ToolOptions{
-		Debug:            true,
-		Verbose:          true,
-		MainLoopModel:    "claude-3-opus",
-		MaxBudgetUSD:     &maxBudget,
+		Debug:              true,
+		Verbose:            true,
+		MainLoopModel:      "claude-3-opus",
+		MaxBudgetUSD:       &maxBudget,
 		CustomSystemPrompt: "Custom prompt",
-		QuerySource:      "test",
+		QuerySource:        "test",
 	}
 
 	if !opts.Debug {

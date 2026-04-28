@@ -8,25 +8,14 @@ import (
 	"regexp"
 	"strings"
 
+	"claude-codex/internal/harness/plannerapi"
 	"claude-codex/internal/harness/state"
 	toolkit "claude-codex/internal/harness/tools"
 )
 
-type ToolCall struct {
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
-}
-
-type Plan struct {
-	AssistantText string     `json:"assistant_text,omitempty"`
-	ToolCalls     []ToolCall `json:"tool_calls,omitempty"`
-	StopReason    string     `json:"stop_reason,omitempty"`
-}
-
-type Planner interface {
-	Next(ctx context.Context, session *state.Session, tools []toolkit.Descriptor) (Plan, error)
-}
+type ToolCall = plannerapi.ToolCall
+type Plan = plannerapi.Plan
+type Planner = plannerapi.Planner
 
 type SimplePlanner struct{}
 

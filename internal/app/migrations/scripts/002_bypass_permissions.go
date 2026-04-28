@@ -2,9 +2,9 @@ package scripts
 
 import (
 	"context"
-	"fmt"
 
 	"claude-codex/internal/app/migrations"
+	"claude-codex/internal/app/settings"
 )
 
 func init() {
@@ -18,14 +18,15 @@ func init() {
 
 // migrateBypassPermissionsAcceptedToSettings moves bypass permissions flag to settings
 func migrateBypassPermissionsAcceptedToSettings(ctx context.Context) error {
-	// TODO: Implement when config and settings modules are available
-
-	// The migration should:
-	// 1. Check globalConfig.bypassPermissionsModeAccepted === true
-	// 2. Check if skipDangerousModePermissionPrompt is not already set
-	// 3. Set userSettings.skipDangerousModePermissionPrompt = true
-	// 4. Remove bypassPermissionsModeAccepted from globalConfig
-	// 5. Log analytics event
-
-	return fmt.Errorf("migration not yet implemented - requires config module")
+	cfg, path, err := loadRawConfig()
+	if err != nil {
+		return err
+	}
+	if boolValue(cfg, "bypassPermissionsModeAccepted") {
+		if err := setUserSetting(settings.Document{"skipDangerousModePermissionPrompt": true}); err != nil {
+			return err
+		}
+	}
+	delete(cfg, "bypassPermissionsModeAccepted")
+	return saveRawConfig(path, cfg)
 }

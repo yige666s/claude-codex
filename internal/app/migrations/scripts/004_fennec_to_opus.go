@@ -2,9 +2,10 @@ package scripts
 
 import (
 	"context"
-	"fmt"
+	"strings"
 
 	"claude-codex/internal/app/migrations"
+	"claude-codex/internal/app/settings"
 )
 
 func init() {
@@ -18,17 +19,24 @@ func init() {
 
 // migrateFennecToOpus migrates fennec model aliases to opus
 func migrateFennecToOpus(ctx context.Context) error {
-	// TODO: Implement when config and settings modules are available
-
-	// The migration should:
-	// 1. Check USER_TYPE === "ant"
-	// 2. Check userSettings.model for fennec patterns:
-	//    - fennec-latest[1m] → opus[1m]
-	//    - fennec-latest → opus
-	//    - fennec-fast-latest → opus[1m] + fastMode: true
-	//    - opus-4-5-fast → opus + fastMode: true
-	// 3. Update userSettings.model and fastMode accordingly
-	// 4. Only touches userSettings (idempotent)
-
-	return fmt.Errorf("migration not yet implemented - requires config module")
+	user, path, err := loadSettings(settings.SourceUser, workingDirFromContext())
+	if err != nil {
+		return err
+	}
+	model := strings.ToLower(stringValue(user, "model"))
+	switch model {
+	case "fennec-latest[1m]":
+		user["model"] = "opus[1m]"
+	case "fennec-latest":
+		user["model"] = "opus"
+	case "fennec-fast-latest":
+		user["model"] = "opus[1m]"
+		user["fastMode"] = true
+	case "opus-4-5-fast":
+		user["model"] = "opus"
+		user["fastMode"] = true
+	default:
+		return nil
+	}
+	return saveSettings(path, user)
 }

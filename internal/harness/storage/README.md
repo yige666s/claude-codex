@@ -4,7 +4,7 @@ Go implementation of the Claude Code session storage system, migrated from TypeS
 
 ## Overview
 
-This package provides a robust, concurrent-safe session storage system using JSONL (JSON Lines) format for transcript persistence. It supports:
+This package provides a robust, concurrent-safe session storage system using JSONL (JSON Lines) format for transcript persistence. It stores transcripts under the app home, grouped by workspace, and supports:
 
 - **Transcript Recording**: Append-only log of conversation messages
 - **Session Metadata**: Titles, tags, agent info, PR links
@@ -248,6 +248,24 @@ The JSONL format is fully compatible with the TypeScript implementation, allowin
 - Reading TypeScript-generated transcripts in Go
 - Reading Go-generated transcripts in TypeScript
 - Seamless migration between implementations
+
+## Storage Layout
+
+Session transcripts are not written into the live workspace root. Instead, they are written under the app home using a project-scoped directory:
+
+```text
+~/.claude-codex/
+  projects/
+    <project-name>-<hash>/
+      sessions/
+        <session-id>.jsonl
+  snapshots/
+    ...
+```
+
+`projectDir` is still passed to `NewSessionStorage`, but only as the identity of the workspace being grouped. The transcript file itself lives under `homeDir`.
+
+Legacy transcripts found directly under the workspace root are migrated into this home-based layout the first time the same session is opened.
 
 ## Future Enhancements
 

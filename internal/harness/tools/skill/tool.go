@@ -9,12 +9,15 @@ import (
 	"claude-codex/internal/harness/permissions"
 	"claude-codex/internal/harness/skills"
 	toolkit "claude-codex/internal/harness/tools"
+	agenttool "claude-codex/internal/harness/tools/agent"
 )
 
 const ToolName = "Skill"
 
 type Tool struct {
 	skillManager *skills.SkillManager
+	defaultDir   string
+	runSubagent  agenttool.Runner
 }
 
 type Input struct {
@@ -36,6 +39,14 @@ type Output struct {
 func NewTool(skillManager *skills.SkillManager) toolkit.Tool {
 	return &Tool{
 		skillManager: skillManager,
+	}
+}
+
+func NewToolWithRunner(skillManager *skills.SkillManager, defaultDir string, runSubagent agenttool.Runner) toolkit.Tool {
+	return &Tool{
+		skillManager: skillManager,
+		defaultDir:   defaultDir,
+		runSubagent:  runSubagent,
 	}
 }
 
@@ -115,17 +126,9 @@ func (t *Tool) Execute(ctx context.Context, rawInput json.RawMessage) (toolkit.R
 		return toolkit.Result{}, fmt.Errorf("skill %s is not user-invocable", skillName)
 	}
 
-	// Check if skill should run in fork mode
-	if skill.ExecutionContext == skills.ContextFork {
-		// TODO: Implement forked skill execution
-		// For now, return error indicating fork mode is not yet supported
-		return toolkit.Result{}, fmt.Errorf("forked skill execution not yet implemented for skill: %s", skillName)
-	}
-
-	// Generate prompt from skill (inline mode)
 	blocks, err := skill.GetPrompt(input.Args, &skills.SkillContext{
 		SessionID:  "", // Will be set by engine
-		WorkingDir: "",
+		WorkingDir: t.defaultDir,
 	})
 	if err != nil {
 		return toolkit.Result{}, fmt.Errorf("failed to generate skill prompt: %w", err)
@@ -141,6 +144,23 @@ func (t *Tool) Execute(ctx context.Context, rawInput json.RawMessage) (toolkit.R
 
 	promptText := promptBuilder.String()
 	promptText = skills.WrapGeneratedSkillPrompt(skillName, input.Args, promptText)
+
+	if skill.ExecutionContext == skills.ContextFork {
+		if t.runSubagent == nil {
+			return toolkit.Result{}, fmt.Errorf("forked skill execution requires a configured subagent runner for skill: %s", skillName)
+		}
+		output, err := t.runSubagent(ctx, agenttool.Request{
+			Prompt:       promptText,
+			Description:  skill.Description,
+			SubagentType: strings.TrimSpace(skill.Agent),
+			Model:        strings.TrimSpace(skill.Model),
+			WorkingDir:   t.defaultDir,
+		})
+		if err != nil {
+			return toolkit.Result{}, err
+		}
+		return toolkit.Result{Output: output}, nil
+	}
 
 	return toolkit.Result{
 		Output: promptText,

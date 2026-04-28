@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"strings"
 
 	"claude-codex/internal/public/types"
 )
@@ -86,14 +87,25 @@ func recoverFromImageError(err error) (types.Message, bool) {
 
 // isImageSizeError checks if an error is an image size error.
 func isImageSizeError(err error) bool {
-	// TODO: Implement image size error detection
-	return false
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "image") &&
+		(strings.Contains(msg, "size") ||
+			strings.Contains(msg, "too large") ||
+			strings.Contains(msg, "exceeds") ||
+			strings.Contains(msg, "maximum"))
 }
 
 // isImageResizeError checks if an error is an image resize error.
 func isImageResizeError(err error) bool {
-	// TODO: Implement image resize error detection
-	return false
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "image") &&
+		(strings.Contains(msg, "resize") || strings.Contains(msg, "rescale"))
 }
 
 // handleFallbackError handles model fallback during streaming.
@@ -127,12 +139,37 @@ func handleFallbackError(
 
 // preserveThinkingBlocks ensures thinking blocks are properly preserved.
 func preserveThinkingBlocks(messages []types.Message) []types.Message {
-	// TODO: Implement thinking block preservation logic
-	return messages
+	out := cloneMessages(messages)
+	for i := range out {
+		out[i].Content = trimTrailingThinkingBlocks(out[i].Content)
+	}
+	return out
 }
 
 // stripThinkingBlocks removes thinking blocks when needed (e.g., for fallback models).
 func stripThinkingBlocks(messages []types.Message) []types.Message {
-	// TODO: Implement thinking block stripping logic
-	return messages
+	out := cloneMessages(messages)
+	for i := range out {
+		filtered := out[i].Content[:0]
+		for _, block := range out[i].Content {
+			if isThinkingBlock(block) {
+				continue
+			}
+			filtered = append(filtered, block)
+		}
+		out[i].Content = filtered
+	}
+	return out
+}
+
+func trimTrailingThinkingBlocks(blocks []types.ContentBlock) []types.ContentBlock {
+	end := len(blocks)
+	for end > 0 && isThinkingBlock(blocks[end-1]) {
+		end--
+	}
+	return append([]types.ContentBlock(nil), blocks[:end]...)
+}
+
+func isThinkingBlock(block types.ContentBlock) bool {
+	return block.Type == "thinking" || block.Type == "redacted_thinking"
 }

@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -220,6 +223,103 @@ func TestProgressTracker(t *testing.T) {
 		// Give it a moment to clean up
 		time.Sleep(10 * time.Millisecond)
 	})
+}
+
+func TestResolveAgentToolsMatchesTSSurface(t *testing.T) {
+	def := &AgentDefinition{
+		AgentType:       "reviewer",
+		Tools:           []string{"Read", "Bash(git:*)", "Agent(worker, explore)", "Missing"},
+		DisallowedTools: []string{"Bash(rm:*)"},
+		Permission:      PermissionDefault,
+		Source:          SourceUserSettings,
+	}
+	resolved := resolveAgentTools(def, []string{"Read", "Bash", "Agent", "mcp__notes__search"}, false, false)
+	if strings.Join(resolved.ValidTools, ",") != "Agent(worker, explore),Bash(git:*),Read" {
+		t.Fatalf("unexpected valid tool specs: %#v", resolved.ValidTools)
+	}
+	if len(resolved.InvalidTools) != 1 || resolved.InvalidTools[0] != "Missing" {
+		t.Fatalf("unexpected invalid tools: %#v", resolved.InvalidTools)
+	}
+	if strings.Join(resolved.ResolvedTools, ",") != "Read" {
+		t.Fatalf("subagents should not resolve Agent or disallowed Bash, got %#v", resolved.ResolvedTools)
+	}
+	if strings.Join(resolved.AllowedAgentTypes, ",") != "worker,explore" {
+		t.Fatalf("unexpected allowed agent types: %#v", resolved.AllowedAgentTypes)
+	}
+}
+
+func TestAgentIDHelpers(t *testing.T) {
+	id := FormatAgentID("researcher", "alpha")
+	name, team, ok := ParseAgentID(id)
+	if !ok || name != "researcher" || team != "alpha" {
+		t.Fatalf("unexpected parsed agent id: %q %q %v", name, team, ok)
+	}
+	requestID := GenerateRequestID("resume", id)
+	requestType, timestamp, parsedID, ok := ParseRequestID(requestID)
+	if !ok || requestType != "resume" || timestamp == 0 || parsedID != id {
+		t.Fatalf("unexpected parsed request id: %q %d %q %v", requestType, timestamp, parsedID, ok)
+	}
+	if _, _, ok := ParseAgentID("missing-separator"); ok {
+		t.Fatal("expected invalid agent id")
+	}
+	if _, _, _, ok := ParseRequestID("resume-nope@researcher@alpha"); ok {
+		t.Fatal("expected invalid request id timestamp")
+	}
+}
+
+func TestLoadAgentDefinitionsSupportsTSFrontmatter(t *testing.T) {
+	cwd := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	ClearAgentDefinitionsCache()
+	t.Cleanup(ClearAgentDefinitionsCache)
+
+	agentDir := filepath.Join(cwd, ".claude", "agents")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("mkdir agent dir: %v", err)
+	}
+	content := `---
+name: reviewer
+description: Reviews code
+tools: [Read, "Bash(git:*)"]
+disallowedTools: [Write]
+permissionMode: plan
+maxTurns: 7
+initialPrompt: Start here
+isolation: worktree
+memory: local
+---
+You review changes.
+`
+	if err := os.WriteFile(filepath.Join(agentDir, "reviewer.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write agent: %v", err)
+	}
+
+	result, err := GetAgentDefinitionsWithOverrides(cwd, false)
+	if err != nil {
+		t.Fatalf("load agents: %v", err)
+	}
+	var reviewer *AgentDefinition
+	for _, def := range result.Agents {
+		if def.AgentType == "reviewer" {
+			reviewer = def
+			break
+		}
+	}
+	if reviewer == nil {
+		t.Fatalf("reviewer agent not loaded: %#v", result.Agents)
+	}
+	if reviewer.Source != SourceProjectSettings {
+		t.Fatalf("expected project source, got %q", reviewer.Source)
+	}
+	if reviewer.WhenToUse != "Reviews code" || reviewer.SystemPrompt != "You review changes." {
+		t.Fatalf("unexpected parsed definition: %+v", reviewer)
+	}
+	if reviewer.Permission != PermissionMode("plan") || reviewer.MaxTurns != 7 {
+		t.Fatalf("unexpected permission/max turns: %+v", reviewer)
+	}
+	if reviewer.InitialPrompt != "Start here" || reviewer.Isolation != "worktree" || reviewer.Memory != "local" {
+		t.Fatalf("missing TS fields: %+v", reviewer)
+	}
 }
 
 func TestExecutor(t *testing.T) {

@@ -192,6 +192,51 @@ func TestParseStringArray(t *testing.T) {
 	}
 }
 
+func TestParseSkillFileQuotesProblematicFrontmatterValues(t *testing.T) {
+	content := `---
+name: Glob Skill
+paths: src/*.{ts,tsx}, packages/{api,web}/**
+---
+
+Body
+`
+
+	parsed, err := ParseSkillFile(content)
+	if err != nil {
+		t.Fatalf("failed to parse frontmatter with unquoted brace globs: %v", err)
+	}
+	paths := ParsePaths(parsed.Frontmatter.Paths)
+	want := []string{"src/*.ts", "src/*.tsx", "packages/api", "packages/web"}
+	if len(paths) != len(want) {
+		t.Fatalf("expected paths %#v, got %#v", want, paths)
+	}
+	for i := range want {
+		if paths[i] != want[i] {
+			t.Fatalf("path %d: expected %q, got %q", i, want[i], paths[i])
+		}
+	}
+}
+
+func TestParseArgumentNamesSplitsWhitespaceAndFiltersNumericNames(t *testing.T) {
+	got := ParseArgumentNames("topic audience 2")
+	want := []string{"topic", "audience"}
+	if len(got) != len(want) {
+		t.Fatalf("expected arguments %#v, got %#v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("argument %d: expected %q, got %q", i, want[i], got[i])
+		}
+	}
+}
+
+func TestParseEffortAcceptsMaxAlias(t *testing.T) {
+	got := ParseEffort("max")
+	if got == nil || *got != 5 {
+		t.Fatalf("expected max effort to parse as 5, got %#v", got)
+	}
+}
+
 func TestParseSkillMetadataEnv(t *testing.T) {
 	allowed, primary := ParseSkillMetadataEnv(map[string]interface{}{
 		"openclaw": map[string]interface{}{
@@ -247,6 +292,171 @@ Test content
 	cached := loader.cache.Get(skill.FileIdentity)
 	if cached == nil {
 		t.Error("skill not cached")
+	}
+}
+
+func TestSkillPromptSubstitutesTypeScriptArgumentPlaceholders(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "demo")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	content := `---
+name: Demo
+arguments: topic audience
+---
+
+Topic=$topic
+First=$0
+Second=$ARGUMENTS[1]
+All=$ARGUMENTS
+`
+	if err := os.WriteFile(skillPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+
+	loader := NewSkillLoader()
+	skill, err := loader.LoadSkillFromFile(skillPath, SourceFile)
+	if err != nil {
+		t.Fatalf("load skill: %v", err)
+	}
+	blocks, err := skill.GetPrompt(`hello "wide world"`, nil)
+	if err != nil {
+		t.Fatalf("GetPrompt() error = %v", err)
+	}
+	got := blocks[0].Text
+	for _, want := range []string{
+		"Topic=hello",
+		"First=hello",
+		"Second=wide world",
+		`All=hello "wide world"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected prompt to contain %q, got %q", want, got)
+		}
+	}
+}
+
+func TestSkillPromptAppendsArgumentsWhenNoPlaceholderExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillPath := filepath.Join(tmpDir, "plain.md")
+	if err := os.WriteFile(skillPath, []byte("---\nname: Plain\n---\n\nDo the thing.\n"), 0o644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+
+	loader := NewSkillLoader()
+	skill, err := loader.LoadSkillFromFile(skillPath, SourceFile)
+	if err != nil {
+		t.Fatalf("load skill: %v", err)
+	}
+	blocks, err := skill.GetPrompt("extra context", nil)
+	if err != nil {
+		t.Fatalf("GetPrompt() error = %v", err)
+	}
+	if !strings.Contains(blocks[0].Text, "ARGUMENTS: extra context") {
+		t.Fatalf("expected prompt to append raw arguments, got %q", blocks[0].Text)
+	}
+}
+
+func TestSkillModelInheritMapsToDefaultModel(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillPath := filepath.Join(tmpDir, "inherit.md")
+	content := "---\nname: Inherit\nmodel: inherit\n---\n\nBody\n"
+	if err := os.WriteFile(skillPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+
+	loader := NewSkillLoader()
+	skill, err := loader.LoadSkillFromFile(skillPath, SourceFile)
+	if err != nil {
+		t.Fatalf("load skill: %v", err)
+	}
+	if skill.Model != "" {
+		t.Fatalf("expected inherited model to be empty, got %q", skill.Model)
+	}
+}
+
+func TestLoadSkillsFromDirectoryFollowsSymlinkedSkillDirectories(t *testing.T) {
+	tmpDir := t.TempDir()
+	root := filepath.Join(tmpDir, "skills")
+	target := filepath.Join(tmpDir, "actual-skill")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "SKILL.md"), []byte("---\nname: Actual\n---\n\nBody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "linked-skill")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	loader := NewSkillLoader()
+	loaded, err := loader.LoadSkillsFromDirectory(root, SourceFile)
+	if err != nil {
+		t.Fatalf("LoadSkillsFromDirectory() error = %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Name != "linked-skill" {
+		t.Fatalf("expected linked skill to load as directory name, got %#v", loaded)
+	}
+}
+
+func TestLoadCommandsFromDirectorySupportsLegacyMarkdownAndSkillDirs(t *testing.T) {
+	tmpDir := t.TempDir()
+	commandsDir := filepath.Join(tmpDir, "commands")
+	if err := os.MkdirAll(filepath.Join(commandsDir, "git"), 0o755); err != nil {
+		t.Fatalf("mkdir git commands: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(commandsDir, "workflow"), 0o755); err != nil {
+		t.Fatalf("mkdir workflow command: %v", err)
+	}
+	files := map[string]string{
+		filepath.Join(commandsDir, "review.md"):              "---\nname: Review\n---\n\nReview prompt\n",
+		filepath.Join(commandsDir, "git", "commit.md"):       "---\nname: Commit\n---\n\nCommit prompt\n",
+		filepath.Join(commandsDir, "workflow", "SKILL.md"):   "---\nname: Workflow\n---\n\nWorkflow prompt\n",
+		filepath.Join(commandsDir, "workflow", "ignored.md"): "---\nname: Ignored\n---\n\nIgnored prompt\n",
+	}
+	for path, content := range files {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	loader := NewSkillLoader()
+	loaded, err := loader.LoadCommandsFromDirectory(commandsDir, SourceFile)
+	if err != nil {
+		t.Fatalf("LoadCommandsFromDirectory() error = %v", err)
+	}
+	byName := make(map[string]*SkillDefinition, len(loaded))
+	for _, skill := range loaded {
+		byName[skill.Name] = skill
+	}
+	for _, name := range []string{"review", "git:commit", "workflow"} {
+		skill := byName[name]
+		if skill == nil {
+			t.Fatalf("expected command %q in %#v", name, byName)
+		}
+		if skill.LoadedFrom != string(LoadedFromCommands) {
+			t.Fatalf("expected command %q loadedFrom=%q, got %q", name, LoadedFromCommands, skill.LoadedFrom)
+		}
+	}
+	if byName["workflow:ignored"] != nil {
+		t.Fatal("expected SKILL.md directory command to suppress sibling markdown files")
+	}
+}
+
+func TestSkillManagerUnsubscribeRemovesListener(t *testing.T) {
+	manager := NewSkillManager()
+	unsubscribe := manager.OnSkillsChanged(func() {})
+	unsubscribe()
+
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	if len(manager.listeners) != 0 {
+		t.Fatalf("expected listener to be removed, got %d listeners", len(manager.listeners))
 	}
 }
 

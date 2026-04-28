@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"claude-codex/internal/harness/engine"
+	"claude-codex/internal/harness/plannerapi"
 	"claude-codex/internal/harness/state"
 	toolkit "claude-codex/internal/harness/tools"
 )
@@ -21,7 +21,7 @@ func NewPlanner(client *Client, model string) *Planner {
 }
 
 // Next calls the Anthropic API synchronously and returns the next plan (text or tool calls).
-func (p *Planner) Next(ctx context.Context, session *state.Session, tools []toolkit.Descriptor) (engine.Plan, error) {
+func (p *Planner) Next(ctx context.Context, session *state.Session, tools []toolkit.Descriptor) (plannerapi.Plan, error) {
 	request := MessageRequest{
 		Model:     p.model,
 		MaxTokens: 8096,
@@ -31,7 +31,7 @@ func (p *Planner) Next(ctx context.Context, session *state.Session, tools []tool
 
 	response, err := p.client.CreateMessage(ctx, request)
 	if err != nil {
-		return engine.Plan{}, err
+		return plannerapi.Plan{}, err
 	}
 
 	return planFromBlocks(response.Content, response.StopReason), nil
@@ -39,7 +39,7 @@ func (p *Planner) Next(ctx context.Context, session *state.Session, tools []tool
 
 // StreamNext streams the Anthropic response, calling onChunk for each text delta.
 // If the model invokes tools, it returns a Plan with ToolCalls populated.
-func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools []toolkit.Descriptor, onChunk func(string)) (engine.Plan, error) {
+func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools []toolkit.Descriptor, onChunk func(string)) (plannerapi.Plan, error) {
 	request := MessageRequest{
 		Model:     p.model,
 		MaxTokens: 8096,
@@ -119,30 +119,30 @@ func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools 
 				} `json:"error"`
 			}
 			if err := json.Unmarshal(event.Data, &apiErr); err == nil {
-				return engine.Plan{}, fmt.Errorf("stream error: %s", apiErr.Error.Message)
+				return plannerapi.Plan{}, fmt.Errorf("stream error: %s", apiErr.Error.Message)
 			}
 		}
 	}
 
 	if err := <-errs; err != nil {
-		return engine.Plan{}, err
+		return plannerapi.Plan{}, err
 	}
 
 	// Convert accumulated tool calls
-	var engineToolCalls []engine.ToolCall
+	var engineToolCalls []plannerapi.ToolCall
 	for _, tc := range toolCalls {
 		inputJSON := tc.input.String()
 		if inputJSON == "" {
 			inputJSON = "{}"
 		}
-		engineToolCalls = append(engineToolCalls, engine.ToolCall{
+		engineToolCalls = append(engineToolCalls, plannerapi.ToolCall{
 			ID:    tc.id,
 			Name:  tc.name,
 			Input: json.RawMessage(inputJSON),
 		})
 	}
 
-	return engine.Plan{
+	return plannerapi.Plan{
 		AssistantText: textSB.String(),
 		ToolCalls:     engineToolCalls,
 		StopReason:    stopReason,
@@ -150,9 +150,9 @@ func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools 
 }
 
 // planFromBlocks converts Anthropic response content blocks into an engine Plan.
-func planFromBlocks(blocks []ContentBlock, stopReason string) engine.Plan {
+func planFromBlocks(blocks []ContentBlock, stopReason string) plannerapi.Plan {
 	var textParts []string
-	var toolCalls []engine.ToolCall
+	var toolCalls []plannerapi.ToolCall
 
 	for _, block := range blocks {
 		switch block.Type {
@@ -165,7 +165,7 @@ func planFromBlocks(blocks []ContentBlock, stopReason string) engine.Plan {
 			if len(input) == 0 {
 				input = json.RawMessage("{}")
 			}
-			toolCalls = append(toolCalls, engine.ToolCall{
+			toolCalls = append(toolCalls, plannerapi.ToolCall{
 				ID:    block.ID,
 				Name:  block.Name,
 				Input: input,
@@ -173,7 +173,7 @@ func planFromBlocks(blocks []ContentBlock, stopReason string) engine.Plan {
 		}
 	}
 
-	return engine.Plan{
+	return plannerapi.Plan{
 		AssistantText: strings.TrimSpace(strings.Join(textParts, "\n")),
 		ToolCalls:     toolCalls,
 		StopReason:    stopReason,

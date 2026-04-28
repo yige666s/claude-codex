@@ -2,9 +2,10 @@ package scripts
 
 import (
 	"context"
-	"fmt"
+	"strings"
 
 	"claude-codex/internal/app/migrations"
+	"claude-codex/internal/app/settings"
 )
 
 func init() {
@@ -18,12 +19,18 @@ func init() {
 
 // migrateSonnet1mToSonnet45 migrates sonnet 1M to sonnet 4.5
 func migrateSonnet1mToSonnet45(ctx context.Context) error {
-	// TODO: Implement when config and settings modules are available
-
-	// The migration should:
-	// 1. Check for sonnet[1m] or similar variants
-	// 2. Update to sonnet-4-5 variants
-	// 3. Log analytics event
-
-	return fmt.Errorf("migration not yet implemented - requires config module")
+	user, path, err := loadSettings(settings.SourceUser, workingDirFromContext())
+	if err != nil {
+		return err
+	}
+	model := strings.ToLower(stringValue(user, "model"))
+	switch model {
+	case "sonnet[1m]", "claude-sonnet-4-5-20250929[1m]":
+		user["model"] = "sonnet-4-5[1m]"
+	case "sonnet-1m", "claude-sonnet-1m":
+		user["model"] = "sonnet-4-5"
+	default:
+		return nil
+	}
+	return saveSettings(path, user)
 }

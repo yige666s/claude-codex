@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"claude-codex/internal/harness/tools"
 	"claude-codex/internal/harness/anthropic"
+	"claude-codex/internal/harness/tools"
 )
 
 // Executor handles agent execution
@@ -171,7 +171,7 @@ func (e *Executor) executeLoop(ctx context.Context, instance *AgentInstance, con
 	// Build tool list for API
 	var apiTools []anthropic.Tool
 	if e.toolRegistry != nil {
-		apiTools = e.buildAPITools(config.Definition.Tools)
+		apiTools = e.buildAPIToolsForDefinition(config.Definition, config.Definition.Background, false)
 	}
 
 	var lastMessage *Message
@@ -388,6 +388,19 @@ func (e *Executor) buildAPITools(toolNames []string) []anthropic.Tool {
 	return apiTools
 }
 
+func (e *Executor) buildAPIToolsForDefinition(def *AgentDefinition, isAsync bool, isMainThread bool) []anthropic.Tool {
+	if e.toolRegistry == nil || def == nil {
+		return nil
+	}
+	descriptors := e.toolRegistry.Descriptors()
+	available := make([]string, 0, len(descriptors))
+	for _, desc := range descriptors {
+		available = append(available, desc.Name)
+	}
+	resolved := resolveAgentTools(def, available, isAsync, isMainThread)
+	return e.buildAPITools(resolved.ResolvedTools)
+}
+
 // extractToolUseBlocks extracts tool_use blocks from content
 func (e *Executor) extractToolUseBlocks(content []ContentBlock) []ContentBlock {
 	var toolUses []ContentBlock
@@ -574,8 +587,8 @@ func (e *Executor) executeWithStreaming(
 
 			case "content_block_start":
 				var data struct {
-					Index        int                      `json:"index"`
-					ContentBlock anthropic.ContentBlock   `json:"content_block"`
+					Index        int                    `json:"index"`
+					ContentBlock anthropic.ContentBlock `json:"content_block"`
 				}
 				if err := json.Unmarshal(event.Data, &data); err == nil {
 					if data.ContentBlock.Type == "text" {
@@ -611,9 +624,9 @@ func (e *Executor) executeWithStreaming(
 				var data struct {
 					Index int `json:"index"`
 					Delta struct {
-						Type string          `json:"type"`
-						Text string          `json:"text,omitempty"`
-						PartialJSON string   `json:"partial_json,omitempty"`
+						Type        string `json:"type"`
+						Text        string `json:"text,omitempty"`
+						PartialJSON string `json:"partial_json,omitempty"`
 					} `json:"delta"`
 				}
 				if err := json.Unmarshal(event.Data, &data); err == nil {

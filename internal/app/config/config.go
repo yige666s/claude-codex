@@ -44,6 +44,11 @@ type Config struct {
 	MCPServers     []MCPServerConfig `json:"mcp_servers,omitempty"`
 	PluginDir      string            `json:"plugin_dir,omitempty"`
 	BridgeSecret   string            `json:"bridge_secret,omitempty"`
+
+	AppleTerminalSetupInProgress bool   `json:"appleTerminalSetupInProgress,omitempty"`
+	AppleTerminalBackupPath      string `json:"appleTerminalBackupPath,omitempty"`
+	ITerm2SetupInProgress        bool   `json:"iterm2SetupInProgress,omitempty"`
+	ITerm2BackupPath             string `json:"iterm2BackupPath,omitempty"`
 }
 
 type TelemetryConfig struct {

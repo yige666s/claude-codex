@@ -30,14 +30,18 @@ import (
 	toolkit "claude-codex/internal/harness/tools"
 	agenttool "claude-codex/internal/harness/tools/agent"
 	bashtool "claude-codex/internal/harness/tools/bash"
+	configtool "claude-codex/internal/harness/tools/configtool"
 	filetool "claude-codex/internal/harness/tools/file"
 	lsptool "claude-codex/internal/harness/tools/lsp"
 	mcptool "claude-codex/internal/harness/tools/mcp"
 	mcpresourcestool "claude-codex/internal/harness/tools/mcpresources"
 	notebooktool "claude-codex/internal/harness/tools/notebook"
 	searchtool "claude-codex/internal/harness/tools/search"
+	sendmessagetool "claude-codex/internal/harness/tools/sendmessage"
 	skilltool "claude-codex/internal/harness/tools/skill"
+	tasktool "claude-codex/internal/harness/tools/tasks"
 	teamtool "claude-codex/internal/harness/tools/team"
+	todotool "claude-codex/internal/harness/tools/todo"
 	webtool "claude-codex/internal/harness/tools/web"
 	worktreetool "claude-codex/internal/harness/tools/worktree"
 	"claude-codex/internal/public/apperrors"
@@ -141,16 +145,28 @@ func NewRootCommandWithIO(streams IO) *cobra.Command {
 			defer func() {
 				_ = telemetryRuntime.Close()
 			}()
-			if telemetryRuntime.IsEnabled() && strings.TrimSpace(cfg.PluginDir) != "" {
-				manifests, err := plugins.NewLoader(cfg.PluginDir).Load()
+			var loadedPlugins []*plugins.LoadedPlugin
+			if strings.TrimSpace(cfg.PluginDir) != "" {
+				loadedPlugins, err = plugins.NewLoader(cfg.PluginDir).LoadDetailed(plugins.LoadOptions{
+					Marketplace: InlinePluginMarketplaceForCLI(),
+					Repository:  "plugin_dir",
+				})
 				if err != nil {
 					return err
 				}
-				for _, manifest := range manifests {
-					_ = telemetryRuntime.Tracer().Record(telemetry.BuildPluginEvent(manifest, nil))
+				if telemetryRuntime.IsEnabled() {
+					for _, plugin := range loadedPlugins {
+						_ = telemetryRuntime.Tracer().Record(telemetry.BuildPluginEvent(plugins.Manifest{
+							Name:       plugin.Source,
+							Version:    plugin.Manifest.Version,
+							Path:       plugin.Path,
+							MCPServers: plugin.MCPServers,
+						}, nil))
+					}
 				}
+				cfg.MCPServers = append(cfg.MCPServers, plugins.MCPServerConfigs(loadedPlugins)...)
 			}
-			skillManager := loadSkillManager(cwdFlag, streams)
+			skillManager := loadSkillManager(cwdFlag, streams, loadedPlugins)
 			baseRuntime := newRuntimeServices(cwdFlag, home, nil, nil)
 			baseRuntime.warmupMagicDocs()
 			unregisterReadListener := baseRuntime.registerFileReadListener()
@@ -260,6 +276,7 @@ func newEngine(cfg config.Config, mode permissions.Mode, workingDir string, stre
 func buildRegistry(cfg config.Config, workingDir string, runSubagent agenttool.Runner, skillManager *skills.SkillManager) (*toolkit.Registry, error) {
 	tools := []toolkit.Tool{
 		bashtool.NewTool(workingDir),
+		configtool.NewTool(workingDir),
 		filetool.NewReadTool(workingDir),
 		filetool.NewWriteTool(workingDir),
 		filetool.NewEditTool(workingDir),
@@ -272,6 +289,14 @@ func buildRegistry(cfg config.Config, workingDir string, runSubagent agenttool.R
 		teamtool.NewTeamCreateTool(coordinator.NewManager(coordinator.Config{ScratchpadDir: workingDir})),
 		teamtool.NewTeamDeleteTool(coordinator.NewManager(coordinator.Config{ScratchpadDir: workingDir})),
 		worktreetool.NewEnterTool(coordinator.NewWorktreeManager(workingDir)),
+		tasktool.NewTaskCreateTool(),
+		tasktool.NewTaskGetTool(),
+		tasktool.NewTaskListTool(),
+		tasktool.NewTaskUpdateTool(),
+		tasktool.NewTaskStopTool(),
+		tasktool.NewTaskOutputTool(),
+		todotool.New(),
+		&sendmessagetool.Tool{},
 		mcpresourcestool.NewListMcpResources(""),
 		mcpresourcestool.NewReadMcpResource(),
 	}
@@ -279,7 +304,7 @@ func buildRegistry(cfg config.Config, workingDir string, runSubagent agenttool.R
 		tools = append(tools, agenttool.NewTool(workingDir, runSubagent))
 	}
 	if skillManager != nil {
-		skilltool := skilltool.NewTool(skillManager)
+		skilltool := skilltool.NewToolWithRunner(skillManager, workingDir, runSubagent)
 		tools = append(tools, skilltool)
 	}
 	if _, err := plugins.NewLoader(cfg.PluginDir).Load(); err != nil {
@@ -320,6 +345,11 @@ func newEngineWithOptions(
 	if err != nil {
 		return nil, err
 	}
+	runtimePermissionOptions, err := newPermissionRuntimeOptions(cfg, mode, workingDir)
+	if err != nil {
+		return nil, err
+	}
+	checkerOptions = append(runtimePermissionOptions, checkerOptions...)
 
 	eng := engine.NewWithDir(
 		planner,
@@ -398,8 +428,8 @@ func runInteractive(
 					),
 					tracer,
 					skillManager,
-					permissions.WithRequestHandler(func(requestCtx context.Context, request permissions.Request) error {
-						return broker.Authorize(requestCtx, request)
+					permissions.WithDecisionHandler(func(requestCtx context.Context, request permissions.Request) (permissions.Decision, error) {
+						return broker.AuthorizeDecision(requestCtx, request)
 					}),
 				)
 				if err != nil {
@@ -488,8 +518,8 @@ func runInteractive(
 				),
 				tracer,
 				skillManager,
-				permissions.WithRequestHandler(func(requestCtx context.Context, request permissions.Request) error {
-					return broker.Authorize(requestCtx, request)
+				permissions.WithDecisionHandler(func(requestCtx context.Context, request permissions.Request) (permissions.Decision, error) {
+					return broker.AuthorizeDecision(requestCtx, request)
 				}),
 			)
 			if err != nil {
@@ -542,8 +572,8 @@ func runInteractive(
 				),
 				tracer,
 				skillManager,
-				permissions.WithRequestHandler(func(requestCtx context.Context, request permissions.Request) error {
-					return broker.Authorize(requestCtx, request)
+				permissions.WithDecisionHandler(func(requestCtx context.Context, request permissions.Request) (permissions.Decision, error) {
+					return broker.AuthorizeDecision(requestCtx, request)
 				}),
 			)
 			if err != nil {
@@ -588,7 +618,11 @@ func runInteractive(
 	})
 }
 
-func loadSkillManager(workingDir string, streams IO) *skills.SkillManager {
+func InlinePluginMarketplaceForCLI() string {
+	return plugins.InlineMarketplaceName
+}
+
+func loadSkillManager(workingDir string, streams IO, loadedPlugins ...[]*plugins.LoadedPlugin) *skills.SkillManager {
 	skillManager := skills.NewSkillManager()
 
 	if err := skillManager.LoadBundledSkills(); err != nil && streams.Err != nil {
@@ -599,10 +633,34 @@ func loadSkillManager(workingDir string, streams IO) *skills.SkillManager {
 	if err == nil {
 		userSkillsDir := filepath.Join(homeDir, ".claude", "skills")
 		_ = skillManager.LoadSkillsFromDirectory(userSkillsDir, skills.SourceFile)
+		userCommandsDir := filepath.Join(homeDir, ".claude", "commands")
+		_ = skillManager.LoadCommandsFromDirectory(userCommandsDir, skills.SourceFile)
 	}
 
 	projectSkillsDir := filepath.Join(workingDir, ".claude", "skills")
 	_ = skillManager.LoadSkillsFromDirectory(projectSkillsDir, skills.SourceFile)
+	projectCommandsDir := filepath.Join(workingDir, ".claude", "commands")
+	_ = skillManager.LoadCommandsFromDirectory(projectCommandsDir, skills.SourceFile)
+
+	for _, pluginList := range loadedPlugins {
+		if len(pluginList) == 0 {
+			continue
+		}
+		report, err := plugins.LoadRuntimeComponents(plugins.RuntimeOptions{
+			Plugins:        pluginList,
+			SkillManager:   skillManager,
+			RegisterAgents: true,
+		})
+		if err != nil && streams.Err != nil {
+			fmt.Fprintf(streams.Err, "Warning: failed to load plugin components: %v\n", err)
+			continue
+		}
+		for _, warning := range report.Warnings {
+			if streams.Err != nil {
+				fmt.Fprintf(streams.Err, "Warning: %s\n", warning)
+			}
+		}
+	}
 
 	return skillManager
 }

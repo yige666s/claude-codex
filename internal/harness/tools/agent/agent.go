@@ -30,13 +30,21 @@ type Runner func(ctx context.Context, request Request) (string, error)
 type Tool struct {
 	defaultWorkDir string
 	run            Runner
+	background     *BackgroundManager
 }
 
 func NewTool(defaultWorkDir string, run Runner) *Tool {
 	return &Tool{
 		defaultWorkDir: defaultWorkDir,
 		run:            run,
+		background:     defaultBackgroundManager,
 	}
+}
+
+func NewToolWithBackgroundManager(defaultWorkDir string, run Runner, background *BackgroundManager) *Tool {
+	tool := NewTool(defaultWorkDir, run)
+	tool.background = background
+	return tool
 }
 
 func (t *Tool) Name() string {
@@ -82,14 +90,12 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result
 	if req.Prompt == "" {
 		return toolkit.Result{}, fmt.Errorf("prompt is required")
 	}
-	if req.RunInBackground {
-		return toolkit.Result{}, fmt.Errorf("agent background execution is not implemented")
-	}
 	switch req.Isolation {
 	case "", "none":
 		req.Isolation = ""
-	case "worktree", "remote":
-		return toolkit.Result{}, fmt.Errorf("agent isolation %q is not implemented", req.Isolation)
+	case "worktree":
+	case "remote":
+		return toolkit.Result{}, fmt.Errorf("agent isolation %q requires a remote agent backend", req.Isolation)
 	default:
 		return toolkit.Result{}, fmt.Errorf("agent isolation %q is invalid", req.Isolation)
 	}
@@ -104,6 +110,20 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result
 	}
 	if req.WorkingDir == "" {
 		req.WorkingDir = t.defaultWorkDir
+	}
+
+	if req.RunInBackground {
+		task, err := t.background.Start(ctx, req, t.run)
+		if err != nil {
+			return toolkit.Result{}, err
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"agent_id":    task.ID,
+			"status":      task.Status,
+			"description": req.Description,
+			"agent_type":  req.SubagentType,
+		})
+		return toolkit.Result{Output: string(payload)}, nil
 	}
 
 	type result struct {

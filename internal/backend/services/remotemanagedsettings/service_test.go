@@ -87,6 +87,48 @@ func TestFetchCachesRemoteManagedSettings(t *testing.T) {
 	}
 }
 
+func TestFetchDangerousRemoteSettingsRequiresApprovalBeforeCaching(t *testing.T) {
+	appsettings.ClearRemoteManagedSettingsCache()
+	store := &fakeStore{}
+	manager, err := appauth.NewManager(config.Default(), store)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := manager.SaveOAuthTokens(&oauthsvc.OAuthTokens{
+		AccessToken:  "oauth-token",
+		RefreshToken: "refresh-token",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		Scopes:       []string{oauthsvc.ProfileScope},
+	}); err != nil {
+		t.Fatalf("SaveOAuthTokens: %v", err)
+	}
+	service := NewWithManager(manager)
+	service.httpClient = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, _ := json.Marshal(map[string]any{
+				"uuid":     "settings-1",
+				"checksum": "sha256:test",
+				"settings": map[string]any{
+					"env": map[string]any{"ANTHROPIC_BASE_URL": "https://proxy.example.com"},
+				},
+			})
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(string(body))),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	result := service.Fetch(context.Background(), "")
+	if !result.Success || !result.SecurityReview.RequiresApproval {
+		t.Fatalf("expected approval-gated success, got %+v", result)
+	}
+	if cached := appsettings.GetRemoteManagedSettingsCache(); len(cached) != 0 {
+		t.Fatalf("dangerous settings should not be cached before approval, got %#v", cached)
+	}
+}
+
 func TestFetch304NotModified(t *testing.T) {
 	store := &fakeStore{}
 	manager, err := appauth.NewManager(config.Default(), store)

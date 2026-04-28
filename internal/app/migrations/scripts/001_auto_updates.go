@@ -2,9 +2,10 @@ package scripts
 
 import (
 	"context"
-	"fmt"
+	"os"
 
 	"claude-codex/internal/app/migrations"
+	"claude-codex/internal/app/settings"
 )
 
 func init() {
@@ -19,16 +20,17 @@ func init() {
 // migrateAutoUpdatesToSettings moves autoUpdates from global config to settings
 // Only migrates if user explicitly disabled auto-updates (not for protection)
 func migrateAutoUpdatesToSettings(ctx context.Context) error {
-	// TODO: Implement when config and settings modules are available
-	// This is a placeholder that will be implemented after config module is ready
-
-	// The migration should:
-	// 1. Check globalConfig.autoUpdates === false
-	// 2. Check globalConfig.autoUpdatesProtectedForNative !== true
-	// 3. Set userSettings.env.DISABLE_AUTOUPDATER = "1"
-	// 4. Set process.env.DISABLE_AUTOUPDATER = "1"
-	// 5. Remove autoUpdates and autoUpdatesProtectedForNative from globalConfig
-	// 6. Log analytics event
-
-	return fmt.Errorf("migration not yet implemented - requires config module")
+	cfg, path, err := loadRawConfig()
+	if err != nil {
+		return err
+	}
+	if value, ok := cfg["autoUpdates"].(bool); ok && !value && !boolValue(cfg, "autoUpdatesProtectedForNative") {
+		if err := setUserSetting(settings.Document{"env": map[string]any{"DISABLE_AUTOUPDATER": "1"}}); err != nil {
+			return err
+		}
+		_ = os.Setenv("DISABLE_AUTOUPDATER", "1")
+	}
+	delete(cfg, "autoUpdates")
+	delete(cfg, "autoUpdatesProtectedForNative")
+	return saveRawConfig(path, cfg)
 }

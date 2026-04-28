@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"reflect"
 	"sync"
 	"time"
 )
@@ -114,6 +115,24 @@ func (m *SkillManager) LoadSkillsFromDirectory(dir string, source SkillSource) e
 		return err
 	}
 
+	return m.registerLoadedSkills(skills)
+}
+
+// LoadCommandsFromDirectory loads legacy command-style skills from a commands directory.
+func (m *SkillManager) LoadCommandsFromDirectory(dir string, source SkillSource) error {
+	skills, err := m.loader.LoadCommandsFromDirectory(dir, source)
+	if err != nil {
+		return err
+	}
+
+	return m.registerLoadedSkills(skills)
+}
+
+func (m *SkillManager) RegisterLoadedSkills(skills []*SkillDefinition) error {
+	return m.registerLoadedSkills(skills)
+}
+
+func (m *SkillManager) registerLoadedSkills(skills []*SkillDefinition) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -216,8 +235,9 @@ func (m *SkillManager) OnSkillsChanged(callback func()) func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
+		callbackPointer := reflect.ValueOf(callback).Pointer()
 		for i, listener := range m.listeners {
-			if &listener == &callback {
+			if reflect.ValueOf(listener).Pointer() == callbackPointer {
 				m.listeners = append(m.listeners[:i], m.listeners[i+1:]...)
 				break
 			}

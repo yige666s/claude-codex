@@ -18,8 +18,22 @@ func NewPermissionBroker() *PermissionBroker {
 }
 
 func (b *PermissionBroker) Authorize(ctx context.Context, request permissions.Request) error {
+	decision, err := b.AuthorizeDecision(ctx, request)
+	if err != nil {
+		return err
+	}
+	if decision.Behavior == permissions.BehaviorDeny {
+		if decision.Reason == "" {
+			decision.Reason = "permission denied"
+		}
+		return errors.New(decision.Reason)
+	}
+	return nil
+}
+
+func (b *PermissionBroker) AuthorizeDecision(ctx context.Context, request permissions.Request) (permissions.Decision, error) {
 	if b == nil {
-		return errors.New("permission broker is not configured")
+		return permissions.Decision{}, errors.New("permission broker is not configured")
 	}
 
 	reply := make(chan permissionResult, 1)
@@ -30,15 +44,21 @@ func (b *PermissionBroker) Authorize(ctx context.Context, request permissions.Re
 
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return permissions.Decision{}, ctx.Err()
 	case b.requests <- envelope:
 	}
 
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return permissions.Decision{}, ctx.Err()
 	case result := <-reply:
-		return result.err
+		if result.err != nil {
+			return permissions.Decision{}, result.err
+		}
+		if result.decision.Behavior == "" {
+			result.decision.Behavior = permissions.BehaviorAllow
+		}
+		return result.decision, nil
 	}
 }
 

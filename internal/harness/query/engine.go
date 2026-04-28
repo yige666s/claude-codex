@@ -5,12 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	appconfig "claude-codex/internal/app/config"
 	"claude-codex/internal/harness/compact"
 	"claude-codex/internal/harness/input"
 	"claude-codex/internal/harness/mcp"
+	"claude-codex/internal/harness/plannerapi"
+	"claude-codex/internal/harness/state"
 	"claude-codex/internal/harness/storage"
+	htool "claude-codex/internal/harness/tool"
+	toolkit "claude-codex/internal/harness/tools"
 	"claude-codex/internal/public/types"
 )
 
@@ -19,17 +25,17 @@ import (
 // turn within the same conversation. State (messages, file cache, usage, etc.)
 // persists across turns.
 type QueryEngine struct {
-	config                        *QueryEngineConfig
-	mutableMessages               []types.Message
-	abortController               context.CancelFunc
-	permissionDenials             []PermissionDenial
-	totalUsage                    Usage
-	hasHandledOrphanedPermission  bool
-	readFileState                 *FileStateCache
-	discoveredSkillNames          map[string]bool
-	loadedNestedMemoryPaths       map[string]bool
-	sessionStorage                *storage.SessionStorage
-	autoCompactor                 *compact.AutoCompactor
+	config                       *QueryEngineConfig
+	mutableMessages              []types.Message
+	abortController              context.CancelFunc
+	permissionDenials            []PermissionDenial
+	totalUsage                   Usage
+	hasHandledOrphanedPermission bool
+	readFileState                *FileStateCache
+	discoveredSkillNames         map[string]bool
+	loadedNestedMemoryPaths      map[string]bool
+	sessionStorage               *storage.SessionStorage
+	autoCompactor                *compact.AutoCompactor
 }
 
 // QueryEngineConfig contains configuration for QueryEngine.
@@ -38,7 +44,16 @@ type QueryEngineConfig struct {
 	WorkingDir string
 
 	// Tools available for execution
-	Tools []Tool
+	Tools []htool.Tool
+
+	// Planner used by runtime-backed execution
+	Planner plannerapi.Planner
+
+	// ToolDescriptors exposed to the planner
+	ToolDescriptors []toolkit.Descriptor
+
+	// ExecuteTool executes a planned tool call
+	ExecuteTool func(ctx context.Context, name string, input json.RawMessage) (string, error)
 
 	// Commands available for execution
 	Commands []Command
@@ -82,6 +97,9 @@ type QueryEngineConfig struct {
 	// TaskBudget limits task resources
 	TaskBudget *TaskBudget
 
+	// TokenBudget controls TS-style auto-continuation until a token target is reached.
+	TokenBudget *int
+
 	// JSONSchema for structured output
 	JSONSchema map[string]any
 
@@ -106,9 +124,9 @@ type QueryEngineConfig struct {
 
 // PermissionDenial represents a denied tool permission.
 type PermissionDenial struct {
-	ToolName   string
-	ToolUseID  string
-	ToolInput  map[string]interface{}
+	ToolName  string
+	ToolUseID string
+	ToolInput map[string]interface{}
 }
 
 // Usage tracks API usage statistics.
@@ -117,13 +135,6 @@ type Usage struct {
 	OutputTokens int
 	CacheReads   int
 	CacheWrites  int
-}
-
-// Tool represents an available tool.
-type Tool struct {
-	Name        string
-	Description string
-	InputSchema map[string]interface{}
 }
 
 // Command represents a slash command.
@@ -143,7 +154,7 @@ type Agent struct {
 // CanUseToolFunc checks if a tool can be used.
 type CanUseToolFunc func(
 	ctx context.Context,
-	tool Tool,
+	tool htool.Tool,
 	input map[string]interface{},
 	toolUseID string,
 ) (PermissionResult, error)
@@ -176,9 +187,10 @@ func NewQueryEngine(config *QueryEngineConfig) (*QueryEngine, error) {
 	_ = ctx // Will be used for abort controller
 
 	// Initialize session storage
-	homeDir := os.Getenv("HOME")
-	if homeDir == "" {
-		homeDir = "/tmp"
+	homeDir, err := appconfig.AppHome()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to resolve app home: %w", err)
 	}
 	sessionStorage, err := storage.NewSessionStorage(homeDir, config.SessionID, config.WorkingDir)
 	if err != nil {
@@ -287,8 +299,8 @@ func (qe *QueryEngine) submitMessageInternal(
 	// Add messages from user input
 	qe.mutableMessages = append(qe.mutableMessages, inputResult.Messages...)
 
-	// Record to transcript
-	if err := qe.recordTranscript(ctx); err != nil {
+	// Record the newly added input messages to transcript storage.
+	if err := qe.recordMessages(inputResult.Messages); err != nil {
 		// Log error but don't fail
 		fmt.Printf("Warning: failed to record transcript: %v\n", err)
 	}
@@ -386,10 +398,9 @@ func (qe *QueryEngine) processUserInput(
 	return input.ProcessUserInput(ctx, inputOpts)
 }
 
-// recordTranscript records messages to the transcript.
-func (qe *QueryEngine) recordTranscript(ctx context.Context) error {
-	// Record all messages
-	for _, msg := range qe.mutableMessages {
+// recordMessages records a message slice to the transcript store.
+func (qe *QueryEngine) recordMessages(messages []types.Message) error {
+	for _, msg := range messages {
 		transcriptMsg := convertToTranscriptMessage(msg)
 		if err := qe.sessionStorage.RecordMessage(transcriptMsg); err != nil {
 			return err
@@ -474,10 +485,10 @@ func (qe *QueryEngine) handleOrphanedPermission(
 	}
 
 	// Find the tool definition
-	var toolDef *Tool
-	for i := range qe.config.Tools {
-		if qe.config.Tools[i].Name == toolUseBlock.Name {
-			toolDef = &qe.config.Tools[i]
+	var toolDef htool.Tool
+	for _, configuredTool := range qe.runtimeTools() {
+		if configuredTool.Name() == toolUseBlock.Name {
+			toolDef = configuredTool
 			break
 		}
 	}
@@ -490,12 +501,6 @@ func (qe *QueryEngine) handleOrphanedPermission(
 	finalInput := orphaned.Input
 	if finalInput == nil {
 		finalInput = toolUseBlock.Input
-	}
-
-	// Create a permission result that always allows (since user already approved)
-	permissionResult := PermissionResult{
-		Behavior: "allow",
-		Reason:   "Orphaned permission - user already approved",
 	}
 
 	// Check if the tool use is already in messages (for CCR resume)
@@ -544,21 +549,26 @@ func (qe *QueryEngine) handleOrphanedPermission(
 		messageChan <- assistantMsg
 	}
 
-	// Execute the tool
-	// TODO: Implement tool execution
-	// For now, create a placeholder tool result
-	toolResultMsg := types.Message{
-		Type:      types.MessageTypeUser,
-		UUID:      orphaned.ToolUseID + "-result",
-		Timestamp: time.Now(),
-		Content: []types.ContentBlock{
-			{
-				Type:      "tool_result",
-				ToolUseID: orphaned.ToolUseID,
-				Content:   "Tool execution completed (placeholder)",
-			},
-		},
+	var output string
+	var isError bool
+	if qe.config.ExecuteTool == nil {
+		output = fmt.Sprintf("tool executor not configured for %s", toolUseBlock.Name)
+		isError = true
+	} else {
+		inputJSON, err := json.Marshal(finalInput)
+		if err != nil {
+			output = fmt.Sprintf("failed to encode tool input: %v", err)
+			isError = true
+		} else if result, err := qe.config.ExecuteTool(ctx, toolUseBlock.Name, inputJSON); err != nil {
+			output = err.Error()
+			isError = true
+		} else {
+			output = result
+		}
 	}
+
+	toolResultMsg := createToolResultMessage(orphaned.ToolUseID, output, isError)
+	toolResultMsg.UUID = orphaned.ToolUseID + "-result"
 	qe.mutableMessages = append(qe.mutableMessages, toolResultMsg)
 
 	// Record to transcript
@@ -570,9 +580,6 @@ func (qe *QueryEngine) handleOrphanedPermission(
 	// Send to channel
 	messageChan <- toolResultMsg
 
-	// Track permission result
-	_ = permissionResult // Will be used when we implement full permission tracking
-
 	return nil
 }
 
@@ -582,9 +589,463 @@ func (qe *QueryEngine) executeQueryLoop(
 	systemPrompt types.SystemPrompt,
 	messageChan chan<- types.Message,
 ) error {
-	// TODO: Implement query loop execution
-	// This will call the existing Query function with appropriate parameters
+	toolCtx := htool.NewToolUseContext(ctx)
+	toolCtx.SessionID = qe.config.SessionID
+	toolCtx.Options.MainLoopModel = qe.selectedModel()
+	toolCtx.SetTools(qe.runtimeTools())
+	toolCtx.AbortController = htool.NewAbortController()
+	toolCtx.ReadFileState = map[string]bool{}
+	if qe.readFileState != nil {
+		toolCtx.State.FileStateCache = qe.readFileState
+	}
+
+	maxTurns := qe.config.MaxTurns
+	var maxTurnsPtr *int
+	if maxTurns > 0 {
+		maxTurnsPtr = &maxTurns
+	}
+	tokenBudget := qe.config.TokenBudget
+
+	deps := productionDeps()
+	deps.CompactService = NewLocalCompactService(qe.selectedModel())
+	if qe.config.Planner != nil {
+		deps.CallModel = qe.plannerModelCaller(systemPrompt)
+	}
+
+	events, terminal, err := Query(ctx, &QueryParams{
+		Messages:       qe.mutableMessages,
+		SystemPrompt:   systemPrompt,
+		CanUseTool:     qe.toolPermissionAdapter(),
+		ToolUseContext: toolCtx,
+		FallbackModel:  qe.config.FallbackModel,
+		QuerySource:    "sdk",
+		MaxTurns:       maxTurnsPtr,
+		TokenBudget:    tokenBudget,
+		TaskBudget:     qe.config.TaskBudget,
+		Deps:           deps,
+	})
+	if err != nil {
+		return err
+	}
+
+	emitted := make([]types.Message, 0, 4)
+	for event := range events {
+		switch msg := event.(type) {
+		case types.Message:
+			emitted = append(emitted, msg)
+			messageChan <- msg
+		case types.AssistantMessage:
+			emitted = append(emitted, msg.Message)
+			messageChan <- msg.Message
+		}
+	}
+	result := <-terminal
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.Reason == TerminalReasonMaxTurns {
+		return fmt.Errorf("query exceeded max turns (%d)", maxTurns)
+	}
+	if len(result.Messages) > 0 {
+		qe.mutableMessages = result.Messages
+	} else {
+		qe.mutableMessages = append(qe.mutableMessages, emitted...)
+	}
+	qe.totalUsage = usageFromMessages(qe.mutableMessages)
+	if len(emitted) > 0 {
+		return qe.recordMessages(emitted)
+	}
 	return nil
+}
+
+func (qe *QueryEngine) runtimeTools() []htool.Tool {
+	if len(qe.config.Tools) > 0 {
+		return append([]htool.Tool(nil), qe.config.Tools...)
+	}
+	return configuredToolsFromDescriptors(qe.config.ToolDescriptors, qe.config.ExecuteTool)
+}
+
+func (qe *QueryEngine) executePlannedTool(ctx context.Context, call plannerapi.ToolCall) (string, error) {
+	if qe.config.ExecuteTool == nil {
+		return "", fmt.Errorf("tool executor not configured for %s", call.Name)
+	}
+	return qe.config.ExecuteTool(ctx, call.Name, call.Input)
+}
+
+func (qe *QueryEngine) selectedModel() string {
+	if qe.config.UserSpecifiedModel != "" {
+		return qe.config.UserSpecifiedModel
+	}
+	if qe.config.FallbackModel != "" {
+		return qe.config.FallbackModel
+	}
+	return "claude-sonnet-4-6"
+}
+
+func (qe *QueryEngine) toolPermissionAdapter() htool.CanUseToolFn {
+	return func(toolDef htool.Tool, input map[string]interface{}, toolUseContext *htool.ToolUseContext, assistantMessage interface{}, toolUseID string, forceDecision *string) (*htool.PermissionResult, error) {
+		if qe.config.CanUseTool == nil {
+			return &htool.PermissionResult{Behavior: htool.PermissionAllow, UpdatedInput: input}, nil
+		}
+		result, err := qe.config.CanUseTool(toolUseContext.Ctx, toolDef, input, toolUseID)
+		if err != nil {
+			return nil, err
+		}
+		behavior := htool.PermissionBehavior(result.Behavior)
+		if behavior == "" {
+			behavior = htool.PermissionAllow
+		}
+		return &htool.PermissionResult{Behavior: behavior, UpdatedInput: input, Reason: result.Reason}, nil
+	}
+}
+
+func (qe *QueryEngine) plannerModelCaller(systemPrompt types.SystemPrompt) ModelCaller {
+	return func(ctx context.Context, params *ModelCallParams) (<-chan types.Message, error) {
+		session := qe.runtimeSession(systemPrompt)
+		session.Messages = publicMessagesToStateMessages(params.Messages)
+		plan, err := qe.config.Planner.Next(ctx, session, qe.config.ToolDescriptors)
+		if err != nil {
+			return nil, err
+		}
+		msg := types.Message{
+			Type:       types.MessageTypeAssistant,
+			UUID:       types.UUID(),
+			Timestamp:  time.Now().UTC(),
+			StopReason: plan.StopReason,
+			Content:    plannerContentBlocks(plan),
+		}
+		ch := make(chan types.Message, 1)
+		ch <- msg
+		close(ch)
+		return ch, nil
+	}
+}
+
+func plannerContentBlocks(plan plannerapi.Plan) []types.ContentBlock {
+	blocks := make([]types.ContentBlock, 0, len(plan.ToolCalls)+1)
+	if strings.TrimSpace(plan.AssistantText) != "" {
+		blocks = append(blocks, types.ContentBlock{Type: "text", Text: plan.AssistantText})
+	}
+	for _, call := range plan.ToolCalls {
+		blocks = append(blocks, types.ContentBlock{
+			Type:  "tool_use",
+			ID:    call.ID,
+			Name:  call.Name,
+			Input: rawJSONToMap(call.Input),
+		})
+	}
+	return blocks
+}
+
+func (qe *QueryEngine) runtimeSession(systemPrompt types.SystemPrompt) *state.Session {
+	session := state.NewSession(qe.config.WorkingDir)
+	session.ID = qe.config.SessionID
+	session.Messages = publicMessagesToStateMessages(qe.mutableMessages)
+	session.Usage = calculateStateUsage(session.Messages)
+	if session.StartedAt.IsZero() {
+		session.StartedAt = time.Now().UTC()
+	}
+	session.UpdatedAt = session.StartedAt
+
+	if prompt := strings.TrimSpace(systemPrompt.Content); prompt != "" && !hasHiddenContext(session.Messages, prompt) {
+		systemMessage := state.Message{
+			Role:      "user",
+			Content:   prompt,
+			Hidden:    true,
+			CreatedAt: session.StartedAt,
+		}
+		session.Messages = append([]state.Message{systemMessage}, session.Messages...)
+		session.Usage.RecordInput(prompt)
+	}
+
+	return session
+}
+
+func (qe *QueryEngine) syncRuntimeSession(session *state.Session) {
+	qe.mutableMessages = stateMessagesToPublicMessages(session.Messages)
+	qe.totalUsage = Usage{
+		InputTokens:  session.Usage.InputTokens,
+		OutputTokens: session.Usage.OutputTokens,
+		CacheReads:   0,
+		CacheWrites:  0,
+	}
+}
+
+func publicMessagesToStateMessages(messages []types.Message) []state.Message {
+	out := make([]state.Message, 0, len(messages))
+	for _, msg := range messages {
+		if converted, ok := publicMessageToStateMessage(msg); ok {
+			out = append(out, converted)
+		}
+	}
+	return out
+}
+
+func publicMessageToStateMessage(msg types.Message) (state.Message, bool) {
+	createdAt := msg.Timestamp
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+
+	switch msg.Type {
+	case types.MessageTypeAssistant:
+		content, toolCalls := publicAssistantContent(msg.Content)
+		return state.Message{
+			Role:      "assistant",
+			Content:   content,
+			ToolCalls: toolCalls,
+			CreatedAt: createdAt,
+		}, true
+	case types.MessageTypeTool:
+		return state.Message{
+			Role:       "tool",
+			ToolCallID: msg.ToolUseID,
+			ToolName:   publicToolName(msg.Message),
+			ToolInput:  publicToolInput(msg.Message),
+			ToolOutput: publicToolOutput(msg.Content),
+			CreatedAt:  createdAt,
+		}, true
+	default:
+		if toolMsg, ok := publicToolResultStateMessage(msg, createdAt); ok {
+			return toolMsg, true
+		}
+		return state.Message{
+			Role:      "user",
+			Content:   publicContentText(msg.Content),
+			Hidden:    msg.IsMeta || msg.Type == types.MessageTypeSystem,
+			CreatedAt: createdAt,
+		}, true
+	}
+}
+
+func publicToolResultStateMessage(msg types.Message, createdAt time.Time) (state.Message, bool) {
+	for _, block := range msg.Content {
+		if block.Type != "tool_result" {
+			continue
+		}
+		return state.Message{
+			Role:       "tool",
+			ToolCallID: block.ToolUseID,
+			ToolName:   publicToolName(msg.Message),
+			ToolOutput: firstNonEmpty(block.Content, block.Text),
+			CreatedAt:  createdAt,
+		}, true
+	}
+	return state.Message{}, false
+}
+
+func stateMessagesToPublicMessages(messages []state.Message) []types.Message {
+	out := make([]types.Message, 0, len(messages))
+	for _, msg := range messages {
+		out = append(out, stateMessageToPublicMessage(&msg))
+	}
+	return out
+}
+
+func stateMessageToPublicMessage(msg *state.Message) types.Message {
+	if msg == nil {
+		return types.Message{}
+	}
+
+	timestamp := msg.CreatedAt
+	if timestamp.IsZero() {
+		timestamp = time.Now().UTC()
+	}
+
+	switch msg.Role {
+	case "assistant":
+		return types.Message{
+			Type:      types.MessageTypeAssistant,
+			UUID:      types.UUID(),
+			Timestamp: timestamp,
+			Content:   stateAssistantContentBlocks(msg),
+		}
+	case "tool":
+		return types.Message{
+			Type:      types.MessageTypeTool,
+			UUID:      types.UUID(),
+			Timestamp: timestamp,
+			ToolUseID: msg.ToolCallID,
+			Message: map[string]any{
+				"tool_name":  msg.ToolName,
+				"tool_input": rawJSONToMap(msg.ToolInput),
+			},
+			Content: []types.ContentBlock{{
+				Type:      "tool_result",
+				ToolUseID: msg.ToolCallID,
+				Content:   msg.ToolOutput,
+			}},
+		}
+	default:
+		return types.Message{
+			Type:      types.MessageTypeUser,
+			UUID:      types.UUID(),
+			Timestamp: timestamp,
+			IsMeta:    msg.Hidden,
+			Content: []types.ContentBlock{{
+				Type: "text",
+				Text: msg.Content,
+			}},
+		}
+	}
+}
+
+func publicAssistantContent(content []types.ContentBlock) (string, []state.ToolCall) {
+	textParts := make([]string, 0, len(content))
+	toolCalls := make([]state.ToolCall, 0)
+	for _, block := range content {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				textParts = append(textParts, block.Text)
+			}
+		case "tool_use":
+			input, _ := json.Marshal(block.Input)
+			toolCalls = append(toolCalls, state.ToolCall{
+				ID:    block.ID,
+				Name:  block.Name,
+				Input: input,
+			})
+		}
+	}
+	return strings.Join(textParts, "\n"), toolCalls
+}
+
+func stateAssistantContentBlocks(msg *state.Message) []types.ContentBlock {
+	blocks := make([]types.ContentBlock, 0, len(msg.ToolCalls)+1)
+	if strings.TrimSpace(msg.Content) != "" {
+		blocks = append(blocks, types.ContentBlock{
+			Type: "text",
+			Text: msg.Content,
+		})
+	}
+	for _, call := range msg.ToolCalls {
+		blocks = append(blocks, types.ContentBlock{
+			Type:  "tool_use",
+			ID:    call.ID,
+			Name:  call.Name,
+			Input: rawJSONToMap(call.Input),
+		})
+	}
+	return blocks
+}
+
+func publicContentText(content []types.ContentBlock) string {
+	parts := make([]string, 0, len(content))
+	for _, block := range content {
+		if block.Type == "text" && block.Text != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func publicToolOutput(content []types.ContentBlock) string {
+	for _, block := range content {
+		if block.Type == "tool_result" && block.Content != "" {
+			return block.Content
+		}
+		if block.Type == "text" && block.Text != "" {
+			return block.Text
+		}
+	}
+	return ""
+}
+
+func publicToolName(message interface{}) string {
+	meta, ok := message.(map[string]any)
+	if !ok {
+		return ""
+	}
+	name, _ := meta["tool_name"].(string)
+	return name
+}
+
+func publicToolInput(message interface{}) json.RawMessage {
+	meta, ok := message.(map[string]any)
+	if !ok {
+		return nil
+	}
+	input, _ := meta["tool_input"].(map[string]any)
+	if input == nil {
+		return nil
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+func rawJSONToMap(raw json.RawMessage) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func plannerToolCallsToState(calls []plannerapi.ToolCall) []state.ToolCall {
+	out := make([]state.ToolCall, len(calls))
+	for i, call := range calls {
+		out[i] = state.ToolCall{
+			ID:    call.ID,
+			Name:  call.Name,
+			Input: call.Input,
+		}
+	}
+	return out
+}
+
+func hasHiddenContext(messages []state.Message, content string) bool {
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Hidden && msg.Content == content {
+			return true
+		}
+	}
+	return false
+}
+
+func calculateStateUsage(messages []state.Message) state.Usage {
+	usage := state.Usage{}
+	for _, msg := range messages {
+		switch msg.Role {
+		case "user":
+			usage.RecordInput(msg.Content)
+		case "assistant":
+			usage.RecordOutput(msg.Content)
+		case "tool":
+			usage.RecordOutput(msg.ToolOutput)
+		}
+	}
+	return usage
+}
+
+func usageFromMessages(messages []types.Message) Usage {
+	usage := Usage{}
+	for _, msg := range messages {
+		tokens := estimateMessageTokens([]types.Message{msg})
+		switch msg.Type {
+		case types.MessageTypeAssistant:
+			usage.OutputTokens += tokens
+		default:
+			usage.InputTokens += tokens
+		}
+	}
+	return usage
+}
+
+func formatToolExecutionError(name string, err error) string {
+	if err == nil {
+		return ""
+	}
+	if name == "" {
+		return err.Error()
+	}
+	return fmt.Sprintf("%s: %v", name, err)
 }
 
 // GetMessages returns the current message history.

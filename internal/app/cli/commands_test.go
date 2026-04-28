@@ -193,9 +193,9 @@ func TestFormatDescriptionWithSource(t *testing.T) {
 
 func TestParseCommandLine(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       string
-		expectedCmd string
+		name         string
+		input        string
+		expectedCmd  string
 		expectedArgs []string
 	}{
 		{
