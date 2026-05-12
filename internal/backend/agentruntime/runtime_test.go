@@ -1423,9 +1423,13 @@ func TestAuthServiceRegisterLoginRefreshLogout(t *testing.T) {
 		RefreshTTL: time.Hour,
 	}
 
-	registered, err := service.Register(context.Background(), "Alice@example.com", "password123", "Alice", nil)
+	registration, err := service.Register(context.Background(), "Alice@example.com", "password123", "Alice", nil)
 	if err != nil {
 		t.Fatalf("register: %v", err)
+	}
+	registered := registration.Session
+	if registered == nil {
+		t.Fatal("register did not issue session")
 	}
 	if registered.User.Email != "alice@example.com" || registered.AccessToken == "" || registered.RefreshToken == "" {
 		t.Fatalf("bad register session: %#v", registered)
@@ -1454,6 +1458,50 @@ func TestAuthServiceRegisterLoginRefreshLogout(t *testing.T) {
 	}
 	if _, err := service.Refresh(context.Background(), refreshed.RefreshToken, nil); err == nil {
 		t.Fatal("logged-out refresh token should be revoked")
+	}
+}
+
+func TestAuthServiceRequiresEmailVerificationWhenConfigured(t *testing.T) {
+	store := newMemoryUserStore()
+	mailer := &captureMailer{}
+	service := &AuthService{
+		Store:                     store,
+		JWTSecret:                 "secret",
+		AccessTTL:                 time.Minute,
+		RefreshTTL:                time.Hour,
+		EmailVerificationRequired: true,
+		EmailVerificationTTL:      time.Hour,
+		PublicBaseURL:             "https://www.mkason.com",
+		Mailer:                    mailer,
+	}
+
+	registration, err := service.Register(context.Background(), "bob@example.com", "password123", "Bob", nil)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if !registration.VerificationRequired || registration.Session != nil {
+		t.Fatalf("expected pending verification registration, got %#v", registration)
+	}
+	if len(mailer.messages) != 1 {
+		t.Fatalf("expected one verification email, got %d", len(mailer.messages))
+	}
+	if _, err := service.Login(context.Background(), "bob@example.com", "password123", nil); err == nil {
+		t.Fatal("login should fail before email verification")
+	}
+
+	token := verificationTokenFromMessage(t, mailer.messages[0])
+	profile, err := service.VerifyEmail(context.Background(), token)
+	if err != nil {
+		t.Fatalf("verify email: %v", err)
+	}
+	if !profile.EmailVerified || profile.Status != UserStatusActive {
+		t.Fatalf("expected verified active user, got %#v", profile)
+	}
+	if _, err := service.Login(context.Background(), "bob@example.com", "password123", nil); err != nil {
+		t.Fatalf("login after verification: %v", err)
+	}
+	if _, err := service.VerifyEmail(context.Background(), token); err == nil {
+		t.Fatal("verification token should be single-use")
 	}
 }
 
@@ -3401,10 +3449,35 @@ func (r *fakeSkillRegistry) RecordSkillVersion(_ context.Context, record SkillRe
 }
 
 type memoryUserStore struct {
-	mu      sync.Mutex
-	users   map[string]*UserAccount
-	emails  map[string]string
-	refresh map[string]*RefreshTokenRecord
+	mu           sync.Mutex
+	users        map[string]*UserAccount
+	emails       map[string]string
+	refresh      map[string]*RefreshTokenRecord
+	verification map[string]*EmailVerificationTokenRecord
+}
+
+type captureMailer struct {
+	messages []EmailMessage
+}
+
+func (m *captureMailer) Send(_ context.Context, message EmailMessage) error {
+	m.messages = append(m.messages, message)
+	return nil
+}
+
+func verificationTokenFromMessage(t *testing.T, message EmailMessage) string {
+	t.Helper()
+	prefix := "Verify your AgentAPI account: "
+	rawURL := strings.TrimSpace(strings.TrimPrefix(message.Text, prefix))
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse verification link %q: %v", rawURL, err)
+	}
+	token := parsed.Query().Get("token")
+	if token == "" {
+		t.Fatalf("verification link missing token: %q", rawURL)
+	}
+	return token
 }
 
 type memoryArtifactStore struct {
@@ -3496,9 +3569,10 @@ func (s *memoryArtifactStore) PruneDeletedBefore(_ context.Context, cutoff time.
 
 func newMemoryUserStore() *memoryUserStore {
 	return &memoryUserStore{
-		users:   make(map[string]*UserAccount),
-		emails:  make(map[string]string),
-		refresh: make(map[string]*RefreshTokenRecord),
+		users:        make(map[string]*UserAccount),
+		emails:       make(map[string]string),
+		refresh:      make(map[string]*RefreshTokenRecord),
+		verification: make(map[string]*EmailVerificationTokenRecord),
 	}
 }
 
@@ -3610,13 +3684,14 @@ func (s *memoryUserStore) UpdateUserStatus(_ context.Context, userID string, sta
 
 func adminRecordFromUser(user *UserAccount) AdminUserRecord {
 	return AdminUserRecord{
-		ID:          user.ID,
-		Email:       user.Email,
-		DisplayName: user.DisplayName,
-		Status:      user.Status,
-		CreatedAt:   user.CreatedAt,
-		UpdatedAt:   user.UpdatedAt,
-		LastLoginAt: user.LastLoginAt,
+		ID:              user.ID,
+		Email:           user.Email,
+		DisplayName:     user.DisplayName,
+		Status:          user.Status,
+		EmailVerifiedAt: user.EmailVerifiedAt,
+		CreatedAt:       user.CreatedAt,
+		UpdatedAt:       user.UpdatedAt,
+		LastLoginAt:     user.LastLoginAt,
 	}
 }
 
@@ -3669,6 +3744,33 @@ func (s *memoryUserStore) RevokeUserRefreshTokens(_ context.Context, userID stri
 	return nil
 }
 
+func (s *memoryUserStore) CreateEmailVerificationToken(_ context.Context, token *EmailVerificationTokenRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clone := *token
+	s.verification[token.TokenHash] = &clone
+	return nil
+}
+
+func (s *memoryUserStore) ConsumeEmailVerificationToken(_ context.Context, tokenHash string, at time.Time) (*UserAccount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token, ok := s.verification[tokenHash]
+	if !ok || token.UsedAt != nil || !at.Before(token.ExpiresAt) {
+		return nil, errors.New("not found")
+	}
+	user, ok := s.users[token.UserID]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	token.UsedAt = &at
+	user.Status = UserStatusActive
+	user.EmailVerifiedAt = &at
+	user.UpdatedAt = at
+	clone := *user
+	return &clone, nil
+}
+
 func (s *memoryUserStore) DeleteUser(_ context.Context, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3679,6 +3781,11 @@ func (s *memoryUserStore) DeleteUser(_ context.Context, userID string) error {
 	for hash, token := range s.refresh {
 		if token.UserID == userID {
 			delete(s.refresh, hash)
+		}
+	}
+	for hash, token := range s.verification {
+		if token.UserID == userID {
+			delete(s.verification, hash)
 		}
 	}
 	return nil

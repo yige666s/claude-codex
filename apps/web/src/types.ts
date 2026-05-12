@@ -3,6 +3,8 @@ export type UserProfile = {
   email: string;
   display_name: string;
   status: string;
+  email_verified?: boolean;
+  email_verified_at?: string;
   created_at: string;
   last_login_at?: string;
 };
@@ -19,6 +21,11 @@ export type AuthSession = {
   refresh_token: string;
   csrf_token?: string;
   expires_at: string;
+};
+
+export type AuthRegistrationPending = {
+  verification_required: true;
+  email: string;
 };
 
 export type Message = {

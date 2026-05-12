@@ -341,6 +341,12 @@ func (s *Server) handlePublicAuth(w http.ResponseWriter, r *http.Request, path s
 	case r.Method == http.MethodPost && path == "v1/auth/register":
 		s.handleAuthRegister(w, r)
 		return true
+	case r.Method == http.MethodGet && path == "v1/auth/verify-email":
+		s.handleAuthVerifyEmail(w, r)
+		return true
+	case r.Method == http.MethodPost && path == "v1/auth/verify-email":
+		s.handleAuthVerifyEmail(w, r)
+		return true
 	case r.Method == http.MethodPost && path == "v1/auth/login":
 		s.handleAuthLogin(w, r)
 		return true
@@ -379,7 +385,7 @@ func (s *Server) handleAuthRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user system is not configured"})
 		return
 	}
-	session, err := s.authService.Register(r.Context(), body.Email, body.Password, body.DisplayName, r)
+	registration, err := s.authService.Register(r.Context(), body.Email, body.Password, body.DisplayName, r)
 	if err != nil {
 		s.recordRiskEvent(r, RiskEvent{
 			IPAddress:  clientIP(r),
@@ -392,10 +398,62 @@ func (s *Server) handleAuthRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if registration != nil && registration.VerificationRequired {
+		s.logEvent("auth_register_verification_sent", map[string]any{"email": registration.Email, "request_id": requestIDFromContext(r.Context())})
+		s.auditEvent(r, "auth_register_verification_sent", User{}, map[string]any{"email": registration.Email})
+		writeJSON(w, http.StatusAccepted, registration)
+		return
+	}
+	if registration == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "registration did not create a session"})
+		return
+	}
+	session := registration.Session
+	if session == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "registration did not create a session"})
+		return
+	}
 	s.setAuthCookies(w, session)
 	s.logEvent("auth_register", map[string]any{"user_id": session.User.ID, "request_id": requestIDFromContext(r.Context())})
 	s.auditEvent(r, "auth_register", User{ID: session.User.ID}, map[string]any{"email": session.User.Email})
 	writeJSON(w, http.StatusCreated, session)
+}
+
+func (s *Server) handleAuthVerifyEmail(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" && r.Method == http.MethodPost {
+		var body struct {
+			Token string `json:"token"`
+		}
+		if err := readJSON(r, &body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		token = strings.TrimSpace(body.Token)
+	}
+	if s.authService == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user system is not configured"})
+		return
+	}
+	profile, err := s.authService.VerifyEmail(r.Context(), token)
+	if err != nil {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`<html><body><h1>Email verification failed</h1><p>The verification link is invalid or expired.</p></body></html>`))
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.logEvent("auth_email_verified", map[string]any{"user_id": profile.ID, "request_id": requestIDFromContext(r.Context())})
+	s.auditEvent(r, "auth_email_verified", User{ID: profile.ID}, map[string]any{"email": profile.Email})
+	if r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><body><h1>Email verified</h1><p>You can close this page and sign in.</p><p><a href="/">Return to AgentAPI</a></p></body></html>`))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": profile, "verified": true})
 }
 
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {

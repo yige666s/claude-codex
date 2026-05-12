@@ -421,8 +421,16 @@ export function App() {
     const displayName = String(form.get("displayName") || "").trim();
     setStatus({ tone: "busy", text: "Signing in" });
     try {
-      if (authMode === "register") await api.register(email, password, displayName);
-      else await api.login(email, password);
+      if (authMode === "register") {
+        const result = await api.register(email, password, displayName);
+        if ("verification_required" in result && result.verification_required) {
+          setAuthMode("login");
+          setStatus({ tone: "ok", text: `Verification email sent to ${result.email}` });
+          return;
+        }
+      } else {
+        await api.login(email, password);
+      }
       await refreshAll();
     } catch (error) {
       showError(error);

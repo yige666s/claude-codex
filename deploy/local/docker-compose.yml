@@ -49,6 +49,13 @@ services:
       AGENT_API_SQL_DSN: postgres://${AGENT_API_POSTGRES_USER:-agentapi}:${AGENT_API_POSTGRES_PASSWORD:-agentapi}@postgres:5432/${AGENT_API_POSTGRES_DB:-agentapi}?sslmode=disable
       AGENT_API_JWT_SECRET: ${AGENT_API_JWT_SECRET:-local-dev-jwt-secret-change-me}
       AGENT_API_ADMIN_TOKEN: ${AGENT_API_ADMIN_TOKEN:-11b270acdc30d0785d791f42aa8a44be87cbbdf6186f3fc4b02e7836d86f38f9}
+      AGENT_API_EMAIL_PROVIDER: ${AGENT_API_EMAIL_PROVIDER:-}
+      AGENT_API_EMAIL_FROM: ${AGENT_API_EMAIL_FROM:-}
+      AGENT_API_EMAIL_PUBLIC_BASE_URL: ${AGENT_API_EMAIL_PUBLIC_BASE_URL:-}
+      AGENT_API_EMAIL_VERIFICATION_REQUIRED: ${AGENT_API_EMAIL_VERIFICATION_REQUIRED:-false}
+      AGENT_API_EMAIL_VERIFICATION_TTL: ${AGENT_API_EMAIL_VERIFICATION_TTL:-24h}
+      AGENT_API_RESEND_API_KEY: ${AGENT_API_RESEND_API_KEY:-}
+      AGENT_API_RESEND_BASE_URL: ${AGENT_API_RESEND_BASE_URL:-}
       AGENT_API_ARTIFACT_S3_ENDPOINT: ${AGENT_API_ARTIFACT_S3_ENDPOINT:-5c11ff96d03d238d51aef31150a87101.r2.cloudflarestorage.com}
       AGENT_API_ARTIFACT_S3_ACCESS_KEY: ${AGENT_API_ARTIFACT_S3_ACCESS_KEY:?set Cloudflare R2 S3 access key id}
       AGENT_API_ARTIFACT_S3_SECRET_KEY: ${AGENT_API_ARTIFACT_S3_SECRET_KEY:?set Cloudflare R2 S3 secret access key}
@@ -100,6 +107,20 @@ services:
       - jwt
       - -jwt-secret
       - "${AGENT_API_JWT_SECRET:-local-dev-jwt-secret-change-me}"
+      - -email-verification-required
+      - "${AGENT_API_EMAIL_VERIFICATION_REQUIRED:-false}"
+      - -email-verification-ttl
+      - "${AGENT_API_EMAIL_VERIFICATION_TTL:-24h}"
+      - -email-provider
+      - "${AGENT_API_EMAIL_PROVIDER:-}"
+      - -email-from
+      - "${AGENT_API_EMAIL_FROM:-}"
+      - -email-public-base-url
+      - "${AGENT_API_EMAIL_PUBLIC_BASE_URL:-}"
+      - -resend-api-key
+      - "${AGENT_API_RESEND_API_KEY:-}"
+      - -resend-base-url
+      - "${AGENT_API_RESEND_BASE_URL:-}"
       - -artifact-store
       - s3
       - -rate-limit-backend

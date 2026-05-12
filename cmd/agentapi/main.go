@@ -82,6 +82,13 @@ func main() {
 	enableUserSystem := flag.Bool("enable-user-system", envBool("AGENT_API_ENABLE_USER_SYSTEM", false), "enable built-in consumer user registration/login APIs")
 	authAccessTTL := flag.Duration("auth-access-ttl", envDuration("AGENT_API_AUTH_ACCESS_TTL", 15*time.Minute), "access token TTL for built-in user system")
 	authRefreshTTL := flag.Duration("auth-refresh-ttl", envDuration("AGENT_API_AUTH_REFRESH_TTL", 30*24*time.Hour), "refresh token TTL for built-in user system")
+	emailVerificationRequired := flag.Bool("email-verification-required", envBool("AGENT_API_EMAIL_VERIFICATION_REQUIRED", false), "require email verification before built-in users can log in")
+	emailVerificationTTL := flag.Duration("email-verification-ttl", envDuration("AGENT_API_EMAIL_VERIFICATION_TTL", 24*time.Hour), "email verification token TTL")
+	emailProvider := flag.String("email-provider", os.Getenv("AGENT_API_EMAIL_PROVIDER"), "email provider for auth emails: resend or empty")
+	emailFrom := flag.String("email-from", os.Getenv("AGENT_API_EMAIL_FROM"), "from address for auth emails")
+	emailPublicBaseURL := flag.String("email-public-base-url", os.Getenv("AGENT_API_EMAIL_PUBLIC_BASE_URL"), "public base URL used in auth email links")
+	resendAPIKey := flag.String("resend-api-key", os.Getenv("AGENT_API_RESEND_API_KEY"), "Resend API key for auth emails")
+	resendBaseURL := flag.String("resend-base-url", os.Getenv("AGENT_API_RESEND_BASE_URL"), "optional Resend API base URL")
 	sessionCookieName := flag.String("session-cookie-name", firstNonEmpty(os.Getenv("AGENT_API_SESSION_COOKIE_NAME"), "agentapi_session"), "signed JWT session cookie name")
 	sessionCookieSecret := flag.String("session-cookie-secret", os.Getenv("AGENT_API_SESSION_COOKIE_SECRET"), "HS256 secret for session cookie JWT")
 	sessionCookieDomain := flag.String("session-cookie-domain", os.Getenv("AGENT_API_SESSION_COOKIE_DOMAIN"), "optional domain for session and CSRF cookies")
@@ -231,11 +238,18 @@ func main() {
 		sqlMaxIdle:         *sqlMaxIdle,
 		sqlConnMaxLifetime: *sqlConnMaxLifetime,
 	}, authServiceConfig{
-		jwtSecret:   *jwtSecret,
-		jwtIssuer:   *jwtIssuer,
-		jwtAudience: *jwtAudience,
-		accessTTL:   *authAccessTTL,
-		refreshTTL:  *authRefreshTTL,
+		jwtSecret:                 *jwtSecret,
+		jwtIssuer:                 *jwtIssuer,
+		jwtAudience:               *jwtAudience,
+		accessTTL:                 *authAccessTTL,
+		refreshTTL:                *authRefreshTTL,
+		emailVerificationRequired: *emailVerificationRequired,
+		emailVerificationTTL:      *emailVerificationTTL,
+		emailProvider:             *emailProvider,
+		emailFrom:                 *emailFrom,
+		emailPublicBaseURL:        *emailPublicBaseURL,
+		resendAPIKey:              *resendAPIKey,
+		resendBaseURL:             *resendBaseURL,
 	})
 	artifactService := buildArtifactService(artifactConfig{
 		store:       *artifactStore,
@@ -1108,11 +1122,18 @@ func runRetentionPrune(runtime *agentruntime.Runtime, authService *agentruntime.
 }
 
 type authServiceConfig struct {
-	jwtSecret   string
-	jwtIssuer   string
-	jwtAudience string
-	accessTTL   time.Duration
-	refreshTTL  time.Duration
+	jwtSecret                 string
+	jwtIssuer                 string
+	jwtAudience               string
+	accessTTL                 time.Duration
+	refreshTTL                time.Duration
+	emailVerificationRequired bool
+	emailVerificationTTL      time.Duration
+	emailProvider             string
+	emailFrom                 string
+	emailPublicBaseURL        string
+	resendAPIKey              string
+	resendBaseURL             string
 }
 
 func buildAuthService(enabled bool, storeCfg storeConfig, authCfg authServiceConfig) *agentruntime.AuthService {
@@ -1133,13 +1154,36 @@ func buildAuthService(enabled bool, storeCfg storeConfig, authCfg authServiceCon
 	if err := store.Init(ctx); err != nil {
 		log.Fatalf("init sql user store: %v", err)
 	}
+	if authCfg.emailVerificationRequired && strings.TrimSpace(authCfg.emailProvider) == "" {
+		log.Fatal("email verification requires -email-provider or AGENT_API_EMAIL_PROVIDER")
+	}
 	return &agentruntime.AuthService{
-		Store:      store,
-		JWTSecret:  authCfg.jwtSecret,
-		Issuer:     authCfg.jwtIssuer,
-		Audience:   authCfg.jwtAudience,
-		AccessTTL:  authCfg.accessTTL,
-		RefreshTTL: authCfg.refreshTTL,
+		Store:                     store,
+		JWTSecret:                 authCfg.jwtSecret,
+		Issuer:                    authCfg.jwtIssuer,
+		Audience:                  authCfg.jwtAudience,
+		AccessTTL:                 authCfg.accessTTL,
+		RefreshTTL:                authCfg.refreshTTL,
+		EmailVerificationRequired: authCfg.emailVerificationRequired,
+		EmailVerificationTTL:      authCfg.emailVerificationTTL,
+		PublicBaseURL:             authCfg.emailPublicBaseURL,
+		Mailer:                    buildMailer(authCfg),
+	}
+}
+
+func buildMailer(authCfg authServiceConfig) agentruntime.Mailer {
+	switch strings.ToLower(strings.TrimSpace(authCfg.emailProvider)) {
+	case "":
+		return nil
+	case "resend":
+		return agentruntime.ResendMailer{
+			APIKey:  authCfg.resendAPIKey,
+			From:    authCfg.emailFrom,
+			BaseURL: authCfg.resendBaseURL,
+		}
+	default:
+		log.Fatalf("unsupported email provider %q", authCfg.emailProvider)
+		return nil
 	}
 }
 

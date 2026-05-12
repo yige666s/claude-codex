@@ -1,5 +1,5 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthSession, Job, JobEvent, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, MessageSearchResult, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, Job, JobEvent, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, MessageSearchResult, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -30,10 +30,12 @@ export class ApiClient {
   }
 
   async login(email: string, password: string): Promise<AuthSession> {
-    return this.authRequest("/v1/auth/login", { email, password });
+    const result = await this.authRequest("/v1/auth/login", { email, password });
+    if (!isAuthSession(result)) throw new ApiError("email verification is required", 202, "verification_required");
+    return result;
   }
 
-  async register(email: string, password: string, displayName: string): Promise<AuthSession> {
+  async register(email: string, password: string, displayName: string): Promise<AuthSession | AuthRegistrationPending> {
     return this.authRequest("/v1/auth/register", { email, password, display_name: displayName });
   }
 
@@ -584,7 +586,7 @@ export class ApiClient {
     return response;
   }
 
-  private async authRequest(path: string, body: Record<string, string>): Promise<AuthSession> {
+  private async authRequest(path: string, body: Record<string, string>): Promise<AuthSession | AuthRegistrationPending> {
     const response = await fetch(this.apiURL(path), {
       method: "POST",
       credentials: "include",
@@ -592,9 +594,9 @@ export class ApiClient {
       body: JSON.stringify(body)
     });
     if (!response.ok) throw await toApiError(response);
-    const session = (await response.json()) as AuthSession;
-    this.setAuth(session);
-    return session;
+    const payload = (await response.json()) as AuthSession | AuthRegistrationPending;
+    if (isAuthSession(payload)) this.setAuth(payload);
+    return payload;
   }
 
   private async fetchJSON<T>(path: string, options: RequestInit = {}, retry = true): Promise<T> {
@@ -709,4 +711,8 @@ async function toApiError(response: Response): Promise<ApiError> {
   } catch {
     return new ApiError(text || response.statusText, response.status, undefined, requestId);
   }
+}
+
+function isAuthSession(value: AuthSession | AuthRegistrationPending): value is AuthSession {
+  return Boolean((value as AuthSession).access_token && (value as AuthSession).refresh_token);
 }
