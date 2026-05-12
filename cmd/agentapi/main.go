@@ -1281,8 +1281,17 @@ func loadSkills(skillDirs []string) *skills.SkillManager {
 		if dir == "" {
 			continue
 		}
+		before := manager.GetStats().TotalSkills
 		if err := manager.LoadSkillsFromDirectory(dir, skills.SourceFile); err != nil {
 			log.Printf("warning: failed to load skills from %s: %v", dir, err)
+		}
+		after := manager.GetStats().TotalSkills
+		if after == before {
+			if err := manager.LoadCommandsFromDirectory(dir, skills.SourceFile); err != nil {
+				log.Printf("warning: failed to load fallback skills from %s: %v", dir, err)
+			} else if fallbackStats := manager.GetStats(); fallbackStats.TotalSkills > after {
+				log.Printf("skills fallback loaded %d skill(s) from %s", fallbackStats.TotalSkills-after, dir)
+			}
 		}
 	}
 	stats := manager.GetStats()

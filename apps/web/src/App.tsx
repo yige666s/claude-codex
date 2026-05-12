@@ -418,14 +418,19 @@ export function App() {
     const form = new FormData(event.currentTarget);
     const email = String(form.get("email") || "").trim();
     const password = String(form.get("password") || "");
+    const confirmPassword = String(form.get("confirmPassword") || "");
     const displayName = String(form.get("displayName") || "").trim();
-    setStatus({ tone: "busy", text: "Signing in" });
+    if (authMode === "register" && password !== confirmPassword) {
+      setStatus({ tone: "error", text: "Passwords do not match" });
+      return;
+    }
+    setStatus({ tone: "busy", text: authMode === "register" ? "Creating account and sending verification email" : "Signing in" });
     try {
       if (authMode === "register") {
         const result = await api.register(email, password, displayName);
         if ("verification_required" in result && result.verification_required) {
           setAuthMode("login");
-          setStatus({ tone: "ok", text: `Verification email sent to ${result.email}` });
+          setStatus({ tone: "ok", text: `Verification email sent to ${result.email}. Check your inbox and spam folder.` });
           return;
         }
       } else {
@@ -433,7 +438,14 @@ export function App() {
       }
       await refreshAll();
     } catch (error) {
-      showError(error);
+      if (authMode === "register") {
+        const message = `Could not send verification email: ${errorMessage(error)}`;
+        setRuntimeError(message);
+        setStatus({ tone: "error", text: message });
+        readServiceStatus(api).then(setServiceStatus).catch(() => {});
+      } else {
+        showError(error);
+      }
     }
   }
 
@@ -1104,6 +1116,12 @@ export function App() {
             Password
             <input name="password" type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} required minLength={8} />
           </label>
+          {authMode === "register" && (
+            <label>
+              Confirm Password
+              <input name="confirmPassword" type="password" autoComplete="new-password" required minLength={8} />
+            </label>
+          )}
           <button className="primary wide" type="submit">{authMode === "login" ? "Login" : "Create Account"}</button>
           <StatusLine status={status} />
         </form>
