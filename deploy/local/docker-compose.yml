@@ -92,6 +92,7 @@ services:
     volumes:
       - agentapi_data:/var/lib/agentapi
       - ../../.claude:/workspace/.claude:ro
+      - ${AGENT_API_SECRETS_DIR:-../../secrets}:/run/agentapi/secrets:ro
     # Optional string settings are passed through environment above. Do not add
     # empty string command args here: Go's flag parser treats them as positional
     # args and stops parsing later flags such as -skill-dirs.
