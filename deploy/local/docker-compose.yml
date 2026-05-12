@@ -141,6 +141,26 @@ services:
       retries: 12
       start_period: 15s
 
+  agentweb:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.agentweb
+      args:
+        VITE_AGENT_API_BASE_URL: ${VITE_AGENT_API_BASE_URL:-}
+    image: claude-codex-agentweb:local
+    container_name: claude-codex-agentweb
+    depends_on:
+      agentapi:
+        condition: service_healthy
+    ports:
+      - "${AGENT_WEB_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
 volumes:
   postgres_data:
   redis_data:
