@@ -10,7 +10,7 @@
 *.dylib
 tui
 webui
-agentapi
+/agentapi
 
 # 测试产物
 *.test

@@ -1,0 +1,101 @@
+package main
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestBuildLLMConfigOpenAIAndCustom(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "openai-key")
+	openai, err := buildLLMConfig("openai", "", "", "", "", 30)
+	if err != nil {
+		t.Fatalf("build openai config: %v", err)
+	}
+	if openai.Provider != "openai" || openai.APIKey != "openai-key" || openai.BaseURL == "" {
+		t.Fatalf("unexpected openai config: %#v", openai)
+	}
+
+	custom, err := buildLLMConfig("custom", "local-model", "custom-key", "", "http://localhost:11434/v1", 30)
+	if err != nil {
+		t.Fatalf("build custom config: %v", err)
+	}
+	if custom.Provider != "custom" || custom.Model != "local-model" || custom.BaseURL != "http://localhost:11434/v1" {
+		t.Fatalf("unexpected custom config: %#v", custom)
+	}
+}
+
+func TestBuildLLMConfigVertexUsesTokenEnv(t *testing.T) {
+	t.Setenv("VERTEX_ACCESS_TOKEN", "vertex-token")
+	cfg, err := buildLLMConfig("vertex", "gemini-1.5-flash", "", "", "", 30)
+	if err != nil {
+		t.Fatalf("build vertex config: %v", err)
+	}
+	if cfg.Provider != "vertex" || cfg.Token != "vertex-token" {
+		t.Fatalf("unexpected vertex config: %#v", cfg)
+	}
+}
+
+func TestBuildLLMConfigQwenUsesDashScopeEnv(t *testing.T) {
+	t.Setenv("DASHSCOPE_API_KEY", "dashscope-key")
+	cfg, err := buildLLMConfig("qwen", "", "", "", "", 30)
+	if err != nil {
+		t.Fatalf("build qwen config: %v", err)
+	}
+	if cfg.Provider != "qwen" || cfg.APIKey != "dashscope-key" || cfg.Model != "qwen-plus" {
+		t.Fatalf("unexpected qwen config: %#v", cfg)
+	}
+	if !strings.Contains(cfg.BaseURL, "dashscope.aliyuncs.com/compatible-mode/v1") {
+		t.Fatalf("unexpected qwen base url: %q", cfg.BaseURL)
+	}
+}
+
+func TestLLMConfigReadinessCheckValidatesVertexProject(t *testing.T) {
+	t.Setenv("VERTEX_ACCESS_TOKEN", "vertex-token")
+	t.Setenv("VERTEX_PROJECT_ID", "")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+	t.Setenv("GCLOUD_PROJECT", "")
+	cfg, err := buildLLMConfig("vertex", "gemini-2.5-pro", "", "", "", 30)
+	if err != nil {
+		t.Fatalf("build vertex config: %v", err)
+	}
+	err = llmConfigReadinessCheck(cfg)(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "project ID") {
+		t.Fatalf("expected project ID readiness error, got %v", err)
+	}
+	t.Setenv("VERTEX_PROJECT_ID", "project-1")
+	if err := llmConfigReadinessCheck(cfg)(context.Background()); err != nil {
+		t.Fatalf("readiness should pass with project ID: %v", err)
+	}
+}
+
+func TestParseLLMFallbacksAndModelRoutes(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "openai-key")
+	fallbacks := parseLLMFallbacks("openai:gpt-4o-mini", 30)
+	if len(fallbacks) != 1 || fallbacks[0].Provider != "openai" || fallbacks[0].Model != "gpt-4o-mini" {
+		t.Fatalf("unexpected fallbacks %#v", fallbacks)
+	}
+
+	routes := parseModelRoutes("default=gemini-2.5-pro,skill:vertex-image-artifact=gemini-2.5-pro")
+	if routes["default"] != "gemini-2.5-pro" || routes["skill:vertex-image-artifact"] != "gemini-2.5-pro" {
+		t.Fatalf("unexpected routes %#v", routes)
+	}
+}
+
+func TestLoadSkillsUsesExplicitSkillDirs(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "demo")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: demo\ndescription: Demo skill\nuser-invocable: true\n---\n\nDemo body\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	manager := loadSkills([]string{filepath.Join(root, "skills")})
+	if _, ok := manager.GetSkill("demo"); !ok {
+		t.Fatal("expected explicit skill dir to load demo skill")
+	}
+}
