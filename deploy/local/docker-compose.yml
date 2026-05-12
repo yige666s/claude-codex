@@ -83,6 +83,9 @@ services:
     volumes:
       - agentapi_data:/var/lib/agentapi
       - ../../.claude:/workspace/.claude:ro
+    # Optional string settings are passed through environment above. Do not add
+    # empty string command args here: Go's flag parser treats them as positional
+    # args and stops parsing later flags such as -skill-dirs.
     command:
       - -addr
       - :8081
@@ -107,20 +110,6 @@ services:
       - jwt
       - -jwt-secret
       - "${AGENT_API_JWT_SECRET:-local-dev-jwt-secret-change-me}"
-      - -email-verification-required
-      - "${AGENT_API_EMAIL_VERIFICATION_REQUIRED:-false}"
-      - -email-verification-ttl
-      - "${AGENT_API_EMAIL_VERIFICATION_TTL:-24h}"
-      - -email-provider
-      - "${AGENT_API_EMAIL_PROVIDER:-}"
-      - -email-from
-      - "${AGENT_API_EMAIL_FROM:-}"
-      - -email-public-base-url
-      - "${AGENT_API_EMAIL_PUBLIC_BASE_URL:-}"
-      - -resend-api-key
-      - "${AGENT_API_RESEND_API_KEY:-}"
-      - -resend-base-url
-      - "${AGENT_API_RESEND_BASE_URL:-}"
       - -artifact-store
       - s3
       - -rate-limit-backend
@@ -135,8 +124,6 @@ services:
       - "${AGENT_API_SKILL_DIRS:-/workspace/.claude/skills}"
       - -skill-shell-runner
       - "${AGENT_API_SKILL_SHELL_RUNNER:-local}"
-      - -network-allowlist
-      - "${AGENT_API_NETWORK_ALLOWLIST:-}"
       - -llm-provider
       - "${AGENT_API_LLM_PROVIDER:-vertex}"
       - -model
