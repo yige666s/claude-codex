@@ -10,7 +10,10 @@ This compose stack runs the production-oriented local baseline:
 Start it with:
 
 ```bash
-export VERTEX_ACCESS_TOKEN="$(gcloud auth print-access-token)"
+mkdir -p secrets
+# Put a Vertex-enabled service account JSON at:
+# secrets/vertex-service-account.json
+export GOOGLE_APPLICATION_CREDENTIALS="secrets/vertex-service-account.json"
 export VERTEX_PROJECT_ID="vigilant-router-378708"
 export VERTEX_LOCATION="us-central1"
 export AGENT_API_ARTIFACT_S3_ACCESS_KEY="REPLACE_WITH_R2_ACCESS_KEY_ID"
