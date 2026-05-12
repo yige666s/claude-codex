@@ -1,213 +1,301 @@
-# claude-codex
+# AgentAPI
 
-> `claude-codex` is a Go rewrite of the core capabilities from `claude-code` (TypeScript).  
-> Current status: **runnable and testable, but not yet fully feature-parity with the TS version**.
+AgentAPI is a Go backend plus React web frontend for a consumer-facing
+agent workspace. It supports authenticated chat sessions, long-running jobs,
+skills, attachments, generated artifacts, memory, admin operations, audit logs,
+and production-oriented deployment through Docker Compose.
 
----
+The repository still contains the local TUI/CLI harness, but the main product
+surface is now `cmd/agentapi` + `apps/web`.
 
-## Table of Contents
+## Contents
 
-- [Overview](#overview)
-- [Usability Baseline](#usability-baseline)
-- [Quickstart](#quickstart)
-- [Configuration Paths and Meanings](#configuration-paths-and-meanings)
-- [Refactoring Status by Module](#refactoring-status-by-module)
-- [TUI vs AgentAPI](#tui-vs-agentapi)
-- [Notes](#notes)
-- [Common Commands](#common-commands)
-- [License](#license)
+- [Current Status](#current-status)
+- [Repository Layout](#repository-layout)
+- [Core Capabilities](#core-capabilities)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Deployment](#deployment)
+- [Operations](#operations)
+- [Development Commands](#development-commands)
+- [Security Notes](#security-notes)
+- [Related Docs](#related-docs)
 
----
+## Current Status
 
-## Overview
+The current production path is:
 
-| Item | Description |
-|---|---|
-| Repository | `claude-codex` |
-| TS reference source | `claude-code/src` |
-| Go version | `1.24.4` |
-| Main dependencies | Cobra, Bubble Tea, Gorilla WebSocket |
-| Entrypoints | `cmd/tui`, `cmd/agentapi` |
+- Backend: `cmd/agentapi`
+- Frontend: `apps/web`
+- Database: Postgres
+- Cache/rate limiting: Redis
+- Object storage: Cloudflare R2 through the S3-compatible API
+- LLM provider: Vertex AI with service account credentials
+- Email provider: Resend for registration verification
+- Deployment: Docker Compose, with GitHub Actions deploy-on-main support
 
-### Refactor Positioning
+Implemented product areas include:
 
-- The Go implementation uses a layered architecture: `app / backend / harness / public / ui`.
-- The TS implementation remains much larger, especially in `commands`, `components`, `tools`, and `utils`.
-- The Go side already has core capabilities, but some areas are still under active completion.
+- JWT user auth with refresh tokens and optional email verification.
+- Session chat with streaming, reconnect/replay support, and attachment-aware
+  messages.
+- Job execution and job event timeline replay.
+- Attachment and generated artifact storage through R2.
+- Skill registry, product skill listing, skill execution history, review checks,
+  and admin management APIs/UI.
+- Memory capture, governance, user controls, deletion/export, maintenance, and
+  quality feedback.
+- Admin console for skills, users, sessions/jobs/artifacts, health/cost, audit,
+  and risk operations.
+- Risk control and abuse prevention primitives, including rate limits, risk
+  events, admin review actions, and audit logging.
 
-### Current Incomplete Signals (Observed)
+Still intentionally deferred:
 
-- Around **117** TODO/FIXME markers under `internal`.
-- Around **65** of them are in `internal/harness/query` + `internal/harness/queryengine`.
+- Product analytics beyond the operational metrics already exposed.
+- Advanced vector/multimodal memory retrieval enhancements.
+- Some deeper enterprise-style governance workflows that are not required for
+  the current consumer-focused launch path.
 
-> Conclusion: suitable for development validation, gradual rollout, and continuous refactoring; not recommended yet as a final full replacement for TS.
+## Repository Layout
 
----
+| Path | Purpose |
+| --- | --- |
+| `cmd/agentapi` | Product backend entrypoint. |
+| `apps/web` | React/Vite product frontend and admin console. |
+| `internal/backend/agentruntime` | Web agent runtime: auth, sessions, memory, jobs, skills, artifacts, admin/risk APIs. |
+| `internal/backend/googleauth` | Service-account OAuth token exchange used for Vertex AI. |
+| `internal/harness` | Local agent harness, providers, tools, state, skills, and CLI-oriented runtime pieces. |
+| `.claude/skills` | Local skills exposed to AgentAPI, including docx and Vertex image artifact generation. |
+| `deploy/local` | Local Docker Compose stack. |
+| `deploy/production` | Production deployment examples, frontend nginx config, backup/restore runbook. |
+| `.github/workflows/deploy-main.yml` | Push-to-main deployment workflow for the test server. |
 
-## Usability Baseline
+## Core Capabilities
 
-Verified in this repository:
+### Web Product
 
-- ✅ `go test ./...`
-- ✅ `go build ./cmd/tui && go build ./cmd/agentapi`
-- ✅ `go run ./cmd/tui --help`
-- ✅ `go run ./cmd/tui /help`
-- ✅ `go run ./cmd/agentapi -h`
+- Login, registration, email verification, logout, and account deletion.
+- Session list, chat transcript, streaming responses, global search, and
+  responsive desktop/mobile layout.
+- Attachment upload with progress, preview/download/delete, and message
+  attachment sending.
+- Artifact list, preview/download/delete, and generated artifact surfacing.
+- Skill browser with category grouping, search, detail modal, and insertion into
+  chat/job flows.
+- Settings modal with memory controls and data/account actions.
 
-> Note: **passing tests does not equal full feature parity**. Please evaluate usage scope together with the refactoring and notes sections below.
+The site logo is stored at `apps/web/public/logo.png` and is used as the
+browser icon and in-app brand mark.
 
----
+### Agent Runtime
 
-## Quickstart
+- SQL-backed user, session, message, memory, skill, job, artifact, audit, and
+  risk records.
+- SSE chat stream and job stream replay.
+- Governed LLM execution with retries, request/token quotas, usage/cost
+  accounting, and fallback hooks.
+- Skill execution with policy merge, sandbox settings, allowed env/tool
+  controls, generated artifact registration, and execution telemetry.
+- Memory extraction, abstraction, scoring/maintenance, redaction, and
+  user-controlled opt-in/out.
 
-### 1) Check environment
+### Admin And Operations
+
+- Admin token protected `/admin` UI.
+- Skill registry and policy management.
+- User status management.
+- Session/job/artifact troubleshooting.
+- Runtime health, readiness, and cost panels.
+- Audit log and risk review console.
+
+## Quick Start
+
+### Prerequisites
+
+- Go `1.24.4` or compatible with `go.mod`.
+- Node.js `22` for `apps/web`.
+- Docker and Docker Compose for the local full stack.
+- Postgres, Redis, and Cloudflare R2 credentials for compose/production.
+- Vertex AI service account JSON for the default LLM provider.
+
+### Local Web Stack
+
+The recommended local path is Docker Compose:
 
 ```bash
-go version
+mkdir -p secrets
+# Put a Vertex-enabled service account JSON here:
+# secrets/vertex-service-account.json
+
+export GOOGLE_APPLICATION_CREDENTIALS="secrets/vertex-service-account.json"
+export VERTEX_PROJECT_ID="REPLACE_WITH_GCP_PROJECT"
+export VERTEX_LOCATION="us-central1"
+export AGENT_API_ARTIFACT_S3_ACCESS_KEY="REPLACE_WITH_R2_ACCESS_KEY_ID"
+export AGENT_API_ARTIFACT_S3_SECRET_KEY="REPLACE_WITH_R2_SECRET_ACCESS_KEY"
+
+docker compose -f deploy/local/docker-compose.yml up --build
 ```
 
-Recommended: keep it aligned with `go.mod`.
+Open:
 
-### 2) Start TUI/CLI
+- Web app: `http://localhost:8080`
+- AgentAPI: `http://localhost:8081`
+- Health: `http://localhost:8081/healthz`
+- Readiness: `http://localhost:8081/readyz`
+
+More local compose details are in [deploy/local/README.md](deploy/local/README.md).
+
+### Frontend Dev Server
+
+Run the backend first, then:
 
 ```bash
-cd claude-codex
-go run ./cmd/tui --help
+cd apps/web
+npm ci
+npm run dev
 ```
 
-Common slash commands:
+Vite proxies `/v1`, `/healthz`, `/readyz`, and `/metrics` to
+`http://localhost:8081` by default.
+
+### Backend Without Compose
+
+For a direct backend run:
 
 ```bash
-go run ./cmd/tui /help
-go run ./cmd/tui /model
-go run ./cmd/tui /limits
+go run ./cmd/agentapi \
+  -addr :8081 \
+  -store-backend sql \
+  -sql-driver pgx \
+  -sql-dialect postgres \
+  -sql-dsn "$AGENT_API_SQL_DSN" \
+  -enable-user-system \
+  -auth-mode jwt \
+  -jwt-secret "$AGENT_API_JWT_SECRET" \
+  -llm-provider vertex \
+  -model gemini-2.5-flash
 ```
 
-Or:
+## Configuration
+
+The production template is [deploy/production/.env.example](deploy/production/.env.example).
+Do not commit real `.env` files or service account JSON files.
+
+Important environment groups:
+
+| Group | Key Variables |
+| --- | --- |
+| Auth | `AGENT_API_JWT_SECRET`, `AGENT_API_ADMIN_TOKEN`, JWT/session settings |
+| Email | `AGENT_API_EMAIL_PROVIDER=resend`, `AGENT_API_RESEND_API_KEY`, `AGENT_API_EMAIL_FROM`, `AGENT_API_EMAIL_PUBLIC_BASE_URL` |
+| Storage | `AGENT_API_ARTIFACT_S3_ENDPOINT`, `AGENT_API_ARTIFACT_S3_ACCESS_KEY`, `AGENT_API_ARTIFACT_S3_SECRET_KEY`, `AGENT_API_ARTIFACT_S3_BUCKET`, `AGENT_API_ARTIFACT_S3_PREFIX` |
+| Vertex | `GOOGLE_APPLICATION_CREDENTIALS`, `VERTEX_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT`, `VERTEX_LOCATION` |
+| Runtime | `AGENT_API_SKILL_DIRS`, `AGENT_API_SKILL_POLICY`, `AGENT_API_OPERATION_RATE_LIMITS`, `AGENT_API_RETENTION_DAYS` |
+| Frontend | `VITE_AGENT_API_BASE_URL` for split frontend/API origins |
+
+### Vertex AI Credentials
+
+Production should use a service account JSON, not short-lived access-token
+environment variables.
+
+For Docker Compose, mount a host secrets directory and point the container at
+the mounted path:
+
+```env
+AGENT_API_SECRETS_DIR=/opt/agentapi/secrets
+GOOGLE_APPLICATION_CREDENTIALS=/run/agentapi/secrets/vertex-service-account.json
+VERTEX_PROJECT_ID=your-gcp-project
+GOOGLE_CLOUD_PROJECT=your-gcp-project
+VERTEX_LOCATION=us-central1
+```
+
+The service account needs enough permission to call Vertex AI, for example
+`roles/aiplatform.user` on the target project.
+
+## Deployment
+
+The current deployment model is Docker Compose on a server:
+
+```bash
+cd /opt/agentapi/repo
+docker compose --env-file /opt/agentapi/.env -f deploy/local/docker-compose.yml up -d --build
+```
+
+The GitHub Actions workflow in `.github/workflows/deploy-main.yml` can deploy
+automatically after pushes to `main`. It SSHes into the server, updates the repo,
+and rebuilds/restarts the compose stack.
+
+Frontend production options:
+
+- Same origin: serve `apps/web/dist` and reverse-proxy `/v1`, `/healthz`,
+  `/readyz`, and `/metrics` to AgentAPI.
+- Split origin: build with `VITE_AGENT_API_BASE_URL=https://api.example.com`
+  and configure CORS on AgentAPI.
+
+See [deploy/production/FRONTEND.md](deploy/production/FRONTEND.md).
+
+## Operations
+
+Useful checks:
+
+```bash
+curl -fsS http://localhost:8081/healthz
+curl -fsS http://localhost:8081/readyz
+curl -fsS http://localhost:8081/metrics
+```
+
+Common server checks:
+
+```bash
+docker ps
+docker logs --tail=100 claude-codex-agentapi
+docker logs --tail=100 claude-codex-agentweb
+```
+
+Backup and restore guidance is in
+[deploy/production/BACKUP_RESTORE.md](deploy/production/BACKUP_RESTORE.md).
+
+## Development Commands
+
+```bash
+make fmt
+make test
+go test ./internal/backend/agentruntime ./internal/backend/googleauth ./internal/harness/provider ./cmd/agentapi
+go build ./cmd/agentapi
+
+cd apps/web
+npm run build
+npm run test
+npm run e2e
+```
+
+The repository also includes the local TUI:
 
 ```bash
 make run-tui
 ```
 
-### 3) Start AgentAPI
+## Security Notes
 
-```bash
-cd claude-codex
-export ANTHROPIC_API_KEY="your-api-key"
-go run ./cmd/agentapi -addr :8080 -llm-provider anthropic -model claude-sonnet-4-6 -auth-token dev-token
-```
+- Never commit `.env` files, R2 keys, Resend keys, admin tokens, or service
+  account JSON files.
+- `secrets/` is gitignored and intended for local secret material only.
+- Prefer service account credentials for Vertex AI.
+- Keep `/run/agentapi/secrets` mounted read-only in containers.
+- Restrict CORS to exact frontend origins when using split-origin hosting.
+- Use HTTPS before enabling cookie auth in production.
+- Keep Cloudflare R2 S3 keys separate from Cloudflare API tokens.
 
-Open in browser: `http://localhost:8080`
+## Related Docs
 
-Or:
-
-```bash
-make run-agentapi
-```
-
-### 4) Regression checks
-
-```bash
-cd claude-codex
-go test ./...
-```
-
----
-
-## Configuration Paths and Meanings
-
-`claude-codex` currently supports two configuration layers: global + workspace.
-
-- Global config: `~/.claude-codex/config.json`
-- Custom global home: set `CLAUDE_GO_HOME`; effective path is `${CLAUDE_GO_HOME}/config.json`
-- Workspace config: `<your-project>/.claude-codex/config.json`
-
-When workspace config exists, same-name fields override the global ones (currently including model, permission mode, theme, timeout, max turns, telemetry, OAuth, MCP, etc.).
-
-### Field Meanings (`config.json`)
-
-| Field | Meaning |
-|---|---|
-| `schema_version` | Config schema version; normalized/migrated automatically |
-| `backend` | Backend type (supports `anthropic` / `openai` protocol) |
-| `provider` | LLM provider (for example `anthropic` / `openai`) |
-| `model` | Default model name |
-| `permission_mode` | Permission mode: `default` / `plan` / `bypass` / `auto` |
-| `theme` | UI theme: `dark` or `light` |
-| `api_base_url` | API base URL |
-| `api_key` / `api_token` | API credentials (prefer env vars; never commit) |
-| `timeout_seconds` | Request timeout in seconds |
-| `max_turns` | Max turns in one session (minimum 1) |
-| `secret_store` | Secret storage mode: `auto` / `plaintext` / `keychain` |
-| `plugin_dir` | Plugin directory path |
-| `bridge_secret` | Bridge authentication secret |
-| `telemetry.enabled` | Whether telemetry is enabled |
-| `telemetry.exporter` | Telemetry exporters (comma-separated) |
-| `telemetry.endpoint` | Telemetry endpoint |
-| `telemetry.insecure` | Whether insecure telemetry transport is allowed |
-| `telemetry.service_name` | Telemetry service name (default `claude-codex`) |
-| `oauth.client_id` / `oauth.client_secret` | OAuth client credentials |
-| `oauth.auth_url` / `oauth.token_url` | OAuth authorize/token endpoints |
-| `oauth.scopes` | OAuth scopes |
-| `oauth.redirect_host` / `oauth.redirect_port` | OAuth redirect listen address |
-| `mcp_servers` | MCP server list |
-
----
-
-## Refactoring Status by Module
-
-### Areas with solid usable baseline
-
-- `internal/harness/*`: core framework capabilities such as agent, engine, tools, state, skills
-- `internal/backend/services/*`: analytics, api, tokens, tools, oauth, and related services
-- `internal/app/cli/*`: main CLI and a set of slash commands
-- `internal/backend/agentruntime`: Web-side server entry
-
-### Areas still under active refactoring
-
-- `Query / QueryEngine`: TODO-dense and currently the largest incomplete source
-- Some tools and edge features: directories exist, but behavior/coverage is still being filled in
-- Capability mapping against large TS `utils` is not fully converged yet
-
----
-
-## TUI vs AgentAPI
-
-| Dimension | TUI (`cmd/tui`) | AgentAPI (`cmd/agentapi`) |
-|---|---|---|
-| Interaction style | Terminal CLI / TUI | Browser + HTTP/WebSocket |
-| Core tech | Cobra + Bubble Tea | Web server + `/ws` |
-| Typical usage | Local development, scripting workflows | Visual chat, demos, integration testing |
-| Session profile | CLI-oriented workflow | Mostly in-memory session flow currently |
-| Permission strategy | Follows CLI runtime config | Read/search/web/skill by default; write and execute require explicit opt-in |
-| Risk point | Command coverage still being filled | Production auth and durable storage should be wired before public exposure |
-
----
-
-## Notes
-
-1. This is a project under active refactoring, not a final completed state.  
-2. Before production use, harden AgentAPI permissions and network exposure first.  
-3. Inject API keys via environment variables only; avoid hardcoding/committing.  
-4. After every change, at minimum run: `go test ./...`.  
-5. Executables named `tui`/`agentapi` in repo root are binaries; they are different from source entrypoints `cmd/tui`/`cmd/agentapi`.
-
----
-
-## Common Commands
-
-```bash
-make fmt         # Format code
-make test        # Run tests
-make run-tui     # Start TUI
-make run-agentapi   # Start AgentAPI
-make clean       # Clean binaries
-```
-
----
+- [apps/web/README.md](apps/web/README.md)
+- [deploy/local/README.md](deploy/local/README.md)
+- [deploy/production/.env.example](deploy/production/.env.example)
+- [deploy/production/FRONTEND.md](deploy/production/FRONTEND.md)
+- [deploy/production/BACKUP_RESTORE.md](deploy/production/BACKUP_RESTORE.md)
+- [internal/backend/agentruntime/README.md](internal/backend/agentruntime/README.md)
+- [internal/backend/agentruntime/PRODUCTION_PROGRESS.md](internal/backend/agentruntime/PRODUCTION_PROGRESS.md)
 
 ## License
 
 This project is licensed under the [MIT License](./LICENSE).
-
----

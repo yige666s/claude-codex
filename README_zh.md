@@ -1,213 +1,281 @@
-# claude-codex
+# AgentAPI
 
-> `claude-codex` 是 `claude-code`（TypeScript）核心能力的 Go 重构版本。  
-> 当前阶段：**可运行、可测试，但尚未与 TS 版本完全功能对等**。
+AgentAPI 是一个面向 C 端用户的 Agent 工作区产品，由 Go 后端和
+React Web 前端组成。它支持用户认证、会话对话、长任务、Skill、附件、
+生成产物、Memory、Admin 运维、Audit Log、风控，以及基于 Docker
+Compose 的生产部署。
 
----
+仓库中仍保留本地 TUI/CLI harness，但当前主要产品面是
+`cmd/agentapi` + `apps/web`。
 
 ## 目录
 
-- [项目概览](#项目概览)
-- [可用性基线](#可用性基线)
-- [Quickstart](#quickstart)
-- [配置文件路径与含义](#配置文件路径与含义)
-- [模块重构情况](#模块重构情况)
-- [TUI vs AgentAPI](#tui-vs-agentapi)
-- [注意事项](#注意事项)
-- [常用命令](#常用命令)
-- [许可证](#许可证)
+- [当前状态](#当前状态)
+- [目录结构](#目录结构)
+- [核心能力](#核心能力)
+- [快速启动](#快速启动)
+- [配置说明](#配置说明)
+- [部署](#部署)
+- [运维](#运维)
+- [开发命令](#开发命令)
+- [安全注意事项](#安全注意事项)
+- [相关文档](#相关文档)
 
----
+## 当前状态
 
-## 项目概览
+当前生产路径：
 
-| 项 | 说明 |
-|---|---|
-| 代码仓 | `claude-codex` |
-| TS 对照源码 | `claude-code/src` |
-| Go 版本 | `1.24.4` |
-| 主要依赖 | Cobra、Bubble Tea、Gorilla WebSocket |
-| 入口 | `cmd/tui`、`cmd/agentapi` |
+- 后端：`cmd/agentapi`
+- 前端：`apps/web`
+- 数据库：Postgres
+- 缓存和限流：Redis
+- 对象存储：Cloudflare R2，使用 S3-compatible API
+- LLM provider：Vertex AI，使用 service account 凭据
+- 邮件服务：Resend，用于注册邮箱验证
+- 部署：Docker Compose，并支持 GitHub Actions push-to-main 自动部署
 
-### 重构定位
+已经实现的产品模块：
 
-- Go 侧采用分层架构：`app / backend / harness / public / ui`。
-- TS 侧模块规模显著更大（尤其 `commands`、`components`、`tools`、`utils`）。
-- Go 侧已具备核心能力，但仍有未完成区域。
+- JWT 用户系统、refresh token、可选邮箱验证。
+- 会话对话、流式响应、断线恢复/回放、带附件消息。
+- Job 执行和 Job Timeline 事件回放。
+- 附件和生成产物通过 R2 存储。
+- Skill Registry、产品化 Skill 列表、执行历史、Review Checks、Admin 管理 API/UI。
+- Memory 捕获、治理、用户控制、删除/导出、维护、质量反馈。
+- Admin Console：Skill、用户、Session/Job/Artifact、Health/Cost、Audit、Risk。
+- 风控和滥用防护基础设施：限流、风险事件、Admin Review、审计日志。
 
-### 当前不完整信号（实测统计）
+暂缓内容：
 
-- `internal` 下 TODO/FIXME 约 **117** 处。
-- 其中 `internal/harness/query` + `internal/harness/queryengine` 约 **65** 处。
+- Product Analytics 的完整产品分析面板。
+- 更高级的向量/多模态 Memory 检索增强。
+- 一部分偏 To B 的深度治理流程。
 
-> 结论：当前适合开发验证、灰度使用与持续重构，不建议视为“完全替代 TS”的最终版本。
+## 目录结构
 
----
+| 路径 | 作用 |
+| --- | --- |
+| `cmd/agentapi` | 产品后端入口。 |
+| `apps/web` | React/Vite C 端前端和 Admin 控制台。 |
+| `internal/backend/agentruntime` | Web Agent Runtime：认证、会话、Memory、Job、Skill、Artifact、Admin/Risk API。 |
+| `internal/backend/googleauth` | Vertex AI service account OAuth token exchange。 |
+| `internal/harness` | 本地 agent harness、provider、tool、state、skill 和 CLI 运行时。 |
+| `.claude/skills` | AgentAPI 暴露的本地 skills，包括 docx 和 Vertex image artifact。 |
+| `deploy/local` | 本地 Docker Compose 栈。 |
+| `deploy/production` | 生产部署示例、前端 nginx 配置、备份恢复文档。 |
+| `.github/workflows/deploy-main.yml` | main 分支自动部署 workflow。 |
 
-## 可用性基线
+## 核心能力
 
-在当前仓库实测通过：
+### Web 产品
 
-- ✅ `go test ./...`
-- ✅ `go build ./cmd/tui && go build ./cmd/agentapi`
-- ✅ `go run ./cmd/tui --help`
-- ✅ `go run ./cmd/tui /help`
-- ✅ `go run ./cmd/agentapi -h`
+- 登录、注册、邮箱验证、登出、删除账号。
+- 会话列表、聊天记录、流式响应、全局搜索、桌面/移动端响应式布局。
+- 附件上传进度、预览、下载、删除，以及随消息发送附件。
+- Artifact 列表、预览、下载、删除，以及生成产物入口。
+- Skill 分类、搜索、详情弹窗、插入到对话/Job 流程。
+- 设置弹窗、Memory 开关、Memory 管理、导出/删除数据、账号操作。
 
-> 注意：**测试通过 ≠ 功能完全对等**。请结合“模块重构情况”和“注意事项”评估使用边界。
+网站 logo 位于 `apps/web/public/logo.png`，用于浏览器图标和应用内品牌标识。
 
----
+### Agent Runtime
 
-## Quickstart
+- SQL 持久化用户、会话、消息、Memory、Skill、Job、Artifact、Audit、Risk。
+- SSE Chat Stream 和 Job Stream replay。
+- Governed LLM：重试、请求/Token 配额、用量/成本统计、fallback hooks。
+- Skill 执行：policy merge、sandbox 设置、allowed env/tool、产物注册、执行遥测。
+- Memory：抽取、抽象、评分/维护、敏感信息脱敏、用户 opt-in/out。
 
-### 1) 环境检查
+### Admin 与运维
+
+- `/admin` 控制台，使用 Admin Token 保护。
+- Skill Registry 和 Policy 管理。
+- 用户状态管理。
+- Session / Job / Artifact 排障台。
+- Runtime Health、Readiness、Cost 面板。
+- Audit Log 和 Risk Review Console。
+
+## 快速启动
+
+### 前置要求
+
+- Go `1.24.4`，或与 `go.mod` 兼容。
+- Node.js `22`，用于 `apps/web`。
+- Docker 和 Docker Compose。
+- Postgres、Redis、Cloudflare R2 凭据。
+- Vertex AI service account JSON。
+
+### 本地 Web 栈
+
+推荐使用 Docker Compose：
 
 ```bash
-go version
+mkdir -p secrets
+# 将有 Vertex 权限的 service account JSON 放到：
+# secrets/vertex-service-account.json
+
+export GOOGLE_APPLICATION_CREDENTIALS="secrets/vertex-service-account.json"
+export VERTEX_PROJECT_ID="REPLACE_WITH_GCP_PROJECT"
+export VERTEX_LOCATION="us-central1"
+export AGENT_API_ARTIFACT_S3_ACCESS_KEY="REPLACE_WITH_R2_ACCESS_KEY_ID"
+export AGENT_API_ARTIFACT_S3_SECRET_KEY="REPLACE_WITH_R2_SECRET_ACCESS_KEY"
+
+docker compose -f deploy/local/docker-compose.yml up --build
 ```
 
-建议与 `go.mod` 保持一致。
+访问：
 
-### 2) 启动 TUI/CLI
+- Web App：`http://localhost:8080`
+- AgentAPI：`http://localhost:8081`
+- Health：`http://localhost:8081/healthz`
+- Readiness：`http://localhost:8081/readyz`
+
+更多说明见 [deploy/local/README.md](deploy/local/README.md)。
+
+### 前端开发服务器
+
+先启动后端，然后运行：
 
 ```bash
-cd claude-codex
-go run ./cmd/tui --help
+cd apps/web
+npm ci
+npm run dev
 ```
 
-常用命令：
+Vite 默认将 `/v1`、`/healthz`、`/readyz`、`/metrics` 代理到
+`http://localhost:8081`。
+
+### 不使用 Compose 启动后端
 
 ```bash
-go run ./cmd/tui /help
-go run ./cmd/tui /model
-go run ./cmd/tui /limits
+go run ./cmd/agentapi \
+  -addr :8081 \
+  -store-backend sql \
+  -sql-driver pgx \
+  -sql-dialect postgres \
+  -sql-dsn "$AGENT_API_SQL_DSN" \
+  -enable-user-system \
+  -auth-mode jwt \
+  -jwt-secret "$AGENT_API_JWT_SECRET" \
+  -llm-provider vertex \
+  -model gemini-2.5-flash
 ```
 
-或：
+## 配置说明
+
+生产环境模板见 [deploy/production/.env.example](deploy/production/.env.example)。
+不要提交真实 `.env`、service account JSON 或任何密钥。
+
+关键配置组：
+
+| 配置组 | 关键变量 |
+| --- | --- |
+| Auth | `AGENT_API_JWT_SECRET`、`AGENT_API_ADMIN_TOKEN`、JWT/session 设置 |
+| Email | `AGENT_API_EMAIL_PROVIDER=resend`、`AGENT_API_RESEND_API_KEY`、`AGENT_API_EMAIL_FROM`、`AGENT_API_EMAIL_PUBLIC_BASE_URL` |
+| Storage | `AGENT_API_ARTIFACT_S3_ENDPOINT`、`AGENT_API_ARTIFACT_S3_ACCESS_KEY`、`AGENT_API_ARTIFACT_S3_SECRET_KEY`、`AGENT_API_ARTIFACT_S3_BUCKET`、`AGENT_API_ARTIFACT_S3_PREFIX` |
+| Vertex | `GOOGLE_APPLICATION_CREDENTIALS`、`VERTEX_PROJECT_ID`、`GOOGLE_CLOUD_PROJECT`、`VERTEX_LOCATION` |
+| Runtime | `AGENT_API_SKILL_DIRS`、`AGENT_API_SKILL_POLICY`、`AGENT_API_OPERATION_RATE_LIMITS`、`AGENT_API_RETENTION_DAYS` |
+| Frontend | `VITE_AGENT_API_BASE_URL`，用于前端/API 分离部署 |
+
+### Vertex AI 凭据
+
+生产环境应使用 service account JSON，不要依赖短期 access token。
+
+Docker Compose 中推荐挂载宿主机 secrets 目录，并让容器读取挂载后的路径：
+
+```env
+AGENT_API_SECRETS_DIR=/opt/agentapi/secrets
+GOOGLE_APPLICATION_CREDENTIALS=/run/agentapi/secrets/vertex-service-account.json
+VERTEX_PROJECT_ID=your-gcp-project
+GOOGLE_CLOUD_PROJECT=your-gcp-project
+VERTEX_LOCATION=us-central1
+```
+
+该 service account 至少需要能够调用 Vertex AI，例如目标项目上的
+`roles/aiplatform.user`。
+
+## 部署
+
+当前部署模型是在服务器上运行 Docker Compose：
+
+```bash
+cd /opt/agentapi/repo
+docker compose --env-file /opt/agentapi/.env -f deploy/local/docker-compose.yml up -d --build
+```
+
+`.github/workflows/deploy-main.yml` 支持 main 分支 push 后自动部署。
+Workflow 会 SSH 到服务器，更新仓库，然后重建/重启 Compose 栈。
+
+前端生产部署有两种方式：
+
+- 同源部署：服务 `apps/web/dist`，并将 `/v1`、`/healthz`、`/readyz`、
+  `/metrics` 反代到 AgentAPI。
+- 前后端分离：构建时设置
+  `VITE_AGENT_API_BASE_URL=https://api.example.com`，并在 AgentAPI 配置 CORS。
+
+见 [deploy/production/FRONTEND.md](deploy/production/FRONTEND.md)。
+
+## 运维
+
+常用检查：
+
+```bash
+curl -fsS http://localhost:8081/healthz
+curl -fsS http://localhost:8081/readyz
+curl -fsS http://localhost:8081/metrics
+```
+
+服务器常用命令：
+
+```bash
+docker ps
+docker logs --tail=100 claude-codex-agentapi
+docker logs --tail=100 claude-codex-agentweb
+```
+
+备份恢复见 [deploy/production/BACKUP_RESTORE.md](deploy/production/BACKUP_RESTORE.md)。
+
+## 开发命令
+
+```bash
+make fmt
+make test
+go test ./internal/backend/agentruntime ./internal/backend/googleauth ./internal/harness/provider ./cmd/agentapi
+go build ./cmd/agentapi
+
+cd apps/web
+npm run build
+npm run test
+npm run e2e
+```
+
+仓库仍保留本地 TUI：
 
 ```bash
 make run-tui
 ```
 
-### 3) 启动 AgentAPI
+## 安全注意事项
 
-```bash
-cd claude-codex
-export ANTHROPIC_API_KEY="your-api-key"
-go run ./cmd/agentapi -addr :8080 -llm-provider anthropic -model claude-sonnet-4-6 -auth-token dev-token
-```
+- 不要提交 `.env`、R2 key、Resend key、Admin Token、service account JSON。
+- `secrets/` 已加入 gitignore，只用于本地 secret。
+- Vertex AI 优先使用 service account 凭据。
+- 容器中的 `/run/agentapi/secrets` 应保持只读挂载。
+- 前后端分离部署时，CORS 只允许精确的前端 origin。
+- Cookie Auth 上生产前必须启用 HTTPS。
+- Cloudflare R2 S3 key 与 Cloudflare API token 分开管理。
 
-浏览器访问：`http://localhost:8080`
+## 相关文档
 
-或：
-
-```bash
-make run-agentapi
-```
-
-### 4) 回归验证
-
-```bash
-cd claude-codex
-go test ./...
-```
-
----
-
-## 配置文件路径与含义
-
-`claude-codex` 当前支持“全局配置 + 工作区配置”两层：
-
-- 全局配置：`~/.claude-codex/config.json`
-- 自定义全局目录：可通过环境变量 `CLAUDE_GO_HOME` 修改，实际路径为 `${CLAUDE_GO_HOME}/config.json`
-- 工作区配置：`<你的项目目录>/.claude-codex/config.json`
-
-当工作区配置存在时，会覆盖同名全局配置项（按当前实现，主要覆盖模型、权限模式、主题、超时、回合数、Telemetry、OAuth、MCP 等字段）。
-
-### 配置字段说明（`config.json`）
-
-| 字段 | 含义 |
-|---|---|
-| `schema_version` | 配置版本号，程序会按当前版本自动归一化/迁移 |
-| `backend` | 后端类型（支持 `anthropic` / `openai` 协议） |
-| `provider` | LLM 提供商（如 `anthropic` / `openai`） |
-| `model` | 默认模型名 |
-| `permission_mode` | 权限模式：`default` / `plan` / `bypass` / `auto` |
-| `theme` | 主题：`dark` 或 `light` |
-| `api_base_url` | API 基础地址 |
-| `api_key` / `api_token` | API 凭据（建议使用环境变量注入，不要提交到仓库） |
-| `timeout_seconds` | 请求超时秒数 |
-| `max_turns` | 单次会话最大轮数（最小为 1） |
-| `secret_store` | 密钥存储策略：`auto` / `plaintext` / `keychain` |
-| `plugin_dir` | 插件目录路径 |
-| `bridge_secret` | bridge 鉴权密钥 |
-| `telemetry.enabled` | 是否开启遥测 |
-| `telemetry.exporter` | 遥测导出器，可逗号分隔） |
-| `telemetry.endpoint` | 遥测上报地址 |
-| `telemetry.insecure` | 遥测是否使用不安全连接 |
-| `telemetry.service_name` | 遥测服务名（默认 `claude-codex`） |
-| `oauth.client_id` / `oauth.client_secret` | OAuth 客户端凭据 |
-| `oauth.auth_url` / `oauth.token_url` | OAuth 授权与换 token 地址 |
-| `oauth.scopes` | OAuth scope 列表 |
-| `oauth.redirect_host` / `oauth.redirect_port` | OAuth 回调监听地址 |
-| `mcp_servers` | MCP 服务列表|
-
----
-
-## 模块重构情况
-
-### 已具备较好可用基础
-
-- `internal/harness/*`：agent、engine、tools、state、skills 等核心框架能力
-- `internal/backend/services/*`：analytics、api、tokens、tools、oauth 等服务
-- `internal/app/cli/*`：CLI 主体与一批 slash 命令
-- `internal/backend/agentruntime`：Web 侧服务入口
-
-### 仍在持续重构
-
-- `Query / QueryEngine`：TODO 密集，是主要未完成来源
-- 部分工具与边缘能力：目录已在，但覆盖度和行为一致性仍在补齐
-- 与 TS 大体量 `utils` 的能力映射未完全收敛
-
----
-
-## TUI vs AgentAPI
-
-| 维度 | TUI (`cmd/tui`) | AgentAPI (`cmd/agentapi`) |
-|---|---|---|
-| 交互形态 | 终端 CLI / TUI | 浏览器 + HTTP/WebSocket |
-| 核心技术 | Cobra + Bubble Tea | Web server + `/ws` |
-| 典型场景 | 本地开发、脚本化流程 | 可视化对话、演示与联调 |
-| 会话特征 | CLI 习惯流 | 当前以内存会话为主 |
-| 权限策略 | 跟随 CLI 运行配置 | 默认只启用读/搜索/Web/Skill，写入和执行需显式开启 |
-| 风险点 | 命令覆盖仍在补齐 | 生产前需接入正式用户鉴权和持久化后端 |
-
----
-
-## 注意事项
-
-1. 这是重构中项目，不是最终完成态。  
-2. 生产使用前，请先做 AgentAPI 权限与网络暴露加固。  
-3. API Key 请仅通过环境变量注入，避免硬编码或提交。  
-4. 每次改动建议最少执行：`go test ./...`。  
-5. 根目录中可能存在 `tui`/`agentapi` 可执行文件，和 `cmd/tui`/`cmd/agentapi` 源码入口不是同一概念。  
-
----
-
-## 常用命令
-
-```bash
-make fmt         # 格式化
-make test        # 运行测试
-make run-tui     # 启动 TUI
-make run-agentapi   # 启动 AgentAPI
-make clean       # 清理二进制
-```
-
----
+- [README.md](README.md)
+- [apps/web/README.md](apps/web/README.md)
+- [deploy/local/README.md](deploy/local/README.md)
+- [deploy/production/.env.example](deploy/production/.env.example)
+- [deploy/production/FRONTEND.md](deploy/production/FRONTEND.md)
+- [deploy/production/BACKUP_RESTORE.md](deploy/production/BACKUP_RESTORE.md)
+- [internal/backend/agentruntime/README.md](internal/backend/agentruntime/README.md)
+- [internal/backend/agentruntime/PRODUCTION_PROGRESS.md](internal/backend/agentruntime/PRODUCTION_PROGRESS.md)
 
 ## 许可证
 
-本项目采用 [MIT License](./LICENSE) 开源协议。
-
----
+本项目使用 [MIT License](./LICENSE)。

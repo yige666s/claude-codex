@@ -89,11 +89,18 @@ select {
   width: 34px;
   height: 34px;
   border-radius: 8px;
-  display: grid;
-  place-items: center;
-  background: var(--accent);
-  color: white;
+  display: block;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid #cfe3df;
   flex: 0 0 auto;
+}
+.brand-mark img,
+.brand-icon img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 .brand-toggle {
   width: 38px;
@@ -108,6 +115,12 @@ select {
   background: var(--accent);
   color: #fff;
   flex: 0 0 auto;
+  overflow: hidden;
+}
+.brand-icon {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 .brand-toggle-icon {
   display: none;

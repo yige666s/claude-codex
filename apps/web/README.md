@@ -1,6 +1,11 @@
 # AgentAPI Web App
 
-Formal C-end frontend for `cmd/agentapi`.
+Consumer-facing React/Vite frontend for `cmd/agentapi`, including the main
+workspace UI and the `/admin` operations console.
+
+The site logo is served from `public/logo.png`. The same file is used for the
+browser icon, login screen brand mark, sidebar brand mark, and admin console
+brand mark.
 
 ## Development
 
@@ -55,17 +60,23 @@ same-origin reverse-proxy guidance.
 
 ## Product Surface
 
-The first formal frontend baseline includes:
+The current frontend includes:
 
 - Login/register/logout with stored access and refresh tokens.
+- Registration email-verification feedback.
 - Automatic access-token refresh before API calls.
 - Session list, auto-created initial session, chat transcript, and SSE chat
   event handling.
 - Long-running job list, timeline replay, EventSource live updates, and
-  cancellation.
-- Attachment upload/list/download/delete.
-- Artifact list/download/delete.
-- Skill list with prompt insertion.
+- cancellation. The newest job opens by default and older jobs stay collapsed.
+- Attachment upload/list/download/delete with progress and preview.
+- Artifact list/preview/download/delete.
+- Skill category/search/detail UI with prompt insertion.
+- Memory settings, memory management, export/delete data actions, and account
+  deletion flows.
+- Global search across sessions.
+- Admin console for skill management, users, sessions/jobs/artifacts,
+  health/cost, audit logs, and risk operations.
 - Responsive layout for desktop and mobile.
 
 The embedded `agentruntime` UI remains useful as a backend debug console. This

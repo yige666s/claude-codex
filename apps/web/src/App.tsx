@@ -3,7 +3,6 @@ import {
   Activity,
   AlertCircle,
   Archive,
-  Bot,
   Brain,
   Briefcase,
   ChevronDown,
@@ -48,6 +47,16 @@ const defaultMemorySettings: MemorySettings = {
   context_enabled: true,
   updated_at: ""
 };
+
+const brandLogoSrc = "/logo.png";
+
+function BrandLogo({ className = "brand-mark" }: { className?: string }) {
+  return (
+    <span className={className} aria-hidden="true">
+      <img src={brandLogoSrc} alt="" />
+    </span>
+  );
+}
 
 function applyMemorySettingsPatch(
   current: MemorySettings,
@@ -1092,7 +1101,7 @@ export function App() {
       <main className="auth-page">
         <form className="auth-card" onSubmit={submitAuth}>
           <div className="auth-head">
-            <div className="brand-mark"><Bot size={22} /></div>
+            <BrandLogo />
             <div>
               <h1>AgentAPI</h1>
               <p>Consumer agent workspace</p>
@@ -1153,10 +1162,10 @@ export function App() {
             aria-label="Expand sidebar"
             aria-expanded={leftSidebarOpen}
           >
-            <span className="brand-icon"><Bot size={20} /></span>
+            <BrandLogo className="brand-icon" />
             <span className="brand-toggle-icon"><PanelLeft size={18} /></span>
           </button>
-          <div className="brand-mark sidebar-logo"><Bot size={20} /></div>
+          <BrandLogo className="brand-mark sidebar-logo" />
           <strong>AgentAPI</strong>
           <ServiceStatusPill status={serviceStatus} />
           <button
@@ -2357,7 +2366,7 @@ function AdminConsole({
     <main className="admin-shell">
       <aside className="admin-sidebar">
         <div className="admin-brand">
-          <div className="brand-mark"><ShieldCheck size={20} /></div>
+          <BrandLogo />
           <div>
             <strong>AgentAPI Admin</strong>
             <small>{userLabel}</small>
