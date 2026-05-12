@@ -38,6 +38,17 @@ func TestBuildLLMConfigVertexUsesTokenEnv(t *testing.T) {
 	}
 }
 
+func TestBuildLLMConfigVertexAllowsApplicationCredentials(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", `{"client_email":"agentapi@example.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----"}`)
+	cfg, err := buildLLMConfig("vertex", "gemini-1.5-flash", "", "", "", 30)
+	if err != nil {
+		t.Fatalf("build vertex config with application credentials: %v", err)
+	}
+	if cfg.Provider != "vertex" || cfg.Token != "" {
+		t.Fatalf("unexpected vertex config: %#v", cfg)
+	}
+}
+
 func TestBuildLLMConfigQwenUsesDashScopeEnv(t *testing.T) {
 	t.Setenv("DASHSCOPE_API_KEY", "dashscope-key")
 	cfg, err := buildLLMConfig("qwen", "", "", "", "", 30)

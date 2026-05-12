@@ -8,10 +8,11 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
+
+	"claude-codex/internal/backend/googleauth"
 )
 
 // VertexProvider implements Provider for Gemini models on Vertex AI.
@@ -53,13 +54,24 @@ func NewVertexProvider(cfg Config) (*VertexProvider, error) {
 	if timeout <= 0 {
 		timeout = 600 * time.Second
 	}
+	client := &http.Client{Timeout: timeout}
+	tokenRefresher := googleauth.GcloudAccessToken
+	if source, ok, err := googleauth.NewServiceAccountTokenSourceFromEnv(client); ok {
+		if err != nil {
+			tokenRefresher = func(context.Context) (string, error) {
+				return "", err
+			}
+		} else {
+			tokenRefresher = source.AccessToken
+		}
+	}
 	return &VertexProvider{
 		token:          token,
-		tokenRefresher: gcloudAccessToken,
+		tokenRefresher: tokenRefresher,
 		baseURL:        baseURL,
 		projectID:      projectID,
 		location:       location,
-		httpClient:     &http.Client{Timeout: timeout},
+		httpClient:     client,
 		config:         cfg,
 	}, nil
 }
@@ -81,7 +93,7 @@ func (p *VertexProvider) SupportedModels() []string {
 func (p *VertexProvider) CreateMessage(ctx context.Context, request MessageRequest) (*MessageResponse, error) {
 	if p.currentToken() == "" {
 		if err := p.refreshAccessToken(ctx); err != nil {
-			return nil, fmt.Errorf("vertex access token is required; set VERTEX_ACCESS_TOKEN or GOOGLE_OAUTH_ACCESS_TOKEN, or run gcloud auth application-default login: %w", err)
+			return nil, fmt.Errorf("vertex access token is required; set GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_APPLICATION_CREDENTIALS_JSON, VERTEX_ACCESS_TOKEN, or run gcloud auth print-access-token: %w", err)
 		}
 	}
 	modelPath, err := p.modelPath(request.Model)
@@ -162,16 +174,6 @@ func (p *VertexProvider) refreshAccessToken(ctx context.Context) error {
 	}
 	p.setToken(token)
 	return nil
-}
-
-func gcloudAccessToken(ctx context.Context) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "gcloud", "auth", "print-access-token").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
 }
 
 func (p *VertexProvider) modelPath(model string) (string, error) {

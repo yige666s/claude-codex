@@ -24,6 +24,10 @@ metadata:
         - VERTEX_ACCESS_TOKEN
         - GOOGLE_OAUTH_ACCESS_TOKEN
         - GOOGLE_ACCESS_TOKEN
+        - GOOGLE_APPLICATION_CREDENTIALS
+        - GOOGLE_APPLICATION_CREDENTIALS_JSON
+        - VERTEX_SERVICE_ACCOUNT_FILE
+        - VERTEX_SERVICE_ACCOUNT_JSON
         - VERTEX_IMAGE_MODEL
         - VERTEX_IMAGE_ASPECT_RATIO
 ---
@@ -32,7 +36,7 @@ metadata:
 
 Generate a simple test image with Vertex AI Imagen, then save the generated PNG as an artifact.
 
-The shell step below calls the Vertex Imagen REST `predict` API and writes the PNG into the current user's workspace. It expects `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, and a Vertex OAuth access token from `VERTEX_ACCESS_TOKEN`, `GOOGLE_OAUTH_ACCESS_TOKEN`, `GOOGLE_ACCESS_TOKEN`, or local `gcloud auth print-access-token`.
+The shell step below calls the Vertex Imagen REST `predict` API and writes the PNG into the current user's workspace. It expects `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, and either service account credentials from `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_APPLICATION_CREDENTIALS_JSON`, a Vertex OAuth access token from `VERTEX_ACCESS_TOKEN`, `GOOGLE_OAUTH_ACCESS_TOKEN`, `GOOGLE_ACCESS_TOKEN`, or local `gcloud auth print-access-token`.
 
 ```!
 python3 "${CLAUDE_SKILL_DIR}/generate_vertex_image.py" <<'VERTEX_IMAGE_PROMPT'

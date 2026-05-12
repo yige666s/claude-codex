@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"claude-codex/internal/backend/agentruntime"
+	"claude-codex/internal/backend/googleauth"
 	"claude-codex/internal/harness/anthropic"
 	"claude-codex/internal/harness/engine"
 	providerbackend "claude-codex/internal/harness/provider"
@@ -504,7 +505,7 @@ func buildLLMConfig(providerName, model, apiKey, apiToken, apiBaseURL string, ti
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = defaults.Timeout
 	}
-	if requiresCredential(cfg.Provider) && cfg.APIKey == "" && cfg.Token == "" {
+	if requiresCredential(cfg.Provider) && cfg.APIKey == "" && cfg.Token == "" && !providerHasAmbientCredential(cfg.Provider) {
 		return llmConfig{}, fmt.Errorf("credential required for llm provider %q", cfg.Provider)
 	}
 	if isCustomProvider(providerName) && strings.TrimSpace(cfg.BaseURL) == "" {
@@ -659,6 +660,15 @@ func providerEnvToken(providerName string) string {
 		return firstNonEmpty(os.Getenv("VERTEX_ACCESS_TOKEN"), os.Getenv("GOOGLE_OAUTH_ACCESS_TOKEN"), os.Getenv("GOOGLE_ACCESS_TOKEN"))
 	default:
 		return os.Getenv("AGENT_API_LLM_TOKEN")
+	}
+}
+
+func providerHasAmbientCredential(providerName string) bool {
+	switch strings.ToLower(strings.TrimSpace(providerName)) {
+	case "vertex", "gcp":
+		return googleauth.HasGoogleApplicationCredentialsEnv()
+	default:
+		return false
 	}
 }
 
@@ -1035,13 +1045,13 @@ func llmConfigReadinessCheck(cfg llmConfig) func(context.Context) error {
 		if isCustomProvider(provider) && strings.TrimSpace(cfg.BaseURL) == "" {
 			return fmt.Errorf("custom llm provider requires base URL")
 		}
-		if requiresCredential(provider) && strings.TrimSpace(cfg.APIKey) == "" && strings.TrimSpace(cfg.Token) == "" {
+		if requiresCredential(provider) && strings.TrimSpace(cfg.APIKey) == "" && strings.TrimSpace(cfg.Token) == "" && !providerHasAmbientCredential(provider) {
 			return fmt.Errorf("llm credential is required for provider %q", provider)
 		}
 		switch provider {
 		case "vertex", "gcp":
-			if strings.TrimSpace(cfg.Token) == "" && strings.TrimSpace(cfg.APIKey) == "" {
-				return fmt.Errorf("vertex access token is required")
+			if strings.TrimSpace(cfg.Token) == "" && strings.TrimSpace(cfg.APIKey) == "" && !googleauth.HasGoogleApplicationCredentialsEnv() {
+				return fmt.Errorf("vertex credential is required; set GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_APPLICATION_CREDENTIALS_JSON, or VERTEX_ACCESS_TOKEN")
 			}
 			if !strings.Contains(strings.TrimSpace(cfg.Model), "/") && firstNonEmpty(os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")) == "" {
 				return fmt.Errorf("vertex project ID is required for short model names")

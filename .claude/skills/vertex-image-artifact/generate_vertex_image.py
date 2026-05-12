@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -31,11 +33,146 @@ def gcloud_access_token() -> str:
     ).strip()
 
 
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+class DERReader:
+    def __init__(self, data: bytes):
+        self.data = data
+        self.pos = 0
+
+    def read_tlv(self) -> tuple[int, bytes]:
+        if self.pos >= len(self.data):
+            raise ValueError("unexpected end of DER")
+        tag = self.data[self.pos]
+        self.pos += 1
+        if self.pos >= len(self.data):
+            raise ValueError("missing DER length")
+        length = self.data[self.pos]
+        self.pos += 1
+        if length & 0x80:
+            count = length & 0x7F
+            if count == 0 or self.pos + count > len(self.data):
+                raise ValueError("invalid DER length")
+            length = int.from_bytes(self.data[self.pos : self.pos + count], "big")
+            self.pos += count
+        if self.pos + length > len(self.data):
+            raise ValueError("DER value exceeds input")
+        value = self.data[self.pos : self.pos + length]
+        self.pos += length
+        return tag, value
+
+
+def pem_to_der(pem_text: str) -> bytes:
+    body = []
+    for line in pem_text.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("-----"):
+            continue
+        body.append(line)
+    if not body:
+        raise ValueError("private_key is not PEM encoded")
+    return base64.b64decode("".join(body))
+
+
+def parse_rsa_private_key(pem_text: str) -> tuple[int, int]:
+    der = pem_to_der(pem_text)
+    tag, value = DERReader(der).read_tlv()
+    if tag != 0x30:
+        raise ValueError("private_key is not a DER sequence")
+
+    # PKCS#8 wraps the PKCS#1 RSA key in an octet string.
+    reader = DERReader(value)
+    items: list[tuple[int, bytes]] = []
+    while reader.pos < len(reader.data):
+        items.append(reader.read_tlv())
+    if len(items) >= 3 and items[2][0] == 0x04:
+        tag, value = DERReader(items[2][1]).read_tlv()
+        if tag != 0x30:
+            raise ValueError("PKCS#8 private key payload is not a sequence")
+
+    reader = DERReader(value)
+    integers: list[int] = []
+    while reader.pos < len(reader.data):
+        tag, raw = reader.read_tlv()
+        if tag == 0x02:
+            integers.append(int.from_bytes(raw, "big", signed=False))
+    if len(integers) < 4:
+        raise ValueError("RSA private key is missing modulus/private exponent")
+    modulus = integers[1]
+    private_exponent = integers[3]
+    return modulus, private_exponent
+
+
+def rsa_sha256_sign(private_key_pem: str, data: bytes) -> bytes:
+    modulus, private_exponent = parse_rsa_private_key(private_key_pem)
+    digest = hashlib.sha256(data).digest()
+    digest_info = bytes.fromhex("3031300d060960864801650304020105000420") + digest
+    key_size = (modulus.bit_length() + 7) // 8
+    padding_len = key_size - len(digest_info) - 3
+    if padding_len < 8:
+        raise ValueError("RSA key is too small for SHA-256 signature")
+    encoded = b"\x00\x01" + (b"\xff" * padding_len) + b"\x00" + digest_info
+    signature_int = pow(int.from_bytes(encoded, "big"), private_exponent, modulus)
+    return signature_int.to_bytes(key_size, "big")
+
+
+def service_account_credentials() -> dict | None:
+    raw_json = env_first("GOOGLE_APPLICATION_CREDENTIALS_JSON", "VERTEX_SERVICE_ACCOUNT_JSON")
+    if raw_json:
+        return json.loads(raw_json)
+    path = env_first("GOOGLE_APPLICATION_CREDENTIALS", "VERTEX_SERVICE_ACCOUNT_FILE")
+    if path:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    return None
+
+
+def service_account_access_token() -> str:
+    credentials = service_account_credentials()
+    if not credentials:
+        return ""
+    token_uri = credentials.get("token_uri") or "https://oauth2.googleapis.com/token"
+    now = int(time.time())
+    header = {"alg": "RS256", "typ": "JWT"}
+    claims = {
+        "iss": credentials["client_email"],
+        "scope": "https://www.googleapis.com/auth/cloud-platform",
+        "aud": token_uri,
+        "iat": now,
+        "exp": now + 3600,
+    }
+    unsigned = f"{b64url(json.dumps(header, separators=(',', ':')).encode())}.{b64url(json.dumps(claims, separators=(',', ':')).encode())}"
+    signature = rsa_sha256_sign(credentials["private_key"], unsigned.encode("ascii"))
+    assertion = f"{unsigned}.{b64url(signature)}"
+    body = urllib.parse.urlencode(
+        {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": assertion,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        token_uri,
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    token = str(payload.get("access_token") or "").strip()
+    if not token:
+        raise SystemExit("Service account token response did not include access_token")
+    return token
+
+
 def access_token(refresh: bool = False) -> str:
     if not refresh:
         token = env_first("VERTEX_ACCESS_TOKEN", "GOOGLE_OAUTH_ACCESS_TOKEN", "GOOGLE_ACCESS_TOKEN")
         if token:
             return token
+    token = service_account_access_token()
+    if token:
+        return token
     try:
         token = gcloud_access_token()
         if token:
