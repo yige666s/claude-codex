@@ -3,9 +3,12 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"claude-codex/internal/harness/permissions"
+	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 	toolkit "claude-codex/internal/harness/tools"
 )
@@ -41,6 +44,36 @@ func TestUseQueryRuntime_RunGeneratedPromptKeepsMessageHidden(t *testing.T) {
 	}
 	if hiddenUserCount != 1 {
 		t.Fatalf("expected one hidden generated prompt message, got %#v", session.Messages)
+	}
+}
+
+func TestQueryRuntimeInitialMessagesIncludeFullSkillDescriptionsAfterSessionStarted(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("earlier turn")
+	fullDescription := "Use this skill for Word documents. " + strings.Repeat("detail ", 80) + "unique-tail-marker"
+	manager := skills.NewSkillManager()
+	if err := manager.RegisterLoadedSkills([]*skills.SkillDefinition{{
+		Name:          "docx",
+		Description:   fullDescription,
+		UserInvocable: true,
+	}}); err != nil {
+		t.Fatalf("register skill: %v", err)
+	}
+
+	engine := NewWithDir(NewSimplePlanner(), toolkit.NewRegistry(), permissions.NewChecker(permissions.ModeBypass, nil, nil), 2, t.TempDir())
+	engine.SetSkillManager(manager)
+	runtime := newQueryRuntime(engine).(*queryRuntime)
+
+	messages := runtime.initialQueryMessages(session)
+	found := false
+	for _, message := range messages {
+		if message.IsMeta && strings.Contains(fmt.Sprint(message.Content), "unique-tail-marker") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected full skill description in query runtime context, got %#v", messages)
 	}
 }
 

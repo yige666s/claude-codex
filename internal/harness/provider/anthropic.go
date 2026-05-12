@@ -127,4 +127,3 @@ func (p *AnthropicProvider) SupportedModels() []string {
 func (p *AnthropicProvider) GetClient() *api.Client {
 	return p.client
 }
-

@@ -19,7 +19,8 @@ type EditTool struct {
 }
 
 type editInput struct {
-	Path       string `json:"path"`
+	FilePath   string `json:"file_path"`
+	Path       string `json:"path,omitempty"`
 	OldString  string `json:"old_string"`
 	NewString  string `json:"new_string"`
 	ReplaceAll bool   `json:"replace_all"`
@@ -30,7 +31,7 @@ func NewEditTool(rootDir string) *EditTool {
 }
 
 func (t *EditTool) Name() string {
-	return "file_edit"
+	return EditToolName
 }
 
 func (t *EditTool) Description() string {
@@ -38,7 +39,7 @@ func (t *EditTool) Description() string {
 }
 
 func (t *EditTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["path","old_string","new_string"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"file_path":{"type":"string","description":"The absolute path to the file to modify"},"old_string":{"type":"string","description":"The text to replace"},"new_string":{"type":"string","description":"The text to replace it with; must be different from old_string"},"replace_all":{"type":"boolean","description":"Replace all occurrences of old_string"}},"required":["file_path","old_string","new_string"]}`)
 }
 
 func (t *EditTool) Permission() permissions.Level {
@@ -54,11 +55,11 @@ func (t *EditTool) Execute(_ context.Context, input json.RawMessage) (toolkit.Re
 	if err := json.Unmarshal(input, &payload); err != nil {
 		return toolkit.Result{}, err
 	}
-	if payload.OldString == "" {
-		return toolkit.Result{}, fmt.Errorf("old_string is required")
+	if payload.OldString == payload.NewString {
+		return toolkit.Result{}, fmt.Errorf("no changes to make: old_string and new_string are exactly the same")
 	}
 
-	path, err := toolkit.ResolvePath(t.rootDir, payload.Path)
+	path, err := toolkit.ResolvePath(t.rootDir, payload.filePath())
 	if err != nil {
 		return toolkit.Result{}, err
 	}
@@ -69,12 +70,40 @@ func (t *EditTool) Execute(_ context.Context, input json.RawMessage) (toolkit.Re
 
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) && payload.OldString == "" {
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return toolkit.Result{}, err
+			}
+			if err := fsutil.WriteFileAtomic(path, []byte(payload.NewString), 0o644); err != nil {
+				return toolkit.Result{}, err
+			}
+			output, err := encodeOutput(editOutput{
+				FilePath:        path,
+				OldString:       payload.OldString,
+				NewString:       payload.NewString,
+				OriginalFile:    "",
+				StructuredPatch: []patchHunk{},
+				UserModified:    false,
+				ReplaceAll:      payload.ReplaceAll,
+			})
+			if err != nil {
+				return toolkit.Result{}, err
+			}
+			return toolkit.Result{Output: output}, nil
+		}
 		return toolkit.Result{}, err
 	}
 
 	content := string(data)
-	if !strings.Contains(content, payload.OldString) {
+	if payload.OldString == "" {
+		return toolkit.Result{}, fmt.Errorf("old_string is required when editing an existing file")
+	}
+	count := strings.Count(content, payload.OldString)
+	if count == 0 {
 		return toolkit.Result{}, fmt.Errorf("target text not found in %s", path)
+	}
+	if count > 1 && !payload.ReplaceAll {
+		return toolkit.Result{}, fmt.Errorf("old_string appears %d times in %s; set replace_all to true or provide a more specific old_string", count, path)
 	}
 
 	updated := strings.Replace(content, payload.OldString, payload.NewString, 1)
@@ -86,14 +115,25 @@ func (t *EditTool) Execute(_ context.Context, input json.RawMessage) (toolkit.Re
 		return toolkit.Result{}, err
 	}
 
-	diff := fmt.Sprintf(
-		"edited %s\n```diff\n--- %s\n+++ %s\n-%s\n+%s\n```",
-		path,
-		filepath.Base(path),
-		filepath.Base(path),
-		payload.OldString,
-		payload.NewString,
-	)
+	output, err := encodeOutput(editOutput{
+		FilePath:        path,
+		OldString:       payload.OldString,
+		NewString:       payload.NewString,
+		OriginalFile:    content,
+		StructuredPatch: structuredPatch(content, updated),
+		UserModified:    false,
+		ReplaceAll:      payload.ReplaceAll,
+	})
+	if err != nil {
+		return toolkit.Result{}, err
+	}
 
-	return toolkit.Result{Output: diff}, nil
+	return toolkit.Result{Output: output}, nil
+}
+
+func (in editInput) filePath() string {
+	if in.FilePath != "" {
+		return in.FilePath
+	}
+	return in.Path
 }

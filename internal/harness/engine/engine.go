@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -16,6 +17,7 @@ import (
 	"claude-codex/internal/harness/telemetry"
 	toolkit "claude-codex/internal/harness/tools"
 	bashtool "claude-codex/internal/harness/tools/bash"
+	publictypes "claude-codex/internal/public/types"
 )
 
 type Engine struct {
@@ -34,6 +36,11 @@ type Engine struct {
 type Result struct {
 	Output  string
 	Session *state.Session
+}
+
+type StreamingPlanner interface {
+	Planner
+	StreamNext(ctx context.Context, session *state.Session, tools []toolkit.Descriptor, onChunk func(string)) (Plan, error)
 }
 
 func New(planner Planner, registry *toolkit.Registry, checker *permissions.Checker, maxTurns int) *Engine {
@@ -97,8 +104,110 @@ func (e *Engine) Run(ctx context.Context, session *state.Session, prompt string)
 	return e.runner.Run(ctx, session, prompt, true)
 }
 
+func (e *Engine) RunContent(ctx context.Context, session *state.Session, prompt []publictypes.ContentBlock) (Result, error) {
+	return e.runner.Run(ctx, session, prompt, true)
+}
+
 func (e *Engine) RunGeneratedPrompt(ctx context.Context, session *state.Session, prompt string) (Result, error) {
 	return e.runner.Run(ctx, session, prompt, false)
+}
+
+func (e *Engine) RunStream(ctx context.Context, session *state.Session, prompt string, onToken func(string)) (Result, error) {
+	return e.runStream(ctx, session, prompt, true, onToken)
+}
+
+func (e *Engine) RunGeneratedPromptStream(ctx context.Context, session *state.Session, prompt string, onToken func(string)) (Result, error) {
+	return e.runStream(ctx, session, prompt, false, onToken)
+}
+
+func (e *Engine) runStream(ctx context.Context, session *state.Session, prompt string, recordUserMessage bool, onToken func(string)) (Result, error) {
+	streamingPlanner, ok := e.planner.(StreamingPlanner)
+	if !ok {
+		if recordUserMessage {
+			return e.Run(ctx, session, prompt)
+		}
+		return e.RunGeneratedPrompt(ctx, session, prompt)
+	}
+	if session == nil {
+		return Result{}, fmt.Errorf("session is required")
+	}
+	interactionID := fmt.Sprintf("interaction-%d", time.Now().UnixNano())
+	e.recordTrace(session.ID, "interaction.start", "interaction", map[string]any{
+		"span_id":       interactionID,
+		"prompt":        prompt,
+		"prompt_length": len(prompt),
+		"prompt_source": promptSource(recordUserMessage),
+		"working_dir":   session.WorkingDir,
+		"runtime":       "streaming",
+	})
+
+	if recordUserMessage {
+		if last := session.LastUserMessage(); last != prompt {
+			session.AddUserMessage(prompt)
+		}
+	} else if strings.TrimSpace(prompt) != "" {
+		session.AddSystemContext(prompt)
+	}
+
+	var output strings.Builder
+	for turn := 0; e.maxTurns <= 0 || turn < e.maxTurns; turn++ {
+		turnSpanID := fmt.Sprintf("%s:turn:%d", interactionID, turn)
+		e.recordTrace(session.ID, "planner.turn.start", "planner", map[string]any{
+			"span_id": turnSpanID,
+			"turn":    turn,
+			"tools":   len(e.registry.Descriptors()),
+		})
+		plan, err := streamingPlanner.StreamNext(ctx, session, e.registry.Descriptors(), func(token string) {
+			if token == "" {
+				return
+			}
+			output.WriteString(token)
+			if onToken != nil {
+				onToken(token)
+			}
+		})
+		if err != nil {
+			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+				"span_id": interactionID,
+				"status":  "error",
+				"error":   err.Error(),
+				"runtime": "streaming",
+			})
+			return Result{}, err
+		}
+		e.recordTrace(session.ID, "planner.turn.end", "planner", map[string]any{
+			"span_id":         turnSpanID,
+			"turn":            turn,
+			"status":          "ok",
+			"tool_call_count": len(plan.ToolCalls),
+			"assistant_chars": len(plan.AssistantText),
+			"stop_reason":     plan.StopReason,
+		})
+
+		if len(plan.ToolCalls) == 0 {
+			if plan.AssistantText != "" {
+				session.AddAssistantMessage(plan.AssistantText)
+			}
+			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+				"span_id":         interactionID,
+				"status":          "ok",
+				"tool_call_count": 0,
+				"output_chars":    len(plan.AssistantText),
+				"runtime":         "streaming",
+			})
+			return Result{Output: plan.AssistantText, Session: session}, nil
+		}
+
+		stateToolCalls := make([]state.ToolCall, len(plan.ToolCalls))
+		for i, tc := range plan.ToolCalls {
+			stateToolCalls[i] = state.ToolCall{ID: tc.ID, Name: tc.Name, Input: tc.Input}
+		}
+		session.AddAssistantMessageWithTools(plan.AssistantText, stateToolCalls)
+		if err := e.executeToolCalls(ctx, session, plan.ToolCalls, interactionID); err != nil {
+			return Result{}, err
+		}
+	}
+	return Result{}, fmt.Errorf("planner exceeded max turns (%d)", e.maxTurns)
 }
 
 func toolFailureMessage(call ToolCall, output string) state.Message {
@@ -291,7 +400,7 @@ func buildPermissionRequest(toolName string, level permissions.Level, input json
 
 	metadata := map[string]string{}
 	switch toolName {
-	case "bash":
+	case "Bash", "bash":
 		if command, ok := payload["command"].(string); ok {
 			request.Summary = summarizeText(command, 120)
 			metadata["command"] = summarizeText(command, 240)
@@ -325,8 +434,12 @@ func buildPermissionRequest(toolName string, level permissions.Level, input json
 				metadata["risk"] = risk
 			}
 		}
-	case "file_read", "file_write", "file_edit":
-		if path, ok := payload["path"].(string); ok {
+	case "Read", "Write", "Edit", "file_read", "file_write", "file_edit":
+		if path, ok := payload["file_path"].(string); ok {
+			request.Summary = path
+			metadata["path"] = path
+			metadata["filename"] = filepath.Base(path)
+		} else if path, ok := payload["path"].(string); ok {
 			request.Summary = path
 			metadata["path"] = path
 			metadata["filename"] = filepath.Base(path)
@@ -337,12 +450,12 @@ func buildPermissionRequest(toolName string, level permissions.Level, input json
 		if newString, ok := payload["new_string"].(string); ok {
 			metadata["new"] = summarizeText(newString, 80)
 		}
-	case "web_fetch":
+	case "WebFetch", "web_fetch":
 		if url, ok := payload["url"].(string); ok {
 			request.Summary = summarizeText(url, 120)
 			metadata["url"] = url
 		}
-	case "agent":
+	case "Agent", "agent":
 		if prompt, ok := payload["prompt"].(string); ok {
 			request.Summary = summarizeText(prompt, 120)
 		}
@@ -358,9 +471,9 @@ func buildPermissionRequest(toolName string, level permissions.Level, input json
 		if teamName, ok := payload["team_name"].(string); ok && strings.TrimSpace(teamName) != "" {
 			metadata["team_name"] = teamName
 		}
-	case "team_create", "team_delete":
+	case "TeamCreate", "TeamDelete", "team_create", "team_delete":
 		if teamName, ok := payload["name"].(string); ok && strings.TrimSpace(teamName) != "" {
-			action := strings.TrimPrefix(toolName, "team_")
+			action := teamOperation(toolName)
 			request.Summary = fmt.Sprintf("%s team %s", action, teamName)
 			metadata["team_name"] = teamName
 			metadata["operation"] = action
@@ -414,6 +527,17 @@ func summarizeText(value string, limit int) string {
 		return value[:limit]
 	}
 	return value[:limit-3] + "..."
+}
+
+func teamOperation(toolName string) string {
+	switch toolName {
+	case "TeamCreate", "team_create":
+		return "create"
+	case "TeamDelete", "team_delete":
+		return "delete"
+	default:
+		return strings.TrimPrefix(toolName, "team_")
+	}
 }
 
 func destructiveBashHint(command string) string {

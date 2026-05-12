@@ -17,8 +17,9 @@ type WriteTool struct {
 }
 
 type writeInput struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	FilePath string `json:"file_path"`
+	Path     string `json:"path,omitempty"`
+	Content  string `json:"content"`
 }
 
 func NewWriteTool(rootDir string) *WriteTool {
@@ -26,7 +27,7 @@ func NewWriteTool(rootDir string) *WriteTool {
 }
 
 func (t *WriteTool) Name() string {
-	return "file_write"
+	return WriteToolName
 }
 
 func (t *WriteTool) Description() string {
@@ -34,7 +35,7 @@ func (t *WriteTool) Description() string {
 }
 
 func (t *WriteTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"file_path":{"type":"string","description":"The absolute path to the file to write"},"content":{"type":"string","description":"The content to write to the file"}},"required":["file_path","content"]}`)
 }
 
 func (t *WriteTool) Permission() permissions.Level {
@@ -51,12 +52,20 @@ func (t *WriteTool) Execute(_ context.Context, input json.RawMessage) (toolkit.R
 		return toolkit.Result{}, err
 	}
 
-	path, err := toolkit.ResolvePath(t.rootDir, payload.Path)
+	path, err := toolkit.ResolvePath(t.rootDir, payload.filePath())
 	if err != nil {
 		return toolkit.Result{}, err
 	}
 
 	if err := memdir.CheckTeamMemSecrets(path, payload.Content, t.rootDir); err != nil {
+		return toolkit.Result{}, err
+	}
+
+	var original *string
+	if data, err := os.ReadFile(path); err == nil {
+		value := string(data)
+		original = &value
+	} else if !os.IsNotExist(err) {
 		return toolkit.Result{}, err
 	}
 
@@ -68,5 +77,30 @@ func (t *WriteTool) Execute(_ context.Context, input json.RawMessage) (toolkit.R
 		return toolkit.Result{}, err
 	}
 
-	return toolkit.Result{Output: "wrote " + path}, nil
+	outputType := "create"
+	patch := []patchHunk{}
+	if original != nil {
+		outputType = "update"
+		patch = structuredPatch(*original, payload.Content)
+	}
+
+	output, err := encodeOutput(writeOutput{
+		Type:            outputType,
+		FilePath:        path,
+		Content:         payload.Content,
+		StructuredPatch: patch,
+		OriginalFile:    original,
+	})
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+
+	return toolkit.Result{Output: output}, nil
+}
+
+func (in writeInput) filePath() string {
+	if in.FilePath != "" {
+		return in.FilePath
+	}
+	return in.Path
 }

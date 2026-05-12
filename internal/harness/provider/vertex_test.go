@@ -1,0 +1,302 @@
+package provider
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestVertexProviderGenerateContent(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	var gotPath, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if _, ok := body["contents"].([]interface{}); !ok {
+			t.Fatalf("expected contents in request, got %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{"content":{"role":"model","parts":[{"text":"hello from vertex"}]},"finishReason":"STOP"}],
+			"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4,"totalTokenCount":7}
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "gemini-test",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	resp, err := provider.CreateMessage(context.Background(), MessageRequest{
+		Model: "gemini-test",
+		Messages: []Message{{
+			Role:    "user",
+			Content: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	if !strings.Contains(gotPath, "/v1/projects/proj-1/locations/us-central1/publishers/google/models/gemini-test:generateContent") {
+		t.Fatalf("unexpected path: %s", gotPath)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Fatalf("auth = %q", gotAuth)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Text != "hello from vertex" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestVertexProviderRefreshesTokenAfterUnauthorized(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	var authHeaders []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+		if len(authHeaders) == 1 {
+			http.Error(w, `{"error":"expired"}`, http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "old-token",
+		BaseURL:  server.URL + "/v1",
+		Model:    "gemini-test",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	provider.tokenRefresher = func(context.Context) (string, error) {
+		return "fresh-token", nil
+	}
+
+	resp, err := provider.CreateMessage(context.Background(), MessageRequest{
+		Model:    "gemini-test",
+		Messages: []Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	if len(authHeaders) != 2 {
+		t.Fatalf("request count = %d, want 2", len(authHeaders))
+	}
+	if authHeaders[0] != "Bearer old-token" || authHeaders[1] != "Bearer fresh-token" {
+		t.Fatalf("auth headers = %#v", authHeaders)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Text != "ok" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestVertexProviderMapsToolResultsToFunctionResponses(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "gemini-test",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	_, err = provider.CreateMessage(context.Background(), MessageRequest{
+		Model: "gemini-test",
+		Messages: []Message{
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call-1", Name: "Artifact", Input: json.RawMessage(`{"filename":"x.png"}`)}}},
+			{Role: "tool", ToolCallID: "call-1", ToolName: "Artifact", Content: `{"id":"artifact-1"}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	contents, ok := body["contents"].([]interface{})
+	if !ok || len(contents) != 2 {
+		t.Fatalf("unexpected contents: %#v", body["contents"])
+	}
+	toolResult, ok := contents[1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected tool result content: %#v", contents[1])
+	}
+	if toolResult["role"] != "user" {
+		t.Fatalf("tool result role = %q, want user", toolResult["role"])
+	}
+	parts, ok := toolResult["parts"].([]interface{})
+	if !ok || len(parts) != 1 {
+		t.Fatalf("unexpected tool result parts: %#v", toolResult["parts"])
+	}
+	part, ok := parts[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected function response part: %#v", parts[0])
+	}
+	response, ok := part["functionResponse"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing functionResponse: %#v", part)
+	}
+	if response["name"] != "Artifact" {
+		t.Fatalf("functionResponse name = %q, want Artifact", response["name"])
+	}
+}
+
+func TestVertexProviderMapsAttachmentsToGeminiParts(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "gemini-test",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	_, err = provider.CreateMessage(context.Background(), MessageRequest{
+		Model: "gemini-test",
+		Messages: []Message{{
+			Role: "user",
+			Content: []ContentBlock{
+				{Type: "text", Text: "analyze these"},
+				{Type: "image", Source: map[string]interface{}{
+					"media_type": "image/png",
+					"data":       "aW1n",
+				}},
+				{Type: "file", Source: map[string]interface{}{
+					"media_type": "application/pdf",
+					"file_uri":   "gs://bucket/report.pdf",
+				}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	contents := body["contents"].([]interface{})
+	parts := contents[0].(map[string]interface{})["parts"].([]interface{})
+	if len(parts) != 3 {
+		t.Fatalf("parts len = %d, want 3: %#v", len(parts), parts)
+	}
+	if _, ok := parts[1].(map[string]interface{})["inlineData"]; !ok {
+		t.Fatalf("missing inlineData: %#v", parts[1])
+	}
+	if _, ok := parts[2].(map[string]interface{})["fileData"]; !ok {
+		t.Fatalf("missing fileData: %#v", parts[2])
+	}
+}
+
+func TestVertexProviderBatchesConsecutiveToolResults(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "gemini-test",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	_, err = provider.CreateMessage(context.Background(), MessageRequest{
+		Model: "gemini-test",
+		Messages: []Message{
+			{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: "call-1", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://example.com/a"}`)},
+				{ID: "call-2", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://example.com/b"}`)},
+			}},
+			{Role: "tool", ToolCallID: "call-1", ToolName: "WebFetch", Content: "result a"},
+			{Role: "tool", ToolCallID: "call-2", ToolName: "WebFetch", Content: "result b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	contents, ok := body["contents"].([]interface{})
+	if !ok || len(contents) != 2 {
+		t.Fatalf("unexpected contents: %#v", body["contents"])
+	}
+	assistant, ok := contents[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected assistant content: %#v", contents[0])
+	}
+	assistantParts, ok := assistant["parts"].([]interface{})
+	if !ok || len(assistantParts) != 2 {
+		t.Fatalf("expected two function calls in one model turn, got %#v", assistant["parts"])
+	}
+	toolResult, ok := contents[1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected tool result content: %#v", contents[1])
+	}
+	if toolResult["role"] != "user" {
+		t.Fatalf("tool result role = %q, want user", toolResult["role"])
+	}
+	parts, ok := toolResult["parts"].([]interface{})
+	if !ok || len(parts) != 2 {
+		t.Fatalf("expected two function responses in one user turn, got %#v", toolResult["parts"])
+	}
+}

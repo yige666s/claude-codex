@@ -19,6 +19,8 @@ func TestFactory(t *testing.T) {
 		{"claude", "claude", false},
 		{"openai", "openai", false},
 		{"gpt", "gpt", false},
+		{"qwen", "qwen", false},
+		{"dashscope", "dashscope", false},
 		{"gemini", "gemini", false},
 		{"google", "google", false},
 		{"invalid", "invalid", true},
@@ -53,6 +55,7 @@ func TestProviderInfo(t *testing.T) {
 	}{
 		{"anthropic", "anthropic", "anthropic", 7, false},
 		{"openai", "openai", "openai", 9, false},
+		{"qwen", "qwen", "qwen", 7, false},
 		{"gemini", "gemini", "gemini", 5, false},
 		{"invalid", "invalid", "", 0, true},
 	}
@@ -99,6 +102,15 @@ func TestValidateConfig(t *testing.T) {
 				Provider: "openai",
 				APIKey:   "test-key",
 				Model:    "gpt-4",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid qwen",
+			cfg: provider.Config{
+				Provider: "qwen",
+				APIKey:   "test-key",
+				Model:    "qwen-plus",
 			},
 			wantErr: false,
 		},
@@ -159,6 +171,7 @@ func TestDefaultConfig(t *testing.T) {
 	}{
 		{"anthropic", "anthropic", "anthropic", "claude-sonnet-4-5", false},
 		{"openai", "openai", "openai", "gpt-4o", false},
+		{"qwen", "qwen", "qwen", "qwen-plus", false},
 		{"gemini", "gemini", "gemini", "gemini-1.5-pro", false},
 		{"invalid", "invalid", "", "", true},
 	}

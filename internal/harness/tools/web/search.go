@@ -18,26 +18,34 @@ import (
 type SearchTool struct {
 	client          *http.Client
 	defaultEndpoint string
+	allowedDomains  []string
 }
 
 type searchInput struct {
-	Query      string `json:"query"`
-	MaxResults int    `json:"max_results,omitempty"`
-	Endpoint   string `json:"endpoint,omitempty"`
+	Query          string   `json:"query"`
+	MaxResults     int      `json:"max_results,omitempty"`
+	Endpoint       string   `json:"endpoint,omitempty"`
+	AllowedDomains []string `json:"allowed_domains,omitempty"`
+	BlockedDomains []string `json:"blocked_domains,omitempty"`
 }
 
 func NewSearchTool(client *http.Client) *SearchTool {
+	return NewSearchToolWithAllowlist(client, nil)
+}
+
+func NewSearchToolWithAllowlist(client *http.Client, allowedDomains []string) *SearchTool {
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
 	return &SearchTool{
 		client:          client,
 		defaultEndpoint: "https://duckduckgo.com/html/",
+		allowedDomains:  append([]string(nil), allowedDomains...),
 	}
 }
 
 func (t *SearchTool) Name() string {
-	return "web_search"
+	return "WebSearch"
 }
 
 func (t *SearchTool) Description() string {
@@ -45,7 +53,7 @@ func (t *SearchTool) Description() string {
 }
 
 func (t *SearchTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"endpoint":{"type":"string"}},"required":["query"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"The search query to use"},"allowed_domains":{"type":"array","items":{"type":"string"},"description":"Only include search results from these domains"},"blocked_domains":{"type":"array","items":{"type":"string"},"description":"Never include search results from these domains"},"max_results":{"type":"integer"},"endpoint":{"type":"string"}},"required":["query"]}`)
 }
 
 func (t *SearchTool) Permission() permissions.Level {
@@ -72,6 +80,9 @@ func (t *SearchTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.
 
 	requestURL, err := url.Parse(endpoint)
 	if err != nil {
+		return toolkit.Result{}, err
+	}
+	if err := validateURLAllowed(requestURL.String(), t.allowedDomains); err != nil {
 		return toolkit.Result{}, err
 	}
 
@@ -101,12 +112,62 @@ func (t *SearchTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.
 		maxResults = 5
 	}
 
-	results := parseSearchResults(string(body), maxResults)
+	results := filterDomainResults(parseSearchResults(string(body), maxResults*3), input.AllowedDomains, input.BlockedDomains)
+	if len(results) > maxResults {
+		results = results[:maxResults]
+	}
 	if len(results) == 0 {
 		results = []string{strings.TrimSpace(stripHTML(string(body)))}
 	}
 
 	return toolkit.Result{Output: strings.Join(results, "\n")}, nil
+}
+
+func filterDomainResults(results []string, allowed, blocked []string) []string {
+	if len(allowed) == 0 && len(blocked) == 0 {
+		return results
+	}
+	filtered := make([]string, 0, len(results))
+	for _, result := range results {
+		host := resultHost(result)
+		if host == "" {
+			continue
+		}
+		if len(allowed) > 0 && !domainListed(host, allowed) {
+			continue
+		}
+		if domainListed(host, blocked) {
+			continue
+		}
+		filtered = append(filtered, result)
+	}
+	return filtered
+}
+
+func resultHost(result string) string {
+	idx := strings.LastIndex(result, " - ")
+	if idx < 0 {
+		return ""
+	}
+	parsed, err := url.Parse(strings.TrimSpace(result[idx+3:]))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
+}
+
+func domainListed(host string, domains []string) bool {
+	host = strings.TrimPrefix(strings.ToLower(host), "www.")
+	for _, domain := range domains {
+		domain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), "www.")
+		if domain == "" {
+			continue
+		}
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
 }
 
 var resultAnchorPattern = regexp.MustCompile(`(?is)<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>`)

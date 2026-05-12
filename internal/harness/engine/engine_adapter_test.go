@@ -26,7 +26,7 @@ func (s *runtimeSpy) ExecuteTool(context.Context, string, json.RawMessage) (tool
 	return toolkit.Result{Output: "ok"}, nil
 }
 
-func (s *runtimeSpy) Run(_ context.Context, _ *state.Session, _ string, recordUserMessage bool) (Result, error) {
+func (s *runtimeSpy) Run(_ context.Context, _ *state.Session, _ interface{}, recordUserMessage bool) (Result, error) {
 	s.runCalls = append(s.runCalls, recordUserMessage)
 	return s.result, nil
 }

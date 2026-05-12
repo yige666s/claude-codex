@@ -4,6 +4,11 @@ description: "Explain code in detail"
 user_invocable: true
 argument_hint: "<file_path>"
 allowed_tools: ["read", "grep"]
+metadata:
+  product:
+    version: "0.1.0"
+    category: "Developer Tools"
+    icon: "CODE"
 ---
 
 # Code Explanation Skill

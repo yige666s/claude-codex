@@ -23,6 +23,11 @@ func (f *Factory) CreateProvider(cfg Config) (Provider, error) {
 		return NewAnthropicProvider(cfg)
 	case "openai", "gpt":
 		return NewOpenAIProvider(cfg)
+	case "custom", "openai-compatible", "baseurl":
+		cfg.Provider = "openai"
+		return NewOpenAIProvider(cfg)
+	case "qwen", "dashscope", "aliyun":
+		return NewQwenProvider(cfg)
 	case "gemini", "google":
 		return NewGeminiProvider(cfg)
 	case "bedrock", "aws":
@@ -36,7 +41,7 @@ func (f *Factory) CreateProvider(cfg Config) (Provider, error) {
 
 // ListProviders returns a list of supported providers
 func (f *Factory) ListProviders() []string {
-	return []string{"anthropic", "openai", "gemini", "bedrock", "vertex"}
+	return []string{"anthropic", "openai", "qwen", "gemini", "bedrock", "vertex", "custom"}
 }
 
 // GetProviderInfo returns information about a specific provider
@@ -49,6 +54,12 @@ func (f *Factory) GetProviderInfo(providerName string) (string, []string, error)
 		return p.Name(), p.SupportedModels(), nil
 	case "openai", "gpt":
 		p := &OpenAIProvider{}
+		return p.Name(), p.SupportedModels(), nil
+	case "custom", "openai-compatible", "baseurl":
+		p := &OpenAIProvider{}
+		return "custom", p.SupportedModels(), nil
+	case "qwen", "dashscope", "aliyun":
+		p := &QwenProvider{}
 		return p.Name(), p.SupportedModels(), nil
 	case "gemini", "google":
 		p := &GeminiProvider{}
@@ -72,10 +83,12 @@ func (f *Factory) ValidateConfig(cfg Config) error {
 
 	provider := strings.ToLower(cfg.Provider)
 	if provider != "anthropic" && provider != "claude" &&
-	   provider != "openai" && provider != "gpt" &&
-	   provider != "gemini" && provider != "google" &&
-	   provider != "bedrock" && provider != "aws" &&
-	   provider != "vertex" && provider != "gcp" {
+		provider != "openai" && provider != "gpt" &&
+		provider != "custom" && provider != "openai-compatible" && provider != "baseurl" &&
+		provider != "qwen" && provider != "dashscope" && provider != "aliyun" &&
+		provider != "gemini" && provider != "google" &&
+		provider != "bedrock" && provider != "aws" &&
+		provider != "vertex" && provider != "gcp" {
 		return fmt.Errorf("unsupported provider: %s", cfg.Provider)
 	}
 
@@ -114,6 +127,25 @@ func (f *Factory) DefaultConfig(providerName string) (Config, error) {
 			Provider: "gemini",
 			BaseURL:  "https://generativelanguage.googleapis.com/v1beta",
 			Model:    "gemini-1.5-pro",
+			Timeout:  600,
+		}, nil
+	case "qwen", "dashscope", "aliyun":
+		return Config{
+			Provider: "qwen",
+			BaseURL:  defaultQwenBaseURL,
+			Model:    defaultQwenModel,
+			Timeout:  600,
+		}, nil
+	case "vertex", "gcp":
+		return Config{
+			Provider: "vertex",
+			Model:    "gemini-1.5-pro",
+			Timeout:  600,
+		}, nil
+	case "custom", "openai-compatible", "baseurl":
+		return Config{
+			Provider: "custom",
+			Model:    "gpt-4o",
 			Timeout:  600,
 		}, nil
 	default:

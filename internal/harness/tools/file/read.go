@@ -3,7 +3,9 @@ package file
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"claude-codex/internal/harness/permissions"
@@ -15,7 +17,11 @@ type ReadTool struct {
 }
 
 type readInput struct {
-	Path string `json:"path"`
+	FilePath string `json:"file_path"`
+	Path     string `json:"path,omitempty"`
+	Offset   int    `json:"offset,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+	Pages    string `json:"pages,omitempty"`
 }
 
 type ReadListener func(path string, content string)
@@ -69,15 +75,15 @@ func notifyReadListeners(path string, content string) {
 }
 
 func (t *ReadTool) Name() string {
-	return "file_read"
+	return ReadToolName
 }
 
 func (t *ReadTool) Description() string {
-	return "Read a UTF-8 text file from the project root."
+	return "Read a UTF-8 text file from the local filesystem."
 }
 
 func (t *ReadTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"file_path":{"type":"string","description":"The absolute path to the file to read"},"offset":{"type":"number","description":"The line number to start reading from; line numbers are 1-indexed"},"limit":{"type":"number","description":"The number of lines to read"},"pages":{"type":"string","description":"PDF page range to read, such as 1-5"}},"required":["file_path"]}`)
 }
 
 func (t *ReadTool) Permission() permissions.Level {
@@ -94,9 +100,14 @@ func (t *ReadTool) Execute(_ context.Context, input json.RawMessage) (toolkit.Re
 		return toolkit.Result{}, err
 	}
 
-	path, err := toolkit.ResolvePath(t.rootDir, payload.Path)
+	path, err := toolkit.ResolvePath(t.rootDir, payload.filePath())
 	if err != nil {
 		return toolkit.Result{}, err
+	}
+	if info, err := os.Stat(path); err != nil {
+		return toolkit.Result{}, err
+	} else if info.IsDir() {
+		return toolkit.Result{}, fmt.Errorf("%s is a directory", path)
 	}
 
 	data, err := os.ReadFile(path)
@@ -104,7 +115,57 @@ func (t *ReadTool) Execute(_ context.Context, input json.RawMessage) (toolkit.Re
 		return toolkit.Result{}, err
 	}
 
-	notifyReadListeners(path, string(data))
+	content := string(data)
+	notifyReadListeners(path, content)
 
-	return toolkit.Result{Output: string(data)}, nil
+	return toolkit.Result{Output: addLineNumbers(readLineRange(content, payload.Offset, payload.Limit), firstLine(payload.Offset))}, nil
+}
+
+func (in readInput) filePath() string {
+	if in.FilePath != "" {
+		return in.FilePath
+	}
+	return in.Path
+}
+
+func readLineRange(content string, offset, limit int) string {
+	if content == "" {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	start := firstLine(offset) - 1
+	if start >= len(lines) {
+		return ""
+	}
+	lines = lines[start:]
+	if limit > 0 && limit < len(lines) {
+		lines = lines[:limit]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func firstLine(offset int) int {
+	if offset < 1 {
+		return 1
+	}
+	return offset
+}
+
+func addLineNumbers(content string, startLine int) string {
+	if content == "" {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lineNumber := fmt.Sprintf("%6d", startLine+i)
+		if len(lineNumber) >= 6 {
+			lines[i] = lineNumber + "\u2192" + line
+		} else {
+			lines[i] = lineNumber + "\u2192" + line
+		}
+	}
+	return strings.Join(lines, "\n")
 }

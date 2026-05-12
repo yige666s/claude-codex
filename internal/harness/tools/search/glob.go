@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"claude-codex/internal/harness/permissions"
 	toolkit "claude-codex/internal/harness/tools"
@@ -28,7 +30,7 @@ func NewGlobTool(rootDir string) *GlobTool {
 }
 
 func (t *GlobTool) Name() string {
-	return "glob"
+	return "Glob"
 }
 
 func (t *GlobTool) Description() string {
@@ -72,7 +74,11 @@ func (t *GlobTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Resu
 		maxResults = 200
 	}
 
-	matches := make([]string, 0, 16)
+	type match struct {
+		path    string
+		modTime time.Time
+	}
+	matches := make([]match, 0, 16)
 	err = filepath.WalkDir(baseDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -88,7 +94,11 @@ func (t *GlobTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Resu
 
 		normalized := filepath.ToSlash(relative)
 		if matcher.MatchString(normalized) || matcher.MatchString(filepath.ToSlash(entry.Name())) {
-			matches = append(matches, normalized)
+			info, err := os.Stat(path)
+			if err != nil {
+				return err
+			}
+			matches = append(matches, match{path: normalized, modTime: info.ModTime()})
 		}
 
 		if len(matches) >= maxResults {
@@ -100,8 +110,17 @@ func (t *GlobTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Resu
 		return toolkit.Result{}, err
 	}
 
-	sort.Strings(matches)
-	return toolkit.Result{Output: strings.Join(matches, "\n")}, nil
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].modTime.Equal(matches[j].modTime) {
+			return matches[i].path < matches[j].path
+		}
+		return matches[i].modTime.After(matches[j].modTime)
+	})
+	paths := make([]string, 0, len(matches))
+	for _, match := range matches {
+		paths = append(paths, match.path)
+	}
+	return toolkit.Result{Output: strings.Join(paths, "\n")}, nil
 }
 
 func compileGlobPattern(pattern string) (*regexp.Regexp, error) {

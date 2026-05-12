@@ -9,35 +9,35 @@ import (
 type MessageType string
 
 const (
-	MessageTypeUser       MessageType = "user"
-	MessageTypeAssistant  MessageType = "assistant"
-	MessageTypeSystem     MessageType = "system"
-	MessageTypeProgress   MessageType = "progress"
-	MessageTypeAttachment MessageType = "attachment"
+	MessageTypeUser        MessageType = "user"
+	MessageTypeAssistant   MessageType = "assistant"
+	MessageTypeSystem      MessageType = "system"
+	MessageTypeProgress    MessageType = "progress"
+	MessageTypeAttachment  MessageType = "attachment"
 	MessageTypeStreamEvent MessageType = "stream_event"
-	MessageTypeTombstone  MessageType = "tombstone"
-	MessageTypeTool       MessageType = "tool"
+	MessageTypeTombstone   MessageType = "tombstone"
+	MessageTypeTool        MessageType = "tool"
 )
 
 // Message represents a conversation message in the Claude Code system.
 type Message struct {
-	Type      MessageType            `json:"type"`
-	UUID      string                 `json:"uuid"`
-	Timestamp time.Time              `json:"timestamp"`
-	Message   interface{}            `json:"message,omitempty"`
-	Content   []ContentBlock         `json:"content,omitempty"`
-	Subtype   string                 `json:"subtype,omitempty"`
-	IsMeta    bool                   `json:"is_meta,omitempty"`
-	Data      interface{}            `json:"data,omitempty"`
-	Event     interface{}            `json:"event,omitempty"`
-	ToolUseID string                 `json:"tool_use_id,omitempty"`
-	Attachment interface{}           `json:"attachment,omitempty"`
-	StopReason string                 `json:"stop_reason,omitempty"`
-	CompactMetadata *CompactMetadata `json:"compact_metadata,omitempty"`
-	IsCompactSummary          bool `json:"is_compact_summary,omitempty"`
-	IsVisibleInTranscriptOnly bool `json:"is_visible_in_transcript_only,omitempty"`
-	ToolUseResult             bool `json:"tool_use_result,omitempty"`
-	IsApiErrorMessage         bool `json:"is_api_error_message,omitempty"`
+	Type                      MessageType      `json:"type"`
+	UUID                      string           `json:"uuid"`
+	Timestamp                 time.Time        `json:"timestamp"`
+	Message                   interface{}      `json:"message,omitempty"`
+	Content                   []ContentBlock   `json:"content,omitempty"`
+	Subtype                   string           `json:"subtype,omitempty"`
+	IsMeta                    bool             `json:"is_meta,omitempty"`
+	Data                      interface{}      `json:"data,omitempty"`
+	Event                     interface{}      `json:"event,omitempty"`
+	ToolUseID                 string           `json:"tool_use_id,omitempty"`
+	Attachment                interface{}      `json:"attachment,omitempty"`
+	StopReason                string           `json:"stop_reason,omitempty"`
+	CompactMetadata           *CompactMetadata `json:"compact_metadata,omitempty"`
+	IsCompactSummary          bool             `json:"is_compact_summary,omitempty"`
+	IsVisibleInTranscriptOnly bool             `json:"is_visible_in_transcript_only,omitempty"`
+	ToolUseResult             bool             `json:"tool_use_result,omitempty"`
+	IsApiErrorMessage         bool             `json:"is_api_error_message,omitempty"`
 }
 
 // CompactMetadata contains metadata for compact boundary messages.
@@ -52,14 +52,15 @@ type PreservedSegment struct {
 
 // ContentBlock represents a piece of message content.
 type ContentBlock struct {
-	Type string `json:"type"` // "text", "tool_use", "tool_result", "thinking"
-	Text string `json:"text,omitempty"`
-	ID    string                 `json:"id,omitempty"`
-	Name  string                 `json:"name,omitempty"`
-	Input map[string]interface{} `json:"input,omitempty"`
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	Content   string `json:"content,omitempty"`
-	IsError   bool   `json:"is_error,omitempty"`
+	Type      string                 `json:"type"` // "text", "tool_use", "tool_result", "thinking"
+	Text      string                 `json:"text,omitempty"`
+	Source    map[string]interface{} `json:"source,omitempty"`
+	ID        string                 `json:"id,omitempty"`
+	Name      string                 `json:"name,omitempty"`
+	Input     map[string]interface{} `json:"input,omitempty"`
+	ToolUseID string                 `json:"tool_use_id,omitempty"`
+	Content   string                 `json:"content,omitempty"`
+	IsError   bool                   `json:"is_error,omitempty"`
 }
 
 // ToolUseBlock represents a tool use block in assistant messages.
@@ -136,4 +137,3 @@ func NewMessage(msgType MessageType, content interface{}) *Message {
 		Data:      content,
 	}
 }
-

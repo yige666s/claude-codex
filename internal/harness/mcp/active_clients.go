@@ -20,6 +20,22 @@ func GetActiveClient(name string) (*Client, bool) {
 	return client, ok
 }
 
+func ListActiveClients() map[string]*Client {
+	clients := map[string]*Client{}
+	activeClients.Range(func(key, value any) bool {
+		name, ok := key.(string)
+		if !ok {
+			return true
+		}
+		client, ok := value.(*Client)
+		if ok && client != nil {
+			clients[name] = client
+		}
+		return true
+	})
+	return clients
+}
+
 func ClearActiveClients() {
 	activeClients.Range(func(key, _ any) bool {
 		activeClients.Delete(key)

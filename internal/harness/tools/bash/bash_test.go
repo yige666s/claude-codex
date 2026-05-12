@@ -1,9 +1,12 @@
 package bash
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"claude-codex/internal/harness/permissions"
@@ -121,5 +124,14 @@ func TestApplyPython3Fallback(t *testing.T) {
 	}
 	if got := applyPython3Fallback("cd repo && python script.py"); got != "cd repo && python3 script.py" {
 		t.Fatalf("expected compound python3 fallback, got %q", got)
+	}
+}
+
+func TestExecuteRejectsBackgroundMode(t *testing.T) {
+	tool := NewTool(t.TempDir())
+	input, _ := json.Marshal(map[string]any{"command": "echo hi", "run_in_background": true})
+	_, err := tool.Execute(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "background execution is not supported") {
+		t.Fatalf("expected background rejection, got %v", err)
 	}
 }

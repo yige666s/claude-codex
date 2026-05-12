@@ -10,6 +10,7 @@
 *.dylib
 tui
 webui
+agentapi
 
 # 测试产物
 *.test
@@ -26,6 +27,13 @@ coverage.html
 # Go workspace 文件（可选提交）
 go.work
 go.work.sum
+
+# Node / frontend
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
 
 # ============================================================
 # 项目运行时数据
@@ -52,6 +60,9 @@ go.work.sum
 *.swo
 *~
 .netrwhist
+
+# Cloudlfare Cli
+.wrangler
 
 # Emacs
 \#*\#

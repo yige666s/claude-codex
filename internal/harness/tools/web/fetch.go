@@ -14,23 +14,29 @@ import (
 )
 
 type FetchTool struct {
-	client *http.Client
+	client         *http.Client
+	allowedDomains []string
 }
 
 type fetchInput struct {
 	URL      string `json:"url"`
+	Prompt   string `json:"prompt,omitempty"`
 	MaxBytes int64  `json:"max_bytes,omitempty"`
 }
 
 func NewFetchTool(client *http.Client) *FetchTool {
+	return NewFetchToolWithAllowlist(client, nil)
+}
+
+func NewFetchToolWithAllowlist(client *http.Client, allowedDomains []string) *FetchTool {
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
-	return &FetchTool{client: client}
+	return &FetchTool{client: client, allowedDomains: append([]string(nil), allowedDomains...)}
 }
 
 func (t *FetchTool) Name() string {
-	return "web_fetch"
+	return "WebFetch"
 }
 
 func (t *FetchTool) Description() string {
@@ -38,7 +44,7 @@ func (t *FetchTool) Description() string {
 }
 
 func (t *FetchTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"},"max_bytes":{"type":"integer"}},"required":["url"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch content from"},"prompt":{"type":"string","description":"The prompt describing what information to extract from the fetched content"},"max_bytes":{"type":"integer","description":"Maximum bytes to read before processing"}},"required":["url","prompt"]}`)
 }
 
 func (t *FetchTool) Permission() permissions.Level {
@@ -58,7 +64,15 @@ func (t *FetchTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.R
 		return toolkit.Result{}, fmt.Errorf("url is required")
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, input.URL, nil)
+	requestURL := strings.TrimSpace(input.URL)
+	if strings.HasPrefix(requestURL, "http://") && !strings.HasPrefix(requestURL, "http://localhost") && !strings.HasPrefix(requestURL, "http://127.0.0.1") {
+		requestURL = "https://" + strings.TrimPrefix(requestURL, "http://")
+	}
+	if err := validateURLAllowed(requestURL, t.allowedDomains); err != nil {
+		return toolkit.Result{}, err
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return toolkit.Result{}, err
 	}
@@ -69,6 +83,11 @@ func (t *FetchTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.R
 		return toolkit.Result{}, err
 	}
 	defer response.Body.Close()
+	if response.Request != nil && response.Request.URL != nil {
+		if err := validateURLAllowed(response.Request.URL.String(), t.allowedDomains); err != nil {
+			return toolkit.Result{}, err
+		}
+	}
 
 	maxBytes := input.MaxBytes
 	if maxBytes <= 0 {
@@ -86,7 +105,15 @@ func (t *FetchTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.R
 		payload = stripHTML(payload)
 	}
 
-	return toolkit.Result{
-		Output: fmt.Sprintf("status: %s\ncontent_type: %s\nurl: %s\n\n%s", response.Status, contentType, input.URL, payload),
-	}, nil
+	finalURL := response.Request.URL.String()
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "status: %s\ncontent_type: %s\nurl: %s\n", response.Status, contentType, finalURL)
+	if finalURL != requestURL {
+		fmt.Fprintf(&builder, "redirected_from: %s\n", requestURL)
+	}
+	if strings.TrimSpace(input.Prompt) != "" {
+		fmt.Fprintf(&builder, "prompt: %s\n", strings.TrimSpace(input.Prompt))
+	}
+	fmt.Fprintf(&builder, "\n%s", payload)
+	return toolkit.Result{Output: builder.String()}, nil
 }

@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1.7
+
+ARG GO_VERSION=1.24.4
+ARG ALPINE_VERSION=3.20
+
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
+RUN apk add --no-cache ca-certificates git
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/agentapi ./cmd/agentapi
+
+FROM alpine:${ALPINE_VERSION}
+
+RUN apk add --no-cache ca-certificates curl docker-cli tzdata \
+    && addgroup -S agentapi \
+    && adduser -S -G agentapi -h /var/lib/agentapi agentapi \
+    && mkdir -p /var/lib/agentapi /workspace \
+    && chown -R agentapi:agentapi /var/lib/agentapi /workspace
+
+COPY --from=build /out/agentapi /usr/local/bin/agentapi
+
+ENV AGENT_API_DATA_DIR=/var/lib/agentapi
+WORKDIR /workspace
+USER agentapi
+
+EXPOSE 8081
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8081/healthz >/dev/null || exit 1
+
+ENTRYPOINT ["agentapi"]
+CMD ["-addr", ":8081"]

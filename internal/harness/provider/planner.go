@@ -34,6 +34,17 @@ func (p *Planner) Next(ctx context.Context, session *state.Session, tools []tool
 	return planFromResponse(response), nil
 }
 
+func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools []toolkit.Descriptor, onChunk func(string)) (plannerapi.Plan, error) {
+	plan, err := p.Next(ctx, session, tools)
+	if err != nil {
+		return plannerapi.Plan{}, err
+	}
+	if onChunk != nil && plan.AssistantText != "" {
+		onChunk(plan.AssistantText)
+	}
+	return plan, nil
+}
+
 func toProviderMessages(messages []state.Message) []Message {
 	out := make([]Message, 0, len(messages))
 	for _, msg := range messages {
@@ -67,6 +78,7 @@ func toProviderMessages(messages []state.Message) []Message {
 				Role:       "tool",
 				Content:    msg.ToolOutput,
 				ToolCallID: msg.ToolCallID,
+				ToolName:   msg.ToolName,
 			})
 		}
 	}

@@ -11,12 +11,13 @@ import (
 	"claude-codex/internal/harness/messages"
 	"claude-codex/internal/harness/state"
 	toolkit "claude-codex/internal/harness/tools"
+	publictypes "claude-codex/internal/public/types"
 )
 
 type engineRuntime interface {
 	Descriptors() []toolkit.Descriptor
 	ExecuteTool(ctx context.Context, name string, input json.RawMessage) (toolkit.Result, error)
-	Run(ctx context.Context, session *state.Session, prompt string, recordUserMessage bool) (Result, error)
+	Run(ctx context.Context, session *state.Session, prompt interface{}, recordUserMessage bool) (Result, error)
 }
 
 type legacyRuntime struct {
@@ -44,15 +45,16 @@ func (r *legacyRuntime) ExecuteTool(ctx context.Context, name string, input json
 	return tool.Execute(ctx, input)
 }
 
-func (r *legacyRuntime) Run(ctx context.Context, session *state.Session, prompt string, recordUserMessage bool) (Result, error) {
+func (r *legacyRuntime) Run(ctx context.Context, session *state.Session, prompt interface{}, recordUserMessage bool) (Result, error) {
 	if session == nil {
 		return Result{}, fmt.Errorf("session is required")
 	}
+	promptText := promptToText(prompt)
 	interactionID := fmt.Sprintf("interaction-%d", time.Now().UnixNano())
 	r.engine.recordTrace(session.ID, "interaction.start", "interaction", map[string]any{
 		"span_id":       interactionID,
-		"prompt":        prompt,
-		"prompt_length": len(prompt),
+		"prompt":        promptText,
+		"prompt_length": len(promptText),
 		"prompt_source": promptSource(recordUserMessage),
 		"working_dir":   session.WorkingDir,
 	})
@@ -76,11 +78,11 @@ func (r *legacyRuntime) Run(ctx context.Context, session *state.Session, prompt 
 	}
 
 	if recordUserMessage {
-		if last := session.LastUserMessage(); last != prompt {
-			session.AddUserMessage(prompt)
+		if last := session.LastUserMessage(); last != promptText {
+			session.AddUserMessage(promptText)
 		}
-	} else if strings.TrimSpace(prompt) != "" {
-		session.AddSystemContext(prompt)
+	} else if strings.TrimSpace(promptText) != "" {
+		session.AddSystemContext(promptText)
 	}
 
 	compressionConfig := state.DefaultCompressionConfig()
@@ -187,4 +189,21 @@ func (r *legacyRuntime) Run(ctx context.Context, session *state.Session, prompt 
 		"error":   fmt.Sprintf("planner exceeded max turns (%d)", r.engine.maxTurns),
 	})
 	return Result{}, fmt.Errorf("planner exceeded max turns (%d)", r.engine.maxTurns)
+}
+
+func promptToText(prompt interface{}) string {
+	switch typed := prompt.(type) {
+	case string:
+		return typed
+	case []publictypes.ContentBlock:
+		parts := make([]string, 0, len(typed))
+		for _, block := range typed {
+			if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+				parts = append(parts, block.Text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return fmt.Sprint(prompt)
+	}
 }

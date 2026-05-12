@@ -136,7 +136,7 @@ func TestMakeSubagentRunnerReportsAgentSummary(t *testing.T) {
 	foundStarted := false
 	foundCompleted := false
 	for _, event := range collected {
-		if event.ToolName != "agent" {
+		if event.ToolName != "Agent" {
 			continue
 		}
 		if event.Status == "started" && strings.Contains(event.Message, "Create hello.go") {

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"claude-codex/internal/harness/permissions"
@@ -23,9 +24,21 @@ type GrepTool struct {
 }
 
 type grepInput struct {
-	Path       string `json:"path,omitempty"`
-	Pattern    string `json:"pattern"`
-	MaxMatches int    `json:"max_matches,omitempty"`
+	Path            string `json:"path,omitempty"`
+	Pattern         string `json:"pattern"`
+	Glob            string `json:"glob,omitempty"`
+	OutputMode      string `json:"output_mode,omitempty"`
+	Before          int    `json:"-B,omitempty"`
+	After           int    `json:"-A,omitempty"`
+	Context         int    `json:"context,omitempty"`
+	ContextAlias    int    `json:"-C,omitempty"`
+	ShowLineNumbers *bool  `json:"-n,omitempty"`
+	CaseInsensitive bool   `json:"-i,omitempty"`
+	Type            string `json:"type,omitempty"`
+	HeadLimit       *int   `json:"head_limit,omitempty"`
+	Offset          int    `json:"offset,omitempty"`
+	Multiline       bool   `json:"multiline,omitempty"`
+	MaxMatches      int    `json:"max_matches,omitempty"`
 }
 
 func NewGrepTool(rootDir string) *GrepTool {
@@ -33,7 +46,7 @@ func NewGrepTool(rootDir string) *GrepTool {
 }
 
 func (t *GrepTool) Name() string {
-	return "grep"
+	return "Grep"
 }
 
 func (t *GrepTool) Description() string {
@@ -41,7 +54,7 @@ func (t *GrepTool) Description() string {
 }
 
 func (t *GrepTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"pattern":{"type":"string"},"max_matches":{"type":"integer"}},"required":["pattern"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string","description":"The regular expression pattern to search for in file contents"},"path":{"type":"string","description":"File or directory to search in. Defaults to the current working directory."},"glob":{"type":"string","description":"Glob pattern to filter files, e.g. *.go or *.{ts,tsx}"},"output_mode":{"type":"string","enum":["content","files_with_matches","count"],"description":"Output mode. Defaults to files_with_matches."},"-B":{"type":"integer","description":"Lines before each match for content mode."},"-A":{"type":"integer","description":"Lines after each match for content mode."},"-C":{"type":"integer","description":"Context lines before and after each match for content mode."},"context":{"type":"integer","description":"Context lines before and after each match for content mode."},"-n":{"type":"boolean","description":"Show line numbers in content mode. Defaults to true."},"-i":{"type":"boolean","description":"Case insensitive search."},"type":{"type":"string","description":"File type to search, passed to rg --type when rg is available."},"head_limit":{"type":"integer","description":"Limit output entries. Defaults to 250; 0 means unlimited."},"offset":{"type":"integer","description":"Skip first N output entries before applying head_limit."},"multiline":{"type":"boolean","description":"Enable multiline regex mode when rg is available."},"max_matches":{"type":"integer","description":"Legacy alias for head_limit."}},"required":["pattern"]}`)
 }
 
 func (t *GrepTool) Permission() permissions.Level {
@@ -67,28 +80,85 @@ func (t *GrepTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Re
 		searchRoot = resolved
 	}
 
-	maxMatches := input.MaxMatches
-	if maxMatches <= 0 {
-		maxMatches = 100
+	outputMode := input.OutputMode
+	if outputMode == "" {
+		outputMode = "files_with_matches"
+	}
+	switch outputMode {
+	case "content", "files_with_matches", "count":
+	default:
+		return toolkit.Result{}, fmt.Errorf("unsupported output_mode %q", outputMode)
+	}
+	limit := 250
+	if input.MaxMatches > 0 {
+		limit = input.MaxMatches
+	}
+	if input.HeadLimit != nil {
+		limit = *input.HeadLimit
+		if limit < 0 {
+			limit = 0
+		}
+	}
+	if input.Offset < 0 {
+		input.Offset = 0
 	}
 
-	if output, ok, err := runRipgrep(ctx, searchRoot, input.Pattern, maxMatches); ok {
+	if output, ok, err := runRipgrep(ctx, searchRoot, input, outputMode, limit); ok {
 		if err != nil {
 			return toolkit.Result{}, err
 		}
 		return toolkit.Result{Output: output}, nil
 	}
 
-	return grepFallback(searchRoot, input.Pattern, maxMatches)
+	return grepFallback(searchRoot, input, outputMode, limit)
 }
 
-func runRipgrep(ctx context.Context, searchRoot, pattern string, maxMatches int) (string, bool, error) {
+func runRipgrep(ctx context.Context, searchRoot string, input grepInput, outputMode string, limit int) (string, bool, error) {
 	path, err := exec.LookPath("rg")
 	if err != nil {
 		return "", false, nil
 	}
 
-	command := exec.CommandContext(ctx, path, "-n", "--color", "never", "-m", fmt.Sprintf("%d", maxMatches), pattern, searchRoot)
+	args := []string{"--hidden", "--color", "never", "--max-columns", "500"}
+	if input.Multiline {
+		args = append(args, "-U", "--multiline-dotall")
+	}
+	if input.CaseInsensitive {
+		args = append(args, "-i")
+	}
+	switch outputMode {
+	case "files_with_matches":
+		args = append(args, "-l")
+	case "count":
+		args = append(args, "-c")
+	case "content":
+		if input.ShowLineNumbers == nil || *input.ShowLineNumbers {
+			args = append(args, "-n")
+		}
+		contextLines := input.Context
+		if input.ContextAlias > 0 {
+			contextLines = input.ContextAlias
+		}
+		if contextLines > 0 {
+			args = append(args, "-C", fmt.Sprintf("%d", contextLines))
+		} else {
+			if input.Before > 0 {
+				args = append(args, "-B", fmt.Sprintf("%d", input.Before))
+			}
+			if input.After > 0 {
+				args = append(args, "-A", fmt.Sprintf("%d", input.After))
+			}
+		}
+	}
+	for _, pattern := range splitGlobPatterns(input.Glob) {
+		args = append(args, "--glob", pattern)
+	}
+	if input.Type != "" {
+		args = append(args, "--type", input.Type)
+	}
+	args = append(args, input.Pattern, searchRoot)
+
+	command := exec.CommandContext(ctx, path, args...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.Stdout = &stdout
@@ -101,16 +171,30 @@ func runRipgrep(ctx context.Context, searchRoot, pattern string, maxMatches int)
 		return "", true, fmt.Errorf("rg failed: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 
-	return strings.TrimSpace(stdout.String()), true, nil
+	output := relativizeRipgrepOutput(strings.TrimSpace(stdout.String()), searchRoot)
+	return applyHeadOffset(output, input.Offset, limit), true, nil
 }
 
-func grepFallback(searchRoot, pattern string, maxMatches int) (toolkit.Result, error) {
-	compiled, err := regexp.Compile(pattern)
+func grepFallback(searchRoot string, input grepInput, outputMode string, limit int) (toolkit.Result, error) {
+	regexPattern := input.Pattern
+	if input.CaseInsensitive {
+		regexPattern = "(?i)" + regexPattern
+	}
+	compiled, err := regexp.Compile(regexPattern)
 	if err != nil {
-		compiled = regexp.MustCompile(regexp.QuoteMeta(pattern))
+		compiled = regexp.MustCompile(regexp.QuoteMeta(input.Pattern))
+	}
+	globMatchers := make([]*regexp.Regexp, 0)
+	for _, pattern := range splitGlobPatterns(input.Glob) {
+		matcher, err := compileGlobPattern(pattern)
+		if err != nil {
+			return toolkit.Result{}, err
+		}
+		globMatchers = append(globMatchers, matcher)
 	}
 
 	results := make([]string, 0, 16)
+	fileCounts := map[string]int{}
 	err = filepath.WalkDir(searchRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -129,6 +213,13 @@ func grepFallback(searchRoot, pattern string, maxMatches int) (toolkit.Result, e
 		if err != nil {
 			return err
 		}
+		normalized := filepath.ToSlash(relative)
+		if input.Type != "" && !matchesType(normalized, input.Type) {
+			return nil
+		}
+		if len(globMatchers) > 0 && !matchesAnyGlob(globMatchers, normalized) {
+			return nil
+		}
 
 		scanner := bufio.NewScanner(file)
 		lineNumber := 0
@@ -136,9 +227,14 @@ func grepFallback(searchRoot, pattern string, maxMatches int) (toolkit.Result, e
 			lineNumber++
 			line := scanner.Text()
 			if compiled.MatchString(line) {
-				results = append(results, fmt.Sprintf("%s:%d:%s", filepath.ToSlash(relative), lineNumber, line))
-				if len(results) >= maxMatches {
-					return fs.SkipAll
+				switch outputMode {
+				case "files_with_matches":
+					results = append(results, normalized)
+					return nil
+				case "count":
+					fileCounts[normalized]++
+				default:
+					results = append(results, formatGrepContentLine(normalized, lineNumber, line, input.ShowLineNumbers))
 				}
 			}
 		}
@@ -151,6 +247,90 @@ func grepFallback(searchRoot, pattern string, maxMatches int) (toolkit.Result, e
 	if err != nil && err != fs.SkipAll {
 		return toolkit.Result{}, err
 	}
+	if outputMode == "count" {
+		for file, count := range fileCounts {
+			results = append(results, fmt.Sprintf("%s:%d", file, count))
+		}
+		sort.Strings(results)
+	}
 
-	return toolkit.Result{Output: strings.Join(results, "\n")}, nil
+	return toolkit.Result{Output: applyHeadOffset(strings.Join(results, "\n"), input.Offset, limit)}, nil
+}
+
+func splitGlobPatterns(glob string) []string {
+	fields := strings.Fields(glob)
+	patterns := make([]string, 0, len(fields))
+	for _, field := range fields {
+		for _, part := range strings.Split(field, ",") {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				patterns = append(patterns, trimmed)
+			}
+		}
+	}
+	return patterns
+}
+
+func matchesAnyGlob(matchers []*regexp.Regexp, path string) bool {
+	for _, matcher := range matchers {
+		if matcher.MatchString(path) || matcher.MatchString(filepath.Base(path)) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesType(path, typ string) bool {
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "go":
+		return strings.HasSuffix(path, ".go")
+	case "js", "javascript":
+		return strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".jsx")
+	case "ts", "typescript":
+		return strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".tsx")
+	case "py", "python":
+		return strings.HasSuffix(path, ".py")
+	case "rust", "rs":
+		return strings.HasSuffix(path, ".rs")
+	case "java":
+		return strings.HasSuffix(path, ".java")
+	default:
+		return true
+	}
+}
+
+func formatGrepContentLine(path string, lineNumber int, line string, showLineNumbers *bool) string {
+	if showLineNumbers == nil || *showLineNumbers {
+		return fmt.Sprintf("%s:%d:%s", path, lineNumber, line)
+	}
+	return fmt.Sprintf("%s:%s", path, line)
+}
+
+func applyHeadOffset(output string, offset, limit int) string {
+	if strings.TrimSpace(output) == "" {
+		return ""
+	}
+	lines := strings.Split(output, "\n")
+	if offset > len(lines) {
+		return ""
+	}
+	lines = lines[offset:]
+	if limit > 0 && len(lines) > limit {
+		lines = lines[:limit]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func relativizeRipgrepOutput(output, searchRoot string) string {
+	if output == "" {
+		return ""
+	}
+	prefix := filepath.ToSlash(strings.TrimRight(searchRoot, string(filepath.Separator))) + "/"
+	lines := strings.Split(output, "\n")
+	for i, line := range lines {
+		normalized := filepath.ToSlash(line)
+		if strings.HasPrefix(normalized, prefix) {
+			lines[i] = strings.TrimPrefix(normalized, prefix)
+		}
+	}
+	return strings.Join(lines, "\n")
 }

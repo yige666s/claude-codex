@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"context"
 	"time"
 
 	"claude-codex/internal/harness/websandbox"
@@ -55,6 +56,7 @@ type SkillDefinition struct {
 	Shell                  FrontmatterShell // Optional shell for !-block execution
 	AllowedEnv             []string         // Environment variables allowed for sandboxed execution
 	PrimaryEnv             string           // Primary environment variable for the skill
+	RunAsJob               bool             // Prefer durable job execution when user-invoked
 
 	// Visibility and permissions
 	UserInvocable bool        // Can be invoked by user
@@ -69,7 +71,8 @@ type SkillDefinition struct {
 	Files         map[string]string // Reference files (for bundled skills)
 
 	// Metadata
-	Version      string    // Skill version
+	Version      string // Skill version
+	Metadata     map[string]any
 	SkillRoot    string    // Base directory for skill files
 	Paths        []string  // Path patterns for conditional activation
 	LoadedAt     time.Time // When skill was loaded
@@ -91,8 +94,15 @@ type SkillContext struct {
 	WorkingDir   string
 	Environment  map[string]string
 	WebSandbox   *websandbox.Runtime
+	ShellRuntime PromptShellRuntime
+	ShellTimeout time.Duration
 	State        interface{} // Application state
 	ToolRegistry interface{} // Tool registry
+}
+
+type PromptShellRuntime interface {
+	ExecuteCommand(ctx context.Context, command string) (string, error)
+	ValidateCommand(command string) error
 }
 
 // ContentBlock represents a block of content in a prompt

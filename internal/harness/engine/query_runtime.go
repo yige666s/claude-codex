@@ -43,16 +43,17 @@ func (r *queryRuntime) ExecuteTool(ctx context.Context, name string, input json.
 	return tool.Execute(ctx, input)
 }
 
-func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt string, recordUserMessage bool) (Result, error) {
+func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt interface{}, recordUserMessage bool) (Result, error) {
 	if session == nil {
 		return Result{}, fmt.Errorf("session is required")
 	}
 
+	promptText := promptToText(prompt)
 	interactionID := fmt.Sprintf("interaction-%d", time.Now().UnixNano())
 	r.engine.recordTrace(session.ID, "interaction.start", "interaction", map[string]any{
 		"span_id":       interactionID,
-		"prompt":        prompt,
-		"prompt_length": len(prompt),
+		"prompt":        promptText,
+		"prompt_length": len(promptText),
 		"prompt_source": promptSource(recordUserMessage),
 		"working_dir":   session.WorkingDir,
 		"runtime":       "queryengine",
@@ -132,32 +133,36 @@ func runtimeWorkingDir(engineDir, sessionDir string) string {
 
 func (r *queryRuntime) initialQueryMessages(session *state.Session) []queryengine.Message {
 	initial := sessionToQueryMessages(session)
-	if session == nil || len(session.Messages) != 0 || r.engine.workingDir == "" {
+	if session == nil {
 		return initial
 	}
 
-	wsCtx := workctx.Collect(r.engine.workingDir)
-	initial = append(initial, queryengine.Message{
-		Type:      "user",
-		Timestamp: time.Now().UTC(),
-		UUID:      fmt.Sprintf("%s-workspace", session.ID),
-		IsMeta:    true,
-		Content:   wsCtx.SystemPrompt(),
-	})
-	initial = append(initial, queryengine.Message{
-		Type:      "assistant",
-		Timestamp: time.Now().UTC(),
-		UUID:      fmt.Sprintf("%s-workspace-ack", session.ID),
-		Content:   "Understood. I have the workspace context.",
-	})
+	if len(session.Messages) == 0 && r.engine.workingDir != "" {
+		wsCtx := workctx.Collect(r.engine.workingDir)
+		initial = append(initial, queryengine.Message{
+			Type:      "user",
+			Timestamp: time.Now().UTC(),
+			UUID:      fmt.Sprintf("%s-workspace", session.ID),
+			IsMeta:    true,
+			Content:   wsCtx.SystemPrompt(),
+		})
+		initial = append(initial, queryengine.Message{
+			Type:      "assistant",
+			Timestamp: time.Now().UTC(),
+			UUID:      fmt.Sprintf("%s-workspace-ack", session.ID),
+			Content:   "Understood. I have the workspace context.",
+		})
+	}
 
 	if r.engine.skillManager != nil {
-		if r.engine.skillListingManager == nil {
-			r.engine.skillListingManager = messages.NewSkillListingManager()
-		}
 		allSkills := r.engine.skillManager.ListUserInvocableSkills()
-		attachment := r.engine.skillListingManager.GetSkillListingAttachment(allSkills, 200000)
-		if attachment != nil {
+		content := messages.FormatAllSkillDescriptions(allSkills)
+		if strings.TrimSpace(content) != "" {
+			attachment := &messages.SkillListingAttachment{
+				Content:    content,
+				SkillCount: len(allSkills),
+				IsInitial:  len(session.Messages) == 0,
+			}
 			initial = append(initial, queryengine.Message{
 				Type:      "user",
 				Timestamp: time.Now().UTC(),

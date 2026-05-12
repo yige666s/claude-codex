@@ -29,10 +29,13 @@ type Tool struct {
 }
 
 type input struct {
-	Command        string `json:"command"`
-	Workdir        string `json:"workdir,omitempty"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
-	MaxOutputBytes int    `json:"max_output_bytes,omitempty"`
+	Command         string `json:"command"`
+	Description     string `json:"description,omitempty"`
+	Workdir         string `json:"workdir,omitempty"`
+	TimeoutMs       int    `json:"timeout,omitempty"`
+	TimeoutSeconds  int    `json:"timeout_seconds,omitempty"`
+	MaxOutputBytes  int    `json:"max_output_bytes,omitempty"`
+	RunInBackground bool   `json:"run_in_background,omitempty"`
 }
 
 func NewTool(rootDir string) *Tool {
@@ -40,7 +43,7 @@ func NewTool(rootDir string) *Tool {
 }
 
 func (t *Tool) Name() string {
-	return "bash"
+	return "Bash"
 }
 
 func (t *Tool) Description() string {
@@ -48,7 +51,7 @@ func (t *Tool) Description() string {
 }
 
 func (t *Tool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"workdir":{"type":"string"},"timeout_seconds":{"type":"integer"},"max_output_bytes":{"type":"integer"}},"required":["command"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"The command to execute"},"description":{"type":"string","description":"Brief description of what this command does"},"workdir":{"type":"string","description":"Working directory for the command"},"timeout":{"type":"integer","description":"Timeout in milliseconds"},"timeout_seconds":{"type":"integer","description":"Legacy timeout in seconds"},"max_output_bytes":{"type":"integer","description":"Maximum output bytes to return"},"run_in_background":{"type":"boolean","description":"Reserved for future background task support; currently rejected"}},"required":["command"]}`)
 }
 
 func (t *Tool) Permission() permissions.Level {
@@ -67,6 +70,9 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result
 	if strings.TrimSpace(payload.Command) == "" {
 		return toolkit.Result{}, fmt.Errorf("command is required")
 	}
+	if payload.RunInBackground {
+		return toolkit.Result{}, fmt.Errorf("background execution is not supported yet; use TaskCreate for managed background work")
+	}
 	payload.Command = applyPython3Fallback(payload.Command)
 
 	workdir := t.rootDir
@@ -81,6 +87,8 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result
 	timeout := defaultTimeout
 	if payload.TimeoutSeconds > 0 {
 		timeout = time.Duration(payload.TimeoutSeconds) * time.Second
+	} else if payload.TimeoutMs > 0 {
+		timeout = time.Duration(payload.TimeoutMs) * time.Millisecond
 	}
 
 	permissionResult := CheckCommandPermission(payload.Command, workdir)

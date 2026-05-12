@@ -31,7 +31,7 @@ func NewDeleteTool(manager *coordinator.Manager) toolkit.Tool     { return &dele
 func NewTeamCreateTool(manager *coordinator.Manager) toolkit.Tool { return NewCreateTool(manager) }
 func NewTeamDeleteTool(manager *coordinator.Manager) toolkit.Tool { return NewDeleteTool(manager) }
 
-func (t *createTool) Name() string        { return "team_create" }
+func (t *createTool) Name() string        { return "TeamCreate" }
 func (t *createTool) Description() string { return "Create a persisted team definition." }
 func (t *createTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"lead_agent_id":{"type":"string"},"lead_session_id":{"type":"string"},"agents":{"type":"array","items":{"type":"string"}}},"required":["name"]}`)
@@ -65,7 +65,7 @@ func (t *createTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Re
 	return toolkit.Result{Output: fmt.Sprintf("Created team %q (id: %s).", team.Name, team.ID)}, nil
 }
 
-func (t *deleteTool) Name() string        { return "team_delete" }
+func (t *deleteTool) Name() string        { return "TeamDelete" }
 func (t *deleteTool) Description() string { return "Delete a persisted team definition." }
 func (t *deleteTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)

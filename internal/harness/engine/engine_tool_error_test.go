@@ -68,7 +68,7 @@ func TestRunContinuesAfterBashApprovalStyleError(t *testing.T) {
 
 	var sawToolResult bool
 	for _, message := range session.Messages {
-		if message.Role == "tool" && message.ToolName == "bash" {
+		if message.Role == "tool" && message.ToolName == "Bash" {
 			sawToolResult = true
 			if !strings.Contains(message.ToolOutput, "bash command requires approval") {
 				t.Fatalf("expected bash tool output to be preserved, got %q", message.ToolOutput)

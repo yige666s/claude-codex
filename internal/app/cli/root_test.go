@@ -540,7 +540,55 @@ func TestBuildRegistryIncludesDelegationTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	for _, name := range []string{"agent", "TaskCreate", "TaskOutput", "TaskStop", "SendMessage"} {
+	for _, name := range []string{"Agent", "TaskCreate", "TaskOutput", "TaskStop", "SendMessage"} {
+		if _, err := registry.Get(name); err != nil {
+			t.Fatalf("expected %s in registry: %v", name, err)
+		}
+	}
+}
+
+func TestBuildRegistryUsesTypeScriptBaseToolNames(t *testing.T) {
+	registry, err := buildRegistry(config.Config{}, t.TempDir(), func(context.Context, agenttool.Request) (string, error) {
+		return "ok", nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("build registry: %v", err)
+	}
+
+	for _, name := range []string{
+		"Agent",
+		"AskUserQuestion",
+		"Bash",
+		"EnterWorktree",
+		"EnterPlanMode",
+		"ExitPlanMode",
+		"Glob",
+		"Grep",
+		"LSP",
+		"ListMcpResourcesTool",
+		"NotebookEdit",
+		"ReadMcpResourceTool",
+		"TeamCreate",
+		"TeamDelete",
+		"ToolSearch",
+		"WebFetch",
+		"WebSearch",
+	} {
+		if _, err := registry.Get(name); err != nil {
+			t.Fatalf("expected %s in registry: %v", name, err)
+		}
+	}
+}
+
+func TestBuildRegistrySupportsConditionallyEnabledBaseTools(t *testing.T) {
+	t.Setenv("CLAUDE_GO_ENABLE_SLEEP_TOOL", "true")
+	t.Setenv("CLAUDE_GO_ENABLE_SYNTHETIC_OUTPUT_TOOL", "true")
+
+	registry, err := buildRegistry(config.Config{}, t.TempDir(), nil, nil)
+	if err != nil {
+		t.Fatalf("build registry: %v", err)
+	}
+	for _, name := range []string{"Sleep", "SyntheticOutput"} {
 		if _, err := registry.Get(name); err != nil {
 			t.Fatalf("expected %s in registry: %v", name, err)
 		}

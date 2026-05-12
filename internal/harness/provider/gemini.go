@@ -48,19 +48,34 @@ func NewGeminiProvider(cfg Config) (*GeminiProvider, error) {
 
 // geminiRequest represents Gemini API request format
 type geminiRequest struct {
-	Contents         []geminiContent         `json:"contents"`
-	GenerationConfig geminiGenerationConfig  `json:"generationConfig,omitempty"`
-	SafetySettings   []geminiSafetySetting   `json:"safetySettings,omitempty"`
-	Tools            []geminiTool            `json:"tools,omitempty"`
+	Contents          []geminiContent        `json:"contents"`
+	GenerationConfig  geminiGenerationConfig `json:"generationConfig,omitempty"`
+	SafetySettings    []geminiSafetySetting  `json:"safetySettings,omitempty"`
+	Tools             []geminiTool           `json:"tools,omitempty"`
+	SystemInstruction *geminiContent         `json:"systemInstruction,omitempty"`
 }
 
 type geminiContent struct {
-	Role  string        `json:"role"`
-	Parts []geminiPart  `json:"parts"`
+	Role  string       `json:"role"`
+	Parts []geminiPart `json:"parts"`
 }
 
 type geminiPart struct {
-	Text string `json:"text"`
+	Text             string                  `json:"text,omitempty"`
+	InlineData       *geminiBlob             `json:"inlineData,omitempty"`
+	FileData         *geminiFileData         `json:"fileData,omitempty"`
+	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+}
+
+type geminiBlob struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
+type geminiFileData struct {
+	MimeType string `json:"mimeType"`
+	FileURI  string `json:"fileUri"`
 }
 
 type geminiGenerationConfig struct {
@@ -84,10 +99,20 @@ type geminiFunctionDeclaration struct {
 	Parameters  map[string]interface{} `json:"parameters,omitempty"`
 }
 
+type geminiFunctionCall struct {
+	Name string                 `json:"name"`
+	Args map[string]interface{} `json:"args,omitempty"`
+}
+
+type geminiFunctionResponse struct {
+	Name     string                 `json:"name"`
+	Response map[string]interface{} `json:"response"`
+}
+
 // geminiResponse represents Gemini API response format
 type geminiResponse struct {
-	Candidates     []geminiCandidate     `json:"candidates"`
-	UsageMetadata  geminiUsageMetadata   `json:"usageMetadata,omitempty"`
+	Candidates    []geminiCandidate   `json:"candidates"`
+	UsageMetadata geminiUsageMetadata `json:"usageMetadata,omitempty"`
 }
 
 type geminiCandidate struct {
@@ -115,46 +140,14 @@ func (p *GeminiProvider) CreateMessage(ctx context.Context, request MessageReque
 		},
 	}
 
-	// Add system message as first user message if present
 	if request.System != "" {
-		geminiReq.Contents = append(geminiReq.Contents, geminiContent{
-			Role: "user",
-			Parts: []geminiPart{
-				{Text: "System: " + request.System},
-			},
-		})
+		geminiReq.SystemInstruction = &geminiContent{
+			Role:  "user",
+			Parts: []geminiPart{{Text: request.System}},
+		}
 	}
 
-	// Convert messages
-	for _, msg := range request.Messages {
-		role := msg.Role
-		// Gemini uses "user" and "model" roles
-		if role == "assistant" {
-			role = "model"
-		}
-
-		content := ""
-		switch v := msg.Content.(type) {
-		case string:
-			content = v
-		case []ContentBlock:
-			// Concatenate text blocks
-			var texts []string
-			for _, block := range v {
-				if block.Type == "text" {
-					texts = append(texts, block.Text)
-				}
-			}
-			content = strings.Join(texts, "\n")
-		}
-
-		geminiReq.Contents = append(geminiReq.Contents, geminiContent{
-			Role: role,
-			Parts: []geminiPart{
-				{Text: content},
-			},
-		})
-	}
+	geminiReq.Contents = append(geminiReq.Contents, geminiContentsFromMessages(request.Messages)...)
 
 	// Convert tools if present
 	if len(request.Tools) > 0 {
@@ -213,11 +206,29 @@ func (p *GeminiProvider) CreateMessage(ctx context.Context, request MessageReque
 	// Convert to unified format
 	candidate := geminiResp.Candidates[0]
 	var contentBlocks []ContentBlock
+	var toolCalls []ToolCall
 	for _, part := range candidate.Content.Parts {
-		contentBlocks = append(contentBlocks, ContentBlock{
-			Type: "text",
-			Text: part.Text,
-		})
+		if part.Text != "" {
+			contentBlocks = append(contentBlocks, ContentBlock{
+				Type: "text",
+				Text: part.Text,
+			})
+		}
+		if part.FunctionCall != nil {
+			input, _ := json.Marshal(part.FunctionCall.Args)
+			if len(input) == 0 {
+				input = []byte(`{}`)
+			}
+			toolCalls = append(toolCalls, ToolCall{
+				ID:    fmt.Sprintf("gemini-call-%d", len(toolCalls)+1),
+				Name:  part.FunctionCall.Name,
+				Input: json.RawMessage(input),
+			})
+		}
+	}
+	stopReason := candidate.FinishReason
+	if len(toolCalls) > 0 && stopReason == "" {
+		stopReason = "tool_use"
 	}
 
 	return &MessageResponse{
@@ -225,12 +236,143 @@ func (p *GeminiProvider) CreateMessage(ctx context.Context, request MessageReque
 		Model:      request.Model,
 		Role:       "assistant",
 		Content:    contentBlocks,
-		StopReason: candidate.FinishReason,
+		ToolCalls:  toolCalls,
+		StopReason: stopReason,
 		Usage: Usage{
 			InputTokens:  geminiResp.UsageMetadata.PromptTokenCount,
 			OutputTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
 		},
 	}, nil
+}
+
+func geminiContentsFromMessages(messages []Message) []geminiContent {
+	contents := make([]geminiContent, 0, len(messages))
+	var pendingFunctionResponses []geminiPart
+	flushFunctionResponses := func() {
+		if len(pendingFunctionResponses) == 0 {
+			return
+		}
+		contents = append(contents, geminiContent{Role: "user", Parts: pendingFunctionResponses})
+		pendingFunctionResponses = nil
+	}
+
+	for _, msg := range messages {
+		if msg.Role == "tool" || msg.ToolCallID != "" {
+			if msg.ToolCallID == "" {
+				continue
+			}
+			name := firstNonEmptyString(msg.ToolName, msg.ToolCallID)
+			pendingFunctionResponses = append(pendingFunctionResponses, geminiPart{FunctionResponse: &geminiFunctionResponse{
+				Name: name,
+				Response: map[string]interface{}{
+					"name":    name,
+					"content": geminiTextContent(msg.Content),
+				},
+			}})
+			continue
+		}
+
+		flushFunctionResponses()
+		role := msg.Role
+		if role == "assistant" {
+			role = "model"
+		}
+		parts := geminiPartsFromContent(msg.Content)
+		if parts == nil {
+			parts = make([]geminiPart, 0, len(msg.ToolCalls)+1)
+		}
+		for _, call := range msg.ToolCalls {
+			args := map[string]interface{}{}
+			if len(call.Input) > 0 {
+				_ = json.Unmarshal(call.Input, &args)
+			}
+			parts = append(parts, geminiPart{FunctionCall: &geminiFunctionCall{Name: call.Name, Args: args}})
+		}
+		if len(parts) > 0 {
+			contents = append(contents, geminiContent{Role: role, Parts: parts})
+		}
+	}
+	flushFunctionResponses()
+	return contents
+}
+
+func geminiPartsFromContent(content interface{}) []geminiPart {
+	switch v := content.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		return []geminiPart{{Text: v}}
+	case []ContentBlock:
+		parts := make([]geminiPart, 0, len(v))
+		for _, block := range v {
+			switch block.Type {
+			case "text":
+				if strings.TrimSpace(block.Text) != "" {
+					parts = append(parts, geminiPart{Text: block.Text})
+				}
+			case "image", "file":
+				if part, ok := geminiMediaPart(block); ok {
+					parts = append(parts, part)
+				}
+			}
+		}
+		return parts
+	default:
+		text := geminiTextContent(content)
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+		return []geminiPart{{Text: text}}
+	}
+}
+
+func geminiMediaPart(block ContentBlock) (geminiPart, bool) {
+	mediaType := sourceString(block.Source, "media_type", "mime_type", "mimeType")
+	data := sourceString(block.Source, "data", "base64")
+	if mediaType != "" && data != "" {
+		return geminiPart{InlineData: &geminiBlob{MimeType: mediaType, Data: data}}, true
+	}
+	fileURI := sourceString(block.Source, "file_uri", "fileUri", "url", "uri")
+	if mediaType != "" && fileURI != "" {
+		return geminiPart{FileData: &geminiFileData{MimeType: mediaType, FileURI: fileURI}}, true
+	}
+	return geminiPart{}, false
+}
+
+func sourceString(source map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if source == nil {
+			return ""
+		}
+		switch value := source[key].(type) {
+		case string:
+			if strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
+}
+
+func geminiTextContent(content interface{}) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []ContentBlock:
+		var texts []string
+		for _, block := range v {
+			if block.Type == "text" {
+				texts = append(texts, block.Text)
+			}
+		}
+		return strings.Join(texts, "\n")
+	default:
+		if content == nil {
+			return ""
+		}
+		return fmt.Sprintf("%v", content)
+	}
 }
 
 // Name returns the provider name

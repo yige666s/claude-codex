@@ -29,19 +29,30 @@ import (
 	"claude-codex/internal/harness/telemetry"
 	toolkit "claude-codex/internal/harness/tools"
 	agenttool "claude-codex/internal/harness/tools/agent"
+	askquestiontool "claude-codex/internal/harness/tools/askuserquestion"
 	bashtool "claude-codex/internal/harness/tools/bash"
+	brieftool "claude-codex/internal/harness/tools/brief"
 	configtool "claude-codex/internal/harness/tools/configtool"
+	crontool "claude-codex/internal/harness/tools/cron"
 	filetool "claude-codex/internal/harness/tools/file"
 	lsptool "claude-codex/internal/harness/tools/lsp"
 	mcptool "claude-codex/internal/harness/tools/mcp"
 	mcpresourcestool "claude-codex/internal/harness/tools/mcpresources"
 	notebooktool "claude-codex/internal/harness/tools/notebook"
+	planmodetool "claude-codex/internal/harness/tools/planmode"
+	powershelltool "claude-codex/internal/harness/tools/powershell"
+	remotetriggertool "claude-codex/internal/harness/tools/remotetrigger"
+	repltool "claude-codex/internal/harness/tools/repl"
 	searchtool "claude-codex/internal/harness/tools/search"
 	sendmessagetool "claude-codex/internal/harness/tools/sendmessage"
 	skilltool "claude-codex/internal/harness/tools/skill"
+	sleeptool "claude-codex/internal/harness/tools/sleep"
+	synthetictool "claude-codex/internal/harness/tools/synthetic"
 	tasktool "claude-codex/internal/harness/tools/tasks"
 	teamtool "claude-codex/internal/harness/tools/team"
+	testingpermissiontool "claude-codex/internal/harness/tools/testingpermission"
 	todotool "claude-codex/internal/harness/tools/todo"
+	toolsearchtool "claude-codex/internal/harness/tools/toolsearch"
 	webtool "claude-codex/internal/harness/tools/web"
 	worktreetool "claude-codex/internal/harness/tools/worktree"
 	"claude-codex/internal/public/apperrors"
@@ -274,13 +285,32 @@ func newEngine(cfg config.Config, mode permissions.Mode, workingDir string, stre
 }
 
 func buildRegistry(cfg config.Config, workingDir string, runSubagent agenttool.Runner, skillManager *skills.SkillManager) (*toolkit.Registry, error) {
+	authManager, err := authapp.NewManager(cfg, nil)
+	if err != nil {
+		return nil, err
+	}
+	var briefUploader brieftool.Uploader
+	if brieftool.UploadEnabledFromEnv() {
+		briefUploader = brieftool.NewOAuthUploader(authManager, nil)
+	}
+	worktreeManager := coordinator.NewWorktreeManager(workingDir)
 	tools := []toolkit.Tool{
+		askquestiontool.NewTool(),
 		bashtool.NewTool(workingDir),
+		brieftool.NewToolWithUploader(workingDir, briefUploader),
+		brieftool.NewFileToolWithUploader(workingDir, briefUploader),
+		brieftool.NewLegacyToolWithUploader(workingDir, briefUploader),
 		configtool.NewTool(workingDir),
+		crontool.NewCronCreate(),
+		crontool.NewCronDelete(),
+		crontool.NewCronList(),
+		planmodetool.NewEnterTool(),
+		planmodetool.NewExitTool(),
 		filetool.NewReadTool(workingDir),
 		filetool.NewWriteTool(workingDir),
 		filetool.NewEditTool(workingDir),
 		notebooktool.NewEditTool(workingDir),
+		powershelltool.NewTool(workingDir),
 		searchtool.NewGlobTool(workingDir),
 		searchtool.NewGrepTool(workingDir),
 		webtool.NewSearchTool(nil),
@@ -288,7 +318,8 @@ func buildRegistry(cfg config.Config, workingDir string, runSubagent agenttool.R
 		lsptool.NewTool(workingDir, lspcore.NewLocalManager(workingDir)),
 		teamtool.NewTeamCreateTool(coordinator.NewManager(coordinator.Config{ScratchpadDir: workingDir})),
 		teamtool.NewTeamDeleteTool(coordinator.NewManager(coordinator.Config{ScratchpadDir: workingDir})),
-		worktreetool.NewEnterTool(coordinator.NewWorktreeManager(workingDir)),
+		worktreetool.NewEnterTool(worktreeManager),
+		worktreetool.NewExitTool(worktreeManager),
 		tasktool.NewTaskCreateTool(),
 		tasktool.NewTaskGetTool(),
 		tasktool.NewTaskListTool(),
@@ -297,8 +328,18 @@ func buildRegistry(cfg config.Config, workingDir string, runSubagent agenttool.R
 		tasktool.NewTaskOutputTool(),
 		todotool.New(),
 		&sendmessagetool.Tool{},
+		remotetriggertool.NewTool(authManager),
 		mcpresourcestool.NewListMcpResources(""),
 		mcpresourcestool.NewReadMcpResource(),
+	}
+	if testingpermissiontool.EnabledFromEnv() {
+		tools = append(tools, testingpermissiontool.NewTool())
+	}
+	if optionalToolEnabled("CLAUDE_GO_ENABLE_SLEEP_TOOL", "PROACTIVE", "KAIROS") {
+		tools = append(tools, sleeptool.New())
+	}
+	if optionalToolEnabled("CLAUDE_GO_ENABLE_SYNTHETIC_OUTPUT_TOOL", "CLAUDE_CODE_SYNTHETIC_OUTPUT") {
+		tools = append(tools, synthetictool.New())
 	}
 	if runSubagent != nil {
 		tools = append(tools, agenttool.NewTool(workingDir, runSubagent))
@@ -324,7 +365,30 @@ func buildRegistry(cfg config.Config, workingDir string, runSubagent agenttool.R
 			}
 		}
 	}
+	tools = append(tools, toolsearchtool.New(toolNames(tools)))
+	if repltool.ModeEnabledFromEnv() {
+		tools = append(tools, repltool.NewTool(tools))
+		tools = repltool.FilterToolsForMode(tools)
+	}
 	return toolkit.NewRegistry(tools...), nil
+}
+
+func toolNames(tools []toolkit.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Name())
+	}
+	return names
+}
+
+func optionalToolEnabled(envNames ...string) bool {
+	for _, name := range envNames {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+		case "1", "true", "t", "yes", "y", "on":
+			return true
+		}
+	}
+	return false
 }
 
 func newEngineWithOptions(

@@ -48,7 +48,7 @@ func NewToolWithBackgroundManager(defaultWorkDir string, run Runner, background 
 }
 
 func (t *Tool) Name() string {
-	return "agent"
+	return "Agent"
 }
 
 func (t *Tool) Description() string {

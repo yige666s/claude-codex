@@ -12,7 +12,7 @@
 - [Quickstart](#quickstart)
 - [配置文件路径与含义](#配置文件路径与含义)
 - [模块重构情况](#模块重构情况)
-- [TUI vs WebUI](#tui-vs-webui)
+- [TUI vs AgentAPI](#tui-vs-agentapi)
 - [注意事项](#注意事项)
 - [常用命令](#常用命令)
 - [许可证](#许可证)
@@ -27,7 +27,7 @@
 | TS 对照源码 | `claude-code/src` |
 | Go 版本 | `1.24.4` |
 | 主要依赖 | Cobra、Bubble Tea、Gorilla WebSocket |
-| 入口 | `cmd/tui`、`cmd/webui` |
+| 入口 | `cmd/tui`、`cmd/agentapi` |
 
 ### 重构定位
 
@@ -49,10 +49,10 @@
 在当前仓库实测通过：
 
 - ✅ `go test ./...`
-- ✅ `go build ./cmd/tui && go build ./cmd/webui`
+- ✅ `go build ./cmd/tui && go build ./cmd/agentapi`
 - ✅ `go run ./cmd/tui --help`
 - ✅ `go run ./cmd/tui /help`
-- ✅ `go run ./cmd/webui -h`
+- ✅ `go run ./cmd/agentapi -h`
 
 > 注意：**测试通过 ≠ 功能完全对等**。请结合“模块重构情况”和“注意事项”评估使用边界。
 
@@ -89,12 +89,12 @@ go run ./cmd/tui /limits
 make run-tui
 ```
 
-### 3) 启动 WebUI
+### 3) 启动 AgentAPI
 
 ```bash
 cd claude-codex
 export ANTHROPIC_API_KEY="your-api-key"
-go run ./cmd/webui -addr :8080 -model claude-sonnet-4-6
+go run ./cmd/agentapi -addr :8080 -llm-provider anthropic -model claude-sonnet-4-6 -auth-token dev-token
 ```
 
 浏览器访问：`http://localhost:8080`
@@ -102,7 +102,7 @@ go run ./cmd/webui -addr :8080 -model claude-sonnet-4-6
 或：
 
 ```bash
-make run-webui
+make run-agentapi
 ```
 
 ### 4) 回归验证
@@ -161,7 +161,7 @@ go test ./...
 - `internal/harness/*`：agent、engine、tools、state、skills 等核心框架能力
 - `internal/backend/services/*`：analytics、api、tokens、tools、oauth 等服务
 - `internal/app/cli/*`：CLI 主体与一批 slash 命令
-- `internal/ui/web/server`：Web 侧服务入口
+- `internal/backend/agentruntime`：Web 侧服务入口
 
 ### 仍在持续重构
 
@@ -171,26 +171,26 @@ go test ./...
 
 ---
 
-## TUI vs WebUI
+## TUI vs AgentAPI
 
-| 维度 | TUI (`cmd/tui`) | WebUI (`cmd/webui`) |
+| 维度 | TUI (`cmd/tui`) | AgentAPI (`cmd/agentapi`) |
 |---|---|---|
 | 交互形态 | 终端 CLI / TUI | 浏览器 + HTTP/WebSocket |
 | 核心技术 | Cobra + Bubble Tea | Web server + `/ws` |
 | 典型场景 | 本地开发、脚本化流程 | 可视化对话、演示与联调 |
 | 会话特征 | CLI 习惯流 | 当前以内存会话为主 |
-| 权限策略 | 跟随 CLI 运行配置 | 当前实现含 `ModeBypass`（偏开发态） |
-| 风险点 | 命令覆盖仍在补齐 | 生产前需强化安全与权限控制 |
+| 权限策略 | 跟随 CLI 运行配置 | 默认只启用读/搜索/Web/Skill，写入和执行需显式开启 |
+| 风险点 | 命令覆盖仍在补齐 | 生产前需接入正式用户鉴权和持久化后端 |
 
 ---
 
 ## 注意事项
 
 1. 这是重构中项目，不是最终完成态。  
-2. 生产使用前，请先做 WebUI 权限与网络暴露加固。  
+2. 生产使用前，请先做 AgentAPI 权限与网络暴露加固。  
 3. API Key 请仅通过环境变量注入，避免硬编码或提交。  
 4. 每次改动建议最少执行：`go test ./...`。  
-5. 根目录中可能存在 `tui`/`webui` 可执行文件，和 `cmd/tui`/`cmd/webui` 源码入口不是同一概念。  
+5. 根目录中可能存在 `tui`/`agentapi` 可执行文件，和 `cmd/tui`/`cmd/agentapi` 源码入口不是同一概念。  
 
 ---
 
@@ -200,7 +200,7 @@ go test ./...
 make fmt         # 格式化
 make test        # 运行测试
 make run-tui     # 启动 TUI
-make run-webui   # 启动 WebUI
+make run-agentapi   # 启动 AgentAPI
 make clean       # 清理二进制
 ```
 

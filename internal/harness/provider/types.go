@@ -34,6 +34,7 @@ type Message struct {
 	Role       string      `json:"role"`
 	Content    interface{} `json:"content"` // Can be string or []ContentBlock
 	ToolCallID string      `json:"tool_call_id,omitempty"`
+	ToolName   string      `json:"tool_name,omitempty"`
 	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
 }
 
@@ -76,7 +77,7 @@ type Usage struct {
 
 // Config represents provider configuration
 type Config struct {
-	Provider string `json:"provider"` // anthropic, openai, gemini
+	Provider string `json:"provider"` // anthropic, openai, qwen, gemini, vertex, custom
 	APIKey   string `json:"api_key,omitempty"`
 	BaseURL  string `json:"base_url,omitempty"`
 	Token    string `json:"token,omitempty"` // Alternative to APIKey for some providers

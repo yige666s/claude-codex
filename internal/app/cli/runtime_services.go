@@ -265,7 +265,7 @@ func makeSubagentRunner(
 		}
 
 		if progressSink != nil {
-			progressSink(toolkit.ProgressEvent{ToolName: "agent", Status: "started", Message: currentSummary})
+			progressSink(toolkit.ProgressEvent{ToolName: "Agent", Status: "started", Message: currentSummary})
 		}
 
 		childEngine.SetProgressCallback(func(event toolkit.ProgressEvent) {
@@ -283,7 +283,7 @@ func makeSubagentRunner(
 				},
 				func(summary string) {
 					progressSink(toolkit.ProgressEvent{
-						ToolName: "agent",
+						ToolName: "Agent",
 						Status:   "progress",
 						Message:  summary,
 					})
@@ -296,7 +296,7 @@ func makeSubagentRunner(
 		result, err := childEngine.Run(ctx, childSession, buildSubagentPrompt(request))
 		if err != nil {
 			if progressSink != nil {
-				progressSink(toolkit.ProgressEvent{ToolName: "agent", Status: "failed", Message: getSummary()})
+				progressSink(toolkit.ProgressEvent{ToolName: "Agent", Status: "failed", Message: getSummary()})
 			}
 			return "", err
 		}
@@ -305,7 +305,7 @@ func makeSubagentRunner(
 		setSummary(finalSummary)
 		if progressSink != nil {
 			progressSink(toolkit.ProgressEvent{
-				ToolName: "agent",
+				ToolName: "Agent",
 				Status:   "completed",
 				Progress: 1,
 				Message:  getSummary(),

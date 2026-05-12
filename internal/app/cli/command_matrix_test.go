@@ -127,6 +127,7 @@ func TestCommandMatrixSkillToolFiltersMatchPromptCommandRules(t *testing.T) {
 }
 
 func TestBuildRegistryIncludesTaskTodoSkillAndConfigTools(t *testing.T) {
+	t.Setenv("CLAUDE_GO_ENABLE_TESTING_TOOLS", "true")
 	cfg := config.Default()
 	registry, err := buildRegistry(cfg, t.TempDir(), nil, skills.NewSkillManager())
 	if err != nil {
@@ -139,7 +140,19 @@ func TestBuildRegistryIncludesTaskTodoSkillAndConfigTools(t *testing.T) {
 	}
 
 	for _, want := range []string{
+		"Read",
+		"Write",
+		"Edit",
+		"SendUserMessage",
+		"SendUserFile",
+		"Brief",
 		"Config",
+		"CronCreate",
+		"CronDelete",
+		"CronList",
+		"PowerShell",
+		"RemoteTrigger",
+		"TestingPermission",
 		"TaskCreate",
 		"TaskGet",
 		"TaskList",
@@ -151,6 +164,32 @@ func TestBuildRegistryIncludesTaskTodoSkillAndConfigTools(t *testing.T) {
 	} {
 		if !names[want] {
 			t.Fatalf("expected tool %s to be registered; got %v", want, names)
+		}
+	}
+}
+
+func TestBuildRegistryFiltersPrimitiveToolsWhenReplModeEnabled(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_REPL", "true")
+	t.Setenv("CLAUDE_REPL_MODE", "true")
+	cfg := config.Default()
+	registry, err := buildRegistry(cfg, t.TempDir(), nil, skills.NewSkillManager())
+	if err != nil {
+		t.Fatalf("buildRegistry() error = %v", err)
+	}
+
+	names := map[string]bool{}
+	for _, descriptor := range registry.Descriptors() {
+		names[descriptor.Name] = true
+	}
+
+	for _, want := range []string{"REPL", "Config", "Skill"} {
+		if !names[want] {
+			t.Fatalf("expected tool %s to remain registered; got %v", want, names)
+		}
+	}
+	for _, hidden := range []string{"Read", "Write", "Edit", "file_read", "file_write", "file_edit", "Glob", "Grep", "Bash", "NotebookEdit"} {
+		if names[hidden] {
+			t.Fatalf("expected primitive tool %s to be hidden in REPL mode; got %v", hidden, names)
 		}
 	}
 }

@@ -227,8 +227,9 @@ func providerContent(blocks []types.ContentBlock) interface{} {
 	out := make([]provider.ContentBlock, 0, len(blocks))
 	for _, block := range blocks {
 		out = append(out, provider.ContentBlock{
-			Type: block.Type,
-			Text: firstNonEmpty(block.Text, block.Content),
+			Type:   block.Type,
+			Text:   firstNonEmpty(block.Text, block.Content),
+			Source: block.Source,
 		})
 	}
 	return out

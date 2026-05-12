@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSkillRegistry(t *testing.T) {
@@ -254,6 +255,26 @@ func TestParseSkillMetadataEnv(t *testing.T) {
 	}
 }
 
+func TestParseSkillMetadataRunAsJob(t *testing.T) {
+	cases := []map[string]interface{}{
+		{"job": true},
+		{"run_as_job": "true"},
+		{"long_running": "yes"},
+		{"produces_artifacts": true},
+		{"agentapi": map[string]interface{}{"execution": "job"}},
+		{"runtime": map[string]interface{}{"run_as_job": true}},
+		{"openclaw": map[string]interface{}{"long_running": true}},
+	}
+	for _, tc := range cases {
+		if !ParseSkillMetadataRunAsJob(tc) {
+			t.Fatalf("expected run-as-job metadata to parse true: %#v", tc)
+		}
+	}
+	if ParseSkillMetadataRunAsJob(map[string]interface{}{"job": false}) {
+		t.Fatal("expected false job metadata to stay false")
+	}
+}
+
 func TestSkillLoader(t *testing.T) {
 	// Create temporary directory
 	tmpDir := t.TempDir()
@@ -262,6 +283,10 @@ func TestSkillLoader(t *testing.T) {
 	skillContent := `---
 name: Test Skill
 description: A test skill
+metadata:
+  product:
+    category: Developer Tools
+    icon: CODE
 ---
 
 Test content
@@ -286,6 +311,10 @@ Test content
 
 	if skill.DisplayName != "Test Skill" {
 		t.Errorf("expected display name 'Test Skill', got '%s'", skill.DisplayName)
+	}
+	product, ok := skill.Metadata["product"].(map[string]any)
+	if !ok || product["category"] != "Developer Tools" || product["icon"] != "CODE" {
+		t.Fatalf("expected product metadata to be preserved, got %#v", skill.Metadata)
 	}
 
 	// Test cache
@@ -569,6 +598,28 @@ func TestExecuteShellCommandsInPromptRejectsCommandOutsideAllowedTools(t *testin
 	}
 }
 
+func TestExecuteShellCommandsInPromptRejectsLocalCommandOutsideAllowedTools(t *testing.T) {
+	workingDir := t.TempDir()
+	_, err := ExecuteShellCommandsInPrompt("```!\necho blocked\n```", ShellBash, workingDir, nil, []string{"Bash(printf *)"}, nil)
+	if err == nil {
+		t.Fatal("expected local command outside allowed-tools to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("expected allowed-tools error, got %v", err)
+	}
+}
+
+func TestExecuteShellCommandsInPromptTimesOut(t *testing.T) {
+	workingDir := t.TempDir()
+	_, err := ExecuteShellCommandsInPromptWithTimeout("```!\nsleep 1\n```", ShellBash, workingDir, nil, nil, nil, 10*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected shell timeout")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+}
+
 func TestExecuteShellCommandsInPromptAllowsLocalShellWithoutWebSandbox(t *testing.T) {
 	workingDir := t.TempDir()
 	result, err := ExecuteShellCommandsInPrompt("```!\necho local-ok\n```", ShellBash, workingDir, nil, nil, nil)
@@ -660,6 +711,24 @@ func TestMatchUserInvocableSkillByTriggerPhrase(t *testing.T) {
 	matched, ok := manager.MatchUserInvocableSkill("帮我生成图片")
 	if !ok || matched == nil || matched.Name != "shortart-image-generator-openclaw" {
 		t.Fatalf("expected trigger phrase to match image skill, got %#v ok=%v", matched, ok)
+	}
+}
+
+func TestMatchUserInvocableSkillByTriggersInclude(t *testing.T) {
+	manager := NewSkillManager()
+	skill := NewSimpleSkill("docx", "Create documents. Triggers include: 'Word doc', '生成文档', '整理为一个文档', '调研文档'", "body")
+	if err := manager.registry.Register(skill); err != nil {
+		t.Fatalf("register skill: %v", err)
+	}
+
+	matched, ok := manager.MatchUserInvocableSkill("搜索资料并整理为一个文档")
+	if !ok || matched == nil || matched.Name != "docx" {
+		t.Fatalf("expected triggers include phrase to match docx skill, got %#v ok=%v", matched, ok)
+	}
+
+	matched, ok = manager.MatchUserInvocableSkill("搜索一下这个网站，把活动资讯整理一下，生成一个文档")
+	if !ok || matched == nil || matched.Name != "docx" {
+		t.Fatalf("expected normalized document phrase to match docx skill, got %#v ok=%v", matched, ok)
 	}
 }
 

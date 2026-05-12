@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"claude-codex/internal/harness/websandbox"
 )
 
 // LoadedFrom indicates where a skill was loaded from
@@ -322,6 +320,8 @@ func (l *SkillLoader) buildSkillDefinition(
 	}
 	shell := ParseShellFrontmatter(fm.Shell)
 	allowedEnv, primaryEnv := ParseSkillMetadataEnv(fm.Metadata)
+	metadata := ParseSkillMetadata(fm.Metadata)
+	runAsJob := ParseSkillMetadataRunAsJob(fm.Metadata)
 
 	// Determine execution context
 	var execContext ExecutionContext
@@ -349,7 +349,9 @@ func (l *SkillLoader) buildSkillDefinition(
 		Shell:                       shell,
 		AllowedEnv:                  allowedEnv,
 		PrimaryEnv:                  primaryEnv,
+		RunAsJob:                    runAsJob,
 		Version:                     fm.Version,
+		Metadata:                    metadata,
 		Source:                      source,
 		LoadedFrom:                  string(LoadedFromSkills),
 		Content:                     parsed.Content,
@@ -399,11 +401,18 @@ func (l *SkillLoader) buildSkillDefinition(
 				}
 				env = ctx.Environment
 			}
-			var sandboxRuntime *websandbox.Runtime
+			var shellRuntime PromptShellRuntime
 			if ctx != nil {
-				sandboxRuntime = ctx.WebSandbox
+				shellRuntime = ctx.ShellRuntime
+				if shellRuntime == nil {
+					shellRuntime = ctx.WebSandbox
+				}
 			}
-			processed, err := ExecuteShellCommandsInPrompt(content, skill.Shell, workingDir, env, skill.AllowedTools, sandboxRuntime)
+			var shellTimeout time.Duration
+			if ctx != nil {
+				shellTimeout = ctx.ShellTimeout
+			}
+			processed, err := ExecuteShellCommandsInPromptWithTimeout(content, skill.Shell, workingDir, env, skill.AllowedTools, shellRuntime, shellTimeout)
 			if err != nil {
 				return nil, err
 			}

@@ -58,6 +58,29 @@ func FormatSkillEntry(skill *skills.SkillDefinition) string {
 	return fmt.Sprintf("- %s: %s", skill.Name, FormatSkillDescription(skill))
 }
 
+// FormatFullSkillEntry formats a single skill entry without truncating the
+// description. This is used when the runtime intentionally gives the model the
+// complete skill catalog for LLM-driven skill selection.
+func FormatFullSkillEntry(skill *skills.SkillDefinition) string {
+	desc := skill.Description
+	if skill.WhenToUse != "" {
+		desc = fmt.Sprintf("%s - %s", desc, skill.WhenToUse)
+	}
+	return fmt.Sprintf("- %s: %s", skill.Name, desc)
+}
+
+// FormatAllSkillDescriptions formats every skill with its full description.
+func FormatAllSkillDescriptions(skillList []*skills.SkillDefinition) string {
+	if len(skillList) == 0 {
+		return ""
+	}
+	entries := make([]string, 0, len(skillList))
+	for _, skill := range skillList {
+		entries = append(entries, FormatFullSkillEntry(skill))
+	}
+	return strings.Join(entries, "\n")
+}
+
 // FormatSkillsWithinBudget formats skills within the character budget
 func FormatSkillsWithinBudget(skillList []*skills.SkillDefinition, contextWindowTokens int) string {
 	if len(skillList) == 0 {

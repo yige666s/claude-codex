@@ -114,6 +114,9 @@ func (p *SimplePlanner) Next(_ context.Context, session *state.Session, _ []tool
 }
 
 func summarizeTool(message state.Message) string {
+	if summary := summarizeStructuredFileTool(message); summary != "" {
+		return summary
+	}
 	if strings.TrimSpace(message.ToolOutput) != "" {
 		return message.ToolOutput
 	}
@@ -121,6 +124,33 @@ func summarizeTool(message state.Message) string {
 		return fmt.Sprintf("completed %s", message.ToolName)
 	}
 	return "completed tool execution"
+}
+
+func summarizeStructuredFileTool(message state.Message) string {
+	switch message.ToolName {
+	case "Write":
+		var output struct {
+			Type     string `json:"type"`
+			FilePath string `json:"filePath"`
+		}
+		if err := json.Unmarshal([]byte(message.ToolOutput), &output); err != nil || output.FilePath == "" {
+			return ""
+		}
+		if output.Type == "create" {
+			return "wrote " + output.FilePath
+		}
+		return "updated " + output.FilePath
+	case "Edit":
+		var output struct {
+			FilePath string `json:"filePath"`
+		}
+		if err := json.Unmarshal([]byte(message.ToolOutput), &output); err != nil || output.FilePath == "" {
+			return ""
+		}
+		return "edited " + output.FilePath
+	default:
+		return ""
+	}
 }
 
 func planCreateFile(prompt string) (ToolCall, bool, error) {
@@ -134,8 +164,8 @@ func planCreateFile(prompt string) (ToolCall, bool, error) {
 	}
 
 	input, err := json.Marshal(map[string]any{
-		"path":    path,
-		"content": defaultFileContent(path),
+		"file_path": path,
+		"content":   defaultFileContent(path),
 	})
 	if err != nil {
 		return ToolCall{}, false, err
@@ -143,7 +173,7 @@ func planCreateFile(prompt string) (ToolCall, bool, error) {
 
 	return ToolCall{
 		ID:    "call-file-write",
-		Name:  "file_write",
+		Name:  "Write",
 		Input: input,
 	}, true, nil
 }
@@ -158,14 +188,14 @@ func planReadFile(prompt string) (ToolCall, bool, error) {
 		return ToolCall{}, false, nil
 	}
 
-	input, err := json.Marshal(map[string]any{"path": path})
+	input, err := json.Marshal(map[string]any{"file_path": path})
 	if err != nil {
 		return ToolCall{}, false, err
 	}
 
 	return ToolCall{
 		ID:    "call-file-read",
-		Name:  "file_read",
+		Name:  "Read",
 		Input: input,
 	}, true, nil
 }
@@ -186,7 +216,7 @@ func planEditFile(prompt string) (ToolCall, bool, error) {
 	}
 
 	input, err := json.Marshal(map[string]any{
-		"path":       path,
+		"file_path":  path,
 		"old_string": parts[0],
 		"new_string": parts[1],
 	})
@@ -196,7 +226,7 @@ func planEditFile(prompt string) (ToolCall, bool, error) {
 
 	return ToolCall{
 		ID:    "call-file-edit",
-		Name:  "file_edit",
+		Name:  "Edit",
 		Input: input,
 	}, true, nil
 }
@@ -228,7 +258,7 @@ func planBash(prompt string) (ToolCall, bool, error) {
 
 	return ToolCall{
 		ID:    "call-bash",
-		Name:  "bash",
+		Name:  "Bash",
 		Input: input,
 	}, true, nil
 }
@@ -256,7 +286,7 @@ func planGlob(prompt string) (ToolCall, bool, error) {
 
 	return ToolCall{
 		ID:    "call-glob",
-		Name:  "glob",
+		Name:  "Glob",
 		Input: input,
 	}, true, nil
 }
@@ -281,7 +311,7 @@ func planGrep(prompt string) (ToolCall, bool, error) {
 
 	return ToolCall{
 		ID:    "call-grep",
-		Name:  "grep",
+		Name:  "Grep",
 		Input: input,
 	}, true, nil
 }
@@ -305,7 +335,7 @@ func planWebSearch(prompt string) (ToolCall, bool, error) {
 		return ToolCall{}, false, err
 	}
 
-	return ToolCall{ID: "call-web-search", Name: "web_search", Input: input}, true, nil
+	return ToolCall{ID: "call-web-search", Name: "WebSearch", Input: input}, true, nil
 }
 
 func planWebFetch(prompt string) (ToolCall, bool, error) {
@@ -319,11 +349,11 @@ func planWebFetch(prompt string) (ToolCall, bool, error) {
 		return ToolCall{}, false, nil
 	}
 
-	input, err := json.Marshal(map[string]any{"url": url})
+	input, err := json.Marshal(map[string]any{"url": url, "prompt": "Summarize the fetched content."})
 	if err != nil {
 		return ToolCall{}, false, err
 	}
-	return ToolCall{ID: "call-web-fetch", Name: "web_fetch", Input: input}, true, nil
+	return ToolCall{ID: "call-web-fetch", Name: "WebFetch", Input: input}, true, nil
 }
 
 func planNotebook(prompt string) (ToolCall, bool, error) {
@@ -359,7 +389,7 @@ func planNotebook(prompt string) (ToolCall, bool, error) {
 	if err != nil {
 		return ToolCall{}, false, err
 	}
-	return ToolCall{ID: "call-notebook-edit", Name: "notebook_edit", Input: raw}, true, nil
+	return ToolCall{ID: "call-notebook-edit", Name: "NotebookEdit", Input: raw}, true, nil
 }
 
 func planAgent(prompt string) (ToolCall, bool, error) {
@@ -377,7 +407,7 @@ func planAgent(prompt string) (ToolCall, bool, error) {
 	if err != nil {
 		return ToolCall{}, false, err
 	}
-	return ToolCall{ID: "call-agent", Name: "agent", Input: input}, true, nil
+	return ToolCall{ID: "call-agent", Name: "Agent", Input: input}, true, nil
 }
 
 func extractPath(prompt string) string {

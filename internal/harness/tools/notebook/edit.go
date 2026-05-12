@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"claude-codex/internal/public/fsutil"
 	"claude-codex/internal/harness/permissions"
 	toolkit "claude-codex/internal/harness/tools"
+	"claude-codex/internal/public/fsutil"
 )
 
 type EditTool struct {
@@ -30,7 +30,7 @@ func NewEditTool(rootDir string) *EditTool {
 }
 
 func (t *EditTool) Name() string {
-	return "notebook_edit"
+	return "NotebookEdit"
 }
 
 func (t *EditTool) Description() string {

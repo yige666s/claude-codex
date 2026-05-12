@@ -11,8 +11,8 @@ test:
 run-tui:
 	rm -f tui && $(GO) build -o tui ./cmd/tui && ./tui
 
-run-webui:
-	rm -f webui && $(GO) build -o webui ./cmd/webui && ./webui
+run-agentapi:
+	rm -f agentapi && $(GO) build -o agentapi ./cmd/agentapi && ./agentapi
 
 clean:
-	rm -rf tui webui
+	rm -rf tui agentapi

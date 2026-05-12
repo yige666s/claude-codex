@@ -1,6 +1,6 @@
 # Provider Module
 
-The provider module provides a unified interface for multiple LLM providers (Anthropic Claude, OpenAI GPT, Google Gemini).
+The provider module provides a unified interface for multiple LLM providers (Anthropic Claude, OpenAI GPT, Qwen, Google Gemini).
 
 ## Supported Providers
 
@@ -32,7 +32,20 @@ The provider module provides a unified interface for multiple LLM providers (Ant
   - gpt-3.5-turbo
   - gpt-3.5-turbo-16k
 
-### 3. Google Gemini
+### 3. Qwen / DashScope
+- **Provider name**: `qwen`, `dashscope`, or `aliyun`
+- **Default base URL**: `https://dashscope.aliyuncs.com/compatible-mode/v1`
+- **Authentication**: API Key (Bearer token)
+- **Supported models**:
+  - qwen-plus
+  - qwen-max
+  - qwen-flash
+  - qwen-turbo
+  - qwen3.5-plus
+  - qwen3.5-max
+  - qwen3.5-flash
+
+### 4. Google Gemini
 - **Provider name**: `gemini` or `google`
 - **Default base URL**: `https://generativelanguage.googleapis.com/v1beta`
 - **Authentication**: API Key (query parameter)

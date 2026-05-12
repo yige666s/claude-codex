@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"claude-codex/internal/harness/permissions"
 	toolkit "claude-codex/internal/harness/tools"
 )
+
+const maxJobs = 50
 
 // CronJob represents a scheduled cron job.
 type CronJob struct {
@@ -24,11 +27,42 @@ type CronJob struct {
 	CreatedAt time.Time
 }
 
+type CreateOutput struct {
+	ID            string `json:"id"`
+	Cron          string `json:"cron"`
+	HumanSchedule string `json:"humanSchedule"`
+	Recurring     bool   `json:"recurring"`
+	Durable       bool   `json:"durable,omitempty"`
+}
+
+type DeleteOutput struct {
+	ID string `json:"id"`
+}
+
+type ListOutput struct {
+	Jobs []JobOutput `json:"jobs"`
+}
+
+type JobOutput struct {
+	ID            string `json:"id"`
+	Cron          string `json:"cron"`
+	HumanSchedule string `json:"humanSchedule"`
+	Prompt        string `json:"prompt"`
+	Recurring     bool   `json:"recurring,omitempty"`
+	Durable       bool   `json:"durable,omitempty"`
+}
+
 // cronStore is the in-memory job registry.
 var cronStore = struct {
 	mu   sync.RWMutex
 	jobs map[string]*CronJob
 }{jobs: make(map[string]*CronJob)}
+
+func ResetForTest() {
+	cronStore.mu.Lock()
+	defer cronStore.mu.Unlock()
+	cronStore.jobs = make(map[string]*CronJob)
+}
 
 func newJobID() string {
 	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -93,6 +127,9 @@ func (t *createTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Re
 	if strings.TrimSpace(in.Prompt) == "" {
 		return toolkit.Result{}, fmt.Errorf("prompt is required")
 	}
+	if err := validateCronExpression(in.Cron); err != nil {
+		return toolkit.Result{}, err
+	}
 
 	recurring := true
 	if in.Recurring != nil {
@@ -103,20 +140,32 @@ func (t *createTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Re
 		durable = *in.Durable
 	}
 
+	cronStore.mu.Lock()
+	defer cronStore.mu.Unlock()
+	if len(cronStore.jobs) >= maxJobs {
+		return toolkit.Result{}, fmt.Errorf("Too many scheduled jobs (max %d). Cancel one first", maxJobs)
+	}
 	job := &CronJob{
 		ID:        newJobID(),
-		Cron:      in.Cron,
-		Prompt:    in.Prompt,
+		Cron:      strings.TrimSpace(in.Cron),
+		Prompt:    strings.TrimSpace(in.Prompt),
 		Recurring: recurring,
 		Durable:   durable,
 		CreatedAt: time.Now(),
 	}
-
-	cronStore.mu.Lock()
 	cronStore.jobs[job.ID] = job
-	cronStore.mu.Unlock()
 
-	return toolkit.Result{Output: fmt.Sprintf("Scheduled job %s: '%s' at cron '%s' (recurring=%v, durable=%v)", job.ID, job.Prompt, job.Cron, recurring, durable)}, nil
+	data, err := json.Marshal(CreateOutput{
+		ID:            job.ID,
+		Cron:          job.Cron,
+		HumanSchedule: cronToHuman(job.Cron),
+		Recurring:     job.Recurring,
+		Durable:       job.Durable,
+	})
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	return toolkit.Result{Output: string(data)}, nil
 }
 
 // ---- CronDelete ----
@@ -157,7 +206,11 @@ func (t *deleteTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Re
 	if !ok {
 		return toolkit.Result{}, fmt.Errorf("cron job not found: %s", in.ID)
 	}
-	return toolkit.Result{Output: fmt.Sprintf("Deleted cron job %s.", in.ID)}, nil
+	data, err := json.Marshal(DeleteOutput{ID: in.ID})
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	return toolkit.Result{Output: string(data)}, nil
 }
 
 // ---- CronList ----
@@ -184,14 +237,40 @@ func (t *listTool) Execute(_ context.Context, _ json.RawMessage) (toolkit.Result
 	}
 	cronStore.mu.RUnlock()
 
-	if len(jobs) == 0 {
-		return toolkit.Result{Output: "No cron jobs scheduled."}, nil
-	}
-
-	var sb strings.Builder
+	sort.Slice(jobs, func(i, j int) bool {
+		return jobs[i].CreatedAt.Before(jobs[j].CreatedAt)
+	})
+	out := ListOutput{Jobs: make([]JobOutput, 0, len(jobs))}
 	for _, j := range jobs {
-		fmt.Fprintf(&sb, "ID: %s | Cron: %s | Recurring: %v | Durable: %v | Prompt: %s\n",
-			j.ID, j.Cron, j.Recurring, j.Durable, j.Prompt)
+		out.Jobs = append(out.Jobs, JobOutput{
+			ID:            j.ID,
+			Cron:          j.Cron,
+			HumanSchedule: cronToHuman(j.Cron),
+			Prompt:        j.Prompt,
+			Recurring:     j.Recurring,
+			Durable:       j.Durable,
+		})
 	}
-	return toolkit.Result{Output: strings.TrimRight(sb.String(), "\n")}, nil
+	data, err := json.Marshal(out)
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	return toolkit.Result{Output: string(data)}, nil
+}
+
+func validateCronExpression(expr string) error {
+	fields := strings.Fields(expr)
+	if len(fields) != 5 {
+		return fmt.Errorf("invalid cron expression %q: expected 5 fields", expr)
+	}
+	for _, field := range fields {
+		if strings.TrimSpace(field) == "" {
+			return fmt.Errorf("invalid cron expression %q: empty field", expr)
+		}
+	}
+	return nil
+}
+
+func cronToHuman(expr string) string {
+	return strings.Join(strings.Fields(expr), " ")
 }

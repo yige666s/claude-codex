@@ -12,7 +12,7 @@
 - [Quickstart](#quickstart)
 - [Configuration Paths and Meanings](#configuration-paths-and-meanings)
 - [Refactoring Status by Module](#refactoring-status-by-module)
-- [TUI vs WebUI](#tui-vs-webui)
+- [TUI vs AgentAPI](#tui-vs-agentapi)
 - [Notes](#notes)
 - [Common Commands](#common-commands)
 - [License](#license)
@@ -27,7 +27,7 @@
 | TS reference source | `claude-code/src` |
 | Go version | `1.24.4` |
 | Main dependencies | Cobra, Bubble Tea, Gorilla WebSocket |
-| Entrypoints | `cmd/tui`, `cmd/webui` |
+| Entrypoints | `cmd/tui`, `cmd/agentapi` |
 
 ### Refactor Positioning
 
@@ -49,10 +49,10 @@
 Verified in this repository:
 
 - ✅ `go test ./...`
-- ✅ `go build ./cmd/tui && go build ./cmd/webui`
+- ✅ `go build ./cmd/tui && go build ./cmd/agentapi`
 - ✅ `go run ./cmd/tui --help`
 - ✅ `go run ./cmd/tui /help`
-- ✅ `go run ./cmd/webui -h`
+- ✅ `go run ./cmd/agentapi -h`
 
 > Note: **passing tests does not equal full feature parity**. Please evaluate usage scope together with the refactoring and notes sections below.
 
@@ -89,12 +89,12 @@ Or:
 make run-tui
 ```
 
-### 3) Start WebUI
+### 3) Start AgentAPI
 
 ```bash
 cd claude-codex
 export ANTHROPIC_API_KEY="your-api-key"
-go run ./cmd/webui -addr :8080 -model claude-sonnet-4-6
+go run ./cmd/agentapi -addr :8080 -llm-provider anthropic -model claude-sonnet-4-6 -auth-token dev-token
 ```
 
 Open in browser: `http://localhost:8080`
@@ -102,7 +102,7 @@ Open in browser: `http://localhost:8080`
 Or:
 
 ```bash
-make run-webui
+make run-agentapi
 ```
 
 ### 4) Regression checks
@@ -161,7 +161,7 @@ When workspace config exists, same-name fields override the global ones (current
 - `internal/harness/*`: core framework capabilities such as agent, engine, tools, state, skills
 - `internal/backend/services/*`: analytics, api, tokens, tools, oauth, and related services
 - `internal/app/cli/*`: main CLI and a set of slash commands
-- `internal/ui/web/server`: Web-side server entry
+- `internal/backend/agentruntime`: Web-side server entry
 
 ### Areas still under active refactoring
 
@@ -171,26 +171,26 @@ When workspace config exists, same-name fields override the global ones (current
 
 ---
 
-## TUI vs WebUI
+## TUI vs AgentAPI
 
-| Dimension | TUI (`cmd/tui`) | WebUI (`cmd/webui`) |
+| Dimension | TUI (`cmd/tui`) | AgentAPI (`cmd/agentapi`) |
 |---|---|---|
 | Interaction style | Terminal CLI / TUI | Browser + HTTP/WebSocket |
 | Core tech | Cobra + Bubble Tea | Web server + `/ws` |
 | Typical usage | Local development, scripting workflows | Visual chat, demos, integration testing |
 | Session profile | CLI-oriented workflow | Mostly in-memory session flow currently |
-| Permission strategy | Follows CLI runtime config | Includes `ModeBypass` in current implementation (development-oriented) |
-| Risk point | Command coverage still being filled | Security/permission hardening needed before production |
+| Permission strategy | Follows CLI runtime config | Read/search/web/skill by default; write and execute require explicit opt-in |
+| Risk point | Command coverage still being filled | Production auth and durable storage should be wired before public exposure |
 
 ---
 
 ## Notes
 
 1. This is a project under active refactoring, not a final completed state.  
-2. Before production use, harden WebUI permissions and network exposure first.  
+2. Before production use, harden AgentAPI permissions and network exposure first.  
 3. Inject API keys via environment variables only; avoid hardcoding/committing.  
 4. After every change, at minimum run: `go test ./...`.  
-5. Executables named `tui`/`webui` in repo root are binaries; they are different from source entrypoints `cmd/tui`/`cmd/webui`.
+5. Executables named `tui`/`agentapi` in repo root are binaries; they are different from source entrypoints `cmd/tui`/`cmd/agentapi`.
 
 ---
 
@@ -200,7 +200,7 @@ When workspace config exists, same-name fields override the global ones (current
 make fmt         # Format code
 make test        # Run tests
 make run-tui     # Start TUI
-make run-webui   # Start WebUI
+make run-agentapi   # Start AgentAPI
 make clean       # Clean binaries
 ```
 

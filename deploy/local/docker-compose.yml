@@ -1,0 +1,147 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: claude-codex-pg
+    environment:
+      POSTGRES_DB: ${AGENT_API_POSTGRES_DB:-agentapi}
+      POSTGRES_USER: ${AGENT_API_POSTGRES_USER:-agentapi}
+      POSTGRES_PASSWORD: ${AGENT_API_POSTGRES_PASSWORD:-agentapi}
+    ports:
+      - "${AGENT_API_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: claude-codex-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "${AGENT_API_REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  agentapi:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.agentapi
+    image: claude-codex-agentapi:local
+    container_name: claude-codex-agentapi
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      AGENT_API_SQL_DSN: postgres://${AGENT_API_POSTGRES_USER:-agentapi}:${AGENT_API_POSTGRES_PASSWORD:-agentapi}@postgres:5432/${AGENT_API_POSTGRES_DB:-agentapi}?sslmode=disable
+      AGENT_API_JWT_SECRET: ${AGENT_API_JWT_SECRET:-local-dev-jwt-secret-change-me}
+      AGENT_API_ADMIN_TOKEN: ${AGENT_API_ADMIN_TOKEN:-11b270acdc30d0785d791f42aa8a44be87cbbdf6186f3fc4b02e7836d86f38f9}
+      AGENT_API_ARTIFACT_S3_ENDPOINT: ${AGENT_API_ARTIFACT_S3_ENDPOINT:-5c11ff96d03d238d51aef31150a87101.r2.cloudflarestorage.com}
+      AGENT_API_ARTIFACT_S3_ACCESS_KEY: ${AGENT_API_ARTIFACT_S3_ACCESS_KEY:?set Cloudflare R2 S3 access key id}
+      AGENT_API_ARTIFACT_S3_SECRET_KEY: ${AGENT_API_ARTIFACT_S3_SECRET_KEY:?set Cloudflare R2 S3 secret access key}
+      AGENT_API_ARTIFACT_S3_BUCKET: ${AGENT_API_ARTIFACT_S3_BUCKET:-agentapi}
+      AGENT_API_ARTIFACT_S3_PREFIX: ${AGENT_API_ARTIFACT_S3_PREFIX:-local}
+      AGENT_API_ARTIFACT_S3_SSL: ${AGENT_API_ARTIFACT_S3_SSL:-true}
+      AGENT_API_REDIS_URL: redis://redis:6379/0?prefix=agentapi
+      AGENT_API_OPERATION_RATE_LIMITS: ${AGENT_API_OPERATION_RATE_LIMITS:-auth_login=20/m,auth_register=10/h,chat_message=60/m,job_create=20/m,attachment_upload=30/m,asset_download=120/m,memory_extract=30/h,data_export=5/h,account_delete=3/h,admin_action=120/m}
+      AGENT_API_CORS_ALLOWED_ORIGINS: ${AGENT_API_CORS_ALLOWED_ORIGINS:-http://localhost:8081,http://localhost:5173}
+      AGENT_API_LLM_PROVIDER: ${AGENT_API_LLM_PROVIDER:-vertex}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      VERTEX_ACCESS_TOKEN: ${VERTEX_ACCESS_TOKEN:-}
+      GOOGLE_OAUTH_ACCESS_TOKEN: ${GOOGLE_OAUTH_ACCESS_TOKEN:-}
+      VERTEX_PROJECT_ID: ${VERTEX_PROJECT_ID:-}
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      VERTEX_LOCATION: ${VERTEX_LOCATION:-us-central1}
+    ports:
+      - "${AGENT_API_PORT:-8081}:8081"
+    stop_grace_period: ${AGENT_API_STOP_GRACE_PERIOD:-35s}
+    volumes:
+      - agentapi_data:/var/lib/agentapi
+      - ../../.claude:/workspace/.claude:ro
+    command:
+      - -addr
+      - :8081
+      - -store-backend
+      - sql
+      - -sql-driver
+      - pgx
+      - -sql-dialect
+      - postgres
+      - -sql-max-open-conns
+      - "${AGENT_API_SQL_MAX_OPEN_CONNS:-20}"
+      - -sql-max-idle-conns
+      - "${AGENT_API_SQL_MAX_IDLE_CONNS:-10}"
+      - -data-dir
+      - /var/lib/agentapi
+      - -workspace
+      - /workspace
+      - -user-workspace-root
+      - /var/lib/agentapi/workspaces
+      - -enable-user-system
+      - -auth-mode
+      - jwt
+      - -jwt-secret
+      - "${AGENT_API_JWT_SECRET:-local-dev-jwt-secret-change-me}"
+      - -artifact-store
+      - s3
+      - -rate-limit-backend
+      - redis
+      - -redis-url
+      - redis://redis:6379/0?prefix=agentapi
+      - -operation-rate-limits
+      - "${AGENT_API_OPERATION_RATE_LIMITS:-auth_login=20/m,auth_register=10/h,chat_message=60/m,job_create=20/m,attachment_upload=30/m,asset_download=120/m,memory_extract=30/h,data_export=5/h,account_delete=3/h,admin_action=120/m}"
+      - -skill-policy
+      - "${AGENT_API_SKILL_POLICY:-all}"
+      - -skill-dirs
+      - "${AGENT_API_SKILL_DIRS:-/workspace/.claude/skills}"
+      - -skill-shell-runner
+      - "${AGENT_API_SKILL_SHELL_RUNNER:-local}"
+      - -network-allowlist
+      - "${AGENT_API_NETWORK_ALLOWLIST:-}"
+      - -llm-provider
+      - "${AGENT_API_LLM_PROVIDER:-vertex}"
+      - -model
+      - "${AGENT_API_MODEL:-gemini-2.5-pro}"
+      - -llm-max-attempts
+      - "${AGENT_API_LLM_MAX_ATTEMPTS:-2}"
+      - -llm-chat-timeout
+      - "${AGENT_API_LLM_CHAT_TIMEOUT:-60s}"
+      - -llm-skill-timeout
+      - "${AGENT_API_LLM_SKILL_TIMEOUT:-90s}"
+      - -llm-daily-token-quota
+      - "${AGENT_API_LLM_DAILY_TOKEN_QUOTA:-500000}"
+      - -llm-daily-request-quota
+      - "${AGENT_API_LLM_DAILY_REQUEST_QUOTA:-1000}"
+      - -retention-days
+      - "${AGENT_API_RETENTION_DAYS:-30}"
+      - -shutdown-timeout
+      - "${AGENT_API_SHUTDOWN_TIMEOUT:-30s}"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  postgres_data:
+  redis_data:
+  agentapi_data:

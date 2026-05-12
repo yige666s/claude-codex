@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -9,9 +10,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+const maxPromptShellOutputBytes = 1 << 20
 
 // Frontmatter represents parsed YAML frontmatter from a skill file
 type Frontmatter struct {
@@ -470,6 +474,65 @@ func ParseSkillMetadataEnv(value interface{}) ([]string, string) {
 	return uniqueNonEmpty(envList), strings.TrimSpace(primaryEnv)
 }
 
+func ParseSkillMetadata(value interface{}) map[string]any {
+	meta, ok := value.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	out := make(map[string]any, len(meta))
+	for key, item := range meta {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = item
+	}
+	return out
+}
+
+func ParseSkillMetadataRunAsJob(value interface{}) bool {
+	meta, ok := value.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	if truthyMetadata(meta["job"]) || truthyMetadata(meta["run_as_job"]) || truthyMetadata(meta["long_running"]) || truthyMetadata(meta["produces_artifacts"]) {
+		return true
+	}
+	for _, key := range []string{"agentapi", "runtime", "openclaw"} {
+		nested, ok := meta[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if truthyMetadata(nested["job"]) || truthyMetadata(nested["run_as_job"]) || truthyMetadata(nested["long_running"]) || truthyMetadata(nested["produces_artifacts"]) {
+			return true
+		}
+		execution := strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", nested["execution"])))
+		if execution == "job" || execution == "durable_job" || execution == "background" {
+			return true
+		}
+	}
+	return false
+}
+
+func truthyMetadata(value interface{}) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on", "job", "durable_job", "background", "long", "long_running":
+			return true
+		}
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0
+	}
+	return false
+}
+
 func uniqueNonEmpty(items []string) []string {
 	if len(items) == 0 {
 		return nil
@@ -514,12 +577,11 @@ var (
 	pythonCommandPattern = regexp.MustCompile(`(^|\&\&\s*|\|\|\s*|;\s*|\(\s*|\n\s*)((?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*)python(\s)`)
 )
 
-type promptShellRuntime interface {
-	ExecuteCommand(ctx context.Context, command string) (string, error)
-	ValidateCommand(command string) error
+func ExecuteShellCommandsInPrompt(text string, shell FrontmatterShell, workingDir string, environment map[string]string, allowedTools []string, runtime PromptShellRuntime) (string, error) {
+	return ExecuteShellCommandsInPromptWithTimeout(text, shell, workingDir, environment, allowedTools, runtime, 0)
 }
 
-func ExecuteShellCommandsInPrompt(text string, shell FrontmatterShell, workingDir string, environment map[string]string, allowedTools []string, runtime promptShellRuntime) (string, error) {
+func ExecuteShellCommandsInPromptWithTimeout(text string, shell FrontmatterShell, workingDir string, environment map[string]string, allowedTools []string, runtime PromptShellRuntime, timeout time.Duration) (string, error) {
 	result := text
 
 	blockMatches := blockPattern.FindAllStringSubmatch(result, -1)
@@ -528,7 +590,7 @@ func ExecuteShellCommandsInPrompt(text string, shell FrontmatterShell, workingDi
 			continue
 		}
 		command := applyPython3Fallback(strings.TrimSpace(match[1]))
-		output, err := executePromptShellCommand(command, shell, workingDir, environment, allowedTools, runtime)
+		output, err := executePromptShellCommand(command, shell, workingDir, environment, allowedTools, runtime, timeout)
 		if err != nil {
 			return "", err
 		}
@@ -541,7 +603,7 @@ func ExecuteShellCommandsInPrompt(text string, shell FrontmatterShell, workingDi
 			continue
 		}
 		command := applyPython3Fallback(strings.TrimSpace(match[2]))
-		output, err := executePromptShellCommand(command, shell, workingDir, environment, allowedTools, runtime)
+		output, err := executePromptShellCommand(command, shell, workingDir, environment, allowedTools, runtime, timeout)
 		if err != nil {
 			return "", err
 		}
@@ -551,16 +613,27 @@ func ExecuteShellCommandsInPrompt(text string, shell FrontmatterShell, workingDi
 	return result, nil
 }
 
-func executePromptShellCommand(command string, shell FrontmatterShell, workingDir string, environment map[string]string, allowedTools []string, runtime promptShellRuntime) (string, error) {
+func executePromptShellCommand(command string, shell FrontmatterShell, workingDir string, environment map[string]string, allowedTools []string, runtime PromptShellRuntime, timeout time.Duration) (string, error) {
 	if strings.TrimSpace(command) == "" {
 		return "", nil
 	}
 	command = applyPython3Fallback(command)
+	ctx := context.Background()
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	if runtime != nil && !(reflect.ValueOf(runtime).Kind() == reflect.Ptr && reflect.ValueOf(runtime).IsNil()) {
-		return runtime.ExecuteCommand(context.Background(), command)
+		if err := runtime.ValidateCommand(command); err != nil {
+			return "", err
+		}
+		return runtime.ExecuteCommand(ctx, command)
+	}
+	if err := validateLocalPromptShellCommand(command, shell, allowedTools); err != nil {
+		return "", err
 	}
 
-	ctx := context.Background()
 	exe := "bash"
 	args := []string{"-lc", command}
 	if shell == ShellPowerShell {
@@ -575,11 +648,87 @@ func executePromptShellCommand(command string, shell FrontmatterShell, workingDi
 	for key, value := range environment {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
-	output, err := cmd.CombinedOutput()
+	var output limitBuffer
+	output.limit = maxPromptShellOutputBytes
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	outputText := strings.TrimSpace(output.String())
 	if err != nil {
-		return "", fmt.Errorf("shell command failed for %q: %s", command, strings.TrimSpace(string(output)))
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("shell command timed out after %s: %q", timeout, command)
+		}
+		return "", fmt.Errorf("shell command failed for %q: %s", command, outputText)
 	}
-	return strings.TrimSpace(string(output)), nil
+	if output.exceeded {
+		return "", fmt.Errorf("shell command output exceeds max size of %d bytes", maxPromptShellOutputBytes)
+	}
+	return outputText, nil
+}
+
+type limitBuffer struct {
+	bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (b *limitBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		return len(p), nil
+	}
+	remaining := b.limit - b.Buffer.Len()
+	if remaining <= 0 {
+		b.exceeded = true
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		b.exceeded = true
+		_, _ = b.Buffer.Write(p[:remaining])
+		return len(p), nil
+	}
+	_, _ = b.Buffer.Write(p)
+	return len(p), nil
+}
+
+func validateLocalPromptShellCommand(command string, shell FrontmatterShell, allowedTools []string) error {
+	if len(allowedTools) == 0 {
+		return nil
+	}
+	toolName := "Bash"
+	if shell == ShellPowerShell {
+		toolName = "PowerShell"
+	}
+	for _, allowed := range allowedTools {
+		allowed = strings.TrimSpace(allowed)
+		if strings.EqualFold(allowed, toolName) {
+			return nil
+		}
+		prefix := toolName + "("
+		if !strings.HasPrefix(strings.ToLower(allowed), strings.ToLower(prefix)) || !strings.HasSuffix(allowed, ")") {
+			continue
+		}
+		pattern := strings.TrimSpace(allowed[len(prefix) : len(allowed)-1])
+		if promptShellPatternMatches(command, pattern) {
+			return nil
+		}
+	}
+	return fmt.Errorf("shell command %q is not allowed by skill allowed-tools", command)
+}
+
+func ValidatePromptShellCommand(command string, shell FrontmatterShell, allowedTools []string) error {
+	return validateLocalPromptShellCommand(command, shell, allowedTools)
+}
+
+func promptShellPatternMatches(command, pattern string) bool {
+	command = strings.TrimSpace(command)
+	pattern = strings.TrimSpace(strings.ReplaceAll(pattern, ":", " "))
+	if pattern == "" || pattern == "*" {
+		return true
+	}
+	if strings.HasSuffix(pattern, "*") {
+		return strings.HasPrefix(command, strings.TrimSpace(strings.TrimSuffix(pattern, "*")))
+	}
+	return command == pattern
 }
 
 func applyPython3Fallback(command string) string {

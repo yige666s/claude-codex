@@ -26,3 +26,20 @@ func TestToolWorkspaceSymbols(t *testing.T) {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
 }
+
+func TestToolAcceptsTypeScriptActionAliases(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\nfunc Hello() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewTool(root, lspapi.NewLocalManager(root))
+	input, _ := json.Marshal(map[string]any{"action": "documentSymbol", "filePath": path})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(result.Output, "Hello") {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+}

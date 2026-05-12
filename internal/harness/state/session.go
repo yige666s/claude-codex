@@ -113,6 +113,7 @@ func (s *Session) AddToolResult(callID, toolName string, input json.RawMessage, 
 		ToolName:   toolName,
 		ToolInput:  input,
 		ToolOutput: output,
+		Hidden:     true,
 		CreatedAt:  time.Now().UTC(),
 	})
 	s.Usage.RecordOutput(output)
@@ -371,4 +372,3 @@ func (s *Session) Unarchive() {
 	s.Archived = false
 	s.UpdatedAt = time.Now().UTC()
 }
-
