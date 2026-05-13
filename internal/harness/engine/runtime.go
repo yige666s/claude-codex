@@ -24,8 +24,59 @@ type legacyRuntime struct {
 	engine *Engine
 }
 
+const (
+	workspaceContextInjectedKey = "engine.workspace_context_injected"
+	skillCatalogInjectedKey     = "engine.skill_catalog_injected"
+)
+
 func newLegacyRuntime(engine *Engine) engineRuntime {
 	return &legacyRuntime{engine: engine}
+}
+
+func (e *Engine) ensureInitialModelContext(session *state.Session) {
+	if e == nil || session == nil {
+		return
+	}
+	if session.Metadata == nil {
+		session.Metadata = map[string]string{}
+	}
+	if e.workingDir != "" && session.Metadata[workspaceContextInjectedKey] != "true" && !sessionHasHiddenContent(session, "workspace context") {
+		wsCtx := workctx.Collect(e.workingDir)
+		session.AddSystemContext(wsCtx.SystemPrompt())
+		session.AddAssistantMessage("Understood. I have the workspace context.")
+		session.Metadata[workspaceContextInjectedKey] = "true"
+	}
+	if e.skillManager == nil || session.Metadata[skillCatalogInjectedKey] == "true" || sessionHasHiddenContent(session, "The following skills are available for use with the Skill tool") {
+		if e.skillManager != nil {
+			session.Metadata[skillCatalogInjectedKey] = "true"
+		}
+		return
+	}
+	allSkills := e.skillManager.ListUserInvocableSkills()
+	content := messages.FormatAllSkillDescriptions(allSkills)
+	if strings.TrimSpace(content) == "" {
+		session.Metadata[skillCatalogInjectedKey] = "true"
+		return
+	}
+	attachment := &messages.SkillListingAttachment{
+		Content:    content,
+		SkillCount: len(allSkills),
+		IsInitial:  true,
+	}
+	session.AddSystemContext(attachment.ToSystemReminder())
+	session.Metadata[skillCatalogInjectedKey] = "true"
+}
+
+func sessionHasHiddenContent(session *state.Session, needle string) bool {
+	if session == nil || strings.TrimSpace(needle) == "" {
+		return false
+	}
+	for _, message := range session.Messages {
+		if message.Hidden && strings.Contains(message.Content, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *legacyRuntime) Descriptors() []toolkit.Descriptor {
@@ -59,22 +110,8 @@ func (r *legacyRuntime) Run(ctx context.Context, session *state.Session, prompt 
 		"working_dir":   session.WorkingDir,
 	})
 
-	if len(session.Messages) == 0 && r.engine.workingDir != "" {
-		wsCtx := workctx.Collect(r.engine.workingDir)
-		session.AddSystemContext(wsCtx.SystemPrompt())
-		session.AddAssistantMessage("Understood. I have the workspace context.")
-
-		if r.engine.skillManager != nil {
-			if r.engine.skillListingManager == nil {
-				r.engine.skillListingManager = messages.NewSkillListingManager()
-			}
-
-			allSkills := r.engine.skillManager.ListUserInvocableSkills()
-			attachment := r.engine.skillListingManager.GetSkillListingAttachment(allSkills, 200000)
-			if attachment != nil {
-				session.AddSystemContext(attachment.ToSystemReminder())
-			}
-		}
+	if recordUserMessage {
+		r.engine.ensureInitialModelContext(session)
 	}
 
 	if recordUserMessage {

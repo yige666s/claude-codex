@@ -126,9 +126,14 @@ func (t *Tool) Execute(ctx context.Context, rawInput json.RawMessage) (toolkit.R
 		return toolkit.Result{}, fmt.Errorf("skill %s is not user-invocable", skillName)
 	}
 
+	environment := map[string]string{}
+	if strings.TrimSpace(t.defaultDir) != "" {
+		environment["AGENT_WORKSPACE_DIR"] = t.defaultDir
+	}
 	blocks, err := skill.GetPrompt(input.Args, &skills.SkillContext{
-		SessionID:  "", // Will be set by engine
-		WorkingDir: t.defaultDir,
+		SessionID:   "", // Will be set by engine
+		WorkingDir:  t.defaultDir,
+		Environment: environment,
 	})
 	if err != nil {
 		return toolkit.Result{}, fmt.Errorf("failed to generate skill prompt: %w", err)

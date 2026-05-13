@@ -2520,79 +2520,6 @@ func TestServerRoutesLongRunningChatToJob(t *testing.T) {
 	t.Fatal("routed job did not finish")
 }
 
-func TestRuntimeRoutesLikelyArtifactRequestsToJob(t *testing.T) {
-	runtime := testRuntime(t)
-	runtime.SetJobStore(NewMemoryJobStore())
-	got := runtime.RouteChat(ChatRequest{UserID: "alice", SessionID: "session", Content: "请生成PPT，主题是季度总结"})
-	if !got.RunAsJob || got.JobType != "chat" {
-		t.Fatalf("expected likely long-running request to route to job, got %#v", got)
-	}
-	got = runtime.RouteChat(ChatRequest{UserID: "alice", SessionID: "session", Content: "hello"})
-	if got.RunAsJob {
-		t.Fatalf("expected normal chat to stay inline, got %#v", got)
-	}
-}
-
-func TestRuntimeRoutesNaturalLanguageSkillPromptToJob(t *testing.T) {
-	runtime := testRuntime(t)
-	runtime.SetJobStore(NewMemoryJobStore())
-	runtime.skills = matchingSkillCatalog{fakeSkillCatalog: fakeSkillCatalog{skills: []*skills.SkillDefinition{{
-		Name:          "vertex-image-artifact",
-		UserInvocable: true,
-		RunAsJob:      true,
-	}}}}
-	got := runtime.RouteChat(ChatRequest{UserID: "alice", SessionID: "session", Content: "帮我生成以下图片：Cute little kitty --ar 3:4"})
-	if !got.RunAsJob || got.JobType != "skill" {
-		t.Fatalf("expected natural image prompt to route to skill job, got %#v", got)
-	}
-}
-
-func TestRuntimeRunsMatchedNaturalLanguageSkill(t *testing.T) {
-	root := t.TempDir()
-	storeRoot := t.TempDir()
-	executions := NewMemorySkillExecutionStore()
-	catalog := matchingSkillCatalog{fakeSkillCatalog: fakeSkillCatalog{skills: []*skills.SkillDefinition{{
-		Name:          "vertex-image-artifact",
-		UserInvocable: true,
-		GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
-			return []skills.ContentBlock{{Type: "text", Text: "image " + args}}, nil
-		},
-	}}}}
-	runtime := NewRuntime(
-		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
-		NewFileSessionStore(storeRoot),
-		NewFileMemoryService(storeRoot),
-		catalog,
-		func(Scope) Runner { return skillDiagnosticRunner{} },
-	)
-	runtime.SetSkillExecutionStore(executions)
-	session, err := runtime.CreateSession(context.Background(), "alice", "")
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	content := "帮我生成以下图片：Cute little kitty --ar 3:4"
-	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: content}, &collectSink{}); err != nil {
-		t.Fatalf("chat: %v", err)
-	}
-	records, err := executions.ListSkillExecutions(context.Background(), SkillExecutionFilter{SkillName: "vertex-image-artifact"})
-	if err != nil {
-		t.Fatalf("list executions: %v", err)
-	}
-	if len(records) != 1 {
-		t.Fatalf("records = %#v", records)
-	}
-	if records[0].InputSummary != "Cute little kitty --ar 3:4" {
-		t.Fatalf("input summary = %q", records[0].InputSummary)
-	}
-	updated, err := runtime.GetSession(context.Background(), "alice", session.ID)
-	if err != nil {
-		t.Fatalf("get session: %v", err)
-	}
-	if len(visibleMessages(updated.Messages)) == 0 || visibleMessages(updated.Messages)[0].Content != content {
-		t.Fatalf("natural prompt was not preserved as visible user message: %#v", updated.Messages)
-	}
-}
-
 func TestServerWebSocketStreamsChatEvents(t *testing.T) {
 	server := httptest.NewServer(NewServer(testRuntime(t), HeaderAuthenticator{}, NewRateLimiter(10, time.Minute), nil))
 	defer server.Close()
@@ -3089,6 +3016,51 @@ func TestSkillExecutionHistoryRecordsDiagnostics(t *testing.T) {
 	}
 	if logs, ok := record.DiagnosticJSON["logs"].([]any); !ok || len(logs) == 0 {
 		t.Fatalf("expected diagnostic logs, got %#v", record.DiagnosticJSON)
+	}
+}
+
+func TestRuntimeRecordsLLMSelectedSkillExecution(t *testing.T) {
+	root := t.TempDir()
+	storeRoot := t.TempDir()
+	executions := NewMemorySkillExecutionStore()
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "vertex-image-artifact",
+		UserInvocable: true,
+	}}}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(storeRoot),
+		NewFileMemoryService(storeRoot),
+		catalog,
+		func(Scope) Runner { return inlineSkillToolRunner{} },
+	)
+	runtime.SetSkillExecutionStore(executions)
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "帮我生成以下图片：Cute little kitty --ar 3:4"}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	records, err := executions.ListSkillExecutions(context.Background(), SkillExecutionFilter{SkillName: "vertex-image-artifact"})
+	if err != nil {
+		t.Fatalf("list executions: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v", records)
+	}
+	record := records[0]
+	if record.Status != SkillExecutionStatusFailed {
+		t.Fatalf("status = %q", record.Status)
+	}
+	if record.InputSummary != "Cute little kitty --ar 3:4" {
+		t.Fatalf("input summary = %q", record.InputSummary)
+	}
+	if record.Provider != "vertex" || record.Model != "imagen-test" {
+		t.Fatalf("diagnostics not captured: %#v", record)
+	}
+	if record.Metadata["execution_path"] != "llm_skill_tool" {
+		t.Fatalf("metadata = %#v", record.Metadata)
 	}
 }
 
@@ -3624,6 +3596,22 @@ error_kind: internal`
 	return engine.Result{Output: "图片生成在准备阶段失败", Session: session}, nil
 }
 
+type inlineSkillToolRunner struct{}
+
+func (inlineSkillToolRunner) Run(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	session.AddUserMessage(prompt)
+	output := `skill_log: {"event":"start","provider":"vertex","model":"imagen-test","prompt_hash":"abc123"}
+skill_error: 图片生成在准备阶段失败
+error_kind: internal`
+	session.AddToolResult("skill-call-1", "Skill", json.RawMessage(`{"skill":"vertex-image-artifact","args":"Cute little kitty --ar 3:4"}`), output)
+	session.AddAssistantMessage("图片生成在准备阶段失败")
+	return engine.Result{Output: "图片生成在准备阶段失败", Session: session}, nil
+}
+
+func (inlineSkillToolRunner) RunGeneratedPrompt(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return inlineSkillToolRunner{}.Run(ctx, session, prompt)
+}
+
 type memoryJSONRunner struct {
 	output string
 }
@@ -3824,17 +3812,6 @@ func (c fakeSkillCatalog) ListUserInvocableSkills() []*skills.SkillDefinition {
 
 func (c fakeSkillCatalog) MatchUserInvocableSkill(prompt string) (*skills.SkillDefinition, bool) {
 	return c.GetSkill(prompt)
-}
-
-type matchingSkillCatalog struct {
-	fakeSkillCatalog
-}
-
-func (c matchingSkillCatalog) MatchUserInvocableSkill(prompt string) (*skills.SkillDefinition, bool) {
-	if strings.Contains(prompt, "生成以下图片") || strings.Contains(strings.ToLower(prompt), "generate image") {
-		return c.GetSkill("vertex-image-artifact")
-	}
-	return c.fakeSkillCatalog.MatchUserInvocableSkill(prompt)
 }
 
 type fakeSkillRegistry struct {

@@ -142,6 +142,10 @@ func (e *Engine) runStream(ctx context.Context, session *state.Session, prompt s
 	})
 
 	if recordUserMessage {
+		e.ensureInitialModelContext(session)
+	}
+
+	if recordUserMessage {
 		if last := session.LastUserMessage(); last != prompt {
 			session.AddUserMessage(prompt)
 		}

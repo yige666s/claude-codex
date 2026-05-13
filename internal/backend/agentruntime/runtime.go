@@ -1228,14 +1228,15 @@ func (r *Runtime) RouteChat(req ChatRequest) JobRoutingDecision {
 	if content == "" || r.jobs == nil {
 		return JobRoutingDecision{}
 	}
-	if skill, ok := r.skillForPrompt(content); ok {
+	if strings.HasPrefix(content, "/") {
+		skill, ok := r.skillForPrompt(content)
+		if !ok {
+			return JobRoutingDecision{}
+		}
 		if skill.RunAsJob || skill.ExecutionContext == skills.ContextFork {
 			return JobRoutingDecision{RunAsJob: true, JobType: "skill", Reason: "skill metadata requests durable job execution"}
 		}
 		return JobRoutingDecision{}
-	}
-	if contentLikelyLongRunning(content) {
-		return JobRoutingDecision{RunAsJob: true, JobType: "chat", Reason: "request is likely to create artifacts or run for a long time"}
 	}
 	return JobRoutingDecision{}
 }
@@ -1258,58 +1259,6 @@ func (r *Runtime) skillForPrompt(content string) (*skills.SkillDefinition, bool)
 		return skill, true
 	}
 	return r.skills.MatchUserInvocableSkill(content)
-}
-
-func contentLikelyLongRunning(content string) bool {
-	lower := strings.ToLower(strings.TrimSpace(content))
-	if lower == "" {
-		return false
-	}
-	phrases := []string{
-		"生成ppt", "制作ppt", "做ppt", "生成幻灯片", "制作幻灯片",
-		"生成图片", "生成以下图片", "帮我生成图片", "生成一张图", "画一张", "生图", "生成视频", "生成音频",
-		"生成文件", "导出文件", "导出", "批量处理", "批量生成",
-		"爬取", "抓取", "生成报告", "长任务", "执行工作流",
-		"分析项目", "分析代码库", "分析整个项目", "分析仓库",
-		"generate ppt", "create ppt", "presentation", "slide deck", "slides",
-		"generate image", "create image", "render image", "generate video", "generate audio",
-		"generate file", "export file", "batch process", "batch generate",
-		"crawl", "scrape", "generate report", "long-running", "run workflow",
-		"analyze codebase", "analyze repository", "analyze project",
-	}
-	for _, phrase := range phrases {
-		if strings.Contains(lower, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-func skillArgsForNaturalPrompt(skill *skills.SkillDefinition, content string) string {
-	content = strings.TrimSpace(content)
-	if skill == nil || skill.Name != "vertex-image-artifact" {
-		return content
-	}
-	prefixes := []string{
-		"帮我生成以下图片：",
-		"帮我生成以下图片:",
-		"生成以下图片：",
-		"生成以下图片:",
-		"帮我生成图片：",
-		"帮我生成图片:",
-		"生成图片：",
-		"生成图片:",
-		"请生成图片：",
-		"请生成图片:",
-		"画一张：",
-		"画一张:",
-	}
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(content, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(content, prefix))
-		}
-	}
-	return content
 }
 
 func (r *Runtime) injectMemory(ctx context.Context, userID string, session *state.Session) error {
@@ -1357,10 +1306,6 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	if strings.HasPrefix(strings.TrimSpace(content), "/") {
 		return r.runSkillCommand(ctx, req, userID, session, content, onToken)
 	}
-	if skill, ok := r.skillForPrompt(content); ok {
-		session.AddUserMessage(content)
-		return r.runSkill(ctx, userID, session, skill, skillArgsForNaturalPrompt(skill, content), onToken)
-	}
 	prompt, err := r.chatPrompt(ctx, req, content)
 	if err != nil {
 		return runnerResult{}, err
@@ -1378,7 +1323,10 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 		SessionID:  session.ID,
 		WorkingDir: session.WorkingDir,
 	})
+	startedAt := time.Now().UTC()
+	startMessageCount := len(llmSession.Messages)
 	result, err := runWithTokenStreamContent(ctx, runner, llmSession, llmPrompt, false, onToken)
+	r.recordInlineSkillExecutions(ctx, userID, result.Session, startMessageCount, startedAt, err)
 	return runnerResult{Output: result.Output, Session: result.Session}, err
 }
 
@@ -1857,6 +1805,118 @@ type skillExecutionDiagnostics struct {
 	Model         string
 	ArtifactCount int64
 	JSON          map[string]any
+}
+
+type inlineSkillInvocation struct {
+	Name string
+	Args string
+}
+
+func (r *Runtime) recordInlineSkillExecutions(ctx context.Context, userID string, session *state.Session, startIndex int, startedAt time.Time, runErr error) {
+	if r == nil || r.skillExecutions == nil || session == nil {
+		return
+	}
+	invocations := inlineSkillInvocations(session, startIndex)
+	if len(invocations) == 0 {
+		return
+	}
+	diagnostics := collectSkillExecutionDiagnostics(session, startIndex)
+	completedAt := time.Now().UTC()
+	for _, invocation := range invocations {
+		if strings.TrimSpace(invocation.Name) == "" {
+			continue
+		}
+		status := SkillExecutionStatusSucceeded
+		errText := ""
+		if runErr != nil {
+			status = SkillExecutionStatusFailed
+			errText = runErr.Error()
+		}
+		if diagnostics.SkillError != "" || diagnostics.ErrorKind != "" {
+			status = SkillExecutionStatusFailed
+			errText = firstNonEmpty(diagnostics.SkillError, diagnostics.ErrorKind, errText)
+		}
+		record := SkillExecutionRecord{
+			SkillName:      invocation.Name,
+			UserID:         userID,
+			SessionID:      session.ID,
+			JobID:          jobIDFromContext(ctx),
+			RequestID:      requestIDFromContext(ctx),
+			Status:         status,
+			Error:          errText,
+			ErrorKind:      diagnostics.ErrorKind,
+			Provider:       diagnostics.Provider,
+			Model:          diagnostics.Model,
+			InputSummary:   summarizeSkillInput(invocation.Args),
+			ArtifactCount:  diagnostics.ArtifactCount,
+			DurationMS:     completedAt.Sub(startedAt).Milliseconds(),
+			DiagnosticJSON: diagnostics.JSON,
+			StartedAt:      startedAt,
+			CompletedAt:    completedAt,
+			Metadata: map[string]any{
+				"execution_path": "llm_skill_tool",
+				"args_length":    len(invocation.Args),
+			},
+		}
+		if r.skills != nil {
+			skill, ok := r.skills.GetSkill(invocation.Name)
+			if !ok {
+				_ = r.skillExecutions.RecordSkillExecution(context.Background(), record)
+				continue
+			}
+			policy := r.skillRuntimePolicy(skill)
+			record.Metadata["allowed_tools"] = policy.AllowedTools
+			record.Metadata["allowed_env"] = policy.AllowedEnv
+			record.Metadata["network_allowlist"] = policy.NetworkAllowlist
+			record.Metadata["artifact_types"] = policy.ArtifactTypes
+			record.Metadata["execution_context"] = string(skill.ExecutionContext)
+			record.Metadata["run_as_job"] = skill.RunAsJob
+		}
+		_ = r.skillExecutions.RecordSkillExecution(context.Background(), record)
+	}
+}
+
+func inlineSkillInvocations(session *state.Session, startIndex int) []inlineSkillInvocation {
+	if session == nil || startIndex >= len(session.Messages) {
+		return nil
+	}
+	if startIndex < 0 {
+		startIndex = 0
+	}
+	out := make([]inlineSkillInvocation, 0, 1)
+	for _, message := range session.Messages[startIndex:] {
+		if !strings.EqualFold(message.ToolName, "Skill") {
+			continue
+		}
+		var input struct {
+			Skill string `json:"skill"`
+			Args  string `json:"args"`
+		}
+		if len(message.ToolInput) > 0 {
+			_ = json.Unmarshal(message.ToolInput, &input)
+		}
+		name := strings.TrimPrefix(strings.TrimSpace(input.Skill), "/")
+		if name == "" {
+			name = skillNameFromGeneratedPrompt(message.ToolOutput)
+		}
+		if name == "" {
+			continue
+		}
+		out = append(out, inlineSkillInvocation{Name: name, Args: input.Args})
+	}
+	return out
+}
+
+func skillNameFromGeneratedPrompt(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "<command-name>/") && strings.HasSuffix(line, "</command-name>") {
+			line = strings.TrimPrefix(line, "<command-name>/")
+			line = strings.TrimSuffix(line, "</command-name>")
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
 }
 
 func collectSkillExecutionDiagnostics(session *state.Session, startIndex int) skillExecutionDiagnostics {
