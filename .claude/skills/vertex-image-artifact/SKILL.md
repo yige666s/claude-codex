@@ -1,6 +1,6 @@
 ---
 name: "vertex-image-artifact"
-description: "Generate one image with Vertex AI Imagen and save it as a generated artifact."
+description: "Generate one image with Vertex AI Imagen and save it as a generated artifact. Triggers include: 生成图片, 生成以下图片, 帮我生成图片, 画一张, 生图, generate image, create image, render image."
 user-invocable: true
 argument-hint: "<image prompt>"
 allowed-tools: ["Artifact", "Bash(python3 *)"]

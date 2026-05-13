@@ -2533,6 +2533,66 @@ func TestRuntimeRoutesLikelyArtifactRequestsToJob(t *testing.T) {
 	}
 }
 
+func TestRuntimeRoutesNaturalLanguageSkillPromptToJob(t *testing.T) {
+	runtime := testRuntime(t)
+	runtime.SetJobStore(NewMemoryJobStore())
+	runtime.skills = matchingSkillCatalog{fakeSkillCatalog: fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "vertex-image-artifact",
+		UserInvocable: true,
+		RunAsJob:      true,
+	}}}}
+	got := runtime.RouteChat(ChatRequest{UserID: "alice", SessionID: "session", Content: "帮我生成以下图片：Cute little kitty --ar 3:4"})
+	if !got.RunAsJob || got.JobType != "skill" {
+		t.Fatalf("expected natural image prompt to route to skill job, got %#v", got)
+	}
+}
+
+func TestRuntimeRunsMatchedNaturalLanguageSkill(t *testing.T) {
+	root := t.TempDir()
+	storeRoot := t.TempDir()
+	executions := NewMemorySkillExecutionStore()
+	catalog := matchingSkillCatalog{fakeSkillCatalog: fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "vertex-image-artifact",
+		UserInvocable: true,
+		GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+			return []skills.ContentBlock{{Type: "text", Text: "image " + args}}, nil
+		},
+	}}}}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(storeRoot),
+		NewFileMemoryService(storeRoot),
+		catalog,
+		func(Scope) Runner { return skillDiagnosticRunner{} },
+	)
+	runtime.SetSkillExecutionStore(executions)
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	content := "帮我生成以下图片：Cute little kitty --ar 3:4"
+	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: content}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	records, err := executions.ListSkillExecutions(context.Background(), SkillExecutionFilter{SkillName: "vertex-image-artifact"})
+	if err != nil {
+		t.Fatalf("list executions: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v", records)
+	}
+	if records[0].InputSummary != "Cute little kitty --ar 3:4" {
+		t.Fatalf("input summary = %q", records[0].InputSummary)
+	}
+	updated, err := runtime.GetSession(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if len(visibleMessages(updated.Messages)) == 0 || visibleMessages(updated.Messages)[0].Content != content {
+		t.Fatalf("natural prompt was not preserved as visible user message: %#v", updated.Messages)
+	}
+}
+
 func TestServerWebSocketStreamsChatEvents(t *testing.T) {
 	server := httptest.NewServer(NewServer(testRuntime(t), HeaderAuthenticator{}, NewRateLimiter(10, time.Minute), nil))
 	defer server.Close()
@@ -2748,7 +2808,7 @@ func TestRuntimeChatLetsLLMSelectNaturalLanguageSkill(t *testing.T) {
 		func(Scope) Runner { return echoRunner{} },
 	)
 
-	err = runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "docx"}, &collectSink{})
+	err = runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "please use docx"}, &collectSink{})
 	if err != nil {
 		t.Fatalf("chat: %v", err)
 	}
@@ -2760,10 +2820,10 @@ func TestRuntimeChatLetsLLMSelectNaturalLanguageSkill(t *testing.T) {
 	if len(visible) != 2 {
 		t.Fatalf("expected normal LLM chat path, got %#v", loaded.Messages)
 	}
-	if visible[0].Role != "user" || visible[0].Content != "docx" {
+	if visible[0].Role != "user" || visible[0].Content != "please use docx" {
 		t.Fatalf("expected visible user prompt, got %#v", visible[0])
 	}
-	if visible[1].Role != "assistant" || visible[1].Content != "assistant: docx" {
+	if visible[1].Role != "assistant" || visible[1].Content != "assistant: please use docx" {
 		t.Fatalf("expected runner to decide response, got %#v", visible[1])
 	}
 }
@@ -3764,6 +3824,17 @@ func (c fakeSkillCatalog) ListUserInvocableSkills() []*skills.SkillDefinition {
 
 func (c fakeSkillCatalog) MatchUserInvocableSkill(prompt string) (*skills.SkillDefinition, bool) {
 	return c.GetSkill(prompt)
+}
+
+type matchingSkillCatalog struct {
+	fakeSkillCatalog
+}
+
+func (c matchingSkillCatalog) MatchUserInvocableSkill(prompt string) (*skills.SkillDefinition, bool) {
+	if strings.Contains(prompt, "生成以下图片") || strings.Contains(strings.ToLower(prompt), "generate image") {
+		return c.GetSkill("vertex-image-artifact")
+	}
+	return c.fakeSkillCatalog.MatchUserInvocableSkill(prompt)
 }
 
 type fakeSkillRegistry struct {

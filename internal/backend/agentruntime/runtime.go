@@ -1267,7 +1267,7 @@ func contentLikelyLongRunning(content string) bool {
 	}
 	phrases := []string{
 		"生成ppt", "制作ppt", "做ppt", "生成幻灯片", "制作幻灯片",
-		"生成图片", "生成一张图", "画一张", "生图", "生成视频", "生成音频",
+		"生成图片", "生成以下图片", "帮我生成图片", "生成一张图", "画一张", "生图", "生成视频", "生成音频",
 		"生成文件", "导出文件", "导出", "批量处理", "批量生成",
 		"爬取", "抓取", "生成报告", "长任务", "执行工作流",
 		"分析项目", "分析代码库", "分析整个项目", "分析仓库",
@@ -1283,6 +1283,33 @@ func contentLikelyLongRunning(content string) bool {
 		}
 	}
 	return false
+}
+
+func skillArgsForNaturalPrompt(skill *skills.SkillDefinition, content string) string {
+	content = strings.TrimSpace(content)
+	if skill == nil || skill.Name != "vertex-image-artifact" {
+		return content
+	}
+	prefixes := []string{
+		"帮我生成以下图片：",
+		"帮我生成以下图片:",
+		"生成以下图片：",
+		"生成以下图片:",
+		"帮我生成图片：",
+		"帮我生成图片:",
+		"生成图片：",
+		"生成图片:",
+		"请生成图片：",
+		"请生成图片:",
+		"画一张：",
+		"画一张:",
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(content, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(content, prefix))
+		}
+	}
+	return content
 }
 
 func (r *Runtime) injectMemory(ctx context.Context, userID string, session *state.Session) error {
@@ -1329,6 +1356,10 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	ensureConsumerSecurityContext(session)
 	if strings.HasPrefix(strings.TrimSpace(content), "/") {
 		return r.runSkillCommand(ctx, req, userID, session, content, onToken)
+	}
+	if skill, ok := r.skillForPrompt(content); ok {
+		session.AddUserMessage(content)
+		return r.runSkill(ctx, userID, session, skill, skillArgsForNaturalPrompt(skill, content), onToken)
 	}
 	prompt, err := r.chatPrompt(ctx, req, content)
 	if err != nil {
