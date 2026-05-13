@@ -50,12 +50,13 @@ func toProviderMessages(messages []state.Message) []Message {
 	for _, msg := range messages {
 		switch msg.Role {
 		case "user":
-			if msg.Content == "" {
+			content := providerMessageContent(msg)
+			if content == nil {
 				continue
 			}
 			out = append(out, Message{
 				Role:    "user",
-				Content: msg.Content,
+				Content: content,
 			})
 		case "assistant":
 			message := Message{
@@ -83,6 +84,36 @@ func toProviderMessages(messages []state.Message) []Message {
 		}
 	}
 	return out
+}
+
+func providerMessageContent(msg state.Message) interface{} {
+	if len(msg.ContentBlocks) == 0 {
+		if msg.Content == "" {
+			return nil
+		}
+		return msg.Content
+	}
+	blocks := make([]ContentBlock, 0, len(msg.ContentBlocks))
+	for _, block := range msg.ContentBlocks {
+		blocks = append(blocks, ContentBlock{
+			Type:   block.Type,
+			Text:   firstNonEmptyContent(block.Text, block.Content),
+			Source: block.Source,
+		})
+	}
+	if len(blocks) == 1 && blocks[0].Type == "text" && blocks[0].Text != "" {
+		return blocks[0].Text
+	}
+	return blocks
+}
+
+func firstNonEmptyContent(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func toProviderTools(descs []toolkit.Descriptor) []Tool {
