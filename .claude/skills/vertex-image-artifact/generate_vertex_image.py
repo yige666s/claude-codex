@@ -16,6 +16,18 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+DEFAULT_PROMPT = "a small friendly robot painting a tiny test image, clean product illustration"
+DEFAULT_ASPECT_RATIO = "1:1"
+SUPPORTED_ASPECT_RATIOS = ("1:1", "3:4", "4:3", "16:9", "9:16")
+ASPECT_RATIO_FLAGS = ("--ar", "--aspect-ratio", "--aspect_ratio")
+
+
+class SkillUserError(Exception):
+    def __init__(self, message: str, kind: str = "generation_failed"):
+        super().__init__(message)
+        self.message = message
+        self.kind = kind
+
 
 def env_first(*names: str) -> str:
     for name in names:
@@ -132,6 +144,12 @@ def service_account_access_token() -> str:
     credentials = service_account_credentials()
     if not credentials:
         return ""
+    missing = [name for name in ("client_email", "private_key") if not credentials.get(name)]
+    if missing:
+        raise SkillUserError(
+            "图片服务认证配置不完整，请联系管理员检查 Vertex service account。",
+            "auth_config",
+        )
     token_uri = credentials.get("token_uri") or "https://oauth2.googleapis.com/token"
     now = int(time.time())
     header = {"alg": "RS256", "typ": "JWT"}
@@ -161,7 +179,10 @@ def service_account_access_token() -> str:
         payload = json.loads(response.read().decode("utf-8"))
     token = str(payload.get("access_token") or "").strip()
     if not token:
-        raise SystemExit("Service account token response did not include access_token")
+        raise SkillUserError(
+            "图片服务认证没有返回可用令牌，请联系管理员检查 Vertex service account。",
+            "auth_config",
+        )
     return token
 
 
@@ -179,19 +200,86 @@ def access_token(refresh: bool = False) -> str:
             return token
     except Exception as exc:  # pragma: no cover - depends on local gcloud
         if refresh:
-            raise SystemExit(
-                "Vertex token was rejected and gcloud auth print-access-token is unavailable"
+            raise SkillUserError(
+                "图片服务认证已失效，并且无法自动刷新。请稍后再试或联系管理员检查 Vertex 凭据。",
+                "auth_rejected",
             ) from exc
         token = env_first("VERTEX_ACCESS_TOKEN", "GOOGLE_OAUTH_ACCESS_TOKEN", "GOOGLE_ACCESS_TOKEN")
         if token:
             return token
-        raise SystemExit(
-            "Missing Vertex access token and failed to run gcloud auth print-access-token"
+        raise SkillUserError(
+            "图片服务认证配置不可用，请联系管理员检查 Vertex service account。",
+            "auth_config",
         ) from exc
     token = env_first("VERTEX_ACCESS_TOKEN", "GOOGLE_OAUTH_ACCESS_TOKEN", "GOOGLE_ACCESS_TOKEN")
     if token:
         return token
-    raise SystemExit("Vertex access token is empty")
+    raise SkillUserError(
+        "图片服务认证令牌为空，请联系管理员检查 Vertex service account。",
+        "auth_config",
+    )
+
+
+def aspect_ratio_number(value: str) -> float | None:
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*[:x/]\s*(\d+(?:\.\d+)?)\s*", value, re.IGNORECASE)
+    if not match:
+        return None
+    width = float(match.group(1))
+    height = float(match.group(2))
+    if width <= 0 or height <= 0:
+        return None
+    return width / height
+
+
+def closest_supported_aspect_ratio(value: str) -> str:
+    requested = aspect_ratio_number(value)
+    if requested is None:
+        return DEFAULT_ASPECT_RATIO
+    return min(
+        SUPPORTED_ASPECT_RATIOS,
+        key=lambda supported: abs((aspect_ratio_number(supported) or 1.0) - requested),
+    )
+
+
+def normalize_aspect_ratio(value: str) -> tuple[str, str]:
+    value = value.strip().lower().replace(" ", "")
+    if not value:
+        return DEFAULT_ASPECT_RATIO, ""
+    value = value.replace("×", "x")
+    normalized = re.sub(r"^(\d+(?:\.\d+)?)[x/](\d+(?:\.\d+)?)$", r"\1:\2", value)
+    if normalized in SUPPORTED_ASPECT_RATIOS:
+        return normalized, ""
+    fallback = closest_supported_aspect_ratio(normalized)
+    supported = ", ".join(SUPPORTED_ASPECT_RATIOS)
+    return (
+        fallback,
+        f"Requested aspect ratio {value} is not supported by Vertex Imagen; using {fallback}. Supported values: {supported}.",
+    )
+
+
+def parse_prompt_options(raw_prompt: str) -> tuple[str, str, str]:
+    prompt = raw_prompt.strip()
+    aspect_ratio = env_first("VERTEX_IMAGE_ASPECT_RATIO") or DEFAULT_ASPECT_RATIO
+    note = ""
+
+    for flag in ASPECT_RATIO_FLAGS:
+        equals_pattern = re.compile(rf"(?<!\S){re.escape(flag)}=(\S+)")
+        match = equals_pattern.search(prompt)
+        if match:
+            aspect_ratio = match.group(1)
+            prompt = (prompt[: match.start()] + prompt[match.end() :]).strip()
+            break
+
+        spaced_pattern = re.compile(rf"(?<!\S){re.escape(flag)}\s+(\S+)")
+        match = spaced_pattern.search(prompt)
+        if match:
+            aspect_ratio = match.group(1)
+            prompt = (prompt[: match.start()] + prompt[match.end() :]).strip()
+            break
+
+    aspect_ratio, note = normalize_aspect_ratio(aspect_ratio)
+    prompt = re.sub(r"\s+", " ", prompt).strip() or DEFAULT_PROMPT
+    return prompt, aspect_ratio, note
 
 
 def safe_name(prompt: str) -> str:
@@ -209,20 +297,65 @@ def prediction_image(prediction: dict) -> tuple[bytes, str]:
         encoded = image.get("bytesBase64Encoded")
         mime_type = image.get("mimeType") or mime_type
     if not encoded:
-        raise SystemExit("Vertex response did not contain bytesBase64Encoded")
+        raise SkillUserError(
+            "图片生成服务返回了结果，但没有包含可保存的图片内容。请换一个描述再试。",
+            "empty_image",
+        )
     return base64.b64decode(encoded), mime_type
 
 
+def vertex_error_message(status_code: int, detail: str) -> tuple[str, str]:
+    message = ""
+    try:
+        payload = json.loads(detail)
+        message = str((payload.get("error") or {}).get("message") or "")
+    except json.JSONDecodeError:
+        message = detail
+    lowered = message.lower()
+
+    if status_code in (401, 403):
+        return (
+            "图片服务认证或权限配置异常，请稍后再试，或联系管理员检查 Vertex service account 权限。",
+            "auth_rejected",
+        )
+    if status_code == 429:
+        return (
+            "图片生成服务当前达到配额或频率上限，请稍后再试。",
+            "rate_limited",
+        )
+    if status_code >= 500:
+        return (
+            "Vertex Imagen 服务暂时不可用，请稍后再试。",
+            "service_unavailable",
+        )
+    if status_code == 400 and "aspect ratio" in lowered:
+        supported = ", ".join(SUPPORTED_ASPECT_RATIOS)
+        return (
+            f"图片比例没有通过 Vertex Imagen 校验。请使用这些比例之一：{supported}。",
+            "invalid_aspect_ratio",
+        )
+    if status_code == 400:
+        return (
+            "图片请求参数没有通过 Vertex Imagen 校验，请简化描述或改用支持的图片比例后再试。",
+            "invalid_request",
+        )
+    return (
+        "图片生成失败，请调整描述后再试。",
+        "generation_failed",
+    )
+
+
 def main() -> int:
-    prompt = sys.stdin.read().strip()
-    if not prompt:
-        prompt = "a small friendly robot painting a tiny test image, clean product illustration"
+    prompt, aspect_ratio, aspect_ratio_note = parse_prompt_options(sys.stdin.read())
 
     project_id = env_first("VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GCP_PROJECT")
     location = env_first("VERTEX_LOCATION", "GOOGLE_CLOUD_LOCATION") or "us-central1"
     model = env_first("VERTEX_IMAGE_MODEL") or "imagen-4.0-generate-001"
     if not project_id:
-        raise SystemExit("VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT is required")
+        raise SkillUserError(
+            "图片服务缺少 Vertex 项目配置，请联系管理员检查 VERTEX_PROJECT_ID。",
+            "missing_project",
+        )
 
     endpoint = (
         f"https://{location}-aiplatform.googleapis.com/v1/"
@@ -232,7 +365,7 @@ def main() -> int:
         "instances": [{"prompt": prompt}],
         "parameters": {
             "sampleCount": 1,
-            "aspectRatio": os.environ.get("VERTEX_IMAGE_ASPECT_RATIO", "1:1"),
+            "aspectRatio": aspect_ratio,
             "enhancePrompt": True,
             "outputOptions": {"mimeType": "image/png"},
         },
@@ -254,17 +387,22 @@ def main() -> int:
     except urllib.error.HTTPError as exc:
         if exc.code != 401:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise SystemExit(f"Vertex Imagen request failed: HTTP {exc.code}: {detail}") from exc
+            message, kind = vertex_error_message(exc.code, detail)
+            raise SkillUserError(message, kind) from exc
         try:
             with urllib.request.urlopen(build_request(access_token(refresh=True)), timeout=120) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as retry_exc:
             detail = retry_exc.read().decode("utf-8", errors="replace")
-            raise SystemExit(f"Vertex Imagen request failed after token refresh: HTTP {retry_exc.code}: {detail}") from retry_exc
+            message, kind = vertex_error_message(retry_exc.code, detail)
+            raise SkillUserError(message, kind) from retry_exc
 
     predictions = payload.get("predictions") or []
     if not predictions:
-        raise SystemExit(f"Vertex response did not contain predictions: {json.dumps(payload)[:500]}")
+        raise SkillUserError(
+            "图片生成服务没有返回图片结果，请换一个描述再试。",
+            "empty_response",
+        )
 
     image_bytes, mime_type = prediction_image(predictions[0])
     if mime_type != "image/png":
@@ -285,8 +423,20 @@ def main() -> int:
     print(f"filename: {filename}")
     print(f"content_type: {mime_type}")
     print(f"model: {model}")
+    print(f"aspect_ratio: {aspect_ratio}")
+    if aspect_ratio_note:
+        print(f"aspect_ratio_note: {aspect_ratio_note}")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SkillUserError as exc:
+        print(f"skill_error: {exc.message}")
+        print(f"error_kind: {exc.kind}")
+        raise SystemExit(0)
+    except Exception:
+        print("skill_error: 图片生成在准备阶段失败，请稍后再试或联系管理员检查服务配置。")
+        print("error_kind: internal")
+        raise SystemExit(0)

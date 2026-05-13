@@ -38,6 +38,15 @@ Generate a simple test image with Vertex AI Imagen, then save the generated PNG 
 
 The shell step below calls the Vertex Imagen REST `predict` API and writes the PNG into the current user's workspace. It expects `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, and either service account credentials from `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_APPLICATION_CREDENTIALS_JSON`, a Vertex OAuth access token from `VERTEX_ACCESS_TOKEN`, `GOOGLE_OAUTH_ACCESS_TOKEN`, `GOOGLE_ACCESS_TOKEN`, or local `gcloud auth print-access-token`.
 
+Vertex Imagen generation requires the request to include `instances[0].prompt`. This skill supplies the required `parameters.sampleCount` as `1`, sends `parameters.outputOptions.mimeType` as `image/png`, and defaults `parameters.aspectRatio` to `1:1` when the user does not specify one.
+
+The script parses image options from the user prompt before calling Vertex Imagen:
+
+- `--ar 1:1`, `--ar=1:1`, `--aspect-ratio 1:1`, or `--aspect-ratio=1:1`
+- Supported aspect ratios are `1:1`, `3:4`, `4:3`, `16:9`, and `9:16`
+- Unsupported numeric ratios are normalized to the nearest supported Vertex Imagen ratio and reported as `aspect_ratio_note`
+- Parsed flags are removed from the prompt sent to Vertex Imagen
+
 ```!
 python3 "${CLAUDE_SKILL_DIR}/generate_vertex_image.py" <<'VERTEX_IMAGE_PROMPT'
 $ARGUMENTS
@@ -49,5 +58,7 @@ Use the `Artifact` tool exactly once with the `artifact_file_path` printed above
 - `filename`: use the printed `filename`
 - `content_type`: `image/png`
 - `file_path`: use the printed `artifact_file_path`
+
+If the shell output contains `skill_error:`, do not call the `Artifact` tool. Reply in the user's language with the friendly error from `skill_error:` and, when useful, a concise next step. Do not expose raw Vertex JSON, stack traces, shell commands, auth tokens, artifact IDs, object paths, or download paths to the user.
 
 After the `Artifact` tool succeeds, do not expose raw JSON, artifact IDs, object paths, or download paths to the user. Use the tool result only as internal context, then reply in natural language that the image is ready and can be viewed in the Artifacts panel. Mention the generated filename only if it helps the user identify the asset, and offer a concise next step such as revising the prompt or generating another variant.
