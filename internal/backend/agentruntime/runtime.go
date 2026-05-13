@@ -830,6 +830,13 @@ func (r *Runtime) GetAttachment(ctx context.Context, userID, attachmentID string
 	return r.getAsset(ctx, AssetKindAttachment, userID, attachmentID)
 }
 
+func (r *Runtime) GetAttachmentMetadata(ctx context.Context, userID, attachmentID string) (*Artifact, error) {
+	if r.artifacts == nil {
+		return nil, fmt.Errorf("artifact service is not configured")
+	}
+	return r.artifacts.GetMetadata(ctx, userID, attachmentID, AssetKindAttachment)
+}
+
 func (r *Runtime) getAsset(ctx context.Context, kind, userID, assetID string) (*Artifact, []byte, error) {
 	if r.artifacts == nil {
 		return nil, nil, fmt.Errorf("artifact service is not configured")
@@ -1351,6 +1358,7 @@ func ensureConsumerSecurityContext(session *state.Session) {
 
 const vertexInlineAttachmentLimitBytes = 20 << 20
 const textAttachmentPromptLimitBytes = 1 << 20
+const signedAttachmentURLTTL = 15 * time.Minute
 
 func (r *Runtime) chatPrompt(ctx context.Context, req ChatRequest, content string) ([]publictypes.ContentBlock, error) {
 	blocks := []publictypes.ContentBlock{{Type: "text", Text: content}}
@@ -1360,18 +1368,19 @@ func (r *Runtime) chatPrompt(ctx context.Context, req ChatRequest, content strin
 		if id == "" {
 			continue
 		}
-		artifact, data, err := r.GetAttachment(ctx, req.UserID, id)
+		artifact, err := r.GetAttachmentMetadata(ctx, req.UserID, id)
 		if err != nil {
 			return nil, fmt.Errorf("load attachment %s: %w", id, err)
 		}
 		if artifact.SessionID != "" && artifact.SessionID != req.SessionID {
 			return nil, fmt.Errorf("attachment %s does not belong to this session", id)
 		}
-		if int64(len(data)) > vertexInlineAttachmentLimitBytes {
-			return nil, fmt.Errorf("attachment %s exceeds Vertex inlineData limit of %d bytes", artifact.Filename, vertexInlineAttachmentLimitBytes)
-		}
 		attachmentNames = append(attachmentNames, artifact.Filename)
 		if isTextAttachment(artifact.Filename, artifact.ContentType) {
+			_, data, err := r.GetAttachment(ctx, req.UserID, id)
+			if err != nil {
+				return nil, fmt.Errorf("load attachment %s: %w", id, err)
+			}
 			if len(data) > textAttachmentPromptLimitBytes {
 				return nil, fmt.Errorf("text attachment %s exceeds prompt inline limit of %d bytes", artifact.Filename, textAttachmentPromptLimitBytes)
 			}
@@ -1380,6 +1389,19 @@ func (r *Runtime) chatPrompt(ctx context.Context, req ChatRequest, content strin
 				Text: formatTextAttachmentPrompt(artifact.Filename, artifact.ContentType, data),
 			})
 			continue
+		}
+		if block, ok, err := r.presignedAttachmentBlock(ctx, artifact); ok && err == nil {
+			blocks = append(blocks, block)
+			continue
+		} else if ok && err != nil && artifact.SizeBytes > vertexInlineAttachmentLimitBytes {
+			return nil, fmt.Errorf("presign attachment %s: %w", artifact.Filename, err)
+		}
+		_, data, err := r.GetAttachment(ctx, req.UserID, id)
+		if err != nil {
+			return nil, fmt.Errorf("load attachment %s: %w", id, err)
+		}
+		if int64(len(data)) > vertexInlineAttachmentLimitBytes {
+			return nil, fmt.Errorf("attachment %s exceeds Vertex inlineData limit of %d bytes", artifact.Filename, vertexInlineAttachmentLimitBytes)
 		}
 		blocks = append(blocks, publictypes.ContentBlock{
 			Type: attachmentBlockType(artifact.ContentType),
@@ -1423,6 +1445,24 @@ func (r *Runtime) chatPrompt(ctx context.Context, req ChatRequest, content strin
 		blocks[0].Text = content + "\n\nAttached files: " + strings.Join(attachmentNames, ", ")
 	}
 	return blocks, nil
+}
+
+func (r *Runtime) presignedAttachmentBlock(ctx context.Context, artifact *Artifact) (publictypes.ContentBlock, bool, error) {
+	if r == nil || r.artifacts == nil || artifact == nil {
+		return publictypes.ContentBlock{}, false, nil
+	}
+	fileURL, ok, err := r.artifacts.PresignGet(ctx, artifact.ObjectKey, signedAttachmentURLTTL)
+	if !ok || err != nil {
+		return publictypes.ContentBlock{}, ok, err
+	}
+	return publictypes.ContentBlock{
+		Type: attachmentBlockType(artifact.ContentType),
+		Source: map[string]interface{}{
+			"type":       "url",
+			"media_type": normalizedContentType(artifact.ContentType),
+			"file_uri":   fileURL,
+		},
+	}, true, nil
 }
 
 func formatTextAttachmentPrompt(filename, contentType string, data []byte) string {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"claude-codex/internal/public/fsutil"
 )
@@ -20,6 +21,10 @@ type ObjectStore interface {
 	Get(ctx context.Context, key string) ([]byte, error)
 	List(ctx context.Context, prefix string) ([]string, error)
 	Delete(ctx context.Context, key string) error
+}
+
+type PresignObjectStore interface {
+	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
 }
 
 type FileObjectStore struct {

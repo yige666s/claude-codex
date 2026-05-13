@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -85,6 +87,17 @@ func (s *S3ObjectStore) List(ctx context.Context, prefix string) ([]string, erro
 
 func (s *S3ObjectStore) Delete(ctx context.Context, key string) error {
 	return s.client.RemoveObject(ctx, s.bucket, s.key(key), minio.RemoveObjectOptions{})
+}
+
+func (s *S3ObjectStore) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+	u, err := s.client.PresignedGetObject(ctx, s.bucket, s.key(key), ttl, url.Values{})
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
 }
 
 func (s *S3ObjectStore) key(key string) string {

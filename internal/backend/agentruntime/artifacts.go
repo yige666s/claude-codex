@@ -111,7 +111,7 @@ func (s *ArtifactService) Get(ctx context.Context, userID, artifactID, kind stri
 	if s == nil || s.Store == nil || s.Objects == nil {
 		return nil, nil, fmt.Errorf("artifact service is not configured")
 	}
-	artifact, err := s.Store.Get(ctx, userID, artifactID, normalizeAssetKind(kind))
+	artifact, err := s.GetMetadata(ctx, userID, artifactID, kind)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -120,6 +120,28 @@ func (s *ArtifactService) Get(ctx context.Context, userID, artifactID, kind stri
 		return nil, nil, err
 	}
 	return artifact, data, nil
+}
+
+func (s *ArtifactService) GetMetadata(ctx context.Context, userID, artifactID, kind string) (*Artifact, error) {
+	if s == nil || s.Store == nil {
+		return nil, fmt.Errorf("artifact service is not configured")
+	}
+	return s.Store.Get(ctx, userID, artifactID, normalizeAssetKind(kind))
+}
+
+func (s *ArtifactService) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, bool, error) {
+	if s == nil || s.Objects == nil {
+		return "", false, nil
+	}
+	presigner, ok := s.Objects.(PresignObjectStore)
+	if !ok {
+		return "", false, nil
+	}
+	url, err := presigner.PresignGet(ctx, key, ttl)
+	if err != nil {
+		return "", true, err
+	}
+	return url, true, nil
 }
 
 func (s *ArtifactService) List(ctx context.Context, userID, sessionID, kind string) ([]*Artifact, error) {

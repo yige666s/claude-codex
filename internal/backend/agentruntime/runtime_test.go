@@ -2041,6 +2041,49 @@ func TestRuntimeChatPassesAttachmentAsContentBlock(t *testing.T) {
 	}
 }
 
+func TestRuntimeChatPassesImageAttachmentAsSignedURL(t *testing.T) {
+	root := t.TempDir()
+	capture := &captureContentRunner{}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(root),
+		NewFileMemoryService(root),
+		nil,
+		func(Scope) Runner { return capture },
+	)
+	objects := newPresignObjectStore("https://r2.example.com/signed/photo.png?X-Amz-Signature=test")
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), objects, "artifacts"))
+
+	ctx := context.Background()
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	attachment, err := runtime.CreateAttachment(ctx, "alice", session.ID, "photo.png", "image/png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+
+	if err := runtime.Chat(ctx, ChatRequest{
+		UserID:        "alice",
+		SessionID:     session.ID,
+		Content:       "describe it",
+		AttachmentIDs: []string{attachment.ID},
+	}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if len(capture.blocks) != 2 {
+		t.Fatalf("captured blocks = %#v", capture.blocks)
+	}
+	source := capture.blocks[1].Source
+	if capture.blocks[1].Type != "image" || source["type"] != "url" || source["media_type"] != "image/png" || source["file_uri"] != objects.signedURL {
+		t.Fatalf("unexpected signed attachment block: %#v", capture.blocks[1])
+	}
+	if objects.getCount != 0 {
+		t.Fatalf("object data should not be read when presigned URL is available, got %d reads", objects.getCount)
+	}
+}
+
 func TestRuntimeChatInlinesTextAttachmentAsPromptText(t *testing.T) {
 	root := t.TempDir()
 	capture := &captureContentRunner{}
@@ -3299,6 +3342,52 @@ func (r *captureContentRunner) RunContent(_ context.Context, session *state.Sess
 	session.AddUserMessage(promptContentText(prompt))
 	session.AddAssistantMessage("ok")
 	return engine.Result{Output: "ok", Session: session}, nil
+}
+
+type presignObjectStore struct {
+	data      map[string][]byte
+	signedURL string
+	getCount  int
+}
+
+func newPresignObjectStore(signedURL string) *presignObjectStore {
+	return &presignObjectStore{data: make(map[string][]byte), signedURL: signedURL}
+}
+
+func (s *presignObjectStore) Put(_ context.Context, key string, data []byte, _ string) error {
+	s.data[key] = append([]byte(nil), data...)
+	return nil
+}
+
+func (s *presignObjectStore) Get(_ context.Context, key string) ([]byte, error) {
+	s.getCount++
+	data, ok := s.data[key]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return append([]byte(nil), data...), nil
+}
+
+func (s *presignObjectStore) List(_ context.Context, prefix string) ([]string, error) {
+	var keys []string
+	for key := range s.data {
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
+}
+
+func (s *presignObjectStore) Delete(_ context.Context, key string) error {
+	delete(s.data, key)
+	return nil
+}
+
+func (s *presignObjectStore) PresignGet(_ context.Context, _ string, ttl time.Duration) (string, error) {
+	if ttl <= 0 {
+		return "", errors.New("ttl is required")
+	}
+	return s.signedURL, nil
 }
 
 type blockingRunner struct {
