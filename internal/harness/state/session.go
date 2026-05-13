@@ -11,18 +11,20 @@ import (
 	"time"
 
 	"claude-codex/internal/public/fsutil"
+	publictypes "claude-codex/internal/public/types"
 )
 
 type Message struct {
-	Role       string          `json:"role"`
-	Content    string          `json:"content,omitempty"`
-	ToolName   string          `json:"tool_name,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"` // Anthropic tool_use ID
-	ToolInput  json.RawMessage `json:"tool_input,omitempty"`
-	ToolOutput string          `json:"tool_output,omitempty"`
-	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"` // For assistant messages with tool_use
-	CreatedAt  time.Time       `json:"created_at"`
-	Hidden     bool            `json:"hidden,omitempty"` // hidden messages are not shown in the TUI
+	Role          string                     `json:"role"`
+	Content       string                     `json:"content,omitempty"`
+	ContentBlocks []publictypes.ContentBlock `json:"content_blocks,omitempty"`
+	ToolName      string                     `json:"tool_name,omitempty"`
+	ToolCallID    string                     `json:"tool_call_id,omitempty"` // Anthropic tool_use ID
+	ToolInput     json.RawMessage            `json:"tool_input,omitempty"`
+	ToolOutput    string                     `json:"tool_output,omitempty"`
+	ToolCalls     []ToolCall                 `json:"tool_calls,omitempty"` // For assistant messages with tool_use
+	CreatedAt     time.Time                  `json:"created_at"`
+	Hidden        bool                       `json:"hidden,omitempty"` // hidden messages are not shown in the TUI
 }
 
 type ToolCall struct {

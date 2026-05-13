@@ -217,7 +217,11 @@ func stateToQueryMessage(sessionID string, idx int, msg state.Message) queryengi
 		}
 	default:
 		queryMsg.Type = "user"
-		queryMsg.Content = msg.Content
+		if len(msg.ContentBlocks) > 0 {
+			queryMsg.Content = msg.ContentBlocks
+		} else {
+			queryMsg.Content = msg.Content
+		}
 		queryMsg.IsMeta = msg.Hidden
 	}
 
@@ -304,10 +308,11 @@ func queryToStateMessage(msg queryengine.Message) (state.Message, bool) {
 			return toolMsg, true
 		}
 		return state.Message{
-			Role:      "user",
-			Content:   contentText(msg.Content),
-			Hidden:    msg.IsMeta,
-			CreatedAt: createdAt,
+			Role:          "user",
+			Content:       contentText(msg.Content),
+			ContentBlocks: contentBlocks(msg.Content),
+			Hidden:        msg.IsMeta,
+			CreatedAt:     createdAt,
 		}, true
 	case "assistant":
 		content, toolCalls := queryAssistantContent(msg.Content)
@@ -352,6 +357,14 @@ func queryToolResultUserMessage(msg queryengine.Message, createdAt time.Time) (s
 		}, true
 	}
 	return state.Message{}, false
+}
+
+func contentBlocks(content interface{}) []publictypes.ContentBlock {
+	blocks, ok := content.([]publictypes.ContentBlock)
+	if !ok {
+		return nil
+	}
+	return append([]publictypes.ContentBlock(nil), blocks...)
 }
 
 func contentText(content interface{}) string {

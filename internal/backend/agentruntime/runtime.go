@@ -911,6 +911,7 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 	if session == nil {
 		return fmt.Errorf("runner returned no session")
 	}
+	r.sanitizeSessionAttachmentBlocks(session)
 	if err := r.sessions.Save(ctx, req.UserID, session); err != nil {
 		return err
 	}
@@ -1333,12 +1334,20 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	if err != nil {
 		return runnerResult{}, err
 	}
+	llmSession, err := r.materializedSessionForLLM(ctx, userID, session)
+	if err != nil {
+		return runnerResult{}, err
+	}
+	llmPrompt, err := r.materializeContentBlocks(ctx, userID, prompt)
+	if err != nil {
+		return runnerResult{}, err
+	}
 	runner := r.runnerForScope(Scope{
 		UserID:     userID,
 		SessionID:  session.ID,
 		WorkingDir: session.WorkingDir,
 	})
-	result, err := runWithTokenStreamContent(ctx, runner, session, prompt, false, onToken)
+	result, err := runWithTokenStreamContent(ctx, runner, llmSession, llmPrompt, false, onToken)
 	return runnerResult{Output: result.Output, Session: result.Session}, err
 }
 
@@ -1390,27 +1399,7 @@ func (r *Runtime) chatPrompt(ctx context.Context, req ChatRequest, content strin
 			})
 			continue
 		}
-		if block, ok, err := r.presignedAttachmentBlock(ctx, artifact); ok && err == nil {
-			blocks = append(blocks, block)
-			continue
-		} else if ok && err != nil && artifact.SizeBytes > vertexInlineAttachmentLimitBytes {
-			return nil, fmt.Errorf("presign attachment %s: %w", artifact.Filename, err)
-		}
-		_, data, err := r.GetAttachment(ctx, req.UserID, id)
-		if err != nil {
-			return nil, fmt.Errorf("load attachment %s: %w", id, err)
-		}
-		if int64(len(data)) > vertexInlineAttachmentLimitBytes {
-			return nil, fmt.Errorf("attachment %s exceeds Vertex inlineData limit of %d bytes", artifact.Filename, vertexInlineAttachmentLimitBytes)
-		}
-		blocks = append(blocks, publictypes.ContentBlock{
-			Type: attachmentBlockType(artifact.ContentType),
-			Source: map[string]interface{}{
-				"type":       "base64",
-				"media_type": artifact.ContentType,
-				"data":       base64.StdEncoding.EncodeToString(data),
-			},
-		})
+		blocks = append(blocks, attachmentReferenceBlock(artifact))
 	}
 	for _, item := range req.AttachmentURLs {
 		fileURL := strings.TrimSpace(item.URL)
@@ -1447,6 +1436,148 @@ func (r *Runtime) chatPrompt(ctx context.Context, req ChatRequest, content strin
 	return blocks, nil
 }
 
+func attachmentReferenceBlock(artifact *Artifact) publictypes.ContentBlock {
+	source := map[string]interface{}{
+		"type":          "attachment_ref",
+		"attachment_id": artifact.ID,
+		"media_type":    normalizedContentType(artifact.ContentType),
+		"filename":      artifact.Filename,
+	}
+	return publictypes.ContentBlock{
+		Type:   attachmentBlockType(artifact.ContentType),
+		Source: source,
+	}
+}
+
+func (r *Runtime) materializedSessionForLLM(ctx context.Context, userID string, session *state.Session) (*state.Session, error) {
+	if session == nil {
+		return nil, nil
+	}
+	clone := *session
+	clone.Messages = append([]state.Message(nil), session.Messages...)
+	if session.Tags != nil {
+		clone.Tags = append([]string(nil), session.Tags...)
+	}
+	if session.Metadata != nil {
+		clone.Metadata = make(map[string]string, len(session.Metadata))
+		for key, value := range session.Metadata {
+			clone.Metadata[key] = value
+		}
+	}
+	for i := range clone.Messages {
+		if len(clone.Messages[i].ContentBlocks) == 0 {
+			continue
+		}
+		blocks, err := r.materializeContentBlocks(ctx, userID, clone.Messages[i].ContentBlocks)
+		if err != nil {
+			return nil, err
+		}
+		clone.Messages[i].ContentBlocks = blocks
+	}
+	return &clone, nil
+}
+
+func (r *Runtime) materializeContentBlocks(ctx context.Context, userID string, blocks []publictypes.ContentBlock) ([]publictypes.ContentBlock, error) {
+	if len(blocks) == 0 {
+		return blocks, nil
+	}
+	out := make([]publictypes.ContentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if sourceString(block.Source, "type") != "attachment_ref" {
+			out = append(out, block)
+			continue
+		}
+		id := sourceString(block.Source, "attachment_id", "id")
+		if id == "" {
+			return nil, fmt.Errorf("attachment reference is missing attachment_id")
+		}
+		artifact, err := r.GetAttachmentMetadata(ctx, userID, id)
+		if err != nil {
+			return nil, fmt.Errorf("load attachment %s: %w", id, err)
+		}
+		materialized, err := r.materializedAttachmentBlock(ctx, userID, artifact)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, materialized)
+	}
+	return out, nil
+}
+
+func (r *Runtime) materializedAttachmentBlock(ctx context.Context, userID string, artifact *Artifact) (publictypes.ContentBlock, error) {
+	if block, ok, err := r.presignedAttachmentBlock(ctx, artifact); ok && err == nil {
+		return block, nil
+	} else if ok && err != nil && artifact.SizeBytes > vertexInlineAttachmentLimitBytes {
+		return publictypes.ContentBlock{}, fmt.Errorf("presign attachment %s: %w", artifact.Filename, err)
+	}
+	_, data, err := r.GetAttachment(ctx, userID, artifact.ID)
+	if err != nil {
+		return publictypes.ContentBlock{}, fmt.Errorf("load attachment %s: %w", artifact.ID, err)
+	}
+	if int64(len(data)) > vertexInlineAttachmentLimitBytes {
+		return publictypes.ContentBlock{}, fmt.Errorf("attachment %s exceeds Vertex inlineData limit of %d bytes", artifact.Filename, vertexInlineAttachmentLimitBytes)
+	}
+	return publictypes.ContentBlock{
+		Type: attachmentBlockType(artifact.ContentType),
+		Source: map[string]interface{}{
+			"type":          "base64",
+			"attachment_id": artifact.ID,
+			"media_type":    normalizedContentType(artifact.ContentType),
+			"filename":      artifact.Filename,
+			"data":          base64.StdEncoding.EncodeToString(data),
+		},
+	}, nil
+}
+
+func (r *Runtime) sanitizeSessionAttachmentBlocks(session *state.Session) {
+	if session == nil {
+		return
+	}
+	for i := range session.Messages {
+		if len(session.Messages[i].ContentBlocks) == 0 {
+			continue
+		}
+		session.Messages[i].ContentBlocks = sanitizeAttachmentContentBlocks(session.Messages[i].ContentBlocks)
+	}
+}
+
+func sanitizeAttachmentContentBlocks(blocks []publictypes.ContentBlock) []publictypes.ContentBlock {
+	out := make([]publictypes.ContentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if id := sourceString(block.Source, "attachment_id", "id"); id != "" {
+			mediaType := sourceString(block.Source, "media_type", "mime_type", "mimeType")
+			filename := sourceString(block.Source, "filename", "name")
+			source := map[string]interface{}{
+				"type":          "attachment_ref",
+				"attachment_id": id,
+			}
+			if mediaType != "" {
+				source["media_type"] = normalizedContentType(mediaType)
+			}
+			if filename != "" {
+				source["filename"] = filename
+			}
+			block.Source = source
+		} else if sourceString(block.Source, "data", "base64", "file_uri", "fileUri", "url") != "" {
+			block.Source = nil
+		}
+		out = append(out, block)
+	}
+	return out
+}
+
+func sourceString(source map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if source == nil {
+			return ""
+		}
+		if value, ok := source[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func (r *Runtime) presignedAttachmentBlock(ctx context.Context, artifact *Artifact) (publictypes.ContentBlock, bool, error) {
 	if r == nil || r.artifacts == nil || artifact == nil {
 		return publictypes.ContentBlock{}, false, nil
@@ -1461,9 +1592,11 @@ func (r *Runtime) presignedAttachmentBlock(ctx context.Context, artifact *Artifa
 	return publictypes.ContentBlock{
 		Type: attachmentBlockType(artifact.ContentType),
 		Source: map[string]interface{}{
-			"type":       "url",
-			"media_type": normalizedContentType(artifact.ContentType),
-			"file_uri":   fileURL,
+			"type":          "url",
+			"attachment_id": artifact.ID,
+			"media_type":    normalizedContentType(artifact.ContentType),
+			"filename":      artifact.Filename,
+			"file_uri":      fileURL,
 		},
 	}, true, nil
 }

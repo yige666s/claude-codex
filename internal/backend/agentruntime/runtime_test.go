@@ -2132,6 +2132,24 @@ func TestRuntimeChatKeepsImageAttachmentInline(t *testing.T) {
 	if objects.getCount != 1 {
 		t.Fatalf("object data should be read for inline image fallback, got %d reads", objects.getCount)
 	}
+	saved, err := runtime.GetSession(ctx, "alice", session.ID)
+	if err != nil {
+		t.Fatalf("load saved session: %v", err)
+	}
+	var savedImage *publictypes.ContentBlock
+	for i := range saved.Messages {
+		for j := range saved.Messages[i].ContentBlocks {
+			if saved.Messages[i].ContentBlocks[j].Type == "image" {
+				savedImage = &saved.Messages[i].ContentBlocks[j]
+			}
+		}
+	}
+	if savedImage == nil {
+		t.Fatalf("expected saved image reference in session: %#v", saved.Messages)
+	}
+	if savedImage.Source["type"] != "attachment_ref" || savedImage.Source["attachment_id"] != attachment.ID || savedImage.Source["data"] != nil {
+		t.Fatalf("image should be persisted as attachment reference without base64 data, got %#v", savedImage.Source)
+	}
 }
 
 func TestRuntimeChatPassesNonImageAttachmentAsSignedURL(t *testing.T) {
@@ -2174,6 +2192,97 @@ func TestRuntimeChatPassesNonImageAttachmentAsSignedURL(t *testing.T) {
 	}
 	if objects.getCount != 0 {
 		t.Fatalf("object data should not be read when presigned URL is available, got %d reads", objects.getCount)
+	}
+	saved, err := runtime.GetSession(ctx, "alice", session.ID)
+	if err != nil {
+		t.Fatalf("load saved session: %v", err)
+	}
+	var savedFile *publictypes.ContentBlock
+	for i := range saved.Messages {
+		for j := range saved.Messages[i].ContentBlocks {
+			if saved.Messages[i].ContentBlocks[j].Type == "file" {
+				savedFile = &saved.Messages[i].ContentBlocks[j]
+			}
+		}
+	}
+	if savedFile == nil {
+		t.Fatalf("expected saved file reference in session: %#v", saved.Messages)
+	}
+	if savedFile.Source["type"] != "attachment_ref" || savedFile.Source["attachment_id"] != attachment.ID || savedFile.Source["file_uri"] != nil {
+		t.Fatalf("file should be persisted as attachment reference without signed URL, got %#v", savedFile.Source)
+	}
+}
+
+func TestRuntimeChatMaterializesSavedAttachmentReferencesForReplay(t *testing.T) {
+	root := t.TempDir()
+	capture := &captureContentRunner{}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(root),
+		NewFileMemoryService(root),
+		nil,
+		func(Scope) Runner { return capture },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+
+	ctx := context.Background()
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	attachment, err := runtime.CreateAttachment(ctx, "alice", session.ID, "photo.png", "image/png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+	session.Messages = append(session.Messages, state.Message{
+		Role:    "user",
+		Content: "look at this\n\nAttached files: photo.png",
+		ContentBlocks: []publictypes.ContentBlock{
+			{Type: "text", Text: "look at this\n\nAttached files: photo.png"},
+			{Type: "image", Source: map[string]interface{}{
+				"type":          "attachment_ref",
+				"attachment_id": attachment.ID,
+				"media_type":    "image/png",
+				"filename":      "photo.png",
+			}},
+		},
+		CreatedAt: time.Now().UTC(),
+	})
+	if err := runtime.sessions.Save(ctx, "alice", session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	if err := runtime.Chat(ctx, ChatRequest{
+		UserID:    "alice",
+		SessionID: session.ID,
+		Content:   "what was in the image?",
+	}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	var replayedImage *publictypes.ContentBlock
+	for i := range capture.sessionMessages {
+		for j := range capture.sessionMessages[i].ContentBlocks {
+			if capture.sessionMessages[i].ContentBlocks[j].Type == "image" {
+				replayedImage = &capture.sessionMessages[i].ContentBlocks[j]
+			}
+		}
+	}
+	if replayedImage == nil {
+		t.Fatalf("expected image block in replayed session: %#v", capture.sessionMessages)
+	}
+	if replayedImage.Source["type"] != "base64" || replayedImage.Source["data"] != base64.StdEncoding.EncodeToString([]byte("png-bytes")) {
+		t.Fatalf("expected replayed attachment reference to be materialized for LLM call, got %#v", replayedImage.Source)
+	}
+	saved, err := runtime.GetSession(ctx, "alice", session.ID)
+	if err != nil {
+		t.Fatalf("load saved session: %v", err)
+	}
+	for _, msg := range saved.Messages {
+		for _, block := range msg.ContentBlocks {
+			if block.Type == "image" && block.Source["data"] != nil {
+				t.Fatalf("saved session should not contain base64 image data: %#v", block.Source)
+			}
+		}
 	}
 }
 
@@ -3419,10 +3528,12 @@ func (echoRunner) RunGeneratedPromptStream(ctx context.Context, session *state.S
 }
 
 type captureContentRunner struct {
-	blocks []publictypes.ContentBlock
+	blocks          []publictypes.ContentBlock
+	sessionMessages []state.Message
 }
 
 func (r *captureContentRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	r.sessionMessages = append([]state.Message(nil), session.Messages...)
 	return echoRunner{}.Run(ctx, session, prompt)
 }
 
@@ -3432,7 +3543,13 @@ func (r *captureContentRunner) RunGeneratedPrompt(ctx context.Context, session *
 
 func (r *captureContentRunner) RunContent(_ context.Context, session *state.Session, prompt []publictypes.ContentBlock) (engine.Result, error) {
 	r.blocks = append([]publictypes.ContentBlock(nil), prompt...)
-	session.AddUserMessage(promptContentText(prompt))
+	r.sessionMessages = append([]state.Message(nil), session.Messages...)
+	session.Messages = append(session.Messages, state.Message{
+		Role:          "user",
+		Content:       promptContentText(prompt),
+		ContentBlocks: append([]publictypes.ContentBlock(nil), prompt...),
+		CreatedAt:     time.Now().UTC(),
+	})
 	session.AddAssistantMessage("ok")
 	return engine.Result{Output: "ok", Session: session}, nil
 }

@@ -810,10 +810,11 @@ func publicMessageToStateMessage(msg types.Message) (state.Message, bool) {
 			return toolMsg, true
 		}
 		return state.Message{
-			Role:      "user",
-			Content:   publicContentText(msg.Content),
-			Hidden:    msg.IsMeta || msg.Type == types.MessageTypeSystem,
-			CreatedAt: createdAt,
+			Role:          "user",
+			Content:       publicContentText(msg.Content),
+			ContentBlocks: append([]types.ContentBlock(nil), msg.Content...),
+			Hidden:        msg.IsMeta || msg.Type == types.MessageTypeSystem,
+			CreatedAt:     createdAt,
 		}, true
 	}
 }
@@ -877,15 +878,19 @@ func stateMessageToPublicMessage(msg *state.Message) types.Message {
 			}},
 		}
 	default:
+		content := msg.ContentBlocks
+		if len(content) == 0 {
+			content = []types.ContentBlock{{
+				Type: "text",
+				Text: msg.Content,
+			}}
+		}
 		return types.Message{
 			Type:      types.MessageTypeUser,
 			UUID:      types.UUID(),
 			Timestamp: timestamp,
 			IsMeta:    msg.Hidden,
-			Content: []types.ContentBlock{{
-				Type: "text",
-				Text: msg.Content,
-			}},
+			Content:   append([]types.ContentBlock(nil), content...),
 		}
 	}
 }
