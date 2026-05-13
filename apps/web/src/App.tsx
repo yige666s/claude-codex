@@ -177,6 +177,7 @@ export function App() {
   const accountRef = useRef<HTMLDivElement | null>(null);
   const lastJobEventRef = useRef("");
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const artifactsRef = useRef<Asset[]>([]);
   const globalSearchDialogRef = useFocusTrap<HTMLElement>(globalSearchOpen, () => setGlobalSearchOpen(false));
   const skillDetailDialogRef = useFocusTrap<HTMLElement>(Boolean(skillDetail), () => setSkillDetail(null));
   const authSession = auth || api.session();
@@ -283,6 +284,10 @@ export function App() {
     if (!sessionId) return;
     refreshSessionData(sessionId).catch((error) => showError(error));
   }, [sessionId]);
+
+  useEffect(() => {
+    artifactsRef.current = artifacts;
+  }, [artifacts]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -396,8 +401,9 @@ export function App() {
     await loadMemorySettings();
   }
 
-  async function refreshSessionData(id: string) {
+  async function refreshSessionData(id: string, options: { revealNewArtifacts?: boolean } = {}) {
     setStatus({ tone: "busy", text: "Refreshing" });
+    const previousArtifactIds = new Set(artifactsRef.current.map((asset) => asset.id));
     const [session, jobList, attachmentList, artifactList] = await Promise.all([
       api.getSession(id),
       api.jobs(id),
@@ -408,8 +414,17 @@ export function App() {
     setSessions((current) => upsertSession(current, session));
     setJobs(jobList);
     setAttachments(attachmentList);
+    artifactsRef.current = artifactList;
     setArtifacts(artifactList);
+    if (options.revealNewArtifacts && artifactList.some((asset) => !previousArtifactIds.has(asset.id))) {
+      revealRightPanel("artifacts");
+    }
     setStatus({ tone: "ok", text: "Ready" });
+  }
+
+  function revealRightPanel(tab: RightPanelTab) {
+    setRightPanelOpen(true);
+    setRightPanelTab(tab);
   }
 
   async function openSearchResult(result: MessageSearchResult) {
@@ -775,7 +790,7 @@ export function App() {
         handleRuntimeEvent(data);
       });
       setPendingAttachments([]);
-      if (!routedToJob) await refreshSessionData(sessionId);
+      if (!routedToJob) await refreshSessionData(sessionId, { revealNewArtifacts: true });
       if (sawRuntimeError) {
         setStatus((current) => current.tone === "error" ? current : { tone: "error", text: "Request failed" });
       }
@@ -822,7 +837,7 @@ export function App() {
       const uploaded = await api.uploadAttachment(file, sessionId || undefined, setUploadProgress);
       setPendingAttachments((current) => [...current, uploaded]);
       setAttachments(await api.attachments(sessionId || undefined));
-      setRightPanelTab("attachments");
+      revealRightPanel("attachments");
       setStatus({ tone: "ok", text: "Uploaded" });
     } catch (error) {
       setUploadError(errorMessage(error));
@@ -948,8 +963,7 @@ export function App() {
     }
     if (event.type === "job" && event.job_id) {
       setSelectedJobId(event.job_id);
-      setRightPanelOpen(true);
-      setRightPanelTab("jobs");
+      revealRightPanel("jobs");
       setStatus({ tone: "busy", text: "Job started" });
       saveActiveJob(event.job_id, event.job?.session_id || event.session_id || sessionId);
       const submitted = event.job?.content || "";
@@ -1042,7 +1056,7 @@ export function App() {
     clearActiveJob(jobId);
     api.jobs(sessionId || undefined).then(setJobs).catch(() => {});
     const targetSession = event.session_id || sessionId;
-    if (targetSession) refreshSessionData(targetSession).catch(() => {});
+    if (targetSession) refreshSessionData(targetSession, { revealNewArtifacts: true }).catch(() => {});
   }
 
   function scheduleJobReconnect(jobId: string) {
