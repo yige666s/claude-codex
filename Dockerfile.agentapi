@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM alpine:${ALPINE_VERSION}
 
-RUN apk add --no-cache ca-certificates curl docker-cli tzdata \
+RUN apk add --no-cache bash ca-certificates curl docker-cli python3 tzdata \
     && addgroup -S agentapi \
     && adduser -S -G agentapi -h /var/lib/agentapi agentapi \
     && mkdir -p /var/lib/agentapi /workspace \

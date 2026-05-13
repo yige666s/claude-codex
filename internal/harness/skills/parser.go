@@ -658,6 +658,9 @@ func executePromptShellCommand(command string, shell FrontmatterShell, workingDi
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("shell command timed out after %s: %q", timeout, command)
 		}
+		if outputText == "" {
+			return "", fmt.Errorf("shell command failed for %q: %v", command, err)
+		}
 		return "", fmt.Errorf("shell command failed for %q: %s", command, outputText)
 	}
 	if output.exceeded {
