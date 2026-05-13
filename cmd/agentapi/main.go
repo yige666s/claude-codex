@@ -477,7 +477,10 @@ func buildRegistry(root string, skillManager *skills.SkillManager, allowDangerou
 		toolList = append(toolList, webtool.NewFetchToolWithAllowlist(nil, networkAllowlist))
 	}
 	if enabled("Skill") {
-		toolList = append(toolList, skilltool.NewToolWithRunner(skillManager, root, nil))
+		toolList = append(toolList, skilltool.NewToolWithOptions(skillManager, skilltool.Options{
+			DefaultDir:    root,
+			RouteRunAsJob: true,
+		}))
 	}
 	if artifactWriter != nil && enabled(agentruntime.ArtifactToolName) {
 		toolList = append(toolList, agentruntime.NewArtifactToolWithLimit(artifactWriter, root, artifactMaxBytes))

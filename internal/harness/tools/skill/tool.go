@@ -3,6 +3,7 @@ package skill
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -13,11 +14,21 @@ import (
 )
 
 const ToolName = "Skill"
+const RunAsJobMarkerPrefix = "agentapi_run_as_job:"
+
+var ErrRunAsJobRequired = errors.New("skill requires job execution")
 
 type Tool struct {
-	skillManager *skills.SkillManager
-	defaultDir   string
-	runSubagent  agenttool.Runner
+	skillManager  *skills.SkillManager
+	defaultDir    string
+	runSubagent   agenttool.Runner
+	routeRunAsJob bool
+}
+
+type Options struct {
+	DefaultDir    string
+	RunSubagent   agenttool.Runner
+	RouteRunAsJob bool
 }
 
 type Input struct {
@@ -43,11 +54,23 @@ func NewTool(skillManager *skills.SkillManager) toolkit.Tool {
 }
 
 func NewToolWithRunner(skillManager *skills.SkillManager, defaultDir string, runSubagent agenttool.Runner) toolkit.Tool {
+	return NewToolWithOptions(skillManager, Options{
+		DefaultDir:  defaultDir,
+		RunSubagent: runSubagent,
+	})
+}
+
+func NewToolWithOptions(skillManager *skills.SkillManager, options Options) toolkit.Tool {
 	return &Tool{
-		skillManager: skillManager,
-		defaultDir:   defaultDir,
-		runSubagent:  runSubagent,
+		skillManager:  skillManager,
+		defaultDir:    options.DefaultDir,
+		runSubagent:   options.RunSubagent,
+		routeRunAsJob: options.RouteRunAsJob,
 	}
+}
+
+func IsRunAsJobMarker(output string) bool {
+	return strings.HasPrefix(strings.TrimSpace(output), RunAsJobMarkerPrefix)
 }
 
 func (t *Tool) Name() string {
@@ -124,6 +147,21 @@ func (t *Tool) Execute(ctx context.Context, rawInput json.RawMessage) (toolkit.R
 	// Check if user can invoke this skill
 	if !skill.UserInvocable {
 		return toolkit.Result{}, fmt.Errorf("skill %s is not user-invocable", skillName)
+	}
+	if t.routeRunAsJob && skill.RunAsJob {
+		payload, err := json.Marshal(struct {
+			Skill    string `json:"skill"`
+			Args     string `json:"args,omitempty"`
+			RunAsJob bool   `json:"run_as_job"`
+		}{
+			Skill:    skillName,
+			Args:     input.Args,
+			RunAsJob: true,
+		})
+		if err != nil {
+			return toolkit.Result{}, err
+		}
+		return toolkit.Result{Output: RunAsJobMarkerPrefix + string(payload)}, nil
 	}
 
 	environment := map[string]string{}

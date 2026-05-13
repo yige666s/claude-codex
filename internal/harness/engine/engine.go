@@ -17,6 +17,7 @@ import (
 	"claude-codex/internal/harness/telemetry"
 	toolkit "claude-codex/internal/harness/tools"
 	bashtool "claude-codex/internal/harness/tools/bash"
+	skilltool "claude-codex/internal/harness/tools/skill"
 	publictypes "claude-codex/internal/public/types"
 )
 
@@ -208,7 +209,7 @@ func (e *Engine) runStream(ctx context.Context, session *state.Session, prompt s
 		}
 		session.AddAssistantMessageWithTools(plan.AssistantText, stateToolCalls)
 		if err := e.executeToolCalls(ctx, session, plan.ToolCalls, interactionID); err != nil {
-			return Result{}, err
+			return Result{Output: output.String(), Session: session}, err
 		}
 	}
 	return Result{}, fmt.Errorf("planner exceeded max turns (%d)", e.maxTurns)
@@ -381,6 +382,9 @@ func (e *Engine) executeToolCalls(ctx context.Context, session *state.Session, c
 
 	for _, message := range results {
 		session.AddToolResult(message.ToolCallID, message.ToolName, message.ToolInput, message.ToolOutput)
+		if message.ToolName == skilltool.ToolName && skilltool.IsRunAsJobMarker(message.ToolOutput) {
+			return skilltool.ErrRunAsJobRequired
+		}
 	}
 
 	return nil

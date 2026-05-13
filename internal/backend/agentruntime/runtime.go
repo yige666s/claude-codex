@@ -20,6 +20,7 @@ import (
 	"claude-codex/internal/harness/engine"
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
+	skilltool "claude-codex/internal/harness/tools/skill"
 	publictypes "claude-codex/internal/public/types"
 )
 
@@ -878,11 +879,20 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 	}
 
 	turnCtx, cancel := context.WithTimeout(ctx, r.config.TurnTimeout)
-	if err := r.start(sessionKey(req.UserID, session.ID), cancel); err != nil {
+	turnKey := sessionKey(req.UserID, session.ID)
+	if err := r.start(turnKey, cancel); err != nil {
 		cancel()
 		return err
 	}
-	defer r.finish(sessionKey(req.UserID, session.ID))
+	turnFinished := false
+	finishTurn := func() {
+		if turnFinished {
+			return
+		}
+		r.finish(turnKey)
+		turnFinished = true
+	}
+	defer finishTurn()
 
 	if err := sink.Send(ctx, Event{Type: "start", SessionID: session.ID}); err != nil {
 		return err
@@ -914,6 +924,17 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 	r.sanitizeSessionAttachmentBlocks(session)
 	if err := r.sessions.Save(ctx, req.UserID, session); err != nil {
 		return err
+	}
+	if result.Job != nil {
+		finishTurn()
+		if err := r.StartJob(ctx, result.Job); err != nil {
+			_ = sink.Send(ctx, Event{Type: "error", SessionID: session.ID, JobID: result.Job.ID, Error: err.Error()})
+			return err
+		}
+		if err := sink.Send(ctx, Event{Type: "job", SessionID: session.ID, JobID: result.Job.ID, Job: result.Job, JobReason: result.JobReason}); err != nil {
+			return err
+		}
+		return nil
 	}
 	if r.memory != nil {
 		if err := r.afterTurnMemory(ctx, req.UserID, session); err != nil {
@@ -1326,6 +1347,21 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	startedAt := time.Now().UTC()
 	startMessageCount := len(llmSession.Messages)
 	result, err := runWithTokenStreamContent(ctx, runner, llmSession, llmPrompt, false, onToken)
+	if errors.Is(err, skilltool.ErrRunAsJobRequired) {
+		selection, ok := selectedRunAsJobSkill(result.Session, startMessageCount)
+		if !ok {
+			return runnerResult{Output: result.Output, Session: result.Session}, err
+		}
+		job, jobErr := r.createSelectedSkillJob(ctx, req, session.ID, selection)
+		if jobErr != nil {
+			return runnerResult{Output: result.Output, Session: result.Session}, jobErr
+		}
+		return runnerResult{
+			Session:   result.Session,
+			Job:       job,
+			JobReason: "skill metadata requests durable job execution",
+		}, nil
+	}
 	r.recordInlineSkillExecutions(ctx, userID, result.Session, startMessageCount, startedAt, err)
 	return runnerResult{Output: result.Output, Session: result.Session}, err
 }
@@ -1812,6 +1848,71 @@ type inlineSkillInvocation struct {
 	Args string
 }
 
+type runAsJobSkillSelection struct {
+	Name string
+	Args string
+}
+
+func selectedRunAsJobSkill(session *state.Session, startIndex int) (runAsJobSkillSelection, bool) {
+	if session == nil {
+		return runAsJobSkillSelection{}, false
+	}
+	if startIndex < 0 {
+		startIndex = 0
+	}
+	for _, message := range session.Messages[startIndex:] {
+		if message.Role != "tool" || message.ToolName != skilltool.ToolName || !skilltool.IsRunAsJobMarker(message.ToolOutput) {
+			continue
+		}
+		raw := strings.TrimPrefix(strings.TrimSpace(message.ToolOutput), skilltool.RunAsJobMarkerPrefix)
+		var payload struct {
+			Skill    string `json:"skill"`
+			Args     string `json:"args"`
+			RunAsJob bool   `json:"run_as_job"`
+		}
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			return runAsJobSkillSelection{}, false
+		}
+		name := strings.TrimPrefix(strings.TrimSpace(payload.Skill), "/")
+		if name == "" || !payload.RunAsJob {
+			return runAsJobSkillSelection{}, false
+		}
+		return runAsJobSkillSelection{Name: name, Args: strings.TrimSpace(payload.Args)}, true
+	}
+	return runAsJobSkillSelection{}, false
+}
+
+func (r *Runtime) createSelectedSkillJob(ctx context.Context, req ChatRequest, sessionID string, selection runAsJobSkillSelection) (*Job, error) {
+	if r == nil || r.jobs == nil {
+		return nil, fmt.Errorf("job store is not configured")
+	}
+	if r.skills == nil {
+		return nil, fmt.Errorf("skills are not configured")
+	}
+	skill, ok := r.skills.GetSkill(selection.Name)
+	if !ok {
+		return nil, fmt.Errorf("unknown skill: /%s", selection.Name)
+	}
+	if !skill.UserInvocable {
+		return nil, fmt.Errorf("skill /%s is not user-invocable", selection.Name)
+	}
+	if !skill.RunAsJob {
+		return nil, fmt.Errorf("skill /%s is not configured for job execution", selection.Name)
+	}
+	content := "/" + selection.Name
+	if strings.TrimSpace(selection.Args) != "" {
+		content += " " + strings.TrimSpace(selection.Args)
+	}
+	jobReq := ChatRequest{
+		UserID:         req.UserID,
+		SessionID:      sessionID,
+		Content:        content,
+		AttachmentIDs:  append([]string(nil), req.AttachmentIDs...),
+		AttachmentURLs: append([]ChatAttachmentURL(nil), req.AttachmentURLs...),
+	}
+	return r.CreateJob(ctx, jobReq, "skill")
+}
+
 func (r *Runtime) recordInlineSkillExecutions(ctx context.Context, userID string, session *state.Session, startIndex int, startedAt time.Time, runErr error) {
 	if r == nil || r.skillExecutions == nil || session == nil {
 		return
@@ -2214,8 +2315,10 @@ func (r *Runtime) runningSessionIDs(userID string) []string {
 }
 
 type runnerResult struct {
-	Output  string
-	Session *state.Session
+	Output    string
+	Session   *state.Session
+	Job       *Job
+	JobReason string
 }
 
 type jobEventSink struct {

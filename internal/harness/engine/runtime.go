@@ -201,7 +201,7 @@ func (r *legacyRuntime) Run(ctx context.Context, session *state.Session, prompt 
 				"status":  "error",
 				"error":   err.Error(),
 			})
-			return Result{}, err
+			return Result{Session: session}, err
 		}
 
 		if session.NeedsCompression(compressionConfig) {

@@ -28,6 +28,7 @@ import (
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 	toolkit "claude-codex/internal/harness/tools"
+	skilltool "claude-codex/internal/harness/tools/skill"
 	publictypes "claude-codex/internal/public/types"
 )
 
@@ -3064,6 +3065,73 @@ func TestRuntimeRecordsLLMSelectedSkillExecution(t *testing.T) {
 	}
 }
 
+func TestRuntimeRoutesLLMSelectedRunAsJobSkillToJob(t *testing.T) {
+	root := t.TempDir()
+	storeRoot := t.TempDir()
+	jobs := NewMemoryJobStore()
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "vertex-image-artifact",
+		UserInvocable: true,
+		RunAsJob:      true,
+		GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+			return []skills.ContentBlock{{Type: "text", Text: "generate image: " + args}}, nil
+		},
+	}}}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(storeRoot),
+		NewFileMemoryService(storeRoot),
+		catalog,
+		func(scope Scope) Runner {
+			if scope.SkillScoped {
+				return echoRunner{}
+			}
+			return runAsJobSelectionRunner{}
+		},
+	)
+	runtime.SetJobStore(jobs)
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	sink := &collectSink{}
+	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "帮我生成以下图片：Cute little kitty --ar 3:4"}, sink); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	sink.mu.Lock()
+	events := append([]Event(nil), sink.events...)
+	sink.mu.Unlock()
+	var routedJob *Job
+	for _, event := range events {
+		if event.Type == "message" && event.Role == "assistant" {
+			t.Fatalf("run_as_job skill should not produce inline assistant message: %#v", event)
+		}
+		if event.Type == "job" {
+			routedJob = event.Job
+		}
+	}
+	if routedJob == nil {
+		t.Fatalf("expected job event, got %#v", events)
+	}
+	if routedJob.Type != "skill" || routedJob.Content != "/vertex-image-artifact Cute little kitty --ar 3:4" {
+		t.Fatalf("unexpected routed job: %#v", routedJob)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		stored, err := jobs.GetJob(context.Background(), "alice", routedJob.ID)
+		if err != nil {
+			t.Fatalf("get job: %v", err)
+		}
+		if stored.Status == JobStatusSucceeded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job did not complete: %#v", stored)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestPublishedSkillCatalogFiltersUserInvocableSkills(t *testing.T) {
 	base := fakeSkillCatalog{
 		skills: []*skills.SkillDefinition{
@@ -3610,6 +3678,24 @@ error_kind: internal`
 
 func (inlineSkillToolRunner) RunGeneratedPrompt(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
 	return inlineSkillToolRunner{}.Run(ctx, session, prompt)
+}
+
+type runAsJobSelectionRunner struct{}
+
+func (runAsJobSelectionRunner) Run(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	session.AddUserMessage(prompt)
+	input := json.RawMessage(`{"skill":"vertex-image-artifact","args":"Cute little kitty --ar 3:4"}`)
+	session.AddAssistantMessageWithTools("", []state.ToolCall{{
+		ID:    "skill-call-1",
+		Name:  skilltool.ToolName,
+		Input: input,
+	}})
+	session.AddToolResult("skill-call-1", skilltool.ToolName, input, skilltool.RunAsJobMarkerPrefix+`{"skill":"vertex-image-artifact","args":"Cute little kitty --ar 3:4","run_as_job":true}`)
+	return engine.Result{Session: session}, skilltool.ErrRunAsJobRequired
+}
+
+func (runAsJobSelectionRunner) RunGeneratedPrompt(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return runAsJobSelectionRunner{}.Run(ctx, session, prompt)
 }
 
 type memoryJSONRunner struct {
