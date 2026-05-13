@@ -1093,6 +1093,56 @@ func TestGovernedPlannerFallbackRecordsUsage(t *testing.T) {
 	}
 }
 
+func TestGovernedPlannerRetryableFailureStaysReadyBeforeCircuitOpens(t *testing.T) {
+	planner, err := NewGovernedPlanner([]LLMBackend{
+		{Name: "primary", Provider: "vertex", Model: "broken", Planner: failingPlanner{err: errors.New("HTTP 503 unavailable")}},
+	}, nil, LLMGovernanceConfig{MaxAttempts: 1, ChatTimeout: time.Second, FailureThreshold: 3})
+	if err != nil {
+		t.Fatalf("NewGovernedPlanner() error = %v", err)
+	}
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("hello")
+	_, err = planner.Next(context.Background(), session, nil)
+	if err == nil {
+		t.Fatal("expected backend error")
+	}
+	status := planner.Status()
+	if len(status.Backends) != 1 {
+		t.Fatalf("unexpected backend status count: %#v", status.Backends)
+	}
+	if !status.Backends[0].Healthy || status.Backends[0].ConsecutiveFailures != 1 {
+		t.Fatalf("expected backend to remain ready before circuit opens, got %#v", status.Backends[0])
+	}
+	if err := LLMReadinessCheck(planner.Status)(context.Background()); err != nil {
+		t.Fatalf("readiness should remain ok before circuit opens: %v", err)
+	}
+}
+
+func TestGovernedPlannerNonRetryableErrorDoesNotTripCircuit(t *testing.T) {
+	planner, err := NewGovernedPlanner([]LLMBackend{
+		{Name: "primary", Provider: "vertex", Model: "broken", Planner: failingPlanner{err: errors.New("invalid request payload")}},
+	}, nil, LLMGovernanceConfig{MaxAttempts: 3, ChatTimeout: time.Second, FailureThreshold: 1})
+	if err != nil {
+		t.Fatalf("NewGovernedPlanner() error = %v", err)
+	}
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("hello")
+	_, err = planner.Next(context.Background(), session, nil)
+	if err == nil {
+		t.Fatal("expected request error")
+	}
+	status := planner.Status()
+	if len(status.Backends) != 1 {
+		t.Fatalf("unexpected backend status count: %#v", status.Backends)
+	}
+	if !status.Backends[0].Healthy || status.Backends[0].ConsecutiveFailures != 0 || status.Backends[0].LastError == "" {
+		t.Fatalf("expected request error to be visible without opening circuit, got %#v", status.Backends[0])
+	}
+	if err := LLMReadinessCheck(planner.Status)(context.Background()); err != nil {
+		t.Fatalf("readiness should ignore non-retryable request errors: %v", err)
+	}
+}
+
 func TestGovernedPlannerEnforcesDailyQuota(t *testing.T) {
 	store := NewMemoryLLMUsageStore()
 	if err := store.RecordLLMUsage(context.Background(), LLMUsageRecord{

@@ -248,7 +248,7 @@ func (p *GovernedPlanner) Status() LLMGovernanceStatus {
 			Name:                backend.Name,
 			Provider:            backend.Provider,
 			Model:               backend.Model,
-			Healthy:             backend.state.consecutiveFailures == 0 && !backend.state.disabledUntil.After(now),
+			Healthy:             !backend.state.disabledUntil.After(now),
 			ConsecutiveFailures: backend.state.consecutiveFailures,
 			LastError:           backend.state.lastError,
 		}
@@ -304,10 +304,11 @@ func (p *GovernedPlanner) execute(ctx context.Context, session *state.Session, t
 			}
 			lastErr = err
 			_ = p.record(ctx, scope, backend.LLMBackend, attempt, "error", err.Error(), inputTokens, 0, latency)
-			p.markFailure(idx, err)
 			if !isRetryableLLMError(err) {
+				p.markRequestError(idx, err)
 				return plannerapi.Plan{}, err
 			}
+			p.markFailure(idx, err)
 		}
 		if attempt < attempts {
 			if err := sleepContext(ctx, backoffForAttempt(p.config.RetryBackoff, attempt)); err != nil {
@@ -397,6 +398,17 @@ func (p *GovernedPlanner) markFailure(index int, err error) {
 	if state.consecutiveFailures >= p.config.FailureThreshold {
 		state.disabledUntil = time.Now().UTC().Add(p.config.CircuitBreakerCooldown)
 	}
+}
+
+func (p *GovernedPlanner) markRequestError(index int, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if index < 0 || index >= len(p.backends) {
+		return
+	}
+	state := &p.backends[index].state
+	state.lastErrorAt = time.Now().UTC()
+	state.lastError = err.Error()
 }
 
 func (p *GovernedPlanner) checkQuota(ctx context.Context, scope LLMScope) error {
