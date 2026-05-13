@@ -36,13 +36,15 @@ func ProcessImageContent(pastedContents map[int]PastedContent) ([]types.ContentB
 			mediaType := detectMediaType(content.Data)
 			imageData := base64.StdEncoding.EncodeToString(content.Data)
 
+			source := map[string]interface{}{
+				"type":       "base64",
+				"media_type": mediaType,
+				"data":       imageData,
+			}
 			imageBlock := types.ContentBlock{
-				Type: "image",
-				Input: map[string]interface{}{
-					"type": "base64",
-					"media_type": mediaType,
-					"data": imageData,
-				},
+				Type:   "image",
+				Source: source,
+				Input:  source,
 			}
 
 			imageBlocks = append(imageBlocks, imageBlock)

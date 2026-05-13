@@ -128,6 +128,48 @@ func TestProcessUserInput_ContentBlocks(t *testing.T) {
 	if len(result.Messages) != 1 {
 		t.Fatalf("Expected 1 message, got %d", len(result.Messages))
 	}
+
+	content := result.Messages[0].Content
+	if len(content) != 2 {
+		t.Fatalf("Expected 2 content blocks, got %d: %#v", len(content), content)
+	}
+	if content[0].Text != "Hello" || content[1].Text != "World" {
+		t.Fatalf("content blocks were not preserved: %#v", content)
+	}
+}
+
+func TestProcessUserInput_ContentBlocksPreserveImages(t *testing.T) {
+	ctx := context.Background()
+
+	imageSource := map[string]interface{}{
+		"type":       "base64",
+		"media_type": "image/png",
+		"data":       "aW1n",
+	}
+	opts := &ProcessUserInputOptions{
+		Input: []types.ContentBlock{
+			{Type: "text", Text: "What dog is this?"},
+			{Type: "image", Source: imageSource},
+		},
+		Mode: "prompt",
+		Context: &ProcessUserInputContext{
+			WorkingDir: "/test",
+			SessionID:  "test-session",
+		},
+		UUID: "test-uuid",
+	}
+
+	result, err := ProcessUserInput(ctx, opts)
+	if err != nil {
+		t.Fatalf("ProcessUserInput failed: %v", err)
+	}
+	content := result.Messages[0].Content
+	if len(content) != 2 {
+		t.Fatalf("Expected 2 content blocks, got %d: %#v", len(content), content)
+	}
+	if content[1].Type != "image" || content[1].Source["media_type"] != "image/png" || content[1].Source["data"] != "aW1n" {
+		t.Fatalf("image block was not preserved: %#v", content[1])
+	}
 }
 
 func TestValidateInput(t *testing.T) {

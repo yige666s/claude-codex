@@ -179,6 +179,16 @@ func getInputString(input any) (string, error) {
 	}
 }
 
+func inputContentBlocks(input any) []types.ContentBlock {
+	blocks, ok := input.([]types.ContentBlock)
+	if !ok {
+		return nil
+	}
+	cloned := make([]types.ContentBlock, len(blocks))
+	copy(cloned, blocks)
+	return cloned
+}
+
 // processSlashCommand processes a slash command.
 func processSlashCommand(ctx context.Context, input string, opts *ProcessUserInputOptions, imageBlocks []types.ContentBlock, imagePasteIDs []int, attachmentMessages []AttachmentMessage) (*ProcessUserInputResult, error) {
 	// Parse slash command
@@ -208,10 +218,11 @@ func parseSlashCommand(input string) (command string, args string) {
 // processRegularInput processes regular user input (non-slash command).
 func processRegularInput(_ context.Context, input string, opts *ProcessUserInputOptions, imageBlocks []types.ContentBlock, imagePasteIDs []int, attachmentMessages []AttachmentMessage) (*ProcessUserInputResult, error) {
 	// Build content blocks
-	var content []types.ContentBlock
+	content := inputContentBlocks(opts.Input)
 
-	// Add text content
-	if input != "" {
+	// Add text content when the input was plain text. Content-block input must
+	// stay intact so image/file blocks survive into the provider request.
+	if len(content) == 0 && input != "" {
 		content = append(content, types.ContentBlock{Type: "text", Text: input})
 	}
 
