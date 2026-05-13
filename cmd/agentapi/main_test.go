@@ -6,6 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"claude-codex/internal/backend/agentruntime"
+	"claude-codex/internal/harness/skills"
+	"claude-codex/internal/harness/tools"
 )
 
 func TestBuildLLMConfigOpenAIAndCustom(t *testing.T) {
@@ -109,4 +113,55 @@ func TestLoadSkillsUsesExplicitSkillDirs(t *testing.T) {
 	if _, ok := manager.GetSkill("demo"); !ok {
 		t.Fatal("expected explicit skill dir to load demo skill")
 	}
+}
+
+func TestConsumerChatRegistryHidesFilesystemTools(t *testing.T) {
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, consumerChatToolNames())
+	names := descriptorNameSet(registry)
+
+	for _, hidden := range []string{"Read", "Glob", "Grep", "Write", "Edit", "Bash"} {
+		if names[hidden] {
+			t.Fatalf("consumer chat registry exposed internal tool %s: %#v", hidden, names)
+		}
+	}
+	for _, visible := range []string{"WebSearch", "WebFetch", "Skill"} {
+		if !names[visible] {
+			t.Fatalf("consumer chat registry should expose %s: %#v", visible, names)
+		}
+	}
+}
+
+func TestSkillScopedRegistryUsesSkillPolicy(t *testing.T) {
+	global := allowedToolNames(true)
+	scope := agentruntime.Scope{SkillScoped: true, AllowedTools: []string{"Read", "Grep", "Bash"}}
+	allowed := effectiveAllowedToolNames(global, scope)
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, allowed)
+	names := descriptorNameSet(registry)
+
+	for _, visible := range []string{"Read", "Grep", "Bash"} {
+		if !names[visible] {
+			t.Fatalf("skill-scoped registry should expose %s: %#v", visible, names)
+		}
+	}
+	for _, hidden := range []string{"Glob", "WebSearch", "WebFetch", "Write", "Edit"} {
+		if names[hidden] {
+			t.Fatalf("skill-scoped registry exposed unrequested tool %s: %#v", hidden, names)
+		}
+	}
+}
+
+func TestSkillScopedRegistryDefaultsToNoToolsWithoutPolicy(t *testing.T) {
+	allowed := effectiveAllowedToolNames(allowedToolNames(true), agentruntime.Scope{SkillScoped: true})
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, allowed)
+	if names := descriptorNameSet(registry); len(names) != 0 {
+		t.Fatalf("skill-scoped registry without an explicit policy should expose no tools: %#v", names)
+	}
+}
+
+func descriptorNameSet(registry interface{ Descriptors() []tools.Descriptor }) map[string]bool {
+	out := map[string]bool{}
+	for _, descriptor := range registry.Descriptors() {
+		out[descriptor.Name] = true
+	}
+	return out
 }

@@ -47,6 +47,29 @@ func TestFileSessionStoreScopesSessionsByUser(t *testing.T) {
 	}
 }
 
+func TestEnsureConsumerSecurityContextInjectedOnce(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+
+	ensureConsumerSecurityContext(session)
+	ensureConsumerSecurityContext(session)
+
+	if session.Metadata[consumerSecurityInjectedKey] != "true" {
+		t.Fatalf("consumer security metadata was not set: %#v", session.Metadata)
+	}
+	count := 0
+	for _, message := range session.Messages {
+		if message.Hidden && strings.Contains(message.Content, "<consumer-security>") {
+			count++
+			if !strings.Contains(message.Content, "Never claim that you can read local files") {
+				t.Fatalf("security context missing filesystem disclosure rule: %s", message.Content)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected one consumer security context, got %d in %#v", count, session.Messages)
+	}
+}
+
 func TestFileMemoryServiceScopesMemoryByUser(t *testing.T) {
 	memory := NewFileMemoryService(t.TempDir())
 	session := state.NewSession(t.TempDir())
@@ -2410,14 +2433,15 @@ func TestRuntimeChatPersistsFailedTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load session: %v", err)
 	}
-	if len(loaded.Messages) != 2 {
+	visible := visibleMessages(loaded.Messages)
+	if len(visible) != 2 {
 		t.Fatalf("expected failed turn to be persisted, got %#v", loaded.Messages)
 	}
-	if loaded.Messages[0].Role != "user" || loaded.Messages[0].Content != "/docx make a report" {
-		t.Fatalf("expected persisted user message, got %#v", loaded.Messages[0])
+	if visible[0].Role != "user" || visible[0].Content != "/docx make a report" {
+		t.Fatalf("expected persisted user message, got %#v", visible[0])
 	}
-	if loaded.Messages[1].Role != "assistant" || !strings.Contains(loaded.Messages[1].Content, "vertex rejected tool history") {
-		t.Fatalf("expected persisted assistant error, got %#v", loaded.Messages[1])
+	if visible[1].Role != "assistant" || !strings.Contains(visible[1].Content, "vertex rejected tool history") {
+		t.Fatalf("expected persisted assistant error, got %#v", visible[1])
 	}
 }
 
@@ -2487,15 +2511,26 @@ func TestRuntimeChatLetsLLMSelectNaturalLanguageSkill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load session: %v", err)
 	}
-	if len(loaded.Messages) != 2 {
+	visible := visibleMessages(loaded.Messages)
+	if len(visible) != 2 {
 		t.Fatalf("expected normal LLM chat path, got %#v", loaded.Messages)
 	}
-	if loaded.Messages[0].Role != "user" || loaded.Messages[0].Content != "docx" {
-		t.Fatalf("expected visible user prompt, got %#v", loaded.Messages[0])
+	if visible[0].Role != "user" || visible[0].Content != "docx" {
+		t.Fatalf("expected visible user prompt, got %#v", visible[0])
 	}
-	if loaded.Messages[1].Role != "assistant" || loaded.Messages[1].Content != "assistant: docx" {
-		t.Fatalf("expected runner to decide response, got %#v", loaded.Messages[1])
+	if visible[1].Role != "assistant" || visible[1].Content != "assistant: docx" {
+		t.Fatalf("expected runner to decide response, got %#v", visible[1])
 	}
+}
+
+func visibleMessages(messages []state.Message) []state.Message {
+	out := make([]state.Message, 0, len(messages))
+	for _, message := range messages {
+		if !message.Hidden {
+			out = append(out, message)
+		}
+	}
+	return out
 }
 
 func TestRuntimeCreatesUserSandboxWorkspace(t *testing.T) {

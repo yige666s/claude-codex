@@ -23,7 +23,20 @@ import (
 	publictypes "claude-codex/internal/public/types"
 )
 
-const memoryInjectedKey = "agentruntime.memory_context_injected"
+const (
+	memoryInjectedKey           = "agentruntime.memory_context_injected"
+	consumerSecurityInjectedKey = "agentruntime.consumer_security_context_injected"
+)
+
+const consumerSecuritySystemContext = `<consumer-security>
+You are serving a consumer web user. Do not expose internal server tools, tool names, file paths, workspace paths, shell commands, environment variables, credentials, stack traces, or raw provider errors.
+
+Never claim that you can read local files, list project files, search server file contents, create arbitrary files, edit files, run shell commands, or inspect the server filesystem for the user. These are internal infrastructure capabilities, not user-facing product features.
+
+If the user asks for local filesystem access, source-code search, arbitrary file creation/editing, shell execution, secrets, env vars, or server paths, politely refuse and offer safe alternatives: ask them to upload the file, use a published user-facing skill, or generate an artifact only through an approved skill flow.
+
+Only describe published product skills and user-visible artifact/attachment flows. Do not mention hidden tools or implementation details.
+</consumer-security>`
 
 var ErrSessionNotRunning = errors.New("session is not running")
 var ErrRuntimeShuttingDown = errors.New("runtime is shutting down")
@@ -1305,6 +1318,7 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 		JobID:     jobIDFromContext(ctx),
 		RequestID: requestIDFromContext(ctx),
 	})
+	ensureConsumerSecurityContext(session)
 	if strings.HasPrefix(strings.TrimSpace(content), "/") {
 		return r.runSkillCommand(ctx, req, userID, session, content, onToken)
 	}
@@ -1319,6 +1333,20 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	})
 	result, err := runWithTokenStreamContent(ctx, runner, session, prompt, false, onToken)
 	return runnerResult{Output: result.Output, Session: result.Session}, err
+}
+
+func ensureConsumerSecurityContext(session *state.Session) {
+	if session == nil {
+		return
+	}
+	if session.Metadata == nil {
+		session.Metadata = map[string]string{}
+	}
+	if session.Metadata[consumerSecurityInjectedKey] == "true" {
+		return
+	}
+	session.AddSystemContext(consumerSecuritySystemContext)
+	session.Metadata[consumerSecurityInjectedKey] = "true"
 }
 
 const vertexInlineAttachmentLimitBytes = 20 << 20

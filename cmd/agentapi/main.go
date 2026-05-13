@@ -176,10 +176,11 @@ func main() {
 			root = *workspace
 		}
 		publishedSkillManager := filteredSkillManager(skillCatalog)
-		registry := buildRegistry(root, publishedSkillManager, *allowDangerousTools, scope.Artifacts, scope.ArtifactMaxBytes, scopedNetworkAllowlist(globalNetworkAllowlist, scope.NetworkAllowlist))
+		effectiveAllowed := effectiveAllowedToolNames(globalAllowed, scope)
+		registry := buildRegistry(root, publishedSkillManager, *allowDangerousTools, scope.Artifacts, scope.ArtifactMaxBytes, scopedNetworkAllowlist(globalNetworkAllowlist, scope.NetworkAllowlist), effectiveAllowed)
 		checker := agentruntime.NewProductPermissionCheckerWithReporter(agentruntime.ToolPolicy{
 			AllowWriteExecute: *allowDangerousTools,
-			AllowedTools:      scopedAllowedTools(globalAllowed, scope.AllowedTools),
+			AllowedTools:      effectiveAllowed,
 			SafeWriteTools:    []string{agentruntime.ArtifactToolName},
 		}, func(ctx context.Context, denial agentruntime.ToolDenialRecord) {
 			metadata := map[string]any{
@@ -454,24 +455,43 @@ var httpListenAndServe = func(addr string, handler *agentruntime.Server, shutdow
 	return nil
 }
 
-func buildRegistry(root string, skillManager *skills.SkillManager, allowDangerous bool, artifactWriter agentruntime.ArtifactWriter, artifactMaxBytes int64, networkAllowlist []string) *tools.Registry {
-	toolList := []tools.Tool{
-		filetool.NewReadTool(root),
-		searchtool.NewGlobTool(root),
-		searchtool.NewGrepTool(root),
-		webtool.NewSearchToolWithAllowlist(nil, networkAllowlist),
-		webtool.NewFetchToolWithAllowlist(nil, networkAllowlist),
-		skilltool.NewTool(skillManager),
+func buildRegistry(root string, skillManager *skills.SkillManager, allowDangerous bool, artifactWriter agentruntime.ArtifactWriter, artifactMaxBytes int64, networkAllowlist []string, allowedTools []string) *tools.Registry {
+	allowed := toolNameSet(allowedTools)
+	enabled := func(name string) bool {
+		return len(allowed) == 0 || allowed[name]
 	}
-	if artifactWriter != nil {
+	toolList := make([]tools.Tool, 0, 8)
+	if enabled("Read") {
+		toolList = append(toolList, filetool.NewReadTool(root))
+	}
+	if enabled("Glob") {
+		toolList = append(toolList, searchtool.NewGlobTool(root))
+	}
+	if enabled("Grep") {
+		toolList = append(toolList, searchtool.NewGrepTool(root))
+	}
+	if enabled("WebSearch") {
+		toolList = append(toolList, webtool.NewSearchToolWithAllowlist(nil, networkAllowlist))
+	}
+	if enabled("WebFetch") {
+		toolList = append(toolList, webtool.NewFetchToolWithAllowlist(nil, networkAllowlist))
+	}
+	if enabled("Skill") {
+		toolList = append(toolList, skilltool.NewTool(skillManager))
+	}
+	if artifactWriter != nil && enabled(agentruntime.ArtifactToolName) {
 		toolList = append(toolList, agentruntime.NewArtifactToolWithLimit(artifactWriter, root, artifactMaxBytes))
 	}
 	if allowDangerous {
-		toolList = append(toolList,
-			filetool.NewWriteTool(root),
-			filetool.NewEditTool(root),
-			bashtool.NewTool(root),
-		)
+		if enabled("Write") {
+			toolList = append(toolList, filetool.NewWriteTool(root))
+		}
+		if enabled("Edit") {
+			toolList = append(toolList, filetool.NewEditTool(root))
+		}
+		if enabled("Bash") {
+			toolList = append(toolList, bashtool.NewTool(root))
+		}
 	}
 	return tools.NewRegistry(toolList...)
 }
@@ -1223,6 +1243,31 @@ func allowedToolNames(allowDangerous bool) []string {
 		names = append(names, "Write", "Edit", "Bash")
 	}
 	return names
+}
+
+func consumerChatToolNames() []string {
+	return []string{"WebSearch", "WebFetch", "Skill"}
+}
+
+func effectiveAllowedToolNames(global []string, scope agentruntime.Scope) []string {
+	if scope.SkillScoped {
+		if len(cleanCSVValues(scope.AllowedTools)) == 0 {
+			return []string{"__no_tools_allowed__"}
+		}
+		return scopedAllowedTools(global, scope.AllowedTools)
+	}
+	return scopedAllowedTools(global, consumerChatToolNames())
+}
+
+func toolNameSet(names []string) map[string]bool {
+	out := make(map[string]bool, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			out[name] = true
+		}
+	}
+	return out
 }
 
 func scopedAllowedTools(global, scoped []string) []string {
