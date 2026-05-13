@@ -1701,22 +1701,30 @@ func (r *Runtime) runSkill(ctx context.Context, userID string, session *state.Se
 	status := SkillExecutionStatusFailed
 	errText := ""
 	var policy SkillRuntimePolicy
+	inputSummary := summarizeSkillInput(args)
+	execDiagnostics := skillExecutionDiagnostics{}
 	defer func() {
 		if r == nil || r.skillExecutions == nil || skill == nil {
 			return
 		}
 		completedAt := time.Now().UTC()
 		_ = r.skillExecutions.RecordSkillExecution(context.Background(), SkillExecutionRecord{
-			SkillName:   skill.Name,
-			UserID:      userID,
-			SessionID:   session.ID,
-			JobID:       jobIDFromContext(ctx),
-			RequestID:   requestIDFromContext(ctx),
-			Status:      status,
-			Error:       errText,
-			DurationMS:  completedAt.Sub(startedAt).Milliseconds(),
-			StartedAt:   startedAt,
-			CompletedAt: completedAt,
+			SkillName:      skill.Name,
+			UserID:         userID,
+			SessionID:      session.ID,
+			JobID:          jobIDFromContext(ctx),
+			RequestID:      requestIDFromContext(ctx),
+			Status:         status,
+			Error:          errText,
+			ErrorKind:      execDiagnostics.ErrorKind,
+			Provider:       execDiagnostics.Provider,
+			Model:          execDiagnostics.Model,
+			InputSummary:   inputSummary,
+			ArtifactCount:  execDiagnostics.ArtifactCount,
+			DurationMS:     completedAt.Sub(startedAt).Milliseconds(),
+			DiagnosticJSON: execDiagnostics.JSON,
+			StartedAt:      startedAt,
+			CompletedAt:    completedAt,
 			Metadata: map[string]any{
 				"args_length":       len(args),
 				"allowed_tools":     policy.AllowedTools,
@@ -1743,6 +1751,7 @@ func (r *Runtime) runSkill(ctx context.Context, userID string, session *state.Se
 		errText = err.Error()
 		return runnerResult{}, err
 	}
+	startMessageCount := len(session.Messages)
 	skillDir := workspace
 	if strings.TrimSpace(skill.SkillRoot) != "" {
 		skillDir = skill.SkillRoot
@@ -1792,6 +1801,7 @@ func (r *Runtime) runSkill(ctx context.Context, userID string, session *state.Se
 	result, err := runWithTokenStream(ctx, runner, session, generated, true, onToken)
 	if err != nil {
 		errText = err.Error()
+		execDiagnostics = collectSkillExecutionDiagnostics(result.Session, startMessageCount)
 		r.recordExecutionDenialRisk(ctx, userID, session.ID, skill.Name, err, map[string]any{
 			"phase":             "skill_runner",
 			"allowed_tools":     policy.AllowedTools,
@@ -1799,8 +1809,109 @@ func (r *Runtime) runSkill(ctx context.Context, userID string, session *state.Se
 		})
 		return runnerResult{Output: result.Output, Session: result.Session}, err
 	}
+	execDiagnostics = collectSkillExecutionDiagnostics(result.Session, startMessageCount)
+	if execDiagnostics.SkillError != "" || execDiagnostics.ErrorKind != "" {
+		status = SkillExecutionStatusFailed
+		errText = firstNonEmpty(execDiagnostics.SkillError, execDiagnostics.ErrorKind)
+		return runnerResult{Output: result.Output, Session: result.Session}, nil
+	}
 	status = SkillExecutionStatusSucceeded
 	return runnerResult{Output: result.Output, Session: result.Session}, err
+}
+
+type skillExecutionDiagnostics struct {
+	SkillError    string
+	ErrorKind     string
+	Provider      string
+	Model         string
+	ArtifactCount int64
+	JSON          map[string]any
+}
+
+func collectSkillExecutionDiagnostics(session *state.Session, startIndex int) skillExecutionDiagnostics {
+	out := skillExecutionDiagnostics{JSON: map[string]any{}}
+	if session == nil {
+		return out
+	}
+	if startIndex < 0 || startIndex > len(session.Messages) {
+		startIndex = 0
+	}
+	var logs []map[string]any
+	for _, message := range session.Messages[startIndex:] {
+		if strings.EqualFold(message.ToolName, ArtifactToolName) {
+			out.ArtifactCount++
+		}
+		if !strings.EqualFold(message.ToolName, "Skill") || message.ToolOutput == "" {
+			continue
+		}
+		for _, line := range strings.Split(message.ToolOutput, "\n") {
+			line = strings.TrimSpace(line)
+			switch {
+			case strings.HasPrefix(line, "skill_error:"):
+				out.SkillError = strings.TrimSpace(strings.TrimPrefix(line, "skill_error:"))
+			case strings.HasPrefix(line, "error_kind:"):
+				out.ErrorKind = strings.TrimSpace(strings.TrimPrefix(line, "error_kind:"))
+			case strings.HasPrefix(line, "model:"):
+				out.Model = strings.TrimSpace(strings.TrimPrefix(line, "model:"))
+			case strings.HasPrefix(line, "skill_log:"):
+				var entry map[string]any
+				if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "skill_log:"))), &entry); err != nil {
+					continue
+				}
+				logs = append(logs, entry)
+				if value := stringFromMap(entry, "provider"); value != "" {
+					out.Provider = value
+				}
+				if value := stringFromMap(entry, "model"); value != "" {
+					out.Model = value
+				}
+				if value := stringFromMap(entry, "kind"); value != "" {
+					out.ErrorKind = value
+				}
+				if value := stringFromMap(entry, "error_kind"); value != "" {
+					out.ErrorKind = value
+				}
+			}
+		}
+	}
+	if out.Provider == "" && out.Model != "" {
+		out.Provider = "vertex"
+	}
+	if len(logs) > 0 {
+		out.JSON["logs"] = logs
+	}
+	if out.SkillError != "" {
+		out.JSON["skill_error"] = out.SkillError
+	}
+	if out.ErrorKind != "" {
+		out.JSON["error_kind"] = out.ErrorKind
+	}
+	return out
+}
+
+func stringFromMap(values map[string]any, key string) string {
+	value, ok := values[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func summarizeSkillInput(args string) string {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return ""
+	}
+	return truncateSkillExecutionString(args, 512)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (r *Runtime) skillShellEnvironment(workspace string, allowedEnv []string) map[string]string {

@@ -22,6 +22,37 @@ SUPPORTED_ASPECT_RATIOS = ("1:1", "3:4", "4:3", "16:9", "9:16")
 ASPECT_RATIO_FLAGS = ("--ar", "--aspect-ratio", "--aspect_ratio")
 
 
+def utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def prompt_fingerprint(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def log_event(event: str, **fields: object) -> None:
+    payload = {
+        "ts": utc_now(),
+        "skill": "vertex-image-artifact",
+        "event": event,
+        **fields,
+    }
+    try:
+        print("skill_log: " + json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception:
+        # Logging must never affect image generation.
+        return
+
+
+def log_exception(event: str, exc: BaseException, **fields: object) -> None:
+    log_event(
+        event,
+        error_type=type(exc).__name__,
+        error=str(exc)[:1000],
+        **fields,
+    )
+
+
 class SkillUserError(Exception):
     def __init__(self, message: str, kind: str = "generation_failed"):
         super().__init__(message)
@@ -346,12 +377,26 @@ def vertex_error_message(status_code: int, detail: str) -> tuple[str, str]:
 
 
 def main() -> int:
+    started = time.time()
     prompt, aspect_ratio, aspect_ratio_note = parse_prompt_options(sys.stdin.read())
 
     project_id = env_first("VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GCP_PROJECT")
     location = env_first("VERTEX_LOCATION", "GOOGLE_CLOUD_LOCATION") or "us-central1"
     model = env_first("VERTEX_IMAGE_MODEL") or "imagen-4.0-generate-001"
+    prompt_hash = prompt_fingerprint(prompt)
+    log_event(
+        "start",
+        prompt_hash=prompt_hash,
+        prompt_length=len(prompt),
+        aspect_ratio=aspect_ratio,
+        aspect_ratio_note=aspect_ratio_note,
+        project_configured=bool(project_id),
+        provider="vertex",
+        location=location,
+        model=model,
+    )
     if not project_id:
+        log_event("config_error", kind="missing_project", prompt_hash=prompt_hash)
         raise SkillUserError(
             "图片服务缺少 Vertex 项目配置，请联系管理员检查 VERTEX_PROJECT_ID。",
             "missing_project",
@@ -384,21 +429,79 @@ def main() -> int:
     try:
         with urllib.request.urlopen(build_request(access_token()), timeout=120) as response:
             payload = json.loads(response.read().decode("utf-8"))
+            log_event(
+                "vertex_response",
+                prompt_hash=prompt_hash,
+                provider="vertex",
+                model=model,
+                status=getattr(response, "status", 200),
+                duration_ms=round((time.time() - started) * 1000),
+            )
     except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        message, kind = vertex_error_message(exc.code, detail)
+        log_event(
+            "vertex_http_error",
+            prompt_hash=prompt_hash,
+            provider="vertex",
+            model=model,
+            status=exc.code,
+            kind=kind,
+            error_message=message,
+            retry=exc.code == 401,
+            duration_ms=round((time.time() - started) * 1000),
+        )
         if exc.code != 401:
-            detail = exc.read().decode("utf-8", errors="replace")
-            message, kind = vertex_error_message(exc.code, detail)
             raise SkillUserError(message, kind) from exc
         try:
             with urllib.request.urlopen(build_request(access_token(refresh=True)), timeout=120) as response:
                 payload = json.loads(response.read().decode("utf-8"))
+                log_event(
+                    "vertex_response_after_refresh",
+                    prompt_hash=prompt_hash,
+                    provider="vertex",
+                    model=model,
+                    status=getattr(response, "status", 200),
+                    duration_ms=round((time.time() - started) * 1000),
+                )
         except urllib.error.HTTPError as retry_exc:
             detail = retry_exc.read().decode("utf-8", errors="replace")
             message, kind = vertex_error_message(retry_exc.code, detail)
+            log_event(
+                "vertex_retry_http_error",
+                prompt_hash=prompt_hash,
+                provider="vertex",
+                model=model,
+                status=retry_exc.code,
+                kind=kind,
+                error_message=message,
+                duration_ms=round((time.time() - started) * 1000),
+            )
             raise SkillUserError(message, kind) from retry_exc
+        except Exception as retry_exc:
+            log_exception(
+                "vertex_retry_exception",
+                retry_exc,
+                prompt_hash=prompt_hash,
+                provider="vertex",
+                model=model,
+                duration_ms=round((time.time() - started) * 1000),
+            )
+            raise
+    except Exception as exc:
+        log_exception(
+            "vertex_request_exception",
+            exc,
+            prompt_hash=prompt_hash,
+            provider="vertex",
+            model=model,
+            duration_ms=round((time.time() - started) * 1000),
+        )
+        raise
 
     predictions = payload.get("predictions") or []
     if not predictions:
+        log_event("empty_response", prompt_hash=prompt_hash, duration_ms=round((time.time() - started) * 1000))
         raise SkillUserError(
             "图片生成服务没有返回图片结果，请换一个描述再试。",
             "empty_response",
@@ -417,6 +520,17 @@ def main() -> int:
     output_file = output_dir / filename
     output_file.write_bytes(image_bytes)
     artifact_file_path = f"generated-artifacts/{filename}"
+    log_event(
+        "success",
+        prompt_hash=prompt_hash,
+        provider="vertex",
+        model=model,
+        filename=filename,
+        content_type=mime_type,
+        size_bytes=len(image_bytes),
+        aspect_ratio=aspect_ratio,
+        duration_ms=round((time.time() - started) * 1000),
+    )
 
     print(f"output_file: {output_file}")
     print(f"artifact_file_path: {artifact_file_path}")
@@ -433,10 +547,12 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except SkillUserError as exc:
+        log_event("user_error", kind=exc.kind, message=exc.message)
         print(f"skill_error: {exc.message}")
         print(f"error_kind: {exc.kind}")
         raise SystemExit(0)
-    except Exception:
+    except Exception as exc:
+        log_exception("internal_error", exc)
         print("skill_error: 图片生成在准备阶段失败，请稍后再试或联系管理员检查服务配置。")
         print("error_kind: internal")
         raise SystemExit(0)

@@ -61,4 +61,6 @@ Use the `Artifact` tool exactly once with the `artifact_file_path` printed above
 
 If the shell output contains `skill_error:`, do not call the `Artifact` tool. Reply in the user's language with the friendly error from `skill_error:` and, when useful, a concise next step. Do not expose raw Vertex JSON, stack traces, shell commands, auth tokens, artifact IDs, object paths, or download paths to the user.
 
+The shell output may contain `skill_log: {...}` diagnostic lines. These are for backend execution history only. Do not summarize, quote, or expose them to the user.
+
 After the `Artifact` tool succeeds, do not expose raw JSON, artifact IDs, object paths, or download paths to the user. Use the tool result only as internal context, then reply in natural language that the image is ready and can be viewed in the Artifacts panel. Mention the generated filename only if it helps the user identify the asset, and offer a concise next step such as revising the prompt or generating another variant.

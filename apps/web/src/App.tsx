@@ -2571,8 +2571,12 @@ function AdminConsole({
                           <div key={execution.id} className="admin-table-row">
                             <StatusBadge value={execution.status} />
                             <span>{execution.duration_ms} ms</span>
+                            {(execution.provider || execution.model) && <span>{[execution.provider, execution.model].filter(Boolean).join(" / ")}</span>}
+                            {execution.error_kind && <span>{execution.error_kind}</span>}
+                            {typeof execution.artifact_count === "number" && execution.artifact_count > 0 && <span>{execution.artifact_count} artifact{execution.artifact_count === 1 ? "" : "s"}</span>}
                             <small>{formatTime(execution.completed_at)}</small>
                             {execution.error && <em>{execution.error}</em>}
+                            {execution.input_summary && <em>{execution.input_summary}</em>}
                           </div>
                         ))}
                         {!executions.length && <p className="muted-text">No executions recorded.</p>}

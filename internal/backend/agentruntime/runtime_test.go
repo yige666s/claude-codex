@@ -2978,6 +2978,60 @@ func TestSkillExecutionHistoryRecordsSuccessAndFailure(t *testing.T) {
 	}
 }
 
+func TestSkillExecutionHistoryRecordsDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	storeRoot := t.TempDir()
+	executions := NewMemorySkillExecutionStore()
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "vertex-image-artifact",
+		UserInvocable: true,
+		GetPrompt: func(_ string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+			return []skills.ContentBlock{{Type: "text", Text: "image prompt"}}, nil
+		},
+	}}}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(storeRoot),
+		NewFileMemoryService(storeRoot),
+		catalog,
+		func(Scope) Runner { return skillDiagnosticRunner{} },
+	)
+	runtime.SetSkillExecutionStore(executions)
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "/vertex-image-artifact kitty"}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	records, err := executions.ListSkillExecutions(context.Background(), SkillExecutionFilter{SkillName: "vertex-image-artifact"})
+	if err != nil {
+		t.Fatalf("list executions: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v", records)
+	}
+	record := records[0]
+	if record.Status != SkillExecutionStatusFailed {
+		t.Fatalf("status = %q", record.Status)
+	}
+	if record.ErrorKind != "internal" || record.Provider != "vertex" || record.Model != "imagen-test" {
+		t.Fatalf("unexpected diagnostics: %#v", record)
+	}
+	if record.Error != "图片生成在准备阶段失败" {
+		t.Fatalf("error = %q", record.Error)
+	}
+	if record.InputSummary != "kitty" {
+		t.Fatalf("input summary = %q", record.InputSummary)
+	}
+	if logs, ok := record.DiagnosticJSON["logs"].([]map[string]any); ok && len(logs) > 0 {
+		return
+	}
+	if logs, ok := record.DiagnosticJSON["logs"].([]any); !ok || len(logs) == 0 {
+		t.Fatalf("expected diagnostic logs, got %#v", record.DiagnosticJSON)
+	}
+}
+
 func TestPublishedSkillCatalogFiltersUserInvocableSkills(t *testing.T) {
 	base := fakeSkillCatalog{
 		skills: []*skills.SkillDefinition{
@@ -3493,6 +3547,21 @@ func (echoRunner) RunGeneratedPrompt(ctx context.Context, session *state.Session
 	session.AddSystemContext(prompt)
 	session.AddAssistantMessage("assistant: " + prompt)
 	return engine.Result{Output: "assistant: " + prompt, Session: session}, nil
+}
+
+type skillDiagnosticRunner struct{}
+
+func (skillDiagnosticRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return skillDiagnosticRunner{}.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (skillDiagnosticRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, _ string) (engine.Result, error) {
+	output := `skill_log: {"event":"start","provider":"vertex","model":"imagen-test","prompt_hash":"abc123"}
+skill_error: 图片生成在准备阶段失败
+error_kind: internal`
+	session.AddToolResult("vertex-call-1", "Skill", json.RawMessage(`{"skill":"vertex-image-artifact"}`), output)
+	session.AddAssistantMessage("图片生成在准备阶段失败")
+	return engine.Result{Output: "图片生成在准备阶段失败", Session: session}, nil
 }
 
 type memoryJSONRunner struct {

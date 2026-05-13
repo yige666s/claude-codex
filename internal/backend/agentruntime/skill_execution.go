@@ -17,18 +17,24 @@ const (
 )
 
 type SkillExecutionRecord struct {
-	ID          string         `json:"id"`
-	SkillName   string         `json:"skill_name"`
-	UserID      string         `json:"user_id,omitempty"`
-	SessionID   string         `json:"session_id,omitempty"`
-	JobID       string         `json:"job_id,omitempty"`
-	RequestID   string         `json:"request_id,omitempty"`
-	Status      string         `json:"status"`
-	Error       string         `json:"error,omitempty"`
-	DurationMS  int64          `json:"duration_ms"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
-	StartedAt   time.Time      `json:"started_at"`
-	CompletedAt time.Time      `json:"completed_at"`
+	ID             string         `json:"id"`
+	SkillName      string         `json:"skill_name"`
+	UserID         string         `json:"user_id,omitempty"`
+	SessionID      string         `json:"session_id,omitempty"`
+	JobID          string         `json:"job_id,omitempty"`
+	RequestID      string         `json:"request_id,omitempty"`
+	Status         string         `json:"status"`
+	Error          string         `json:"error,omitempty"`
+	ErrorKind      string         `json:"error_kind,omitempty"`
+	Provider       string         `json:"provider,omitempty"`
+	Model          string         `json:"model,omitempty"`
+	InputSummary   string         `json:"input_summary,omitempty"`
+	ArtifactCount  int64          `json:"artifact_count"`
+	DurationMS     int64          `json:"duration_ms"`
+	DiagnosticJSON map[string]any `json:"diagnostic_json,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+	StartedAt      time.Time      `json:"started_at"`
+	CompletedAt    time.Time      `json:"completed_at"`
 }
 
 type SkillExecutionFilter struct {
@@ -133,7 +139,13 @@ func (s *SQLSkillExecutionStore) Init(ctx context.Context) error {
 	request_id TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL,
 	error TEXT NOT NULL DEFAULT '',
+	error_kind TEXT NOT NULL DEFAULT '',
+	provider TEXT NOT NULL DEFAULT '',
+	model TEXT NOT NULL DEFAULT '',
+	input_summary TEXT NOT NULL DEFAULT '',
+	artifact_count BIGINT NOT NULL DEFAULT 0,
 	duration_ms BIGINT NOT NULL DEFAULT 0,
+	diagnostic_json TEXT NOT NULL DEFAULT '{}',
 	metadata TEXT NOT NULL DEFAULT '{}',
 	started_at ` + s.dialect.TimeType() + ` NOT NULL,
 	completed_at ` + s.dialect.TimeType() + ` NOT NULL
@@ -146,7 +158,43 @@ func (s *SQLSkillExecutionStore) Init(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := s.ensureColumns(ctx); err != nil {
+		return err
+	}
 	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skill_executions", "started_at", "completed_at")
+}
+
+func (s *SQLSkillExecutionStore) ensureColumns(ctx context.Context) error {
+	columns := []struct {
+		name string
+		ddl  string
+	}{
+		{"error_kind", "TEXT NOT NULL DEFAULT ''"},
+		{"provider", "TEXT NOT NULL DEFAULT ''"},
+		{"model", "TEXT NOT NULL DEFAULT ''"},
+		{"input_summary", "TEXT NOT NULL DEFAULT ''"},
+		{"artifact_count", "BIGINT NOT NULL DEFAULT 0"},
+		{"diagnostic_json", "TEXT NOT NULL DEFAULT '{}'"},
+	}
+	for _, column := range columns {
+		stmt := `ALTER TABLE agent_skill_executions ADD COLUMN `
+		if s.dialect == SQLDialectPostgres {
+			stmt += "IF NOT EXISTS "
+		}
+		stmt += column.name + " " + column.ddl
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func isDuplicateColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "duplicate column") || strings.Contains(text, "already exists")
 }
 
 func (s *SQLSkillExecutionStore) RecordSkillExecution(ctx context.Context, record SkillExecutionRecord) error {
@@ -155,9 +203,13 @@ func (s *SQLSkillExecutionStore) RecordSkillExecution(ctx context.Context, recor
 	if err != nil {
 		return err
 	}
+	diagnosticJSON, err := json.Marshal(record.DiagnosticJSON)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
-INSERT INTO agent_skill_executions (id, skill_name, user_id, session_id, job_id, request_id, status, error, duration_ms, metadata, started_at, completed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+INSERT INTO agent_skill_executions (id, skill_name, user_id, session_id, job_id, request_id, status, error, error_kind, provider, model, input_summary, artifact_count, duration_ms, diagnostic_json, metadata, started_at, completed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		record.ID,
 		record.SkillName,
 		record.UserID,
@@ -166,7 +218,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		record.RequestID,
 		record.Status,
 		record.Error,
+		record.ErrorKind,
+		record.Provider,
+		record.Model,
+		record.InputSummary,
+		record.ArtifactCount,
 		record.DurationMS,
+		string(diagnosticJSON),
 		string(metadata),
 		sqlTimeValue(record.StartedAt, s.dialect),
 		sqlTimeValue(record.CompletedAt, s.dialect))
@@ -175,7 +233,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 
 func (s *SQLSkillExecutionStore) ListSkillExecutions(ctx context.Context, filter SkillExecutionFilter) ([]SkillExecutionRecord, error) {
 	filter = normalizeSkillExecutionFilter(filter)
-	query := `SELECT id, skill_name, user_id, session_id, job_id, request_id, status, error, duration_ms, metadata, started_at, completed_at FROM agent_skill_executions`
+	query := `SELECT id, skill_name, user_id, session_id, job_id, request_id, status, error, error_kind, provider, model, input_summary, artifact_count, duration_ms, diagnostic_json, metadata, started_at, completed_at FROM agent_skill_executions`
 	where, args := skillExecutionWhere(filter)
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -246,11 +304,12 @@ func skillExecutionWhere(filter SkillExecutionFilter) ([]string, []any) {
 
 func scanSkillExecutionRecord(row skillRegistryScanner) (SkillExecutionRecord, error) {
 	var record SkillExecutionRecord
-	var metadata string
+	var metadata, diagnosticJSON string
 	var startedAt, completedAt any
-	if err := row.Scan(&record.ID, &record.SkillName, &record.UserID, &record.SessionID, &record.JobID, &record.RequestID, &record.Status, &record.Error, &record.DurationMS, &metadata, &startedAt, &completedAt); err != nil {
+	if err := row.Scan(&record.ID, &record.SkillName, &record.UserID, &record.SessionID, &record.JobID, &record.RequestID, &record.Status, &record.Error, &record.ErrorKind, &record.Provider, &record.Model, &record.InputSummary, &record.ArtifactCount, &record.DurationMS, &diagnosticJSON, &metadata, &startedAt, &completedAt); err != nil {
 		return SkillExecutionRecord{}, err
 	}
+	_ = json.Unmarshal([]byte(diagnosticJSON), &record.DiagnosticJSON)
 	_ = json.Unmarshal([]byte(metadata), &record.Metadata)
 	var err error
 	if record.StartedAt, err = parseSQLTime(startedAt); err != nil {
@@ -274,6 +333,16 @@ func normalizeSkillExecutionRecord(record SkillExecutionRecord) SkillExecutionRe
 	record.RequestID = strings.TrimSpace(record.RequestID)
 	record.Status = normalizeSkillExecutionStatus(record.Status)
 	record.Error = truncateSkillExecutionString(strings.TrimSpace(record.Error), 2048)
+	record.ErrorKind = truncateSkillExecutionString(strings.TrimSpace(record.ErrorKind), 128)
+	record.Provider = truncateSkillExecutionString(strings.TrimSpace(record.Provider), 128)
+	record.Model = truncateSkillExecutionString(strings.TrimSpace(record.Model), 256)
+	record.InputSummary = truncateSkillExecutionString(strings.TrimSpace(record.InputSummary), 512)
+	if record.ArtifactCount < 0 {
+		record.ArtifactCount = 0
+	}
+	if record.DiagnosticJSON == nil {
+		record.DiagnosticJSON = map[string]any{}
+	}
 	if record.Metadata == nil {
 		record.Metadata = map[string]any{}
 	}

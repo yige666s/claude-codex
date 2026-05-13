@@ -196,7 +196,13 @@ export type SkillExecution = {
   request_id?: string;
   status: string;
   error?: string;
+  error_kind?: string;
+  provider?: string;
+  model?: string;
+  input_summary?: string;
+  artifact_count?: number;
   duration_ms: number;
+  diagnostic_json?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   started_at: string;
   completed_at: string;
