@@ -833,11 +833,11 @@ export function App() {
     setUploadError("");
     setUploadProgress(0);
     setStatus({ tone: "busy", text: "Uploading" });
+    revealRightPanel("attachments");
     try {
       const uploaded = await api.uploadAttachment(file, sessionId || undefined, setUploadProgress);
       setPendingAttachments((current) => [...current, uploaded]);
       setAttachments(await api.attachments(sessionId || undefined));
-      revealRightPanel("attachments");
       setStatus({ tone: "ok", text: "Uploaded" });
     } catch (error) {
       setUploadError(errorMessage(error));
