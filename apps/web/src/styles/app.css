@@ -2716,6 +2716,36 @@ label.composer-upload {
     flex-direction: row;
     justify-content: flex-start;
   }
+  .sidebar.open .sidebar-head {
+    gap: 8px;
+  }
+  .sidebar.open .brand-toggle,
+  .sidebar.open .sidebar-collapse-button,
+  .sidebar.open .mobile-only {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    min-height: 34px;
+    flex: 0 0 34px;
+  }
+  .sidebar.open .sidebar-logo {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+  }
+  .sidebar.open .sidebar-head strong {
+    flex: 1 1 auto;
+    min-width: 42px;
+    max-width: none;
+  }
+  .sidebar.open .service-status {
+    height: 30px;
+    flex: 0 1 auto;
+    max-width: 96px;
+    padding: 0 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .left-collapsed .sidebar-head strong,
   .left-collapsed .service-status,
   .left-collapsed .sessions,
@@ -2772,6 +2802,36 @@ label.composer-upload {
 }
 
 @media (max-width: 680px) {
+  .sidebar {
+    width: min(360px, calc(100vw - 36px));
+  }
+  .sidebar.open .sidebar-head {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .sidebar.open .brand-toggle,
+  .sidebar.open .sidebar-collapse-button,
+  .sidebar.open .mobile-only {
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    flex-basis: 32px;
+  }
+  .sidebar.open .sidebar-logo {
+    width: 32px;
+    height: 32px;
+    flex-basis: 32px;
+  }
+  .sidebar.open .sidebar-head strong {
+    min-width: 0;
+    font-size: 14px;
+  }
+  .sidebar.open .service-status {
+    max-width: 82px;
+    padding: 0 7px;
+    font-size: 11px;
+  }
   .admin-main {
     padding: 14px;
   }

@@ -1157,9 +1157,12 @@ export function App() {
         <div className="sidebar-head">
           <button
             className="brand-toggle"
-            onClick={() => setLeftSidebarOpen((open) => !open)}
-            title="Expand sidebar"
-            aria-label="Expand sidebar"
+            onClick={() => {
+              setGlobalSearchOpen(false);
+              setLeftSidebarOpen((open) => !open);
+            }}
+            title={leftSidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+            aria-label={leftSidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
             aria-expanded={leftSidebarOpen}
           >
             <BrandLogo className="brand-icon" />
