@@ -2041,7 +2041,7 @@ func TestRuntimeChatPassesAttachmentAsContentBlock(t *testing.T) {
 	}
 }
 
-func TestRuntimeChatPassesImageAttachmentAsSignedURL(t *testing.T) {
+func TestRuntimeChatKeepsImageAttachmentInline(t *testing.T) {
 	root := t.TempDir()
 	capture := &captureContentRunner{}
 	runtime := NewRuntime(
@@ -2076,7 +2076,50 @@ func TestRuntimeChatPassesImageAttachmentAsSignedURL(t *testing.T) {
 		t.Fatalf("captured blocks = %#v", capture.blocks)
 	}
 	source := capture.blocks[1].Source
-	if capture.blocks[1].Type != "image" || source["type"] != "url" || source["media_type"] != "image/png" || source["file_uri"] != objects.signedURL {
+	if capture.blocks[1].Type != "image" || source["type"] != "base64" || source["media_type"] != "image/png" || source["data"] != base64.StdEncoding.EncodeToString([]byte("png-bytes")) {
+		t.Fatalf("unexpected image attachment block: %#v", capture.blocks[1])
+	}
+	if objects.getCount != 1 {
+		t.Fatalf("object data should be read for inline image fallback, got %d reads", objects.getCount)
+	}
+}
+
+func TestRuntimeChatPassesNonImageAttachmentAsSignedURL(t *testing.T) {
+	root := t.TempDir()
+	capture := &captureContentRunner{}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(root),
+		NewFileMemoryService(root),
+		nil,
+		func(Scope) Runner { return capture },
+	)
+	objects := newPresignObjectStore("https://r2.example.com/signed/report.pdf?X-Amz-Signature=test")
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), objects, "artifacts"))
+
+	ctx := context.Background()
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	attachment, err := runtime.CreateAttachment(ctx, "alice", session.ID, "report.pdf", "application/pdf", []byte("%PDF-bytes"))
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+
+	if err := runtime.Chat(ctx, ChatRequest{
+		UserID:        "alice",
+		SessionID:     session.ID,
+		Content:       "summarize it",
+		AttachmentIDs: []string{attachment.ID},
+	}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if len(capture.blocks) != 2 {
+		t.Fatalf("captured blocks = %#v", capture.blocks)
+	}
+	source := capture.blocks[1].Source
+	if capture.blocks[1].Type != "file" || source["type"] != "url" || source["media_type"] != "application/pdf" || source["file_uri"] != objects.signedURL {
 		t.Fatalf("unexpected signed attachment block: %#v", capture.blocks[1])
 	}
 	if objects.getCount != 0 {

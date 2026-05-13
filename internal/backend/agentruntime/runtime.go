@@ -1451,6 +1451,9 @@ func (r *Runtime) presignedAttachmentBlock(ctx context.Context, artifact *Artifa
 	if r == nil || r.artifacts == nil || artifact == nil {
 		return publictypes.ContentBlock{}, false, nil
 	}
+	if isImageContentType(artifact.ContentType) {
+		return publictypes.ContentBlock{}, false, nil
+	}
 	fileURL, ok, err := r.artifacts.PresignGet(ctx, artifact.ObjectKey, signedAttachmentURLTTL)
 	if !ok || err != nil {
 		return publictypes.ContentBlock{}, ok, err
@@ -1492,10 +1495,14 @@ func isTextAttachment(filename, contentType string) bool {
 }
 
 func attachmentBlockType(contentType string) string {
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "image/") {
+	if isImageContentType(contentType) {
 		return "image"
 	}
 	return "file"
+}
+
+func isImageContentType(contentType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "image/")
 }
 
 func (r *Runtime) runSkillCommand(ctx context.Context, req ChatRequest, userID string, session *state.Session, content string, onToken func(string)) (runnerResult, error) {
