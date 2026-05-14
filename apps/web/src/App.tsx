@@ -175,6 +175,7 @@ export function App() {
   const activeJobStreamIdRef = useRef("");
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const accountRef = useRef<HTMLDivElement | null>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const lastJobEventRef = useRef("");
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const artifactsRef = useRef<Asset[]>([]);
@@ -288,6 +289,10 @@ export function App() {
   useEffect(() => {
     artifactsRef.current = artifacts;
   }, [artifacts]);
+
+  useEffect(() => {
+    resizeComposerInput(composerInputRef.current);
+  }, [draft]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -1368,14 +1373,19 @@ export function App() {
               onChange={(event) => uploadAttachment(event.currentTarget.files)}
               disabled={uploading}
             />
-            <input
+            <textarea
+              ref={composerInputRef}
               value={draft}
               aria-label="Message"
               placeholder="输入消息，或用 /skills 调用工作流"
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter") sendMessage();
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  sendMessage();
+                }
               }}
+              rows={1}
             />
             <div className="composer-actions">
               {busyChat ? (
@@ -4140,6 +4150,17 @@ function rightPanelLabel(tab: RightPanelTab): string {
   if (tab === "jobs") return "jobs";
   if (tab === "attachments") return "attachments";
   return "artifacts";
+}
+
+function resizeComposerInput(element: HTMLTextAreaElement | null) {
+  if (!element) return;
+  element.style.height = "auto";
+  const styles = window.getComputedStyle(element);
+  const minHeight = Number.parseFloat(styles.minHeight) || 44;
+  const maxHeight = Number.parseFloat(styles.maxHeight) || 180;
+  const nextHeight = Math.min(Math.max(element.scrollHeight, minHeight), maxHeight);
+  element.style.height = `${nextHeight}px`;
+  element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
 }
 
 function compareSkills(a: Skill, b: Skill): number {

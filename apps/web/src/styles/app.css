@@ -1152,14 +1152,17 @@ label.composer-upload {
 .composer-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: end;
   gap: 12px;
 }
-.composer input {
+.composer textarea {
   height: var(--composer-control-size);
   min-height: var(--composer-control-size);
-  padding: 0 14px;
+  max-height: 180px;
+  padding: 11px 14px;
   line-height: 1.4;
+  resize: none;
+  overflow-y: hidden;
 }
 .composer-upload {
   width: var(--composer-control-size);
