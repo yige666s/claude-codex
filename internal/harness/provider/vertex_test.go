@@ -383,14 +383,14 @@ func TestVertexProviderCallsClaudeRawPredict(t *testing.T) {
 		Provider: "vertex",
 		Token:    "tok",
 		BaseURL:  server.URL + "/v1",
-		Model:    "claude-sonnet-4-5",
+		Model:    "claude-sonnet-4-5@20250929",
 		Timeout:  30,
 	})
 	if err != nil {
 		t.Fatalf("NewVertexProvider: %v", err)
 	}
 	resp, err := provider.CreateMessage(context.Background(), MessageRequest{
-		Model:     "claude-sonnet-4-5",
+		Model:     "claude-sonnet-4-5@20250929",
 		System:    "You are concise.",
 		MaxTokens: 128,
 		Tools: []Tool{{
@@ -412,7 +412,7 @@ func TestVertexProviderCallsClaudeRawPredict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMessage: %v", err)
 	}
-	wantPath := "/v1/projects/proj-1/locations/global/publishers/anthropic/models/claude-sonnet-4-5:rawPredict"
+	wantPath := "/v1/projects/proj-1/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:rawPredict"
 	if gotPath != wantPath {
 		t.Fatalf("path = %s, want %s", gotPath, wantPath)
 	}

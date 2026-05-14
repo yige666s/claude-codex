@@ -97,6 +97,7 @@ func (p *VertexProvider) SupportedModels() []string {
 		"gemini-2.0-flash",
 		"gemini-2.5-pro",
 		"gemini-2.5-flash",
+		"claude-sonnet-4-5@20250929",
 		"claude-sonnet-4-5",
 	}
 }

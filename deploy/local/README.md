@@ -27,9 +27,9 @@ artifacts, Redis rate limiting, JWT auth, and the built-in user system. Override
 provider settings with environment variables such as `AGENT_API_LLM_PROVIDER`,
 `AGENT_API_MODEL`, `OPENAI_API_KEY`, `DASHSCOPE_API_KEY`, `GEMINI_API_KEY`, or
 `VERTEX_*`. To use Claude Sonnet 4.5 on Vertex, set
-`AGENT_API_MODEL=claude-sonnet-4-5`; `VERTEX_ANTHROPIC_LOCATION` defaults to the
-global partner-model endpoint, while `VERTEX_LOCATION` can remain on the regional
-endpoint used by Gemini and Imagen.
+`AGENT_API_MODEL=claude-sonnet-4-5@20250929`; `VERTEX_ANTHROPIC_LOCATION`
+defaults to the global partner-model endpoint, while `VERTEX_LOCATION` can
+remain on the regional endpoint used by Gemini and Imagen.
 
 Cloudflare R2 defaults:
 
