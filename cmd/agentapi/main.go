@@ -160,6 +160,10 @@ func main() {
 		FailureThreshold:       *llmFailureThreshold,
 		CircuitBreakerCooldown: *llmCircuitCooldown,
 	}
+	llmConfigManager := agentruntime.NewLLMGovernanceConfigManager(llmGovernanceCfg, buildRuntimeConfigStore(storeCfg))
+	if err := llmConfigManager.Load(context.Background()); err != nil {
+		log.Fatalf("load llm governance config: %v", err)
+	}
 	var llmStatusMu sync.RWMutex
 	var llmStatusProvider func() agentruntime.LLMGovernanceStatus
 
@@ -200,7 +204,7 @@ func main() {
 				log.Printf("record tool denial risk event: %v", err)
 			}
 		})
-		planner, err := newGovernedPlannerForScope(llmCfg, *llmFallbacks, *llmModelRoutes, scope, llmUsageStore, llmGovernanceCfg)
+		planner, err := newGovernedPlannerForScope(llmCfg, *llmFallbacks, *llmModelRoutes, scope, llmUsageStore, llmConfigManager.Get())
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -317,6 +321,7 @@ func main() {
 	server.SetAdminToken(*adminToken)
 	server.SetSkillRegistry(skillRegistrySetup.registry)
 	server.SetLLMUsageStore(llmUsageStore)
+	server.SetLLMGovernanceConfigManager(llmConfigManager)
 	llmStatusFn := func() agentruntime.LLMGovernanceStatus {
 		llmStatusMu.RLock()
 		provider := llmStatusProvider
@@ -378,7 +383,8 @@ func main() {
 	if strings.TrimSpace(*llmModelRoutes) != "" {
 		log.Printf("llm model routes: %s", *llmModelRoutes)
 	}
-	log.Printf("llm governance: attempts=%d chat_timeout=%s skill_timeout=%s daily_token_quota=%d daily_request_quota=%d daily_cost_quota_usd=%.4f", *llmMaxAttempts, *llmChatTimeout, *llmSkillTimeout, *llmDailyTokenQuota, *llmDailyRequestQuota, *llmDailyCostQuotaUSD)
+	effectiveLLMConfig := llmConfigManager.Get()
+	log.Printf("llm governance: attempts=%d chat_timeout=%s skill_timeout=%s daily_token_quota=%d daily_request_quota=%d daily_cost_quota_usd=%.4f", effectiveLLMConfig.MaxAttempts, effectiveLLMConfig.ChatTimeout, effectiveLLMConfig.SkillTimeout, effectiveLLMConfig.DailyTokenQuota, effectiveLLMConfig.DailyRequestQuota, effectiveLLMConfig.DailyCostQuotaUSD)
 	log.Printf("auth mode: %s", *authMode)
 	log.Printf("admin API enabled: %t", strings.TrimSpace(*adminToken) != "")
 	log.Printf("user system enabled: %t", authService != nil)
@@ -831,6 +837,22 @@ func buildLLMUsageStore(cfg storeConfig) agentruntime.LLMUsageStore {
 	store := agentruntime.NewSQLLLMUsageStoreWithDialect(db, dialect)
 	if err := store.Init(ctx); err != nil {
 		log.Fatalf("init sql llm usage store: %v", err)
+	}
+	return store
+}
+
+func buildRuntimeConfigStore(cfg storeConfig) agentruntime.LLMGovernanceConfigStore {
+	if !strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		log.Printf("warning: runtime config changes are in-memory because store-backend is not sql")
+		return nil
+	}
+	db := openSQLDB(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	dialect := agentruntime.ParseSQLDialect(firstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+	store := agentruntime.NewSQLRuntimeConfigStoreWithDialect(db, dialect)
+	if err := store.Init(ctx); err != nil {
+		log.Fatalf("init sql runtime config store: %v", err)
 	}
 	return store
 }

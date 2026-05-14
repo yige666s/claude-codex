@@ -268,16 +268,7 @@ func (p *GovernedPlanner) Status() LLMGovernanceStatus {
 	}
 	return LLMGovernanceStatus{
 		Backends: backends,
-		Config: map[string]any{
-			"max_attempts":             p.config.MaxAttempts,
-			"chat_timeout_ms":          p.config.ChatTimeout.Milliseconds(),
-			"skill_timeout_ms":         p.config.SkillTimeout.Milliseconds(),
-			"daily_token_quota":        p.config.DailyTokenQuota,
-			"daily_request_quota":      p.config.DailyRequestQuota,
-			"daily_cost_quota_usd":     p.config.DailyCostQuotaUSD,
-			"failure_threshold":        p.config.FailureThreshold,
-			"circuit_cooldown_seconds": int(p.config.CircuitBreakerCooldown.Seconds()),
-		},
+		Config:   llmGovernanceConfigStatusMap(p.config),
 	}
 }
 

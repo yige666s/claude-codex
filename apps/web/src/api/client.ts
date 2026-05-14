@@ -1,5 +1,5 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, Job, JobEvent, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, MessageSearchResult, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, MessageSearchResult, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -374,6 +374,22 @@ export class ApiClient {
       by_provider: payload.usage?.by_provider || [],
       recent: payload.usage?.recent || []
     };
+  }
+
+  async adminOpsLLMConfig(adminToken: string): Promise<LLMGovernanceConfig> {
+    const payload = await this.fetchJSON<{ config: LLMGovernanceConfig }>("/v1/admin/ops/llm-config", {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return payload.config || {};
+  }
+
+  async updateAdminOpsLLMConfig(adminToken: string, patch: LLMGovernanceConfig): Promise<LLMGovernanceConfig> {
+    const payload = await this.fetchJSON<{ config: LLMGovernanceConfig }>("/v1/admin/ops/llm-config", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify(patch)
+    });
+    return payload.config || {};
   }
 
   async adminOpsQuota(adminToken: string, userId: string, options: { days?: number; limit?: number } = {}): Promise<LLMQuotaAdminSummary> {

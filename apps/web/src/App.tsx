@@ -32,7 +32,7 @@ import {
   X
 } from "lucide-react";
 import { ApiClient, ApiError } from "./api/client";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogRecord, AuditLogSummary, AuthSession, Job, JobEvent, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, ReadinessStatus, RiskEvent, RiskReviewSummary, RiskSummary, RuntimeEvent, Session, Skill, SkillExecution, SkillExecutionSummary, SkillPolicyConfig, SkillReviewResult, SkillVersion } from "./types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogRecord, AuditLogSummary, AuthSession, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, ReadinessStatus, RiskEvent, RiskReviewSummary, RiskSummary, RuntimeEvent, Session, Skill, SkillExecution, SkillExecutionSummary, SkillPolicyConfig, SkillReviewResult, SkillVersion } from "./types";
 import { readSSEStream } from "./lib/sse";
 import { sessionTitle } from "./lib/sessionTitle";
 
@@ -3460,6 +3460,7 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
   const [health, setHealth] = useState<AdminHealthStatus | null>(null);
   const [usage, setUsage] = useState<LLMUsageAdminSummary | null>(null);
   const [quota, setQuota] = useState<LLMQuotaAdminSummary | null>(null);
+  const [configDraft, setConfigDraft] = useState<Record<string, string>>({});
   const [userID, setUserID] = useState("");
   const [days, setDays] = useState(1);
   const [refundRequests, setRefundRequests] = useState("");
@@ -3468,6 +3469,7 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
   const [quotaReason, setQuotaReason] = useState("");
   const [loading, setLoading] = useState(false);
   const [quotaBusy, setQuotaBusy] = useState("");
+  const [configBusy, setConfigBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const token = adminToken.trim();
@@ -3500,6 +3502,37 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
   useEffect(() => {
     if (token) void loadHealthCost();
   }, [token]);
+
+  useEffect(() => {
+    if (llm?.config) setConfigDraft(llmConfigDraftFromConfig(llm.config));
+  }, [llm?.config]);
+
+  const updateConfigDraft = (key: keyof LLMGovernanceConfig, value: string) => {
+    setConfigDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  const saveLLMConfig = async () => {
+    if (!token) return;
+    let patch: LLMGovernanceConfig;
+    try {
+      patch = llmConfigFromDraft(configDraft);
+    } catch (err) {
+      setError(errorMessage(err));
+      return;
+    }
+    setConfigBusy(true);
+    setError("");
+    try {
+      const nextConfig = await api.updateAdminOpsLLMConfig(token, patch);
+      setHealth((current) => current ? { ...current, llm: { ...current.llm, config: nextConfig } } : current);
+      setConfigDraft(llmConfigDraftFromConfig(nextConfig));
+      setNotice("LLM governance config updated");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setConfigBusy(false);
+    }
+  };
 
   const resetQuota = async () => {
     if (!token || !cleanUserID) {
@@ -3628,12 +3661,56 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
           <section className="admin-card">
             <div className="admin-card-head">
               <h3>Governance config</h3>
+              <button className="skill-action" onClick={saveLLMConfig} disabled={configBusy || !token}>
+                <Settings size={15} />
+                <span>{configBusy ? "Saving" : "Save"}</span>
+              </button>
             </div>
-            <div className="admin-facts">
-              <SkillFact label="Max attempts" value={String(llm?.config?.max_attempts ?? "Not set")} />
-              <SkillFact label="Daily requests" value={String(llm?.config?.daily_request_quota ?? "off")} />
-              <SkillFact label="Daily tokens" value={String(llm?.config?.daily_token_quota ?? "off")} />
-              <SkillFact label="Daily cost" value={String(llm?.config?.daily_cost_quota_usd ?? "off")} />
+            <div className="admin-config-grid">
+              <label className="admin-field">
+                <span>Daily token quota</span>
+                <input inputMode="numeric" value={configDraft.daily_token_quota || ""} onChange={(event) => updateConfigDraft("daily_token_quota", event.currentTarget.value)} placeholder="0 disables" />
+              </label>
+              <label className="admin-field">
+                <span>Daily request quota</span>
+                <input inputMode="numeric" value={configDraft.daily_request_quota || ""} onChange={(event) => updateConfigDraft("daily_request_quota", event.currentTarget.value)} placeholder="0 disables" />
+              </label>
+              <label className="admin-field">
+                <span>Daily cost quota USD</span>
+                <input inputMode="decimal" value={configDraft.daily_cost_quota_usd || ""} onChange={(event) => updateConfigDraft("daily_cost_quota_usd", event.currentTarget.value)} placeholder="0 disables" />
+              </label>
+              <label className="admin-field">
+                <span>Max attempts</span>
+                <input inputMode="numeric" value={configDraft.max_attempts || ""} onChange={(event) => updateConfigDraft("max_attempts", event.currentTarget.value)} placeholder="1" />
+              </label>
+              <label className="admin-field">
+                <span>Chat timeout ms</span>
+                <input inputMode="numeric" value={configDraft.chat_timeout_ms || ""} onChange={(event) => updateConfigDraft("chat_timeout_ms", event.currentTarget.value)} placeholder="60000" />
+              </label>
+              <label className="admin-field">
+                <span>Skill timeout ms</span>
+                <input inputMode="numeric" value={configDraft.skill_timeout_ms || ""} onChange={(event) => updateConfigDraft("skill_timeout_ms", event.currentTarget.value)} placeholder="90000" />
+              </label>
+              <label className="admin-field">
+                <span>Input cost / 1M</span>
+                <input inputMode="decimal" value={configDraft.input_cost_per_million || ""} onChange={(event) => updateConfigDraft("input_cost_per_million", event.currentTarget.value)} placeholder="0.30" />
+              </label>
+              <label className="admin-field">
+                <span>Output cost / 1M</span>
+                <input inputMode="decimal" value={configDraft.output_cost_per_million || ""} onChange={(event) => updateConfigDraft("output_cost_per_million", event.currentTarget.value)} placeholder="2.50" />
+              </label>
+              <label className="admin-field">
+                <span>Retry backoff ms</span>
+                <input inputMode="numeric" value={configDraft.retry_backoff_ms || ""} onChange={(event) => updateConfigDraft("retry_backoff_ms", event.currentTarget.value)} placeholder="300" />
+              </label>
+              <label className="admin-field">
+                <span>Failure threshold</span>
+                <input inputMode="numeric" value={configDraft.failure_threshold || ""} onChange={(event) => updateConfigDraft("failure_threshold", event.currentTarget.value)} placeholder="3" />
+              </label>
+              <label className="admin-field">
+                <span>Circuit cooldown sec</span>
+                <input inputMode="numeric" value={configDraft.circuit_cooldown_seconds || ""} onChange={(event) => updateConfigDraft("circuit_cooldown_seconds", event.currentTarget.value)} placeholder="60" />
+              </label>
             </div>
           </section>
           <section className="admin-card">
@@ -3728,6 +3805,57 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
 function StatusBadge({ value }: { value: string }) {
   const normalized = value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
   return <span className={`status-badge ${normalized}`}>{value}</span>;
+}
+
+function llmConfigDraftFromConfig(config: LLMGovernanceConfig): Record<string, string> {
+  const keys: Array<keyof LLMGovernanceConfig> = [
+    "max_attempts",
+    "retry_backoff_ms",
+    "chat_timeout_ms",
+    "skill_timeout_ms",
+    "daily_token_quota",
+    "daily_request_quota",
+    "daily_cost_quota_usd",
+    "input_cost_per_million",
+    "output_cost_per_million",
+    "failure_threshold",
+    "circuit_cooldown_seconds"
+  ];
+  return Object.fromEntries(keys.map((key) => [key, config[key] == null ? "" : String(config[key])]));
+}
+
+function llmConfigFromDraft(draft: Record<string, string>): LLMGovernanceConfig {
+  const integerKeys: Array<keyof LLMGovernanceConfig> = [
+    "max_attempts",
+    "retry_backoff_ms",
+    "chat_timeout_ms",
+    "skill_timeout_ms",
+    "daily_token_quota",
+    "daily_request_quota",
+    "failure_threshold",
+    "circuit_cooldown_seconds"
+  ];
+  const decimalKeys: Array<keyof LLMGovernanceConfig> = [
+    "daily_cost_quota_usd",
+    "input_cost_per_million",
+    "output_cost_per_million"
+  ];
+  const next: LLMGovernanceConfig = {};
+  for (const key of integerKeys) {
+    const raw = String(draft[key] || "").trim();
+    if (!raw) continue;
+    const value = Number(raw);
+    if (!Number.isInteger(value)) throw new Error(`${key} must be an integer`);
+    next[key] = value;
+  }
+  for (const key of decimalKeys) {
+    const raw = String(draft[key] || "").trim();
+    if (!raw) continue;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) throw new Error(`${key} must be a number`);
+    next[key] = value;
+  }
+  return next;
 }
 
 function AdminMetric({ label, value }: { label: string; value: string }) {

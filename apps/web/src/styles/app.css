@@ -1968,6 +1968,12 @@ label.composer-upload {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
+.admin-config-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
 .admin-facts {
   margin-top: 12px;
   display: grid;
@@ -2913,6 +2919,7 @@ label.composer-upload {
   .admin-token-box,
   .admin-metrics,
   .admin-detail-grid,
+  .admin-config-grid,
   .admin-facts {
     grid-template-columns: 1fr;
   }

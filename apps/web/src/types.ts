@@ -231,7 +231,21 @@ export type LLMBackendStatus = {
 
 export type LLMGovernanceStatus = {
   backends: LLMBackendStatus[];
-  config: Record<string, unknown>;
+  config: LLMGovernanceConfig;
+};
+
+export type LLMGovernanceConfig = {
+  max_attempts?: number;
+  retry_backoff_ms?: number;
+  chat_timeout_ms?: number;
+  skill_timeout_ms?: number;
+  daily_token_quota?: number;
+  daily_request_quota?: number;
+  daily_cost_quota_usd?: number;
+  input_cost_per_million?: number;
+  output_cost_per_million?: number;
+  failure_threshold?: number;
+  circuit_cooldown_seconds?: number;
 };
 
 export type LLMUsageRecord = {

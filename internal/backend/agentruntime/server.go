@@ -36,6 +36,7 @@ type Server struct {
 	security         WebSecurityConfig
 	llmStatus        func() LLMGovernanceStatus
 	llmUsage         LLMUsageAdminStore
+	llmConfig        *LLMGovernanceConfigManager
 	metrics          *MetricsRegistry
 	audit            AuditLogger
 	risk             RiskStore
@@ -129,6 +130,10 @@ func (s *Server) SetLLMStatusProvider(provider func() LLMGovernanceStatus) {
 
 func (s *Server) SetLLMUsageStore(store LLMUsageAdminStore) {
 	s.llmUsage = store
+}
+
+func (s *Server) SetLLMGovernanceConfigManager(manager *LLMGovernanceConfigManager) {
+	s.llmConfig = manager
 }
 
 func (s *Server) SetAdminToken(token string) {
@@ -368,7 +373,11 @@ func (s *Server) handleLLMStatus(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "llm governance is not configured"})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.llmStatus())
+	status := s.llmStatus()
+	if s.llmConfig != nil {
+		status.Config = s.llmConfig.StatusMap()
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) handleAuthRegister(w http.ResponseWriter, r *http.Request) {
@@ -646,6 +655,10 @@ func (s *Server) handleAdminOps(w http.ResponseWriter, r *http.Request, user Use
 		s.handleAdminOpsHealth(w, r)
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "llm-usage":
 		s.handleAdminOpsLLMUsage(w, r)
+	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "llm-config":
+		s.handleAdminOpsLLMConfig(w, r)
+	case r.Method == http.MethodPatch && len(parts) == 4 && parts[3] == "llm-config":
+		s.handleAdminOpsUpdateLLMConfig(w, r, user)
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "quota":
 		s.handleAdminOpsQuota(w, r)
 	case r.Method == http.MethodPost && len(parts) == 5 && parts[3] == "quota" && parts[4] == "reset":
@@ -839,6 +852,9 @@ func (s *Server) handleAdminOpsHealth(w http.ResponseWriter, r *http.Request) {
 	if s.llmStatus != nil {
 		llmStatus = s.llmStatus()
 	}
+	if s.llmConfig != nil {
+		llmStatus.Config = s.llmConfig.StatusMap()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"readiness": map[string]any{
 			"status": readinessStatus,
@@ -846,6 +862,35 @@ func (s *Server) handleAdminOpsHealth(w http.ResponseWriter, r *http.Request) {
 		},
 		"llm": llmStatus,
 	})
+}
+
+func (s *Server) handleAdminOpsLLMConfig(w http.ResponseWriter, _ *http.Request) {
+	if s.llmConfig == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "llm governance config is not configured"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"config": s.llmConfig.StatusMap()})
+}
+
+func (s *Server) handleAdminOpsUpdateLLMConfig(w http.ResponseWriter, r *http.Request, actor User) {
+	if s.llmConfig == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "llm governance config is not configured"})
+		return
+	}
+	var patch LLMGovernanceConfigPatch
+	if err := readJSON(r, &patch); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	updated, err := s.llmConfig.Update(r.Context(), patch)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "admin_llm_config_update", actor, map[string]any{
+		"config": llmGovernanceConfigStatusMap(updated),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"config": llmGovernanceConfigStatusMap(updated)})
 }
 
 func (s *Server) handleAdminOpsLLMUsage(w http.ResponseWriter, r *http.Request) {
