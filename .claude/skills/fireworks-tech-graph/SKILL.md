@@ -8,17 +8,21 @@ description: >-
   the user wants illustrated.
 user-invocable: true
 argument-hint: "<diagram request>"
-allowed-tools: ["Artifact"]
+allowed-tools: ["Artifact", "Bash(python3 *)"]
+shell: bash
 metadata:
   product:
-    version: "1.0.5"
+    version: "1.0.6"
     category: "Diagrams"
     icon: "GRAPH"
   agentapi:
     run_as_job: true
     produces_artifacts: true
   policy:
-    allowed_tools: ["Artifact"]
+    allowed_tools: ["Artifact", "Bash(python3 *)"]
+    network_allowlist:
+      - "api.github.com"
+      - "github.com"
     artifact_content_types:
       - "image/svg+xml"
     marketplace_summary: "Generate technical diagrams such as architecture, flowchart, sequence, UML, ER, timeline, and concept maps."
@@ -36,19 +40,38 @@ Create a production-quality technical diagram as one self-contained SVG artifact
 
 ## AgentAPI Contract
 
-You have exactly one user-facing output path in this environment: the `Artifact` tool.
+This skill uses a script-first artifact path. The script converts the user's
+request into template data, renders a self-contained SVG file, and prints the
+relative artifact path. You then register that generated file with the
+`Artifact` tool.
 
-Before any final answer:
+```!
+python3 "${CLAUDE_SKILL_DIR}/scripts/generate-agentapi-diagram.py" <<'FIREWORKS_TECH_GRAPH_PROMPT'
+$ARGUMENTS
+FIREWORKS_TECH_GRAPH_PROMPT
+```
 
-1. Convert the user's request into a concise diagram plan.
-2. Generate a complete, valid SVG document as text.
-3. Call `Artifact` exactly once:
-   - `filename`: short kebab-case name ending in `.svg`
-   - `content_type`: `image/svg+xml`
-   - `content`: the complete SVG text
-4. After `Artifact` succeeds, reply briefly in the user's language that the diagram is ready in the Artifacts panel.
+Use the `Artifact` tool exactly once with the `artifact_file_path` printed
+above. The value is intentionally relative to the current workspace; do not
+rewrite it as an absolute path.
 
-Do not claim that work is in progress. Do not report local file paths. Do not mention internal tools, workspace paths, shell commands, package names, or validation scripts. Do not claim PNG output unless a PNG artifact was actually created.
+- `filename`: use the printed `filename`
+- `content_type`: `image/svg+xml`
+- `file_path`: use the printed `artifact_file_path`
+
+If the shell output contains `skill_error:`, do not call the `Artifact` tool.
+Reply in the user's language with the friendly error from `skill_error:` and,
+when useful, ask for the missing system components or relationships. Do not
+expose raw exceptions, stack traces, shell commands, workspace paths, artifact
+IDs, object paths, or download paths.
+
+The shell output may contain `skill_log: {...}` diagnostic lines. These are for
+backend execution history only. Do not summarize, quote, or expose them to the
+user.
+
+After the `Artifact` tool succeeds, reply briefly in the user's language that
+the diagram is ready in the Artifacts panel. Do not include the SVG source.
+Do not claim PNG output unless a PNG artifact was actually created.
 
 ## Diagram Scope
 
@@ -62,11 +85,14 @@ Infer the diagram type from the request:
 - Timeline: phases, milestones, dependencies.
 - Class/UML/ER: entities, relationships, attributes.
 
-If the user provides a URL or repository name, use generally known public product/domain knowledge only. Do not say you inspected the repository unless the user supplied source content in the conversation or as an attachment.
+If the user provides a public GitHub URL, the script may use public repository
+metadata to infer major components. Do not claim full source-code review or
+precise internals unless the user supplied the relevant content in the
+conversation or as an attachment.
 
 ## SVG Requirements
 
-- Produce a full `<svg ...>` document with `xmlns="http://www.w3.org/2000/svg"`.
+- The script produces a full `<svg ...>` document with `xmlns="http://www.w3.org/2000/svg"`.
 - Default viewBox: `0 0 1200 800`; increase height if the diagram needs more rows.
 - Use plain SVG elements only: `rect`, `circle`, `path`, `line`, `polyline`, `text`, `g`, `defs`, `marker`.
 - Include arrow markers in `<defs>` when arrows are used.
@@ -97,4 +123,4 @@ Show high availability and scaling with replicas, shards, fan-out arrows, or das
 
 ## Output Discipline
 
-The final response must not include the SVG source. The SVG belongs in the `Artifact` tool call only.
+The final response must not include the SVG source. The SVG belongs in the generated artifact only.
