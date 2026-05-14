@@ -107,8 +107,6 @@ func main() {
 	allowDangerousTools := flag.Bool("allow-dangerous-tools", false, "enable write/edit/bash tools and write/execute permissions")
 	networkAllowlist := flag.String("network-allowlist", os.Getenv("AGENT_API_NETWORK_ALLOWLIST"), "comma-separated domains allowed for WebFetch/WebSearch; empty disables app-level web allowlist")
 	skillDirs := flag.String("skill-dirs", os.Getenv("AGENT_API_SKILL_DIRS"), "comma-separated directories containing skill-name/SKILL.md folders")
-	skillPolicy := flag.String("skill-policy", firstNonEmpty(os.Getenv("AGENT_API_SKILL_POLICY"), "allowlist"), "skill policy: allowlist or all")
-	publishedSkills := flag.String("published-skills", os.Getenv("AGENT_API_PUBLISHED_SKILLS"), "comma-separated skill names published for consumer users")
 	rateLimitBackend := flag.String("rate-limit-backend", firstNonEmpty(os.Getenv("AGENT_API_RATE_LIMIT_BACKEND"), "memory"), "rate limit backend: memory, redis, gateway, none")
 	rateLimit := flag.Int("rate-limit", 60, "max requests per user per minute")
 	operationRateLimits := flag.String("operation-rate-limits", os.Getenv("AGENT_API_OPERATION_RATE_LIMITS"), "comma-separated operation rate limits such as chat_message=60/m,job_create=20/m,data_export=5/h")
@@ -166,7 +164,7 @@ func main() {
 	var llmStatusProvider func() agentruntime.LLMGovernanceStatus
 
 	skillManager := loadSkills(splitCSV(*skillDirs))
-	skillRegistrySetup := buildSkillRegistrySetup(storeCfg, skillManager, splitCSV(*publishedSkills), strings.EqualFold(*skillPolicy, "all"))
+	skillRegistrySetup := buildSkillRegistrySetup(storeCfg, skillManager)
 	skillCatalog := skillRegistrySetup.catalog
 	globalAllowed := allowedToolNames(*allowDangerousTools)
 	globalNetworkAllowlist := splitCSV(*networkAllowlist)
@@ -391,7 +389,7 @@ func main() {
 	if *retentionDays > 0 {
 		log.Printf("retention days: %d", *retentionDays)
 	}
-	log.Printf("skill policy: %s published=%d", *skillPolicy, len(splitCSV(*publishedSkills)))
+	log.Printf("skill publication: code-defined registry sync; database status controls enablement")
 	log.Printf("dangerous tools enabled: %t", *allowDangerousTools)
 	log.Printf("skill shell timeout: %s", *skillShellTimeout)
 	log.Printf("skill shell runner: %s image=%s network=%s memory=%s cpus=%s pids=%d", *skillShellRunner, *skillSandboxImage, *skillSandboxNetwork, *skillSandboxMemory, *skillSandboxCPUs, *skillSandboxPidsLimit)
@@ -784,9 +782,9 @@ type skillRegistrySetup struct {
 	registry agentruntime.SkillRegistryAdminStore
 }
 
-func buildSkillRegistrySetup(cfg storeConfig, skillManager *skills.SkillManager, published []string, allowAll bool) skillRegistrySetup {
+func buildSkillRegistrySetup(cfg storeConfig, skillManager *skills.SkillManager) skillRegistrySetup {
 	if !strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
-		return skillRegistrySetup{catalog: agentruntime.NewPublishedSkillCatalog(skillManager, published, allowAll)}
+		return skillRegistrySetup{catalog: agentruntime.NewPublishedSkillCatalog(skillManager, nil, true)}
 	}
 	db := openSQLDB(cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -796,10 +794,7 @@ func buildSkillRegistrySetup(cfg storeConfig, skillManager *skills.SkillManager,
 	if err := registry.Init(ctx); err != nil {
 		log.Fatalf("init sql skill registry: %v", err)
 	}
-	if err := registry.SyncLoadedSkills(ctx, skillManager.ListSkills(), agentruntime.SkillPublicationPolicy{
-		AllowAll: allowAll,
-		Names:    published,
-	}); err != nil {
+	if err := registry.SyncLoadedSkills(ctx, skillManager.ListSkills()); err != nil {
 		log.Fatalf("sync sql skill registry: %v", err)
 	}
 	records, err := registry.ListSkills(ctx)

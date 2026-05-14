@@ -48,11 +48,6 @@ type SkillVersionRecord struct {
 	PublishedAt *time.Time     `json:"published_at,omitempty"`
 }
 
-type SkillPublicationPolicy struct {
-	AllowAll bool
-	Names    []string
-}
-
 type SkillRegistryAdminStore interface {
 	ListSkills(ctx context.Context) ([]SkillRegistryRecord, error)
 	GetSkill(ctx context.Context, name string) (SkillRegistryRecord, error)
@@ -117,7 +112,7 @@ func (s *SQLSkillRegistry) Init(ctx context.Context) error {
 	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skills", "created_at", "updated_at", "published_at")
 }
 
-func (s *SQLSkillRegistry) SyncLoadedSkills(ctx context.Context, loaded []*skills.SkillDefinition, policy SkillPublicationPolicy) error {
+func (s *SQLSkillRegistry) SyncLoadedSkills(ctx context.Context, loaded []*skills.SkillDefinition) error {
 	existing, err := s.ListSkills(ctx)
 	if err != nil {
 		return err
@@ -140,7 +135,7 @@ func (s *SQLSkillRegistry) SyncLoadedSkills(ctx context.Context, loaded []*skill
 				publishedAt := now
 				record.PublishedAt = &publishedAt
 			}
-		} else if skillPublishedByPolicy(skill, policy) {
+		} else if skillCodePublishesByDefault(skill) {
 			record.Status = SkillStatusPublished
 			publishedAt := now
 			record.PublishedAt = &publishedAt
@@ -501,29 +496,11 @@ func normalizeSkillStatus(status string) string {
 	}
 }
 
-func skillPublishedByPolicy(skill *skills.SkillDefinition, policy SkillPublicationPolicy) bool {
+func skillCodePublishesByDefault(skill *skills.SkillDefinition) bool {
 	if skill == nil || !skill.UserInvocable || skill.IsHidden {
 		return false
 	}
-	if policy.AllowAll {
-		return true
-	}
-	allowed := make(map[string]bool, len(policy.Names))
-	for _, name := range policy.Names {
-		name = strings.TrimSpace(name)
-		if name != "" {
-			allowed[name] = true
-		}
-	}
-	if allowed[skill.Name] {
-		return true
-	}
-	for _, alias := range skill.Aliases {
-		if allowed[alias] {
-			return true
-		}
-	}
-	return false
+	return true
 }
 
 func skillDefinitionHash(skill *skills.SkillDefinition) string {

@@ -299,7 +299,7 @@ Status: Done for current P2 scope. Phase 1 registry MVP, Phase 2 admin managemen
 Delivered:
 
 - `agent_skills` SQL registry table with name, display metadata, category/icon placeholders, status, version, source, skill root, metadata, content hash, and publish timestamps.
-- Startup sync from loaded filesystem skills into `agent_skills`; new rows use the existing CLI `skill-policy` / `published-skills` settings only as bootstrap defaults.
+- Startup sync from loaded filesystem skills into `agent_skills`; code-loaded, user-invocable, non-hidden skills are published on first sync, while existing database status is preserved and remains the enable/disable control.
 - Registry-backed skill catalog now controls C-end visible and directly invocable skills.
 - Internal Skill tool execution uses the same registry-filtered skill manager, preventing unpublished skills from bypassing publication state through model tool calls.
 - `GET /v1/skills` remains the C-end skill listing API and now can surface registry-backed product metadata such as category, icon, and version when present.

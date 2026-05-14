@@ -128,8 +128,6 @@ services:
       - redis://redis:6379/0?prefix=agentapi
       - -operation-rate-limits
       - "${AGENT_API_OPERATION_RATE_LIMITS:-auth_login=20/m,auth_register=10/h,chat_message=60/m,job_create=20/m,attachment_upload=30/m,asset_download=120/m,memory_extract=30/h,data_export=5/h,account_delete=3/h,admin_action=120/m}"
-      - -skill-policy
-      - "${AGENT_API_SKILL_POLICY:-all}"
       - -skill-dirs
       - "${AGENT_API_SKILL_DIRS:-/workspace/.claude/skills}"
       - -skill-shell-runner

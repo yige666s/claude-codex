@@ -371,7 +371,7 @@ analysis requests, are routed to jobs by default.
 - Skills are loaded from bundled skills plus `-skill-dirs` / `AGENT_API_SKILL_DIRS`, a comma-separated list of directories containing `skill-name/SKILL.md` folders. Add `~/.claude/skills` or `<workspace>/.claude/skills` to that list when those default-style locations should be used.
 - Write/edit/bash tools require `cmd/agentapi -allow-dangerous-tools`.
 - Server-side permission policy denies write/execute unless explicitly enabled.
-- Consumer-invocable skills are filtered by `-skill-policy allowlist` and `-published-skills name1,name2`. With `-store-backend sql`, these settings bootstrap the `agent_skills` registry; after startup the registry status controls visible and invocable skills.
+- Consumer-invocable skills are loaded from code-controlled skill directories into the `agent_skills` registry. New user-invocable, non-hidden skills are published on first sync; after that the database `status` controls whether each skill is visible and invocable.
 - Admin skill APIs require normal user authentication plus `-admin-token` / `AGENT_API_ADMIN_TOKEN` through the `X-Admin-Token` header. The SQL registry supports listing, metadata edits, version history, pre-publish review, publish, unpublish, and disable without restarting the server.
 - Skill registry metadata can carry runtime policy under `metadata.policy` or `metadata.agentapi.policy`. Supported keys include `allowed_tools`, `allowed_env`, `network_allowlist`, `artifact_content_types`, `shell_timeout`, and `sandbox` (`image`, `network`, `memory`, `cpus`, `pids_limit`, `tmpfs_size`, `max_output_bytes`). These policy values are enforced for skill shell execution, model-visible tools, WebFetch/WebSearch, and Artifact outputs.
 - Direct consumer skill executions are recorded in `agent_skill_executions` when SQL storage is enabled, including skill name, user/session/job/request IDs, status, duration, error text, and policy snapshot metadata. Admin APIs can list recent executions or fetch aggregate success/failure/latency analytics per skill.
@@ -386,8 +386,6 @@ Example production safety shape:
 ```bash
 go run ./cmd/agentapi \
   -user-workspace-root /srv/agentapi/workspaces \
-  -skill-policy allowlist \
-  -published-skills ppt-generator,data-analysis \
   -skill-shell-runner docker \
   -skill-sandbox-image python:3.12-slim \
   -skill-sandbox-network none \

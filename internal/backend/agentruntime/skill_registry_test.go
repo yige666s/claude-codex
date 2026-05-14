@@ -43,3 +43,15 @@ func TestSkillRegistryRecordTopLevelVersionOverridesMetadataVersion(t *testing.T
 		t.Fatalf("top-level version should win, got %q", record.Version)
 	}
 }
+
+func TestSkillCodePublishesUserInvocableSkillsByDefault(t *testing.T) {
+	if !skillCodePublishesByDefault(&skills.SkillDefinition{Name: "diagram", UserInvocable: true}) {
+		t.Fatal("user-invocable code-loaded skill should publish on first registry sync")
+	}
+	if skillCodePublishesByDefault(&skills.SkillDefinition{Name: "internal", UserInvocable: false}) {
+		t.Fatal("non-user-invocable skill should not publish on first registry sync")
+	}
+	if skillCodePublishesByDefault(&skills.SkillDefinition{Name: "hidden", UserInvocable: true, IsHidden: true}) {
+		t.Fatal("hidden skill should not publish on first registry sync")
+	}
+}
