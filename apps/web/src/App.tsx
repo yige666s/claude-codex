@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, forwardRef, ReactNode, RefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertCircle,
@@ -196,10 +196,6 @@ export function App() {
       ...(skill.tags || [])
     ])),
     [skills, rightPanelSearch.skills]
-  );
-  const recentSkillCount = useMemo(
-    () => recentSkillsFromNames(skills, recentSkillNames).length,
-    [skills, recentSkillNames]
   );
   const filteredJobs = useMemo(
     () => jobs.filter((job) => fuzzyMatch(rightPanelSearch.jobs, [job.id, job.content])),
@@ -1408,7 +1404,7 @@ export function App() {
 
       <aside className="right-panel" aria-hidden={!rightPanelOpen}>
         <div className="right-tabs" role="tablist" aria-label="Right panel tools">
-          <RightTabButton tab="skills" activeTab={rightPanelTab} label="Skills" count={recentSkillCount} icon={<Sparkles size={20} />} onClick={setRightPanelTab} />
+          <RightTabButton tab="skills" activeTab={rightPanelTab} label="Skills" count={skills.length} icon={<Sparkles size={20} />} onClick={setRightPanelTab} />
           <RightTabButton tab="jobs" activeTab={rightPanelTab} label="Jobs" count={jobs.length} icon={<Briefcase size={20} />} onClick={setRightPanelTab} />
           <RightTabButton tab="attachments" activeTab={rightPanelTab} label="Attachments" count={attachments.length} icon={<FileUp size={20} />} onClick={setRightPanelTab} />
           <RightTabButton tab="artifacts" activeTab={rightPanelTab} label="Artifacts" count={artifacts.length} icon={<Image size={20} />} onClick={setRightPanelTab} />
@@ -1432,7 +1428,7 @@ export function App() {
             <SkillPanel
               skills={filteredSkills}
               recentSkillNames={recentSkillNames}
-              emptyLabel={rightPanelSearch.skills ? "No matching recent skills" : "No recent skills"}
+              emptyLabel={rightPanelSearch.skills ? "No matching skills" : "No skills"}
               onInsert={insertSkill}
               onDetails={setSkillDetail}
             />
@@ -2184,62 +2180,112 @@ function SkillPanel({
   onDetails: (skill: Skill) => void;
 }) {
   const recentSkills = recentSkillsFromNames(skills, recentSkillNames);
-  if (!recentSkills.length) return <div className="empty-small">{emptyLabel}</div>;
+  const orderedSkills = useMemo(() => [...skills].sort(compareSkills), [skills]);
+  const [expandedSkillName, setExpandedSkillName] = useState("");
+  const skillRefs = useRef(new Map<string, HTMLElement>());
+  if (!orderedSkills.length) return <div className="empty-small">{emptyLabel}</div>;
+  const jumpToSkill = (skill: Skill) => {
+    setExpandedSkillName(skill.name);
+    window.requestAnimationFrame(() => {
+      skillRefs.current.get(skill.name)?.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+  };
+  const setSkillRef = (name: string) => (element: HTMLElement | null) => {
+    if (element) skillRefs.current.set(name, element);
+    else skillRefs.current.delete(name);
+  };
   return (
     <div className="skill-browser">
+      {recentSkills.length > 0 && (
+        <section className="skill-section">
+          <div className="skill-section-title">
+            <Star size={14} />
+            <span>Recent</span>
+            <small>{recentSkills.length}</small>
+          </div>
+          <div className="recent-skill-list">
+            {recentSkills.map((skill) => (
+              <button key={skill.name} type="button" onClick={() => jumpToSkill(skill)}>
+                <SkillGlyph skill={skill} />
+                <span>{skill.display_name || skill.name}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
       <section className="skill-section">
         <div className="skill-section-title">
-          <Star size={14} />
-          <span>Recent</span>
-          <small>{recentSkills.length}</small>
+          <Sparkles size={14} />
+          <span>Skills</span>
+          <small>{orderedSkills.length}</small>
         </div>
         <div className="skill-grid">
-          {recentSkills.map((skill) => (
-            <SkillCard key={skill.name} skill={skill} onInsert={onInsert} onDetails={onDetails} />
-          ))}
+          {orderedSkills.map((skill) => {
+            const expanded = expandedSkillName === skill.name;
+            return (
+              <SkillCard
+                key={skill.name}
+                ref={setSkillRef(skill.name)}
+                skill={skill}
+                expanded={expanded}
+                onToggle={() => setExpandedSkillName(expanded ? "" : skill.name)}
+                onInsert={onInsert}
+                onDetails={onDetails}
+              />
+            );
+          })}
         </div>
       </section>
     </div>
   );
 }
 
-function SkillCard({
-  skill,
-  onInsert,
-  onDetails
-}: {
+const SkillCard = forwardRef<HTMLElement, {
   skill: Skill;
+  expanded: boolean;
+  onToggle: () => void;
   onInsert: (skill: Skill) => void;
   onDetails: (skill: Skill) => void;
-}) {
+}>(function SkillCard({
+  skill,
+  expanded,
+  onToggle,
+  onInsert,
+  onDetails
+}, ref) {
   const title = skill.display_name || skill.name;
   return (
-    <article className={`skill-card ${skill.featured ? "featured" : ""}`}>
-      <div className="skill-card-top">
+    <article ref={ref} className={`skill-card ${expanded ? "expanded" : "collapsed"} ${skill.featured ? "featured" : ""}`}>
+      <button type="button" className="skill-card-summary" onClick={onToggle} aria-expanded={expanded}>
         <SkillGlyph skill={skill} />
         <div>
           <strong>{title}</strong>
           <small>/{skill.name}</small>
         </div>
-      </div>
-      <p>{skill.short_description || skill.description || skill.usage || "No description available."}</p>
-      <div className="skill-meta-row">
-        {skill.run_as_job && <span>Job</span>}
-        {skill.produces_artifacts && <span>Artifacts</span>}
-        {skill.version && <span>v{skill.version}</span>}
-      </div>
-      <div className="skill-card-actions">
-        <button type="button" className="skill-action primary" onClick={() => onInsert(skill)} title={`Insert /${skill.name}`} aria-label={`Insert /${skill.name}`}>
-          <PlayCircle size={15} />
-          <span>Insert</span>
-        </button>
-        <button type="button" className="skill-action" onClick={() => onDetails(skill)} title={`Details for ${title}`} aria-label="Skill details">
-          <Info size={15} />
-        </button>
-      </div>
+        <ChevronDown size={16} />
+      </button>
+      {expanded && (
+        <>
+          <p>{skill.short_description || skill.description || skill.usage || "No description available."}</p>
+          <div className="skill-meta-row">
+            {skill.run_as_job && <span>Job</span>}
+            {skill.produces_artifacts && <span>Artifacts</span>}
+            {skill.version && <span>v{skill.version}</span>}
+          </div>
+          <div className="skill-card-actions">
+            <button type="button" className="skill-action primary" onClick={() => onInsert(skill)} title={`Insert /${skill.name}`} aria-label={`Insert /${skill.name}`}>
+              <PlayCircle size={15} />
+              <span>Insert</span>
+            </button>
+            <button type="button" className="skill-action" onClick={() => onDetails(skill)} title={`Details for ${title}`} aria-label="Skill details">
+              <Info size={15} />
+            </button>
+          </div>
+        </>
+      )}
     </article>
   );
-}
+});
 
 function AdminConsole({
   api,
@@ -4107,15 +4153,11 @@ function compareSkills(a: Skill, b: Skill): number {
 function recentSkillsFromNames(skills: Skill[], names: string[]): Skill[] {
   const byName = new Map(skills.map((skill) => [skill.name, skill]));
   const seenNames = new Set<string>();
-  const seenTaskGroups = new Set<string>();
   const out: Skill[] = [];
   for (const name of names) {
     const skill = byName.get(name);
     if (!skill || seenNames.has(skill.name)) continue;
-    const taskGroup = (skill.category?.trim().toLowerCase() || skill.name);
-    if (seenTaskGroups.has(taskGroup)) continue;
     seenNames.add(skill.name);
-    seenTaskGroups.add(taskGroup);
     out.push(skill);
   }
   return out;
