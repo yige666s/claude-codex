@@ -166,7 +166,7 @@ func (r *Runtime) ListSessions(ctx context.Context, userID string) ([]*state.Ses
 		return nil, err
 	}
 	for _, session := range sessions {
-		hideWorkspaceContextAck(session)
+		r.hideInternalTranscriptMessages(session)
 	}
 	return sessions, nil
 }
@@ -179,8 +179,13 @@ func (r *Runtime) GetSession(ctx context.Context, userID, sessionID string) (*st
 	if err != nil {
 		return nil, err
 	}
-	hideWorkspaceContextAck(session)
+	r.hideInternalTranscriptMessages(session)
 	return session, nil
+}
+
+func (r *Runtime) hideInternalTranscriptMessages(session *state.Session) {
+	hideWorkspaceContextAck(session)
+	r.hideSyntheticRoutedSkillMessages(session)
 }
 
 func hideWorkspaceContextAck(session *state.Session) {
@@ -192,6 +197,56 @@ func hideWorkspaceContextAck(session *state.Session) {
 			session.Messages[i].Hidden = true
 		}
 	}
+}
+
+func (r *Runtime) hideSyntheticRoutedSkillMessages(session *state.Session) {
+	if session == nil || r == nil || r.skills == nil {
+		return
+	}
+	var previousVisible *state.Message
+	for i := range session.Messages {
+		message := &session.Messages[i]
+		if !message.Hidden && message.Role == "user" && isRunAsJobSlashMessage(r.skills, message.Content) && previousVisible != nil && previousVisible.Role == "user" && !isSlashCommand(previousVisible.Content) {
+			message.Hidden = true
+		}
+		if message.Hidden || (message.Role != "user" && message.Role != "assistant") || strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		previousVisible = message
+	}
+}
+
+func isRunAsJobSlashMessage(catalog SkillCatalog, content string) bool {
+	if catalog == nil || !isSlashCommand(content) {
+		return false
+	}
+	parts := strings.SplitN(strings.TrimSpace(content), " ", 2)
+	name := strings.TrimPrefix(parts[0], "/")
+	if name == "" {
+		return false
+	}
+	skill, ok := catalog.GetSkill(name)
+	return ok && skill != nil && skill.RunAsJob
+}
+
+func isSlashCommand(content string) bool {
+	content = strings.TrimSpace(content)
+	if !strings.HasPrefix(content, "/") {
+		return false
+	}
+	if len(content) == 1 {
+		return false
+	}
+	for _, r := range content[1:] {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			return true
+		}
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == ':' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (r *Runtime) DeleteSession(ctx context.Context, userID, sessionID string) error {

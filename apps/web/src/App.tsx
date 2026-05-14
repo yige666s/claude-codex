@@ -1627,6 +1627,9 @@ function visibleMessages(messages: Message[]): Message[] {
       }
       return;
     }
+    if (isConvertedSkillCommandMessage(visible, indexed)) {
+      return;
+    }
     if (indexed.role !== "tool" && !indexed.hidden && (indexed.content || indexed.tool_output)) {
       visible.push(indexed);
     }
@@ -1658,6 +1661,9 @@ function upsertSession(items: Session[], session: Session): Session[] {
 }
 
 function appendRuntimeMessage(messages: Message[], message: Message): Message[] {
+  if (isConvertedSkillCommandMessage(messages, message)) {
+    return messages;
+  }
   const content = message.content || message.tool_output || "";
   const previous = messages[messages.length - 1];
   const previousContent = previous?.content || previous?.tool_output || "";
@@ -1665,6 +1671,34 @@ function appendRuntimeMessage(messages: Message[], message: Message): Message[] 
     return messages;
   }
   return [...messages, message];
+}
+
+function isConvertedSkillCommandMessage(messages: Message[], message: Message): boolean {
+  const content = (message.content || message.tool_output || "").trim();
+  if (message.hidden || message.role !== "user" || !isSlashSkillCommand(content)) {
+    return false;
+  }
+  const previous = lastVisibleConversationalMessage(messages);
+  const previousContent = (previous?.content || previous?.tool_output || "").trim();
+  return previous?.role === "user" && !!previousContent && !isSlashSkillCommand(previousContent);
+}
+
+function lastVisibleConversationalMessage(messages: Message[]): Message | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    const content = (message.content || message.tool_output || "").trim();
+    if (message.hidden || message.role === "tool" || !content) {
+      continue;
+    }
+    if (message.role === "user" || message.role === "assistant") {
+      return message;
+    }
+  }
+  return undefined;
+}
+
+function isSlashSkillCommand(content: string): boolean {
+  return /^\/[A-Za-z0-9_.:-]+(?:\s|$)/.test(content.trim());
 }
 
 function appendJobEvent(events: JobEvent[], event: JobEvent): JobEvent[] {

@@ -69,6 +69,66 @@ func TestRuntimeHidesWorkspaceContextAcknowledgementOnRead(t *testing.T) {
 	}
 }
 
+func TestRuntimeHidesPersistedSyntheticRoutedSkillMessageOnRead(t *testing.T) {
+	store := NewFileSessionStore(t.TempDir())
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "vertex-image-artifact",
+		UserInvocable: true,
+		RunAsJob:      true,
+	}}}
+	runtime := NewRuntime(RuntimeConfig{}, store, nil, catalog, func(Scope) Runner { return echoRunner{} })
+	session, err := store.Create(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	session.AddUserMessage("帮我创建以下图片：ink drawing --ar 3:4")
+	session.AddUserMessage("/vertex-image-artifact ink drawing --ar 3:4")
+	if err := store.Save(context.Background(), "alice", session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	read, err := runtime.GetSession(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	var visibleUsers []string
+	for _, message := range read.Messages {
+		if message.Role == "user" && !message.Hidden {
+			visibleUsers = append(visibleUsers, message.Content)
+		}
+	}
+	if len(visibleUsers) != 1 || visibleUsers[0] != "帮我创建以下图片：ink drawing --ar 3:4" {
+		t.Fatalf("unexpected visible users: %#v messages=%#v", visibleUsers, read.Messages)
+	}
+}
+
+func TestRuntimeKeepsDirectSlashSkillVisibleOnRead(t *testing.T) {
+	store := NewFileSessionStore(t.TempDir())
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "vertex-image-artifact",
+		UserInvocable: true,
+		RunAsJob:      true,
+	}}}
+	runtime := NewRuntime(RuntimeConfig{}, store, nil, catalog, func(Scope) Runner { return echoRunner{} })
+	session, err := store.Create(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	session.AddAssistantMessage("上一轮完成")
+	session.AddUserMessage("/vertex-image-artifact ink drawing --ar 3:4")
+	if err := store.Save(context.Background(), "alice", session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	read, err := runtime.GetSession(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if read.Messages[1].Hidden {
+		t.Fatalf("direct slash skill should remain visible: %#v", read.Messages)
+	}
+}
+
 func TestEnsureConsumerSecurityContextInjectedOnce(t *testing.T) {
 	session := state.NewSession(t.TempDir())
 
