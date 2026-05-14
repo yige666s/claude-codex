@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+var ErrNoStreamCandidates = errors.New("no candidates in stream response")
 
 // GeminiProvider implements Provider for Google Gemini API
 type GeminiProvider struct {
@@ -490,7 +493,7 @@ func parseGeminiStreamResponse(model string, body io.Reader, idPrefix string, on
 	}
 	text := textBuilder.String()
 	if text == "" && len(toolCalls) == 0 {
-		return nil, fmt.Errorf("no candidates in stream response")
+		return nil, ErrNoStreamCandidates
 	}
 	if len(toolCalls) > 0 && stopReason == "" {
 		stopReason = "tool_use"

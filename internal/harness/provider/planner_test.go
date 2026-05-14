@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -42,6 +43,17 @@ func (f *fakeStreamingProvider) StreamMessage(_ context.Context, request Message
 	}, nil
 }
 
+type emptyCandidateStreamingProvider struct {
+	fakeProvider
+	streamed bool
+}
+
+func (f *emptyCandidateStreamingProvider) StreamMessage(_ context.Context, request MessageRequest, _ func(string)) (*MessageResponse, error) {
+	f.request = &request
+	f.streamed = true
+	return nil, ErrNoStreamCandidates
+}
+
 func TestPlannerConvertsProviderToolCallsToEnginePlan(t *testing.T) {
 	planner := NewPlanner(&fakeProvider{
 		response: &MessageResponse{
@@ -60,6 +72,41 @@ func TestPlannerConvertsProviderToolCallsToEnginePlan(t *testing.T) {
 	}
 	if len(plan.ToolCalls) != 1 || plan.ToolCalls[0].Name != "bash" {
 		t.Fatalf("unexpected plan %#v", plan)
+	}
+}
+
+func TestPlannerFallsBackToNonStreamingWhenStreamHasNoCandidates(t *testing.T) {
+	provider := &emptyCandidateStreamingProvider{
+		fakeProvider: fakeProvider{
+			response: &MessageResponse{
+				Model:      "fake",
+				Role:       "assistant",
+				Content:    []ContentBlock{{Type: "text", Text: "fallback ok"}},
+				StopReason: "end_turn",
+			},
+		},
+	}
+	planner := NewPlanner(provider, "fake")
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("draw diagram")
+	plan, err := planner.StreamNext(context.Background(), session, nil, nil)
+	if err != nil {
+		t.Fatalf("StreamNext() error = %v", err)
+	}
+	if !provider.streamed {
+		t.Fatalf("expected streaming request first")
+	}
+	if provider.request == nil || provider.request.Stream {
+		t.Fatalf("expected fallback non-streaming request, got %#v", provider.request)
+	}
+	if plan.AssistantText != "fallback ok" {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestNoStreamCandidatesErrorIsComparable(t *testing.T) {
+	if !errors.Is(ErrNoStreamCandidates, ErrNoStreamCandidates) {
+		t.Fatalf("ErrNoStreamCandidates should be comparable")
 	}
 }
 

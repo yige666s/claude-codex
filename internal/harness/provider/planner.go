@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"claude-codex/internal/harness/plannerapi"
 	"claude-codex/internal/harness/state"
@@ -45,6 +46,9 @@ func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools 
 		}
 		response, err := streaming.StreamMessage(ctx, request, onChunk)
 		if err != nil {
+			if errors.Is(err, ErrNoStreamCandidates) {
+				return p.Next(ctx, session, tools)
+			}
 			return plannerapi.Plan{}, err
 		}
 		return planFromResponse(response), nil
