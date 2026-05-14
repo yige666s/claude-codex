@@ -150,6 +150,7 @@ func (r *queryRuntime) initialQueryMessages(session *state.Session) []queryengin
 			Type:      "assistant",
 			Timestamp: time.Now().UTC(),
 			UUID:      fmt.Sprintf("%s-workspace-ack", session.ID),
+			IsMeta:    true,
 			Content:   "Understood. I have the workspace context.",
 		})
 	}
@@ -222,8 +223,8 @@ func stateToQueryMessage(sessionID string, idx int, msg state.Message) queryengi
 		} else {
 			queryMsg.Content = msg.Content
 		}
-		queryMsg.IsMeta = msg.Hidden
 	}
+	queryMsg.IsMeta = msg.Hidden
 
 	return queryMsg
 }
@@ -320,6 +321,7 @@ func queryToStateMessage(msg queryengine.Message) (state.Message, bool) {
 			Role:      "assistant",
 			Content:   content,
 			ToolCalls: toolCalls,
+			Hidden:    msg.IsMeta,
 			CreatedAt: createdAt,
 		}, true
 	case "tool":

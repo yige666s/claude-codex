@@ -48,6 +48,27 @@ func TestFileSessionStoreScopesSessionsByUser(t *testing.T) {
 	}
 }
 
+func TestRuntimeHidesWorkspaceContextAcknowledgementOnRead(t *testing.T) {
+	store := NewFileSessionStore(t.TempDir())
+	runtime := NewRuntime(RuntimeConfig{}, store, nil, nil, func(Scope) Runner { return echoRunner{} })
+	session, err := store.Create(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	session.AddAssistantMessage(workspaceContextAckContent)
+	if err := store.Save(context.Background(), "alice", session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	read, err := runtime.GetSession(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if len(read.Messages) != 1 || !read.Messages[0].Hidden {
+		t.Fatalf("expected workspace context acknowledgement to be hidden: %#v", read.Messages)
+	}
+}
+
 func TestEnsureConsumerSecurityContextInjectedOnce(t *testing.T) {
 	session := state.NewSession(t.TempDir())
 

@@ -85,6 +85,11 @@ func TestStreamingRunInjectsFullSkillDescriptionsAfterHiddenContext(t *testing.T
 	if session.Metadata[skillCatalogInjectedKey] != "true" {
 		t.Fatalf("skill catalog metadata not marked: %#v", session.Metadata)
 	}
+	for _, message := range session.Messages {
+		if message.Role == "assistant" && message.Content == "Understood. I have the workspace context." && !message.Hidden {
+			t.Fatalf("workspace context acknowledgement should be hidden: %#v", message)
+		}
+	}
 }
 
 type capturingStreamingPlanner struct {

@@ -27,6 +27,7 @@ import (
 const (
 	memoryInjectedKey           = "agentruntime.memory_context_injected"
 	consumerSecurityInjectedKey = "agentruntime.consumer_security_context_injected"
+	workspaceContextAckContent  = "Understood. I have the workspace context."
 )
 
 type hiddenUserMessageContextKey struct{}
@@ -160,14 +161,37 @@ func (r *Runtime) ListSessions(ctx context.Context, userID string) ([]*state.Ses
 	if r.sessions == nil {
 		return nil, fmt.Errorf("session store is required")
 	}
-	return r.sessions.List(ctx, userID)
+	sessions, err := r.sessions.List(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, session := range sessions {
+		hideWorkspaceContextAck(session)
+	}
+	return sessions, nil
 }
 
 func (r *Runtime) GetSession(ctx context.Context, userID, sessionID string) (*state.Session, error) {
 	if r.sessions == nil {
 		return nil, fmt.Errorf("session store is required")
 	}
-	return r.sessions.Get(ctx, userID, sessionID)
+	session, err := r.sessions.Get(ctx, userID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	hideWorkspaceContextAck(session)
+	return session, nil
+}
+
+func hideWorkspaceContextAck(session *state.Session) {
+	if session == nil {
+		return
+	}
+	for i := range session.Messages {
+		if session.Messages[i].Role == "assistant" && session.Messages[i].Content == workspaceContextAckContent {
+			session.Messages[i].Hidden = true
+		}
+	}
 }
 
 func (r *Runtime) DeleteSession(ctx context.Context, userID, sessionID string) error {

@@ -43,7 +43,7 @@ func (e *Engine) ensureInitialModelContext(session *state.Session) {
 	if e.workingDir != "" && session.Metadata[workspaceContextInjectedKey] != "true" && !sessionHasHiddenContent(session, "workspace context") {
 		wsCtx := workctx.Collect(e.workingDir)
 		session.AddSystemContext(wsCtx.SystemPrompt())
-		session.AddAssistantMessage("Understood. I have the workspace context.")
+		session.AddHiddenAssistantMessage("Understood. I have the workspace context.")
 		session.Metadata[workspaceContextInjectedKey] = "true"
 	}
 	if e.skillManager == nil || session.Metadata[skillCatalogInjectedKey] == "true" || sessionHasHiddenContent(session, "The following skills are available for use with the Skill tool") {

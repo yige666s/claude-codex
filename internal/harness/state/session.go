@@ -108,6 +108,16 @@ func (s *Session) AddAssistantMessage(content string) {
 	s.Usage.RecordOutput(content)
 }
 
+func (s *Session) AddHiddenAssistantMessage(content string) {
+	s.append(Message{
+		Role:      "assistant",
+		Content:   content,
+		Hidden:    true,
+		CreatedAt: time.Now().UTC(),
+	})
+	s.Usage.RecordOutput(content)
+}
+
 func (s *Session) AddAssistantMessageWithTools(content string, toolCalls []ToolCall) {
 	s.append(Message{
 		Role:      "assistant",

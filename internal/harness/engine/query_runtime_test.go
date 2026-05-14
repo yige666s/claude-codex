@@ -109,6 +109,12 @@ func TestQueryRuntimeMessageRoundTripPreservesToolHistory(t *testing.T) {
 			Hidden:    true,
 			CreatedAt: session.StartedAt,
 		},
+		{
+			Role:      "assistant",
+			Content:   "hidden assistant context",
+			Hidden:    true,
+			CreatedAt: session.StartedAt,
+		},
 	}
 
 	queryMessages := sessionToQueryMessages(session)
@@ -135,5 +141,9 @@ func TestQueryRuntimeMessageRoundTripPreservesToolHistory(t *testing.T) {
 	hidden := roundTripped.Messages[3]
 	if hidden.Role != "user" || !hidden.Hidden || hidden.Content != "hidden context" {
 		t.Fatalf("expected hidden user message to round-trip, got %#v", hidden)
+	}
+	hiddenAssistant := roundTripped.Messages[4]
+	if hiddenAssistant.Role != "assistant" || !hiddenAssistant.Hidden || hiddenAssistant.Content != "hidden assistant context" {
+		t.Fatalf("expected hidden assistant message to round-trip, got %#v", hiddenAssistant)
 	}
 }
