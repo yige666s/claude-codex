@@ -866,7 +866,7 @@ export function App() {
       writeRecentSkills(next);
       return next;
     });
-    setStatus({ tone: "ok", text: `Inserted /${skill.name}` });
+    setStatus({ tone: "ok", text: `Applied /${skill.name}` });
   }
 
   async function deleteAsset(kind: "attachment" | "artifact", id: string) {
@@ -2273,9 +2273,9 @@ const SkillCard = forwardRef<HTMLElement, {
             {skill.version && <span>v{skill.version}</span>}
           </div>
           <div className="skill-card-actions">
-            <button type="button" className="skill-action primary" onClick={() => onInsert(skill)} title={`Insert /${skill.name}`} aria-label={`Insert /${skill.name}`}>
+            <button type="button" className="skill-action primary" onClick={() => onInsert(skill)} title={`Apply /${skill.name}`} aria-label={`Apply /${skill.name}`}>
               <PlayCircle size={15} />
-              <span>Insert</span>
+              <span>Apply</span>
             </button>
             <button type="button" className="skill-action" onClick={() => onDetails(skill)} title={`Details for ${title}`} aria-label="Skill details">
               <Info size={15} />
@@ -3787,7 +3787,7 @@ function SkillDetailModal({
         <footer>
           <button className="primary skill-modal-insert" onClick={() => onInsert(skill)}>
             <PlayCircle size={16} />
-            <span>Insert /{skill.name}</span>
+            <span>Apply /{skill.name}</span>
           </button>
         </footer>
       </section>
