@@ -28,15 +28,18 @@ def main() -> int:
     if not text:
         print("skill_error: 没有收到可写入 Word 文档的内容。请提供要整理成 docx 的文本或上传文本附件。")
         return 1
+    if looks_like_unresolved_reference(text):
+        print("skill_error: 当前输入只包含对上下文的引用，没有包含实际文档正文。请先根据对话上下文整理出完整正文，再调用此脚本生成 docx。")
+        return 1
 
     workspace = Path(os.environ.get("AGENT_WORKSPACE_DIR") or os.getcwd())
     output_dir = workspace / "generated-artifacts"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    title = infer_title(text)
+    title, body_text = extract_title(text)
     filename = unique_filename(output_dir, safe_filename(title) + ".docx")
     output_path = output_dir / filename
-    write_docx(output_path, title, split_paragraphs(text))
+    write_docx(output_path, title, split_paragraphs(body_text))
 
     print(f"output_file: {output_path}")
     print(f"artifact_file_path: generated-artifacts/{filename}")
@@ -48,21 +51,37 @@ def main() -> int:
 def normalize_input(raw: str) -> str:
     text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
     text = re.sub(r"^\s*/docx\b", "", text, flags=re.IGNORECASE).strip()
-    text = re.sub(r"^把这份总结生成一个\s*Docx\s*文档\s*$", "", text, flags=re.IGNORECASE).strip()
     return text
 
 
-def infer_title(text: str) -> str:
-    for line in text.splitlines():
-        line = line.strip(" #\t:")
-        if line:
-            candidate = re.split(r"[。.!?？；;]", line, maxsplit=1)[0].strip()
-            if 4 <= len(candidate) <= 48:
-                return candidate
-            break
-    if "AI 女友" in text or "AI女友" in text:
-        return "AI_女友产品方案总结"
-    return "生成文档"
+def looks_like_unresolved_reference(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    if len(compact) > 80:
+        return False
+    reference_words = ("上边", "上面", "上述", "以上", "前面", "previous", "above")
+    document_words = ("docx", "word", "文档", "文件")
+    return any(word in compact.lower() for word in reference_words) and any(
+        word in compact.lower() for word in document_words
+    )
+
+
+def extract_title(text: str) -> tuple[str, str]:
+    lines = [line.rstrip() for line in text.splitlines()]
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        markdown_heading = re.match(r"^#{1,2}\s+(.+)$", stripped)
+        if markdown_heading:
+            title = clean_title(markdown_heading.group(1))
+            body = "\n".join(lines[:index] + lines[index + 1 :]).strip()
+            return title, body or title
+        if len(stripped) <= 60 and not sentence_like(stripped):
+            title = clean_title(stripped)
+            body = "\n".join(lines[:index] + lines[index + 1 :]).strip()
+            return title, body or title
+        break
+    return "Word文档", text
 
 
 def safe_filename(title: str) -> str:
@@ -88,21 +107,8 @@ def unique_filename(output_dir: Path, filename: str) -> str:
 def split_paragraphs(text: str) -> list[str]:
     text = text.strip()
     if "\n" not in text:
-        headings = [
-            "OpenClaw 云端沙盒方案对比",
-            "推荐路径",
-            "长时间运行 agent 的关键设计",
-            "AI 女友产品无状态改造方案评估",
-            "OpenClaw 改造路径",
-            "Claw 生态轻量方案对比",
-            "MicroClaw vs ZeptoClaw 深度对比",
-            "最终架构建议",
-            "关于无状态模型与 ZeptoClaw agent 的关系",
-            "然而，当前的 ZeptoClaw 实现仍有待改进",
-        ]
-        for heading in headings:
-            text = text.replace(f" {heading}", f"\n\n{heading}")
-        text = re.sub(r" (?=(Firecracker|gVisor|Nydus|托管服务|早期验证|规模增长|大规模降本|状态持久化|心跳|分层存储|可行性|核心思路|关键问题与解决|记忆加载延迟|记忆存储分层设计|技能动态加载|并发问题|改造前后对比|具体改造点|改造工作量|建议|推荐 ZeptoClaw|ZeroClaw|ZeptoClaw 优势|MicroClaw 优势|结论|容器启动开销|记忆外部化|Session 外部化)[:：])", "\n", text)
+        text = re.sub(r"([。！？!?])\s+", r"\1\n", text)
+        text = re.sub(r"([;；])\s+", r"\1\n", text)
     paragraphs = [line.strip() for line in re.split(r"\n{1,}", text) if line.strip()]
     return paragraphs or [text]
 
@@ -185,7 +191,17 @@ def document_xml(title: str, paragraphs: list[str]) -> str:
 
 def looks_like_heading(text: str) -> bool:
     compact = text.strip()
-    return len(compact) <= 40 and (compact.endswith("：") or compact.endswith(":") or "方案" in compact or "路径" in compact or "建议" in compact)
+    return len(compact) <= 60 and (compact.endswith("：") or compact.endswith(":"))
+
+
+def sentence_like(text: str) -> bool:
+    return bool(re.search(r"[。.!?？；;，,]", text))
+
+
+def clean_title(text: str) -> str:
+    title = text.strip(" #\t:")
+    title = re.sub(r"\s+", " ", title)
+    return title[:60] or "Word文档"
 
 
 def paragraph(text: str, style: str | None = None) -> str:

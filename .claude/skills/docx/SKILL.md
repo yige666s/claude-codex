@@ -20,11 +20,18 @@ metadata:
 
 When the user asks to generate a `.docx` artifact, create and register the file in this turn. Do not only summarize, promise, or say that the document is being generated.
 
-The shell step below creates a valid `.docx` file from the provided request/source text and writes it into the current user's workspace.
+Before creating the file, resolve what content should go into the document:
 
-```!
+- If the user refers to "the above", "previous summary", "上边的总结", "以上内容", or similar, use the relevant prior visible conversation content as the document body.
+- If the user uploaded a text attachment and asks to convert or summarize it, use the attachment content already provided in the prompt.
+- Do not pass only the user's instruction sentence into the file generator when the instruction refers to previous context.
+- Compose a complete document body first, including a suitable title and sections when appropriate.
+
+After the document body is ready, use the Bash tool to run the helper script below. Put the complete document body between `DOCX_INPUT` markers. The helper only packages the text into a valid `.docx`; it must not decide what user-specific content belongs in the document.
+
+```bash
 python3 "${CLAUDE_SKILL_DIR}/scripts/create_docx_artifact.py" <<'DOCX_INPUT'
-$ARGUMENTS
+<complete document body>
 DOCX_INPUT
 ```
 
