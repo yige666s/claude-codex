@@ -197,6 +197,10 @@ export function App() {
     ])),
     [skills, rightPanelSearch.skills]
   );
+  const recentSkillCount = useMemo(
+    () => recentSkillsFromNames(skills, recentSkillNames).length,
+    [skills, recentSkillNames]
+  );
   const filteredJobs = useMemo(
     () => jobs.filter((job) => fuzzyMatch(rightPanelSearch.jobs, [job.id, job.content])),
     [jobs, rightPanelSearch.jobs]
@@ -1404,7 +1408,7 @@ export function App() {
 
       <aside className="right-panel" aria-hidden={!rightPanelOpen}>
         <div className="right-tabs" role="tablist" aria-label="Right panel tools">
-          <RightTabButton tab="skills" activeTab={rightPanelTab} label="Skills" count={skills.length} icon={<Sparkles size={20} />} onClick={setRightPanelTab} />
+          <RightTabButton tab="skills" activeTab={rightPanelTab} label="Skills" count={recentSkillCount} icon={<Sparkles size={20} />} onClick={setRightPanelTab} />
           <RightTabButton tab="jobs" activeTab={rightPanelTab} label="Jobs" count={jobs.length} icon={<Briefcase size={20} />} onClick={setRightPanelTab} />
           <RightTabButton tab="attachments" activeTab={rightPanelTab} label="Attachments" count={attachments.length} icon={<FileUp size={20} />} onClick={setRightPanelTab} />
           <RightTabButton tab="artifacts" activeTab={rightPanelTab} label="Artifacts" count={artifacts.length} icon={<Image size={20} />} onClick={setRightPanelTab} />
@@ -1427,8 +1431,8 @@ export function App() {
           {rightPanelTab === "skills" && (
             <SkillPanel
               skills={filteredSkills}
-              recentSkillNames={rightPanelSearch.skills ? [] : recentSkillNames}
-              emptyLabel={rightPanelSearch.skills ? "No results" : "No skills"}
+              recentSkillNames={recentSkillNames}
+              emptyLabel={rightPanelSearch.skills ? "No matching recent skills" : "No recent skills"}
               onInsert={insertSkill}
               onDetails={setSkillDetail}
             />
@@ -2179,64 +2183,22 @@ function SkillPanel({
   onInsert: (skill: Skill) => void;
   onDetails: (skill: Skill) => void;
 }) {
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(() => new Set());
-  if (!skills.length) return <div className="empty-small">{emptyLabel}</div>;
-  const byName = new Map(skills.map((skill) => [skill.name, skill]));
-  const recentSkills = recentSkillNames.map((name) => byName.get(name)).filter((skill): skill is Skill => Boolean(skill));
-  const sections = groupSkillsByCategory(skills);
-  const toggleSection = (category: string) => {
-    setExpandedSections((current) => {
-      const next = new Set(current);
-      if (next.has(category)) next.delete(category);
-      else next.add(category);
-      return next;
-    });
-  };
+  const recentSkills = recentSkillsFromNames(skills, recentSkillNames);
+  if (!recentSkills.length) return <div className="empty-small">{emptyLabel}</div>;
   return (
     <div className="skill-browser">
-      {recentSkills.length > 0 && (
-        <section className="skill-section">
-          <button
-            type="button"
-            className="skill-section-title skill-section-toggle"
-            onClick={() => toggleSection("recent")}
-            aria-expanded={expandedSections.has("recent")}
-          >
-            <ChevronDown size={15} className={expandedSections.has("recent") ? "expanded" : ""} />
-            <Star size={14} />
-            <span>Recent</span>
-            <small>{recentSkills.length}</small>
-          </button>
-          {expandedSections.has("recent") && (
-            <div className="skill-grid">
-              {recentSkills.map((skill) => (
-                <SkillCard key={`recent-${skill.name}`} skill={skill} onInsert={onInsert} onDetails={onDetails} />
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-      {sections.map((section) => (
-        <section key={section.category} className="skill-section">
-          <button
-            type="button"
-            className="skill-section-title skill-section-toggle"
-            onClick={() => toggleSection(section.category)}
-            aria-expanded={expandedSections.has(section.category)}
-          >
-            <ChevronDown size={15} className={expandedSections.has(section.category) ? "expanded" : ""} />
-            <span>{section.category}</span>
-            <small>{section.skills.length}</small>
-          </button>
-          {expandedSections.has(section.category) && (
-            <div className="skill-grid">
-              {section.skills.map((skill) => (
-                <SkillCard key={skill.name} skill={skill} onInsert={onInsert} onDetails={onDetails} />
-              ))}
-            </div>
-          )}
-        </section>
-      ))}
+      <section className="skill-section">
+        <div className="skill-section-title">
+          <Star size={14} />
+          <span>Recent</span>
+          <small>{recentSkills.length}</small>
+        </div>
+        <div className="skill-grid">
+          {recentSkills.map((skill) => (
+            <SkillCard key={skill.name} skill={skill} onInsert={onInsert} onDetails={onDetails} />
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
@@ -4134,23 +4096,29 @@ function rightPanelLabel(tab: RightPanelTab): string {
   return "artifacts";
 }
 
-function groupSkillsByCategory(skills: Skill[]): Array<{ category: string; skills: Skill[] }> {
-  const grouped = new Map<string, Skill[]>();
-  for (const skill of [...skills].sort(compareSkills)) {
-    const category = skill.category?.trim() || "General";
-    grouped.set(category, [...(grouped.get(category) || []), skill]);
-  }
-  return Array.from(grouped.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([category, items]) => ({ category, skills: items }));
-}
-
 function compareSkills(a: Skill, b: Skill): number {
   if (Boolean(a.featured) !== Boolean(b.featured)) return a.featured ? -1 : 1;
   const orderA = a.sort_order ?? Number.MAX_SAFE_INTEGER;
   const orderB = b.sort_order ?? Number.MAX_SAFE_INTEGER;
   if (orderA !== orderB) return orderA - orderB;
   return (a.display_name || a.name).localeCompare(b.display_name || b.name);
+}
+
+function recentSkillsFromNames(skills: Skill[], names: string[]): Skill[] {
+  const byName = new Map(skills.map((skill) => [skill.name, skill]));
+  const seenNames = new Set<string>();
+  const seenTaskGroups = new Set<string>();
+  const out: Skill[] = [];
+  for (const name of names) {
+    const skill = byName.get(name);
+    if (!skill || seenNames.has(skill.name)) continue;
+    const taskGroup = (skill.category?.trim().toLowerCase() || skill.name);
+    if (seenTaskGroups.has(taskGroup)) continue;
+    seenNames.add(skill.name);
+    seenTaskGroups.add(taskGroup);
+    out.push(skill);
+  }
+  return out;
 }
 
 function readRecentSkills(): string[] {
