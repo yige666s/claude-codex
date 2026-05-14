@@ -350,3 +350,166 @@ func TestVertexProviderBatchesConsecutiveToolResults(t *testing.T) {
 		t.Fatalf("expected two function responses in one user turn, got %#v", toolResult["parts"])
 	}
 }
+
+func TestVertexProviderCallsClaudeRawPredict(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+	t.Setenv("VERTEX_ANTHROPIC_LOCATION", "global")
+
+	var gotPath string
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg-1",
+			"type":"message",
+			"role":"assistant",
+			"model":"claude-sonnet-4-5",
+			"content":[
+				{"type":"text","text":"I can help."},
+				{"type":"tool_use","id":"toolu_1","name":"Artifact","input":{"filename":"x.svg"}}
+			],
+			"stop_reason":"tool_use",
+			"usage":{"input_tokens":11,"output_tokens":7}
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "claude-sonnet-4-5",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	resp, err := provider.CreateMessage(context.Background(), MessageRequest{
+		Model:     "claude-sonnet-4-5",
+		System:    "You are concise.",
+		MaxTokens: 128,
+		Tools: []Tool{{
+			Name:        "Artifact",
+			Description: "Register an artifact",
+			InputSchema: map[string]interface{}{"type": "object"},
+		}},
+		Messages: []Message{{
+			Role: "user",
+			Content: []ContentBlock{
+				{Type: "text", Text: "make a diagram"},
+				{Type: "image", Source: map[string]interface{}{
+					"media_type": "image/png",
+					"data":       "aW1n",
+				}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	wantPath := "/v1/projects/proj-1/locations/global/publishers/anthropic/models/claude-sonnet-4-5:rawPredict"
+	if gotPath != wantPath {
+		t.Fatalf("path = %s, want %s", gotPath, wantPath)
+	}
+	if body["anthropic_version"] != vertexAnthropicVersion {
+		t.Fatalf("anthropic_version = %#v", body["anthropic_version"])
+	}
+	if body["system"] != "You are concise." || body["max_tokens"].(float64) != 128 {
+		t.Fatalf("unexpected system/max_tokens: %#v", body)
+	}
+	tools := body["tools"].([]interface{})
+	if tools[0].(map[string]interface{})["name"] != "Artifact" {
+		t.Fatalf("unexpected tools: %#v", tools)
+	}
+	messages := body["messages"].([]interface{})
+	content := messages[0].(map[string]interface{})["content"].([]interface{})
+	if content[1].(map[string]interface{})["type"] != "image" {
+		t.Fatalf("missing image block: %#v", content)
+	}
+	source := content[1].(map[string]interface{})["source"].(map[string]interface{})
+	if source["type"] != "base64" || source["media_type"] != "image/png" {
+		t.Fatalf("unexpected image source: %#v", source)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Text != "I can help." {
+		t.Fatalf("unexpected content: %#v", resp.Content)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Name != "Artifact" {
+		t.Fatalf("unexpected tool calls: %#v", resp.ToolCalls)
+	}
+	if resp.Usage.InputTokens != 11 || resp.Usage.OutputTokens != 7 {
+		t.Fatalf("usage = %#v", resp.Usage)
+	}
+}
+
+func TestVertexProviderMapsClaudeToolResults(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_ANTHROPIC_LOCATION", "us-east5")
+
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg-2",
+			"role":"assistant",
+			"content":[{"type":"text","text":"done"}],
+			"stop_reason":"end_turn"
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "claude-sonnet-4-5",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	_, err = provider.CreateMessage(context.Background(), MessageRequest{
+		Model: "claude-sonnet-4-5",
+		Messages: []Message{
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call-1", Name: "Artifact", Input: json.RawMessage(`{"filename":"x.png"}`)}}},
+			{Role: "tool", ToolCallID: "call-1", ToolName: "Artifact", Content: `{"id":"artifact-1"}`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	messages := body["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("messages len = %d, want 2: %#v", len(messages), messages)
+	}
+	assistantBlocks := messages[0].(map[string]interface{})["content"].([]interface{})
+	if assistantBlocks[0].(map[string]interface{})["type"] != "tool_use" {
+		t.Fatalf("missing tool_use block: %#v", assistantBlocks)
+	}
+	userBlocks := messages[1].(map[string]interface{})["content"].([]interface{})
+	toolResult := userBlocks[0].(map[string]interface{})
+	if toolResult["type"] != "tool_result" || toolResult["tool_use_id"] != "call-1" {
+		t.Fatalf("unexpected tool_result block: %#v", toolResult)
+	}
+}
+
+func TestVertexEndpointBaseURLForGlobalAndMultiRegion(t *testing.T) {
+	cases := map[string]string{
+		"global":   "https://aiplatform.googleapis.com/v1",
+		"us":       "https://aiplatform.us.rep.googleapis.com/v1",
+		"eu":       "https://aiplatform.eu.rep.googleapis.com/v1",
+		"us-east5": "https://us-east5-aiplatform.googleapis.com/v1",
+	}
+	for location, want := range cases {
+		if got := vertexEndpointBaseURL(location); got != want {
+			t.Fatalf("vertexEndpointBaseURL(%q) = %q, want %q", location, got, want)
+		}
+	}
+}

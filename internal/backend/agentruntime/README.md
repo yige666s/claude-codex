@@ -403,9 +403,12 @@ go run ./cmd/agentapi \
   completions with `DASHSCOPE_API_KEY` or `QWEN_API_KEY`; override the default
   China endpoint with `DASHSCOPE_BASE_URL` or `QWEN_BASE_URL` when needed.
 - `gemini` uses the Gemini API key provider with `GEMINI_API_KEY`.
-- `vertex` uses Gemini on Vertex AI through REST `generateContent`; set
-  `VERTEX_ACCESS_TOKEN` or `GOOGLE_OAUTH_ACCESS_TOKEN`, plus
-  `VERTEX_PROJECT_ID` / `GOOGLE_CLOUD_PROJECT` and optionally `VERTEX_LOCATION`.
+- `vertex` uses Gemini on Vertex AI through REST `generateContent` and Claude
+  partner models through Anthropic `rawPredict`; set `VERTEX_ACCESS_TOKEN` or
+  `GOOGLE_OAUTH_ACCESS_TOKEN`, plus `VERTEX_PROJECT_ID` /
+  `GOOGLE_CLOUD_PROJECT` and optionally `VERTEX_LOCATION`. Claude short model
+  names such as `claude-sonnet-4-5` use `VERTEX_ANTHROPIC_LOCATION`, which
+  defaults to the global endpoint.
   Local runs also try `gcloud auth print-access-token` when no token is set or
   when Vertex returns `401 Unauthorized`, then retry the request once.
 - `custom` uses the OpenAI-compatible provider with `-api-base-url`.
@@ -418,4 +421,5 @@ go run ./cmd/agentapi -llm-provider qwen -model qwen-plus
 go run ./cmd/agentapi -llm-provider gemini -model gemini-1.5-flash
 go run ./cmd/agentapi -llm-provider custom -api-base-url http://localhost:11434/v1 -api-key local -model llama3.1
 go run ./cmd/agentapi -llm-provider vertex -model gemini-1.5-pro
+go run ./cmd/agentapi -llm-provider vertex -model claude-sonnet-4-5
 ```

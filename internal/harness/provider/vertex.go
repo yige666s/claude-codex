@@ -15,16 +15,18 @@ import (
 	"claude-codex/internal/backend/googleauth"
 )
 
-// VertexProvider implements Provider for Gemini models on Vertex AI.
+// VertexProvider implements Provider for Google and partner models on Vertex AI.
 type VertexProvider struct {
-	mu             sync.Mutex
-	token          string
-	tokenRefresher func(context.Context) (string, error)
-	baseURL        string
-	projectID      string
-	location       string
-	httpClient     *http.Client
-	config         Config
+	mu                sync.Mutex
+	token             string
+	tokenRefresher    func(context.Context) (string, error)
+	baseURL           string
+	baseURLConfigured bool
+	projectID         string
+	location          string
+	anthropicLocation string
+	httpClient        *http.Client
+	config            Config
 }
 
 func NewVertexProvider(cfg Config) (*VertexProvider, error) {
@@ -46,9 +48,15 @@ func NewVertexProvider(cfg Config) (*VertexProvider, error) {
 		os.Getenv("CLOUD_ML_REGION"),
 		"us-central1",
 	)
+	anthropicLocation := firstNonEmptyString(
+		os.Getenv("VERTEX_ANTHROPIC_LOCATION"),
+		os.Getenv("GOOGLE_CLOUD_ANTHROPIC_LOCATION"),
+		"global",
+	)
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	baseURLConfigured := baseURL != ""
 	if baseURL == "" {
-		baseURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1", location)
+		baseURL = vertexEndpointBaseURL(location)
 	}
 	timeout := time.Duration(cfg.Timeout) * time.Second
 	if timeout <= 0 {
@@ -66,13 +74,15 @@ func NewVertexProvider(cfg Config) (*VertexProvider, error) {
 		}
 	}
 	return &VertexProvider{
-		token:          token,
-		tokenRefresher: tokenRefresher,
-		baseURL:        baseURL,
-		projectID:      projectID,
-		location:       location,
-		httpClient:     client,
-		config:         cfg,
+		token:             token,
+		tokenRefresher:    tokenRefresher,
+		baseURL:           baseURL,
+		baseURLConfigured: baseURLConfigured,
+		projectID:         projectID,
+		location:          location,
+		anthropicLocation: anthropicLocation,
+		httpClient:        client,
+		config:            cfg,
 	}, nil
 }
 
@@ -87,6 +97,7 @@ func (p *VertexProvider) SupportedModels() []string {
 		"gemini-2.0-flash",
 		"gemini-2.5-pro",
 		"gemini-2.5-flash",
+		"claude-sonnet-4-5",
 	}
 }
 
@@ -96,16 +107,19 @@ func (p *VertexProvider) CreateMessage(ctx context.Context, request MessageReque
 			return nil, fmt.Errorf("vertex access token is required; set GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_APPLICATION_CREDENTIALS_JSON, VERTEX_ACCESS_TOKEN, or run gcloud auth print-access-token: %w", err)
 		}
 	}
-	modelPath, err := p.modelPath(request.Model)
+	model, err := p.modelResource(request.Model)
 	if err != nil {
 		return nil, err
+	}
+	if model.Publisher == "anthropic" {
+		return p.createAnthropicMessage(ctx, request, model)
 	}
 	reqBody := vertexGeminiRequest(request)
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, err
 	}
-	url := fmt.Sprintf("%s/%s:generateContent", p.baseURL, strings.TrimLeft(modelPath, "/"))
+	url := fmt.Sprintf("%s/%s:generateContent", p.endpointBaseURL(model.Location), strings.TrimLeft(model.Path, "/"))
 	parsed, statusCode, status, data, err := p.sendGenerateContent(ctx, url, body)
 	if err != nil {
 		return nil, err
@@ -130,16 +144,30 @@ func (p *VertexProvider) StreamMessage(ctx context.Context, request MessageReque
 			return nil, fmt.Errorf("vertex access token is required; set GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_APPLICATION_CREDENTIALS_JSON, VERTEX_ACCESS_TOKEN, or run gcloud auth print-access-token: %w", err)
 		}
 	}
-	modelPath, err := p.modelPath(request.Model)
+	model, err := p.modelResource(request.Model)
 	if err != nil {
 		return nil, err
+	}
+	if model.Publisher == "anthropic" {
+		resp, err := p.createAnthropicMessage(ctx, request, model)
+		if err != nil {
+			return nil, err
+		}
+		if onChunk != nil {
+			for _, block := range resp.Content {
+				if block.Type == "text" && block.Text != "" {
+					onChunk(block.Text)
+				}
+			}
+		}
+		return resp, nil
 	}
 	reqBody := vertexGeminiRequest(request)
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, err
 	}
-	url := fmt.Sprintf("%s/%s:streamGenerateContent?alt=sse", p.baseURL, strings.TrimLeft(modelPath, "/"))
+	url := fmt.Sprintf("%s/%s:streamGenerateContent?alt=sse", p.endpointBaseURL(model.Location), strings.TrimLeft(model.Path, "/"))
 	parsed, statusCode, status, data, err := p.sendStreamGenerateContent(ctx, url, request.Model, body, onChunk)
 	if err != nil {
 		return nil, err
@@ -234,18 +262,85 @@ func (p *VertexProvider) refreshAccessToken(ctx context.Context) error {
 	return nil
 }
 
-func (p *VertexProvider) modelPath(model string) (string, error) {
+type vertexModelResource struct {
+	Path      string
+	Publisher string
+	Location  string
+	ModelID   string
+}
+
+func (p *VertexProvider) modelResource(model string) (vertexModelResource, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		model = p.config.Model
 	}
 	if strings.Contains(model, "/") {
-		return model, nil
+		resource := parseVertexModelResource(model)
+		resource.Path = strings.TrimLeft(model, "/")
+		return resource, nil
 	}
 	if p.projectID == "" {
-		return "", fmt.Errorf("vertex project ID is required for short model names; set VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT")
+		return vertexModelResource{}, fmt.Errorf("vertex project ID is required for short model names; set VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT")
 	}
-	return fmt.Sprintf("projects/%s/locations/%s/publishers/google/models/%s", p.projectID, p.location, model), nil
+	publisher := "google"
+	location := p.location
+	if isVertexAnthropicModel(model) {
+		publisher = "anthropic"
+		location = p.anthropicLocation
+	}
+	return vertexModelResource{
+		Path:      fmt.Sprintf("projects/%s/locations/%s/publishers/%s/models/%s", p.projectID, location, publisher, model),
+		Publisher: publisher,
+		Location:  location,
+		ModelID:   model,
+	}, nil
+}
+
+func parseVertexModelResource(path string) vertexModelResource {
+	resource := vertexModelResource{Path: strings.TrimLeft(path, "/")}
+	parts := strings.Split(resource.Path, "/")
+	for i := 0; i+1 < len(parts); i++ {
+		switch parts[i] {
+		case "locations":
+			resource.Location = parts[i+1]
+		case "publishers":
+			resource.Publisher = strings.ToLower(parts[i+1])
+		case "models":
+			resource.ModelID = parts[i+1]
+		}
+	}
+	if resource.Publisher == "" && isVertexAnthropicModel(resource.Path) {
+		resource.Publisher = "anthropic"
+	}
+	return resource
+}
+
+func isVertexAnthropicModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "claude-") || strings.Contains(model, "/publishers/anthropic/")
+}
+
+func (p *VertexProvider) endpointBaseURL(location string) string {
+	if p.baseURLConfigured {
+		return p.baseURL
+	}
+	return vertexEndpointBaseURL(location)
+}
+
+func vertexEndpointBaseURL(location string) string {
+	location = strings.ToLower(strings.TrimSpace(location))
+	switch location {
+	case "global":
+		return "https://aiplatform.googleapis.com/v1"
+	case "us":
+		return "https://aiplatform.us.rep.googleapis.com/v1"
+	case "eu":
+		return "https://aiplatform.eu.rep.googleapis.com/v1"
+	case "":
+		return "https://us-central1-aiplatform.googleapis.com/v1"
+	default:
+		return fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1", location)
+	}
 }
 
 func vertexGeminiRequest(request MessageRequest) geminiRequest {
