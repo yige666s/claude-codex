@@ -39,6 +39,10 @@ type ArtifactStore interface {
 	PruneDeletedBefore(ctx context.Context, cutoff time.Time) (int, error)
 }
 
+type uploadedArtifactLister interface {
+	ListUploadedArtifactsBefore(ctx context.Context, cutoff time.Time) ([]*Artifact, error)
+}
+
 type ArtifactService struct {
 	Store   ArtifactStore
 	Objects ObjectStore

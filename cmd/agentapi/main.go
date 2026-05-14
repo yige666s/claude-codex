@@ -113,6 +113,7 @@ func main() {
 	redisURL := flag.String("redis-url", os.Getenv("AGENT_API_REDIS_URL"), "Redis URL for distributed rate limiting")
 	redisFailOpen := flag.Bool("redis-fail-open", envBool("AGENT_API_REDIS_FAIL_OPEN", false), "allow requests when Redis rate limit is unavailable")
 	retentionDays := flag.Int("retention-days", envInt("AGENT_API_RETENTION_DAYS", 0), "delete sessions and memory older than this many days on startup; 0 disables")
+	localArtifactStagingRetention := flag.Duration("local-artifact-staging-retention", envDuration("AGENT_API_LOCAL_ARTIFACT_STAGING_RETENTION", 24*time.Hour), "delete local generated artifact staging files older than this after object-store upload; 0 disables")
 	shutdownTimeout := flag.Duration("shutdown-timeout", envDuration("AGENT_API_SHUTDOWN_TIMEOUT", 30*time.Second), "max time to drain HTTP requests and active agent work after SIGINT/SIGTERM")
 	turnTimeout := flag.Duration("turn-timeout", 2*time.Minute, "max duration for one agent turn")
 	skillShellTimeout := flag.Duration("skill-shell-timeout", envDuration("AGENT_API_SKILL_SHELL_TIMEOUT", 90*time.Second), "max duration for skill frontmatter shell commands")
@@ -368,6 +369,8 @@ func main() {
 		log.Fatal(err)
 	}
 	runRetentionPrune(runtime, authService, *retentionDays)
+	runLocalUploadedArtifactPrune(runtime, *localArtifactStagingRetention)
+	startLocalUploadedArtifactPruneLoop(runtime, *localArtifactStagingRetention, 24*time.Hour)
 
 	log.Printf("agent API listening on %s", *addr)
 	log.Printf("data dir: %s", *dataDir)
@@ -394,6 +397,9 @@ func main() {
 	log.Printf("asset max bytes: %d", *assetMaxBytes)
 	if *retentionDays > 0 {
 		log.Printf("retention days: %d", *retentionDays)
+	}
+	if *localArtifactStagingRetention > 0 {
+		log.Printf("local artifact staging retention: %s", *localArtifactStagingRetention)
 	}
 	log.Printf("skill publication: code-defined registry sync; database status controls enablement")
 	log.Printf("dangerous tools enabled: %t", *allowDangerousTools)
@@ -1168,6 +1174,35 @@ func runRetentionPrune(runtime *agentruntime.Runtime, authService *agentruntime.
 		} else {
 			log.Printf("refresh token prune complete: tokens=%d", count)
 		}
+	}
+}
+
+func startLocalUploadedArtifactPruneLoop(runtime *agentruntime.Runtime, retention, interval time.Duration) {
+	if runtime == nil || retention <= 0 || interval <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			runLocalUploadedArtifactPrune(runtime, retention)
+		}
+	}()
+}
+
+func runLocalUploadedArtifactPrune(runtime *agentruntime.Runtime, retention time.Duration) {
+	if runtime == nil || retention <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := runtime.PruneLocalUploadedArtifacts(ctx, retention)
+	if err != nil {
+		log.Printf("warning: local artifact staging prune failed: checked=%d deleted=%d skipped=%d errors=%d err=%v", result.Checked, result.Deleted, result.Skipped, result.Errors, err)
+		return
+	}
+	if result.Checked > 0 || result.Deleted > 0 || result.Errors > 0 {
+		log.Printf("local artifact staging prune complete: checked=%d deleted=%d skipped=%d errors=%d", result.Checked, result.Deleted, result.Skipped, result.Errors)
 	}
 }
 

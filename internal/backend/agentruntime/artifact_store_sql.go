@@ -85,7 +85,7 @@ FROM agent_artifacts WHERE user_id = ? AND artifact_id = ? AND kind = ? AND dele
 
 func (s *SQLArtifactStore) List(ctx context.Context, userID, sessionID, kind string) ([]*Artifact, error) {
 	query := `SELECT artifact_id, kind, user_id, session_id, job_id, object_key, filename, content_type, size_bytes, created_at, deleted_at
-FROM agent_artifacts WHERE user_id = ? AND kind = ? AND deleted_at IS NULL`
+	FROM agent_artifacts WHERE user_id = ? AND kind = ? AND deleted_at IS NULL`
 	args := []any{userID, normalizeAssetKind(kind)}
 	if strings.TrimSpace(sessionID) != "" {
 		query += ` AND session_id = ?`
@@ -93,6 +93,27 @@ FROM agent_artifacts WHERE user_id = ? AND kind = ? AND deleted_at IS NULL`
 	}
 	query += ` ORDER BY created_at DESC`
 	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*Artifact, 0)
+	for rows.Next() {
+		artifact, err := scanArtifactRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, artifact)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLArtifactStore) ListUploadedArtifactsBefore(ctx context.Context, cutoff time.Time) ([]*Artifact, error) {
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
+SELECT artifact_id, kind, user_id, session_id, job_id, object_key, filename, content_type, size_bytes, created_at, deleted_at
+FROM agent_artifacts
+WHERE kind = ? AND deleted_at IS NULL AND object_key <> '' AND created_at < ?
+ORDER BY created_at ASC`), AssetKindArtifact, sqlTimeValue(cutoff, s.dialect))
 	if err != nil {
 		return nil, err
 	}
