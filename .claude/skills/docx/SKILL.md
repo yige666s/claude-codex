@@ -2,6 +2,9 @@
 name: docx
 description: "Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx files). Triggers include: 'Word doc', 'word document', '.docx', 'Word 文档', 'docx 文件', '生成 Word', '生成文档', '创建文档', '调研文档', '攻略文档', '整理为一个文档', '整理成文档', or requests to produce professional documents with formatting like tables of contents, headings, page numbers, or letterheads. Also use when extracting or reorganizing content from .docx files, inserting or replacing images in documents, performing find-and-replace in Word files, working with tracked changes or comments, or converting content into a polished Word document. If the user asks for a 'report', 'memo', 'letter', 'template', or similar deliverable as a Word or .docx file, use this skill. Do NOT use for PDFs, spreadsheets, Google Docs, or general coding tasks unrelated to document generation."
 user-invocable: true
+argument-hint: "<docx request or source text>"
+allowed-tools: ["Artifact", "Bash(python3 *)"]
+shell: bash
 metadata:
   product:
     version: "0.1.0"
@@ -14,6 +17,26 @@ metadata:
 ---
 
 # DOCX creation, editing, and analysis
+
+When the user asks to generate a `.docx` artifact, create and register the file in this turn. Do not only summarize, promise, or say that the document is being generated.
+
+The shell step below creates a valid `.docx` file from the provided request/source text and writes it into the current user's workspace.
+
+```!
+python3 "${CLAUDE_SKILL_DIR}/scripts/create_docx_artifact.py" <<'DOCX_INPUT'
+$ARGUMENTS
+DOCX_INPUT
+```
+
+Use the `Artifact` tool exactly once with the `artifact_file_path` printed above. The value is intentionally relative to the current workspace; do not rewrite it as an absolute path.
+
+- `filename`: use the printed `filename`
+- `content_type`: `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+- `file_path`: use the printed `artifact_file_path`
+
+If the shell output contains `skill_error:`, do not call the `Artifact` tool. Reply in the user's language with the friendly error from `skill_error:` and, when useful, a concise next step. Do not expose stack traces, shell commands, artifact IDs, object paths, or download paths to the user.
+
+After the `Artifact` tool succeeds, do not expose raw JSON, artifact IDs, object paths, or download paths to the user. Use the tool result only as internal context, then reply in natural language that the Word document is ready and can be viewed in the Artifacts panel.
 
 ## Overview
 

@@ -34,7 +34,18 @@ func (a *SkillListingAttachment) ToSystemReminder() string {
 	if a.Content == "" {
 		return ""
 	}
-	return fmt.Sprintf("<system-reminder>\nThe following skills are available for use with the Skill tool:\n\n%s\n</system-reminder>", a.Content)
+	return fmt.Sprintf(`<system-reminder>
+The following product skills are available through the Skill tool:
+
+%s
+
+Skill selection rules:
+- If the current user request matches one of these skills, you MUST call the Skill tool before responding.
+- Do not merely promise that a skill task is starting or will be done later.
+- For document, image, artifact, or job-style deliverables, call the Skill tool and let the runtime route the work.
+- Pass the user's actual task/request as the Skill args, preserving uploaded attachment context already shown in the conversation.
+- If no listed skill matches, answer normally without inventing a skill.
+</system-reminder>`, a.Content)
 }
 
 // AttachmentMessage represents a message with an attachment

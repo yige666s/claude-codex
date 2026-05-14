@@ -66,7 +66,64 @@ func FormatFullSkillEntry(skill *skills.SkillDefinition) string {
 	if skill.WhenToUse != "" {
 		desc = fmt.Sprintf("%s - %s", desc, skill.WhenToUse)
 	}
-	return fmt.Sprintf("- %s: %s", skill.Name, desc)
+	var hints []string
+	if skill.RunAsJob || skill.ExecutionContext == skills.ContextFork {
+		hints = append(hints, "run mode: job")
+	}
+	if producesArtifacts(skill) {
+		hints = append(hints, "produces artifacts")
+	}
+	if skill.ArgumentHint != "" {
+		hints = append(hints, "args: "+skill.ArgumentHint)
+	}
+	if len(hints) == 0 {
+		return fmt.Sprintf("- %s: %s", skill.Name, desc)
+	}
+	return fmt.Sprintf("- %s: %s (%s)", skill.Name, desc, strings.Join(hints, "; "))
+}
+
+func producesArtifacts(skill *skills.SkillDefinition) bool {
+	if skill == nil {
+		return false
+	}
+	if truthySkillMetadata(skill.Metadata["produces_artifacts"]) {
+		return true
+	}
+	for _, key := range []string{"agentapi", "product", "runtime"} {
+		nested, ok := skill.Metadata[key].(map[string]any)
+		if !ok {
+			if legacy, legacyOK := skill.Metadata[key].(map[interface{}]interface{}); legacyOK {
+				nested = make(map[string]any, len(legacy))
+				for k, v := range legacy {
+					nested[fmt.Sprint(k)] = v
+				}
+				ok = true
+			}
+		}
+		if ok && truthySkillMetadata(nested["produces_artifacts"]) {
+			return true
+		}
+	}
+	return false
+}
+
+func truthySkillMetadata(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "y", "on":
+			return true
+		}
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0
+	}
+	return false
 }
 
 // FormatAllSkillDescriptions formats every skill with its full description.

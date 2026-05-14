@@ -129,8 +129,7 @@ func NewSQLSkillExecutionStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLSk
 }
 
 func (s *SQLSkillExecutionStore) Init(ctx context.Context) error {
-	for _, stmt := range []string{
-		`CREATE TABLE IF NOT EXISTS agent_skill_executions (
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS agent_skill_executions (
 	id TEXT PRIMARY KEY,
 	skill_name TEXT NOT NULL,
 	user_id TEXT NOT NULL DEFAULT '',
@@ -147,9 +146,18 @@ func (s *SQLSkillExecutionStore) Init(ctx context.Context) error {
 	duration_ms BIGINT NOT NULL DEFAULT 0,
 	diagnostic_json TEXT NOT NULL DEFAULT '{}',
 	metadata TEXT NOT NULL DEFAULT '{}',
-	started_at ` + s.dialect.TimeType() + ` NOT NULL,
-	completed_at ` + s.dialect.TimeType() + ` NOT NULL
-)`,
+	started_at `+s.dialect.TimeType()+` NOT NULL,
+	completed_at `+s.dialect.TimeType()+` NOT NULL
+)`); err != nil {
+		return err
+	}
+	if err := s.ensureColumns(ctx); err != nil {
+		return err
+	}
+	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skill_executions", "started_at", "completed_at"); err != nil {
+		return err
+	}
+	for _, stmt := range []string{
 		`CREATE INDEX IF NOT EXISTS idx_agent_skill_executions_skill_time ON agent_skill_executions (skill_name, completed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_skill_executions_status_time ON agent_skill_executions (status, completed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_skill_executions_user_time ON agent_skill_executions (user_id, completed_at)`,
@@ -158,10 +166,7 @@ func (s *SQLSkillExecutionStore) Init(ctx context.Context) error {
 			return err
 		}
 	}
-	if err := s.ensureColumns(ctx); err != nil {
-		return err
-	}
-	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skill_executions", "started_at", "completed_at")
+	return nil
 }
 
 func (s *SQLSkillExecutionStore) ensureColumns(ctx context.Context) error {
@@ -169,12 +174,45 @@ func (s *SQLSkillExecutionStore) ensureColumns(ctx context.Context) error {
 		name string
 		ddl  string
 	}{
+		{"id", "TEXT NOT NULL DEFAULT ''"},
+		{"skill_name", "TEXT NOT NULL DEFAULT ''"},
+		{"status", "TEXT NOT NULL DEFAULT ''"},
+		{"user_id", "TEXT NOT NULL DEFAULT ''"},
+		{"session_id", "TEXT NOT NULL DEFAULT ''"},
+		{"job_id", "TEXT NOT NULL DEFAULT ''"},
+		{"request_id", "TEXT NOT NULL DEFAULT ''"},
+		{"error", "TEXT NOT NULL DEFAULT ''"},
 		{"error_kind", "TEXT NOT NULL DEFAULT ''"},
 		{"provider", "TEXT NOT NULL DEFAULT ''"},
 		{"model", "TEXT NOT NULL DEFAULT ''"},
 		{"input_summary", "TEXT NOT NULL DEFAULT ''"},
 		{"artifact_count", "BIGINT NOT NULL DEFAULT 0"},
+		{"duration_ms", "BIGINT NOT NULL DEFAULT 0"},
 		{"diagnostic_json", "TEXT NOT NULL DEFAULT '{}'"},
+		{"metadata", "TEXT NOT NULL DEFAULT '{}'"},
+	}
+	if s.dialect == SQLDialectPostgres {
+		columns = append(columns,
+			struct {
+				name string
+				ddl  string
+			}{"started_at", s.dialect.TimeType() + " NOT NULL DEFAULT now()"},
+			struct {
+				name string
+				ddl  string
+			}{"completed_at", s.dialect.TimeType() + " NOT NULL DEFAULT now()"},
+		)
+	} else {
+		columns = append(columns,
+			struct {
+				name string
+				ddl  string
+			}{"started_at", s.dialect.TimeType() + " NOT NULL DEFAULT ''"},
+			struct {
+				name string
+				ddl  string
+			}{"completed_at", s.dialect.TimeType() + " NOT NULL DEFAULT ''"},
+		)
 	}
 	for _, column := range columns {
 		stmt := `ALTER TABLE agent_skill_executions ADD COLUMN `

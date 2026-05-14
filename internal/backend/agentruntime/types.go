@@ -239,11 +239,9 @@ type ChatAttachmentURL struct {
 }
 
 type JobRoutingDecision struct {
-	RunAsJob           bool   `json:"run_as_job"`
-	JobType            string `json:"job_type,omitempty"`
-	Reason             string `json:"reason,omitempty"`
-	Content            string `json:"content,omitempty"`
-	HideJobUserMessage bool   `json:"hide_job_user_message,omitempty"`
+	RunAsJob bool   `json:"run_as_job"`
+	JobType  string `json:"job_type,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 const (

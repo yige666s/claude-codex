@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"mime"
 	"net/url"
 	"os"
@@ -1401,15 +1402,6 @@ func (r *Runtime) RouteChat(req ChatRequest) JobRoutingDecision {
 		}
 		return JobRoutingDecision{}
 	}
-	if selection, ok := r.naturalRunAsJobSkillSelection(content); ok {
-		return JobRoutingDecision{
-			RunAsJob:           true,
-			JobType:            "skill",
-			Reason:             "natural language matched job skill metadata",
-			Content:            skillCommandContent(selection),
-			HideJobUserMessage: true,
-		}
-	}
 	return JobRoutingDecision{}
 }
 
@@ -1477,18 +1469,6 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	ensureConsumerSecurityContext(session)
 	if strings.HasPrefix(strings.TrimSpace(content), "/") {
 		return r.runSkillCommand(ctx, req, userID, session, content, onToken)
-	}
-	if selection, ok := r.naturalRunAsJobSkillSelection(content); ok {
-		ensureVisibleUserMessage(session, content)
-		job, jobErr := r.createSelectedSkillJob(ctx, req, session.ID, selection)
-		if jobErr != nil {
-			return runnerResult{}, jobErr
-		}
-		return runnerResult{
-			Session:   session,
-			Job:       job,
-			JobReason: "natural language matched job skill metadata",
-		}, nil
 	}
 	prompt, err := r.chatPrompt(ctx, req, content)
 	if err != nil {
@@ -1890,7 +1870,7 @@ func (r *Runtime) runSkill(ctx context.Context, userID string, session *state.Se
 			return
 		}
 		completedAt := time.Now().UTC()
-		_ = r.skillExecutions.RecordSkillExecution(context.Background(), SkillExecutionRecord{
+		record := SkillExecutionRecord{
 			SkillName:      skill.Name,
 			UserID:         userID,
 			SessionID:      session.ID,
@@ -1916,7 +1896,10 @@ func (r *Runtime) runSkill(ctx context.Context, userID string, session *state.Se
 				"execution_context": string(skill.ExecutionContext),
 				"run_as_job":        skill.RunAsJob,
 			},
-		})
+		}
+		if err := r.skillExecutions.RecordSkillExecution(context.Background(), record); err != nil {
+			log.Printf("record skill execution failed: skill=%s user=%s session=%s job=%s request=%s: %v", skill.Name, userID, session.ID, record.JobID, record.RequestID, err)
+		}
 	}()
 	ctx = WithLLMScope(ctx, LLMScope{
 		UserID:    userID,
@@ -2018,18 +2001,6 @@ type inlineSkillInvocation struct {
 type runAsJobSkillSelection struct {
 	Name string
 	Args string
-}
-
-func (r *Runtime) naturalRunAsJobSkillSelection(content string) (runAsJobSkillSelection, bool) {
-	content = strings.TrimSpace(content)
-	if r == nil || r.skills == nil || content == "" || strings.HasPrefix(content, "/") {
-		return runAsJobSkillSelection{}, false
-	}
-	skill, ok := r.skills.MatchUserInvocableSkill(content)
-	if !ok || skill == nil || !skill.UserInvocable || !skill.RunAsJob {
-		return runAsJobSkillSelection{}, false
-	}
-	return runAsJobSkillSelection{Name: skill.Name, Args: content}, true
 }
 
 func skillCommandContent(selection runAsJobSkillSelection) string {
@@ -2149,7 +2120,9 @@ func (r *Runtime) recordInlineSkillExecutions(ctx context.Context, userID string
 		if r.skills != nil {
 			skill, ok := r.skills.GetSkill(invocation.Name)
 			if !ok {
-				_ = r.skillExecutions.RecordSkillExecution(context.Background(), record)
+				if err := r.skillExecutions.RecordSkillExecution(context.Background(), record); err != nil {
+					log.Printf("record LLM-selected skill execution failed: skill=%s user=%s session=%s job=%s request=%s: %v", invocation.Name, userID, session.ID, record.JobID, record.RequestID, err)
+				}
 				continue
 			}
 			policy := r.skillRuntimePolicy(skill)
@@ -2160,7 +2133,9 @@ func (r *Runtime) recordInlineSkillExecutions(ctx context.Context, userID string
 			record.Metadata["execution_context"] = string(skill.ExecutionContext)
 			record.Metadata["run_as_job"] = skill.RunAsJob
 		}
-		_ = r.skillExecutions.RecordSkillExecution(context.Background(), record)
+		if err := r.skillExecutions.RecordSkillExecution(context.Background(), record); err != nil {
+			log.Printf("record LLM-selected skill execution failed: skill=%s user=%s session=%s job=%s request=%s: %v", invocation.Name, userID, session.ID, record.JobID, record.RequestID, err)
+		}
 	}
 }
 

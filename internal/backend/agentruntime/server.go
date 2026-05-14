@@ -2487,23 +2487,10 @@ func (s *Server) handleCancel(w http.ResponseWriter, _ *http.Request, user User,
 
 func (s *Server) startRoutedJob(r *http.Request, ctx context.Context, user User, req ChatRequest, decision JobRoutingDecision, sink EventSink) (*Job, error) {
 	req.UserID = user.ID
-	visibleContent := req.Content
-	if strings.TrimSpace(decision.Content) != "" {
-		req.Content = decision.Content
-	}
 	job, err := s.runtime.CreateJob(ctx, req, firstNonEmptyString(decision.JobType, "chat"))
 	if err != nil {
 		_ = sink.Send(ctx, Event{Type: "error", SessionID: req.SessionID, Error: err.Error()})
 		return nil, err
-	}
-	if decision.HideJobUserMessage {
-		if strings.TrimSpace(visibleContent) != "" {
-			if session, sessionErr := s.runtime.GetSession(ctx, user.ID, req.SessionID); sessionErr == nil {
-				ensureVisibleUserMessage(session, visibleContent)
-				_ = s.runtime.sessions.Save(ctx, user.ID, session)
-			}
-		}
-		s.runtime.markJobUserMessageHidden(job.ID)
 	}
 	if err := s.runtime.StartJob(ctx, job); err != nil {
 		_ = sink.Send(ctx, Event{Type: "error", SessionID: req.SessionID, JobID: job.ID, Error: err.Error()})
