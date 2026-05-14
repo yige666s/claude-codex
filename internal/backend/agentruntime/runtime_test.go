@@ -1232,6 +1232,31 @@ func TestGovernedPlannerFallbackRecordsUsage(t *testing.T) {
 	}
 }
 
+func TestGovernedPlannerStreamsChunksBeforePlanReturns(t *testing.T) {
+	store := NewMemoryLLMUsageStore()
+	planner, err := NewGovernedPlanner([]LLMBackend{
+		{Name: "primary", Provider: "vertex", Model: "ok", Planner: streamingTextPlanner{}},
+	}, store, LLMGovernanceConfig{MaxAttempts: 1, ChatTimeout: time.Second, FailureThreshold: 5})
+	if err != nil {
+		t.Fatalf("NewGovernedPlanner() error = %v", err)
+	}
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("hello")
+	var chunks []string
+	plan, err := planner.StreamNext(context.Background(), session, nil, func(chunk string) {
+		chunks = append(chunks, chunk)
+	})
+	if err != nil {
+		t.Fatalf("StreamNext() error = %v", err)
+	}
+	if plan.AssistantText != "hello" {
+		t.Fatalf("plan = %#v", plan)
+	}
+	if strings.Join(chunks, "") != "hello" {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+}
+
 func TestGovernedPlannerRetryableFailureStaysReadyBeforeCircuitOpens(t *testing.T) {
 	planner, err := NewGovernedPlanner([]LLMBackend{
 		{Name: "primary", Provider: "vertex", Model: "broken", Planner: failingPlanner{err: errors.New("HTTP 503 unavailable")}},
@@ -4023,6 +4048,20 @@ type planTextPlanner struct {
 
 func (p planTextPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (engine.Plan, error) {
 	return engine.Plan{AssistantText: p.text, StopReason: "end_turn"}, nil
+}
+
+type streamingTextPlanner struct{}
+
+func (streamingTextPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (engine.Plan, error) {
+	return engine.Plan{AssistantText: "fallback", StopReason: "end_turn"}, nil
+}
+
+func (streamingTextPlanner) StreamNext(_ context.Context, _ *state.Session, _ []toolkit.Descriptor, onChunk func(string)) (engine.Plan, error) {
+	if onChunk != nil {
+		onChunk("hel")
+		onChunk("lo")
+	}
+	return engine.Plan{AssistantText: "hello", StopReason: "end_turn"}, nil
 }
 
 type collectSink struct {

@@ -17,6 +17,13 @@ type Provider interface {
 	SupportedModels() []string
 }
 
+// StreamingProvider is implemented by providers that can emit text chunks
+// before the final message is available.
+type StreamingProvider interface {
+	Provider
+	StreamMessage(ctx context.Context, request MessageRequest, onChunk func(string)) (*MessageResponse, error)
+}
+
 // MessageRequest represents a unified message request across providers
 type MessageRequest struct {
 	Model       string    `json:"model"`

@@ -63,6 +63,56 @@ func TestVertexProviderGenerateContent(t *testing.T) {
 	}
 }
 
+func TestVertexProviderStreamsGenerateContent(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.String()
+		if err := json.NewDecoder(r.Body).Decode(&map[string]interface{}{}); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"lo\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2,\"totalTokenCount\":5}}\n\n"))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "gemini-test",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	var chunks []string
+	resp, err := provider.StreamMessage(context.Background(), MessageRequest{
+		Model:    "gemini-test",
+		Messages: []Message{{Role: "user", Content: "hello"}},
+	}, func(chunk string) {
+		chunks = append(chunks, chunk)
+	})
+	if err != nil {
+		t.Fatalf("StreamMessage: %v", err)
+	}
+	if !strings.Contains(gotPath, ":streamGenerateContent") || !strings.Contains(gotPath, "alt=sse") {
+		t.Fatalf("unexpected path: %s", gotPath)
+	}
+	if strings.Join(chunks, "") != "hello" {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Text != "hello" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+	if resp.Usage.OutputTokens != 2 {
+		t.Fatalf("usage = %#v", resp.Usage)
+	}
+}
+
 func TestVertexProviderRefreshesTokenAfterUnauthorized(t *testing.T) {
 	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
 	t.Setenv("VERTEX_LOCATION", "us-central1")

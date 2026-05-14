@@ -335,23 +335,12 @@ func (p *GovernedPlanner) callBackend(ctx context.Context, backend governedBacke
 		err  error
 	)
 	if onChunk != nil {
-		var chunks []string
-		bufferChunk := func(value string) {
-			if value != "" {
-				chunks = append(chunks, value)
-			}
-		}
 		if streaming, ok := backend.Planner.(engine.StreamingPlanner); ok {
-			plan, err = streaming.StreamNext(callCtx, session, tools, bufferChunk)
+			plan, err = streaming.StreamNext(callCtx, session, tools, onChunk)
 		} else {
 			plan, err = backend.Planner.Next(callCtx, session, tools)
 			if err == nil && plan.AssistantText != "" {
-				chunks = append(chunks, plan.AssistantText)
-			}
-		}
-		if err == nil {
-			for _, chunk := range chunks {
-				onChunk(chunk)
+				onChunk(plan.AssistantText)
 			}
 		}
 	} else {

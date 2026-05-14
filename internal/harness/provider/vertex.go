@@ -124,6 +124,40 @@ func (p *VertexProvider) CreateMessage(ctx context.Context, request MessageReque
 	return geminiResponseToUnified(request.Model, *parsed)
 }
 
+func (p *VertexProvider) StreamMessage(ctx context.Context, request MessageRequest, onChunk func(string)) (*MessageResponse, error) {
+	if p.currentToken() == "" {
+		if err := p.refreshAccessToken(ctx); err != nil {
+			return nil, fmt.Errorf("vertex access token is required; set GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_APPLICATION_CREDENTIALS_JSON, VERTEX_ACCESS_TOKEN, or run gcloud auth print-access-token: %w", err)
+		}
+	}
+	modelPath, err := p.modelPath(request.Model)
+	if err != nil {
+		return nil, err
+	}
+	reqBody := vertexGeminiRequest(request)
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("%s/%s:streamGenerateContent?alt=sse", p.baseURL, strings.TrimLeft(modelPath, "/"))
+	parsed, statusCode, status, data, err := p.sendStreamGenerateContent(ctx, url, request.Model, body, onChunk)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode == http.StatusUnauthorized {
+		if refreshErr := p.refreshAccessToken(ctx); refreshErr == nil {
+			parsed, statusCode, status, data, err = p.sendStreamGenerateContent(ctx, url, request.Model, body, onChunk)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if statusCode >= http.StatusBadRequest {
+		return nil, fmt.Errorf("vertex stream request failed: %s: %s", status, string(data))
+	}
+	return parsed, nil
+}
+
 func (p *VertexProvider) sendGenerateContent(ctx context.Context, url string, body []byte) (*geminiResponse, int, string, []byte, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -146,6 +180,30 @@ func (p *VertexProvider) sendGenerateContent(ctx context.Context, url string, bo
 		return nil, resp.StatusCode, resp.Status, nil, err
 	}
 	return &parsed, resp.StatusCode, resp.Status, nil, nil
+}
+
+func (p *VertexProvider) sendStreamGenerateContent(ctx context.Context, url, model string, body []byte, onChunk func(string)) (*MessageResponse, int, string, []byte, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, "", nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.currentToken())
+
+	resp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, 0, "", nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		return nil, resp.StatusCode, resp.Status, data, nil
+	}
+	parsed, err := parseGeminiStreamResponse(model, resp.Body, "vertex", onChunk)
+	if err != nil {
+		return nil, resp.StatusCode, resp.Status, nil, err
+	}
+	return parsed, resp.StatusCode, resp.Status, nil, nil
 }
 
 func (p *VertexProvider) currentToken() string {

@@ -35,6 +35,20 @@ func (p *Planner) Next(ctx context.Context, session *state.Session, tools []tool
 }
 
 func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools []toolkit.Descriptor, onChunk func(string)) (plannerapi.Plan, error) {
+	if streaming, ok := p.provider.(StreamingProvider); ok {
+		request := MessageRequest{
+			Model:     p.model,
+			MaxTokens: 8096,
+			Messages:  toProviderMessages(session.Messages),
+			Tools:     toProviderTools(tools),
+			Stream:    true,
+		}
+		response, err := streaming.StreamMessage(ctx, request, onChunk)
+		if err != nil {
+			return plannerapi.Plan{}, err
+		}
+		return planFromResponse(response), nil
+	}
 	plan, err := p.Next(ctx, session, tools)
 	if err != nil {
 		return plannerapi.Plan{}, err

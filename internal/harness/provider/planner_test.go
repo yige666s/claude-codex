@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"claude-codex/internal/harness/state"
@@ -23,6 +24,24 @@ func (f *fakeProvider) Name() string { return "fake" }
 
 func (f *fakeProvider) SupportedModels() []string { return []string{"fake"} }
 
+type fakeStreamingProvider struct {
+	fakeProvider
+}
+
+func (f *fakeStreamingProvider) StreamMessage(_ context.Context, request MessageRequest, onChunk func(string)) (*MessageResponse, error) {
+	f.request = &request
+	if onChunk != nil {
+		onChunk("hel")
+		onChunk("lo")
+	}
+	return &MessageResponse{
+		Model:      request.Model,
+		Role:       "assistant",
+		Content:    []ContentBlock{{Type: "text", Text: "hello"}},
+		StopReason: "end_turn",
+	}, nil
+}
+
 func TestPlannerConvertsProviderToolCallsToEnginePlan(t *testing.T) {
 	planner := NewPlanner(&fakeProvider{
 		response: &MessageResponse{
@@ -41,6 +60,29 @@ func TestPlannerConvertsProviderToolCallsToEnginePlan(t *testing.T) {
 	}
 	if len(plan.ToolCalls) != 1 || plan.ToolCalls[0].Name != "bash" {
 		t.Fatalf("unexpected plan %#v", plan)
+	}
+}
+
+func TestPlannerStreamsProviderChunksImmediately(t *testing.T) {
+	provider := &fakeStreamingProvider{}
+	planner := NewPlanner(provider, "fake")
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("hello")
+	var chunks []string
+	plan, err := planner.StreamNext(context.Background(), session, nil, func(chunk string) {
+		chunks = append(chunks, chunk)
+	})
+	if err != nil {
+		t.Fatalf("StreamNext() error = %v", err)
+	}
+	if got := strings.Join(chunks, ""); got != "hello" {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+	if plan.AssistantText != "hello" {
+		t.Fatalf("plan = %#v", plan)
+	}
+	if provider.request == nil || !provider.request.Stream {
+		t.Fatalf("stream request was not marked streaming: %#v", provider.request)
 	}
 }
 

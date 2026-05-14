@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -107,6 +108,55 @@ type geminiFunctionCall struct {
 type geminiFunctionResponse struct {
 	Name     string                 `json:"name"`
 	Response map[string]interface{} `json:"response"`
+}
+
+func (p *GeminiProvider) StreamMessage(ctx context.Context, request MessageRequest, onChunk func(string)) (*MessageResponse, error) {
+	geminiReq := geminiRequest{
+		Contents: make([]geminiContent, 0, len(request.Messages)+1),
+		GenerationConfig: geminiGenerationConfig{
+			Temperature:     request.Temperature,
+			TopP:            request.TopP,
+			MaxOutputTokens: request.MaxTokens,
+		},
+	}
+	if request.System != "" {
+		geminiReq.SystemInstruction = &geminiContent{
+			Role:  "user",
+			Parts: []geminiPart{{Text: request.System}},
+		}
+	}
+	geminiReq.Contents = append(geminiReq.Contents, geminiContentsFromMessages(request.Messages)...)
+	if len(request.Tools) > 0 {
+		functionDecls := make([]geminiFunctionDeclaration, len(request.Tools))
+		for i, tool := range request.Tools {
+			functionDecls[i] = geminiFunctionDeclaration{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.InputSchema,
+			}
+		}
+		geminiReq.Tools = []geminiTool{{FunctionDeclarations: functionDecls}}
+	}
+	body, err := json.Marshal(geminiReq)
+	if err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse&key=%s", p.baseURL, request.Model, p.apiKey)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("gemini stream request failed: %s: %s", resp.Status, string(data))
+	}
+	return parseGeminiStreamResponse(request.Model, resp.Body, "gemini", onChunk)
 }
 
 // geminiResponse represents Gemini API response format
@@ -373,6 +423,91 @@ func geminiTextContent(content interface{}) string {
 		}
 		return fmt.Sprintf("%v", content)
 	}
+}
+
+func parseGeminiStreamResponse(model string, body io.Reader, idPrefix string, onChunk func(string)) (*MessageResponse, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	var (
+		textBuilder strings.Builder
+		toolCalls   []ToolCall
+		usage       Usage
+		stopReason  string
+		chunkIndex  int
+	)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var chunk geminiResponse
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			return nil, fmt.Errorf("decode gemini stream chunk: %w", err)
+		}
+		if chunk.UsageMetadata.PromptTokenCount != 0 || chunk.UsageMetadata.CandidatesTokenCount != 0 {
+			usage = Usage{
+				InputTokens:  chunk.UsageMetadata.PromptTokenCount,
+				OutputTokens: chunk.UsageMetadata.CandidatesTokenCount,
+			}
+		}
+		if len(chunk.Candidates) == 0 {
+			continue
+		}
+		candidate := chunk.Candidates[0]
+		if candidate.FinishReason != "" {
+			stopReason = candidate.FinishReason
+		}
+		for _, part := range candidate.Content.Parts {
+			if part.Text != "" {
+				textBuilder.WriteString(part.Text)
+				if onChunk != nil {
+					onChunk(part.Text)
+				}
+			}
+			if part.FunctionCall != nil {
+				input, _ := json.Marshal(part.FunctionCall.Args)
+				if len(input) == 0 {
+					input = []byte(`{}`)
+				}
+				chunkIndex++
+				toolCalls = append(toolCalls, ToolCall{
+					ID:    fmt.Sprintf("%s-call-%d", idPrefix, chunkIndex),
+					Name:  part.FunctionCall.Name,
+					Input: json.RawMessage(input),
+				})
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	text := textBuilder.String()
+	if text == "" && len(toolCalls) == 0 {
+		return nil, fmt.Errorf("no candidates in stream response")
+	}
+	if len(toolCalls) > 0 && stopReason == "" {
+		stopReason = "tool_use"
+	}
+	var contentBlocks []ContentBlock
+	if text != "" {
+		contentBlocks = []ContentBlock{{Type: "text", Text: text}}
+	}
+	return &MessageResponse{
+		ID:         fmt.Sprintf("%s-%d", idPrefix, time.Now().Unix()),
+		Model:      model,
+		Role:       "assistant",
+		Content:    contentBlocks,
+		ToolCalls:  toolCalls,
+		StopReason: stopReason,
+		Usage:      usage,
+	}, nil
 }
 
 // Name returns the provider name
