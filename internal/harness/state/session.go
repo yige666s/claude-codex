@@ -77,6 +77,16 @@ func (s *Session) AddUserMessage(content string) {
 	s.Usage.RecordInput(content)
 }
 
+func (s *Session) AddHiddenUserMessage(content string) {
+	s.append(Message{
+		Role:      "user",
+		Content:   content,
+		Hidden:    true,
+		CreatedAt: time.Now().UTC(),
+	})
+	s.Usage.RecordInput(content)
+}
+
 // AddSystemContext injects a hidden context message that is sent to the model
 // but not displayed in the TUI transcript.
 func (s *Session) AddSystemContext(content string) {

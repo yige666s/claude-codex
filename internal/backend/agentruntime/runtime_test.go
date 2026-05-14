@@ -3130,6 +3130,25 @@ func TestRuntimeRoutesLLMSelectedRunAsJobSkillToJob(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	updated, err := runtime.GetSession(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	var visibleUsers []string
+	for _, message := range updated.Messages {
+		if message.Role == "user" && !message.Hidden {
+			visibleUsers = append(visibleUsers, message.Content)
+		}
+	}
+	if len(visibleUsers) != 1 || visibleUsers[0] != "帮我生成以下图片：Cute little kitty --ar 3:4" {
+		t.Fatalf("unexpected visible user messages: %#v", visibleUsers)
+	}
+	for _, message := range updated.Messages {
+		if message.Role == "user" && message.Hidden && message.Content == "/vertex-image-artifact Cute little kitty --ar 3:4" {
+			return
+		}
+	}
+	t.Fatalf("expected hidden routed slash message in session: %#v", updated.Messages)
 }
 
 func TestPublishedSkillCatalogFiltersUserInvocableSkills(t *testing.T) {

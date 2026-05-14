@@ -29,6 +29,8 @@ const (
 	consumerSecurityInjectedKey = "agentruntime.consumer_security_context_injected"
 )
 
+type hiddenUserMessageContextKey struct{}
+
 const consumerSecuritySystemContext = `<consumer-security>
 You are serving a consumer web user. Do not expose internal server tools, tool names, file paths, workspace paths, shell commands, environment variables, credentials, stack traces, or raw provider errors.
 
@@ -58,11 +60,12 @@ type Runtime struct {
 	riskScanner     RiskScanner
 	riskRecorder    func(context.Context, RiskEvent)
 
-	mu           sync.Mutex
-	wg           sync.WaitGroup
-	running      map[string]context.CancelFunc
-	runningJobs  map[string]context.CancelFunc
-	shuttingDown bool
+	mu                    sync.Mutex
+	wg                    sync.WaitGroup
+	running               map[string]context.CancelFunc
+	runningJobs           map[string]context.CancelFunc
+	hiddenJobUserMessages map[string]bool
+	shuttingDown          bool
 }
 
 func (r *Runtime) SetArtifactService(artifacts *ArtifactService) {
@@ -101,17 +104,18 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 	}
 	config.SkillShellSandbox = config.SkillShellSandbox.normalized()
 	return &Runtime{
-		config:          config,
-		sessions:        sessions,
-		memory:          memory,
-		memoryExtract:   NewRuleMemoryExtractor(),
-		memoryAbstract:  NewRuleMemoryAbstractor(),
-		memoryOrganizer: NewRuleMemoryOrganizer(),
-		skills:          skills,
-		engineFactory:   engineFactory,
-		running:         make(map[string]context.CancelFunc),
-		runningJobs:     make(map[string]context.CancelFunc),
-		jobEvents:       newJobEventBroker(128),
+		config:                config,
+		sessions:              sessions,
+		memory:                memory,
+		memoryExtract:         NewRuleMemoryExtractor(),
+		memoryAbstract:        NewRuleMemoryAbstractor(),
+		memoryOrganizer:       NewRuleMemoryOrganizer(),
+		skills:                skills,
+		engineFactory:         engineFactory,
+		running:               make(map[string]context.CancelFunc),
+		runningJobs:           make(map[string]context.CancelFunc),
+		hiddenJobUserMessages: make(map[string]bool),
+		jobEvents:             newJobEventBroker(128),
 	}
 }
 
@@ -901,8 +905,10 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 	if strings.TrimSpace(displayContent) == "" {
 		displayContent = "Please analyze the attached file(s)."
 	}
-	if err := sink.Send(ctx, Event{Type: "message", SessionID: session.ID, Role: "user", Content: displayContent}); err != nil {
-		return err
+	if !hideUserMessageFromContext(ctx) {
+		if err := sink.Send(ctx, Event{Type: "message", SessionID: session.ID, Role: "user", Content: displayContent}); err != nil {
+			return err
+		}
 	}
 
 	result, err := r.run(turnCtx, req, session, func(token string) {
@@ -927,6 +933,7 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 	}
 	if result.Job != nil {
 		finishTurn()
+		r.markJobUserMessageHidden(result.Job.ID)
 		if err := r.StartJob(ctx, result.Job); err != nil {
 			_ = sink.Send(ctx, Event{Type: "error", SessionID: session.ID, JobID: result.Job.ID, Error: err.Error()})
 			return err
@@ -1097,12 +1104,51 @@ func (r *Runtime) StartJob(ctx context.Context, job *Job) error {
 	workerCtx, cancel := context.WithCancel(context.Background())
 	workerCtx = withRequestID(workerCtx, requestIDFromContext(ctx))
 	workerCtx = WithJobID(workerCtx, job.ID)
+	if r.consumeJobUserMessageHidden(job.ID) {
+		workerCtx = withHiddenUserMessage(workerCtx)
+	}
 	if err := r.startJob(job.ID, cancel); err != nil {
 		cancel()
 		return err
 	}
 	go r.runJob(workerCtx, job)
 	return nil
+}
+
+func withHiddenUserMessage(ctx context.Context) context.Context {
+	return context.WithValue(ctx, hiddenUserMessageContextKey{}, true)
+}
+
+func hideUserMessageFromContext(ctx context.Context) bool {
+	hidden, _ := ctx.Value(hiddenUserMessageContextKey{}).(bool)
+	return hidden
+}
+
+func (r *Runtime) markJobUserMessageHidden(jobID string) {
+	jobID = strings.TrimSpace(jobID)
+	if r == nil || jobID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.hiddenJobUserMessages == nil {
+		r.hiddenJobUserMessages = make(map[string]bool)
+	}
+	r.hiddenJobUserMessages[jobID] = true
+}
+
+func (r *Runtime) consumeJobUserMessageHidden(jobID string) bool {
+	jobID = strings.TrimSpace(jobID)
+	if r == nil || jobID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.hiddenJobUserMessages[jobID] {
+		return false
+	}
+	delete(r.hiddenJobUserMessages, jobID)
+	return true
 }
 
 func (r *Runtime) runJob(ctx context.Context, job *Job) {
@@ -1682,7 +1728,11 @@ func (r *Runtime) runSkillCommand(ctx context.Context, req ChatRequest, userID s
 			args = strings.TrimSpace(args + "\n\n" + attachmentContext)
 		}
 	}
-	session.AddUserMessage(content)
+	if hideUserMessageFromContext(ctx) {
+		session.AddHiddenUserMessage(content)
+	} else {
+		session.AddUserMessage(content)
+	}
 	return r.runSkill(ctx, userID, session, skill, args, onToken)
 }
 
