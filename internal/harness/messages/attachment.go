@@ -13,6 +13,12 @@ const (
 	// Add other attachment types as needed
 )
 
+const SkillSelectionPolicyVersion = "2"
+
+func SkillSelectionPolicyMarker() string {
+	return fmt.Sprintf(`skill-selection-policy version="%s"`, SkillSelectionPolicyVersion)
+}
+
 // Attachment represents a message attachment
 type Attachment interface {
 	Type() AttachmentType
@@ -39,13 +45,15 @@ The following product skills are available through the Skill tool:
 
 %s
 
+<skill-selection-policy version="%s">
 Skill selection rules:
 - If the current user request matches one of these skills, you MUST call the Skill tool before responding.
 - Do not merely promise that a skill task is starting or will be done later.
 - For document, image, artifact, or job-style deliverables, call the Skill tool and let the runtime route the work.
 - Pass the user's actual task/request as the Skill args, preserving uploaded attachment context already shown in the conversation.
 - If no listed skill matches, answer normally without inventing a skill.
-</system-reminder>`, a.Content)
+</skill-selection-policy>
+</system-reminder>`, a.Content, SkillSelectionPolicyVersion)
 }
 
 // AttachmentMessage represents a message with an attachment

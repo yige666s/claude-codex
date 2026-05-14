@@ -25,8 +25,9 @@ type legacyRuntime struct {
 }
 
 const (
-	workspaceContextInjectedKey = "engine.workspace_context_injected"
-	skillCatalogInjectedKey     = "engine.skill_catalog_injected"
+	workspaceContextInjectedKey    = "engine.workspace_context_injected"
+	skillCatalogInjectedKey        = "engine.skill_catalog_injected"
+	skillCatalogInjectedVersionKey = "engine.skill_catalog_injected_version"
 )
 
 func newLegacyRuntime(engine *Engine) engineRuntime {
@@ -46,9 +47,10 @@ func (e *Engine) ensureInitialModelContext(session *state.Session) {
 		session.AddHiddenAssistantMessage("Understood. I have the workspace context.")
 		session.Metadata[workspaceContextInjectedKey] = "true"
 	}
-	if e.skillManager == nil || session.Metadata[skillCatalogInjectedKey] == "true" || sessionHasHiddenContent(session, "The following skills are available for use with the Skill tool") {
+	if e.skillManager == nil || session.Metadata[skillCatalogInjectedVersionKey] == messages.SkillSelectionPolicyVersion || sessionHasHiddenContent(session, messages.SkillSelectionPolicyMarker()) {
 		if e.skillManager != nil {
 			session.Metadata[skillCatalogInjectedKey] = "true"
+			session.Metadata[skillCatalogInjectedVersionKey] = messages.SkillSelectionPolicyVersion
 		}
 		return
 	}
@@ -56,6 +58,7 @@ func (e *Engine) ensureInitialModelContext(session *state.Session) {
 	content := messages.FormatAllSkillDescriptions(allSkills)
 	if strings.TrimSpace(content) == "" {
 		session.Metadata[skillCatalogInjectedKey] = "true"
+		session.Metadata[skillCatalogInjectedVersionKey] = messages.SkillSelectionPolicyVersion
 		return
 	}
 	attachment := &messages.SkillListingAttachment{
@@ -65,6 +68,7 @@ func (e *Engine) ensureInitialModelContext(session *state.Session) {
 	}
 	session.AddSystemContext(attachment.ToSystemReminder())
 	session.Metadata[skillCatalogInjectedKey] = "true"
+	session.Metadata[skillCatalogInjectedVersionKey] = messages.SkillSelectionPolicyVersion
 }
 
 func sessionHasHiddenContent(session *state.Session, needle string) bool {
