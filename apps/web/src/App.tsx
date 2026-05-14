@@ -967,7 +967,7 @@ export function App() {
       setStatus({ tone: "busy", text: "Job started" });
       saveActiveJob(event.job_id, event.job?.session_id || event.session_id || sessionId);
       const submitted = event.job?.content || "";
-      if (submitted) {
+      if (submitted && shouldDisplayJobSubmittedContent(event)) {
         const now = new Date().toISOString();
         setMessages((current) => appendRuntimeMessage(
           appendRuntimeMessage(current, { role: "user", content: submitted, created_at: now }),
@@ -2065,6 +2065,13 @@ function jobStartedMessage(event: RuntimeEvent): string {
     return "已开始执行工作流，完成后会自动更新结果。你也可以在右侧 Jobs 面板查看进度。";
   }
   return "已开始后台处理，完成后会自动更新结果。你也可以在右侧 Jobs 面板查看进度。";
+}
+
+function shouldDisplayJobSubmittedContent(event: RuntimeEvent): boolean {
+  if (event.job_reason === "skill metadata requests durable job execution") {
+    return false;
+  }
+  return true;
 }
 
 function visibleJobEvents(events: JobEvent[]): JobEvent[] {
