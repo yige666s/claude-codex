@@ -1980,6 +1980,17 @@ func (r *Runtime) runSkill(ctx context.Context, userID string, session *state.Se
 		errText = firstNonEmpty(execDiagnostics.SkillError, execDiagnostics.ErrorKind)
 		return runnerResult{Output: result.Output, Session: result.Session}, nil
 	}
+	if skillProducesArtifacts(skill) && execDiagnostics.ArtifactCount == 0 {
+		status = SkillExecutionStatusFailed
+		execDiagnostics.ErrorKind = "missing_artifact"
+		if execDiagnostics.JSON == nil {
+			execDiagnostics.JSON = map[string]any{}
+		}
+		execDiagnostics.JSON["error_kind"] = execDiagnostics.ErrorKind
+		execDiagnostics.JSON["expected_artifact"] = true
+		errText = "skill completed without creating the expected artifact"
+		return runnerResult{Output: result.Output, Session: result.Session}, errors.New(errText)
+	}
 	status = SkillExecutionStatusSucceeded
 	return runnerResult{Output: result.Output, Session: result.Session}, err
 }

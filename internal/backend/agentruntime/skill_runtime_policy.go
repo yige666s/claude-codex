@@ -84,6 +84,31 @@ func applySkillPolicyMetadata(policy *SkillRuntimePolicy, metadata map[string]an
 	}
 }
 
+func skillProducesArtifacts(skill *skills.SkillDefinition) bool {
+	if skill == nil {
+		return false
+	}
+	for _, key := range []string{"produces_artifacts", "producesArtifacts"} {
+		if boolMetadataDeep(skill.Metadata, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func boolMetadataDeep(metadata map[string]any, key string) bool {
+	if boolMetadata(metadata, key) {
+		return true
+	}
+	for _, section := range []string{"agentapi", "runtime", "openclaw", "product", "marketplace", "registry"} {
+		nested, ok := mapMetadata(metadata, section)
+		if ok && boolMetadata(nested, key) {
+			return true
+		}
+	}
+	return false
+}
+
 func skillPolicyMap(metadata map[string]any) map[string]any {
 	for _, key := range []string{"policy", "permissions", "runtime_policy", "runtimePolicy"} {
 		if value, ok := mapMetadata(metadata, key); ok {

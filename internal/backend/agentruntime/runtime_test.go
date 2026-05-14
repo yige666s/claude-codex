@@ -3228,6 +3228,52 @@ func TestRuntimeRecordsLLMSelectedSkillExecution(t *testing.T) {
 	}
 }
 
+func TestArtifactProducingSkillFailsWhenNoArtifactCreated(t *testing.T) {
+	root := t.TempDir()
+	storeRoot := t.TempDir()
+	executions := NewMemorySkillExecutionStore()
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "diagram",
+		UserInvocable: true,
+		Metadata: map[string]any{
+			"agentapi": map[string]any{"produces_artifacts": true},
+		},
+		GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+			return []skills.ContentBlock{{Type: "text", Text: "create a diagram for " + args}}, nil
+		},
+	}}}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(storeRoot),
+		NewFileMemoryService(storeRoot),
+		catalog,
+		func(Scope) Runner { return echoRunner{} },
+	)
+	runtime.SetSkillExecutionStore(executions)
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	err = runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "/diagram Redis architecture"}, &collectSink{})
+	if err == nil || !strings.Contains(err.Error(), "expected artifact") {
+		t.Fatalf("expected missing artifact error, got %v", err)
+	}
+	records, err := executions.ListSkillExecutions(context.Background(), SkillExecutionFilter{SkillName: "diagram"})
+	if err != nil {
+		t.Fatalf("list executions: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v", records)
+	}
+	record := records[0]
+	if record.Status != SkillExecutionStatusFailed || record.ErrorKind != "missing_artifact" || record.ArtifactCount != 0 {
+		t.Fatalf("unexpected execution record: %#v", record)
+	}
+	if record.DiagnosticJSON["expected_artifact"] != true {
+		t.Fatalf("missing expected artifact diagnostic: %#v", record.DiagnosticJSON)
+	}
+}
+
 func TestRuntimeRoutesLLMSelectedRunAsJobSkillToJob(t *testing.T) {
 	root := t.TempDir()
 	storeRoot := t.TempDir()

@@ -35,6 +35,21 @@ metadata:
 
 Generate production-quality SVG technical diagrams exported as PNG via `cairosvg` (recommended), `rsvg-convert`, or `puppeteer`.
 
+## AgentAPI Artifact Contract
+
+When this skill runs inside AgentAPI, the user expects a generated artifact, not a progress-only chat reply.
+
+Follow this contract before any final answer:
+
+1. Generate a complete, self-contained SVG document as text.
+2. Use the `Artifact` tool exactly once to save the SVG:
+   - `filename`: a short kebab-case name ending in `.svg`
+   - `content_type`: `image/svg+xml`
+   - `content`: the complete SVG text
+3. Only after the `Artifact` tool succeeds, reply naturally that the diagram is ready in the Artifacts panel.
+
+Do not stop after saying that you are generating the diagram. Do not only report file paths. Do not claim a PNG exists unless a PNG artifact was actually created. In this AgentAPI environment, the safe default output is the SVG artifact.
+
 ## Install Source
 
 Install this skill from GitHub:
