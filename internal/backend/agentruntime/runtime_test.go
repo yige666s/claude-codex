@@ -2173,6 +2173,21 @@ func TestArtifactToolWritesThroughScopedWriter(t *testing.T) {
 		t.Fatalf("unexpected file artifact kind=%q data=%q", fileOutput.Kind, string(fileData))
 	}
 
+	svgResult, err := fileTool.Execute(ctx, json.RawMessage(`{"filename":"diagram.svg","content_type":"image/svg+xml","content":"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"}`))
+	if err != nil {
+		t.Fatalf("execute svg artifact tool: %v", err)
+	}
+	var svgOutput struct {
+		ID          string `json:"id"`
+		ContentType string `json:"content_type"`
+	}
+	if err := json.Unmarshal([]byte(svgResult.Output), &svgOutput); err != nil {
+		t.Fatalf("decode svg artifact output: %v", err)
+	}
+	if svgOutput.ContentType != "image/svg+xml" {
+		t.Fatalf("svg content type = %q", svgOutput.ContentType)
+	}
+
 	_, err = fileTool.Execute(ctx, json.RawMessage(`{"filename":"bad.sh","content_type":"text/plain","content":"echo bad"}`))
 	if err == nil || !strings.Contains(err.Error(), "extension") {
 		t.Fatalf("expected disallowed extension error, got %v", err)

@@ -18,13 +18,13 @@ type AssetPolicy struct {
 
 func DefaultAssetPolicy() AssetPolicy {
 	extensions := []string{
-		".png", ".jpg", ".jpeg", ".jfif", ".webp", ".gif", ".avif", ".bmp", ".tif", ".tiff", ".heic", ".heif",
+		".png", ".jpg", ".jpeg", ".jfif", ".webp", ".gif", ".avif", ".bmp", ".tif", ".tiff", ".heic", ".heif", ".svg",
 		".pdf",
 		".txt", ".md", ".csv", ".json",
 		".docx", ".xlsx", ".pptx",
 	}
 	mimeTypes := []string{
-		"image/png", "image/jpeg", "image/pjpeg", "image/webp", "image/gif", "image/avif", "image/bmp", "image/tiff", "image/heic", "image/heif",
+		"image/png", "image/jpeg", "image/pjpeg", "image/webp", "image/gif", "image/avif", "image/bmp", "image/tiff", "image/heic", "image/heif", "image/svg+xml",
 		"application/pdf",
 		"text/plain", "text/markdown", "text/csv", "application/json",
 		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
