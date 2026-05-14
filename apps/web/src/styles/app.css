@@ -694,7 +694,7 @@ label.composer-upload {
   width: 30px;
   height: 30px;
   border-radius: 7px;
-  font-size: 14px;
+  font-size: 12px;
 }
 .recent-skill-list span {
   overflow: hidden;
@@ -761,6 +761,7 @@ label.composer-upload {
 .skill-glyph {
   width: 36px;
   height: 36px;
+  min-width: 36px;
   border: 1px solid #cddfdc;
   border-radius: 8px;
   background: #f3faf8;
@@ -768,9 +769,15 @@ label.composer-upload {
   display: inline-grid;
   place-items: center;
   font-weight: 800;
+  line-height: 1;
+  overflow: hidden;
 }
 .skill-glyph.text {
-  font-size: 18px;
+  padding: 0 2px;
+  font-size: 12px;
+  letter-spacing: 0;
+  white-space: nowrap;
+  text-align: center;
 }
 .skill-card p {
   margin: 0 12px;
