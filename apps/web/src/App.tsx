@@ -502,7 +502,7 @@ export function App() {
       setSessions(next);
       if (targetSessionId === sessionId) {
         setSessionId(next[0]?.id || "");
-        setMessages(next[0]?.messages || []);
+        setMessages(visibleMessages(next[0]?.messages || []));
       }
       setSettingsOpen(false);
     } catch (error) {

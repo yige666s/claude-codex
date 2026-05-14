@@ -166,7 +166,11 @@ func (r *Runtime) ListSessions(ctx context.Context, userID string) ([]*state.Ses
 		return nil, err
 	}
 	for _, session := range sessions {
-		r.hideInternalTranscriptMessages(session)
+		if r.hideInternalTranscriptMessages(session) {
+			if err := r.sessions.Save(ctx, userID, session); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return sessions, nil
 }
@@ -179,41 +183,54 @@ func (r *Runtime) GetSession(ctx context.Context, userID, sessionID string) (*st
 	if err != nil {
 		return nil, err
 	}
-	r.hideInternalTranscriptMessages(session)
+	if r.hideInternalTranscriptMessages(session) {
+		if err := r.sessions.Save(ctx, userID, session); err != nil {
+			return nil, err
+		}
+	}
 	return session, nil
 }
 
-func (r *Runtime) hideInternalTranscriptMessages(session *state.Session) {
-	hideWorkspaceContextAck(session)
-	r.hideSyntheticRoutedSkillMessages(session)
+func (r *Runtime) hideInternalTranscriptMessages(session *state.Session) bool {
+	changed := hideWorkspaceContextAck(session)
+	if r.hideSyntheticRoutedSkillMessages(session) {
+		changed = true
+	}
+	return changed
 }
 
-func hideWorkspaceContextAck(session *state.Session) {
+func hideWorkspaceContextAck(session *state.Session) bool {
 	if session == nil {
-		return
+		return false
 	}
+	changed := false
 	for i := range session.Messages {
-		if session.Messages[i].Role == "assistant" && session.Messages[i].Content == workspaceContextAckContent {
+		if session.Messages[i].Role == "assistant" && session.Messages[i].Content == workspaceContextAckContent && !session.Messages[i].Hidden {
 			session.Messages[i].Hidden = true
+			changed = true
 		}
 	}
+	return changed
 }
 
-func (r *Runtime) hideSyntheticRoutedSkillMessages(session *state.Session) {
+func (r *Runtime) hideSyntheticRoutedSkillMessages(session *state.Session) bool {
 	if session == nil || r == nil || r.skills == nil {
-		return
+		return false
 	}
+	changed := false
 	var previousVisible *state.Message
 	for i := range session.Messages {
 		message := &session.Messages[i]
 		if !message.Hidden && message.Role == "user" && isRunAsJobSlashMessage(r.skills, message.Content) && previousVisible != nil && previousVisible.Role == "user" && !isSlashCommand(previousVisible.Content) {
 			message.Hidden = true
+			changed = true
 		}
 		if message.Hidden || (message.Role != "user" && message.Role != "assistant") || strings.TrimSpace(message.Content) == "" {
 			continue
 		}
 		previousVisible = message
 	}
+	return changed
 }
 
 func isRunAsJobSlashMessage(catalog SkillCatalog, content string) bool {

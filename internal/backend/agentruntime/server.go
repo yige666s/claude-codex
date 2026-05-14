@@ -2060,7 +2060,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 	s.auditEvent(r, "session_create", user, map[string]any{"session_id": session.ID})
-	writeJSON(w, http.StatusCreated, session)
+	writeJSON(w, http.StatusCreated, publicSessionView(session))
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request, user User) {
@@ -2069,7 +2069,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request, user
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, sessions)
+	writeJSON(w, http.StatusOK, publicSessionViews(sessions))
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, user User, sessionID string) {
@@ -2078,7 +2078,39 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, user U
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, session)
+	writeJSON(w, http.StatusOK, publicSessionView(session))
+}
+
+func publicSessionViews(sessions []*state.Session) []*state.Session {
+	out := make([]*state.Session, 0, len(sessions))
+	for _, session := range sessions {
+		if public := publicSessionView(session); public != nil {
+			out = append(out, public)
+		}
+	}
+	return out
+}
+
+func publicSessionView(session *state.Session) *state.Session {
+	if session == nil {
+		return nil
+	}
+	clone := *session
+	clone.WorkingDir = ""
+	clone.Metadata = nil
+	clone.Messages = make([]state.Message, 0, len(session.Messages))
+	for _, message := range session.Messages {
+		if message.Hidden || message.Role == "tool" || strings.TrimSpace(firstNonEmptyString(message.Content, message.ToolOutput)) == "" {
+			continue
+		}
+		publicMessage := state.Message{
+			Role:      message.Role,
+			Content:   message.Content,
+			CreatedAt: message.CreatedAt,
+		}
+		clone.Messages = append(clone.Messages, publicMessage)
+	}
+	return &clone
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request, user User, sessionID string) {

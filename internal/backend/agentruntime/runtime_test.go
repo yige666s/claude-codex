@@ -129,6 +129,63 @@ func TestRuntimeKeepsDirectSlashSkillVisibleOnRead(t *testing.T) {
 	}
 }
 
+func TestUserSessionAPIHidesInternalTranscriptData(t *testing.T) {
+	store := NewFileSessionStore(t.TempDir())
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "vertex-image-artifact",
+		UserInvocable: true,
+		RunAsJob:      true,
+	}}}
+	runtime := NewRuntime(RuntimeConfig{}, store, nil, catalog, func(Scope) Runner { return echoRunner{} })
+	server := NewServer(runtime, HeaderAuthenticator{}, NewRateLimiter(10, time.Minute), nil)
+	session, err := store.Create(context.Background(), "alice", "/var/lib/agentapi/workspaces/internal")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	session.Metadata = map[string]string{"engine.workspace_context_injected": "true", "user_id_hash": "secret"}
+	session.AddSystemContext("<consumer-security>secret prompt</consumer-security>")
+	session.AddAssistantMessage(workspaceContextAckContent)
+	session.AddUserMessage("帮我创建以下图片：ink drawing --ar 3:4")
+	session.AddUserMessage("/vertex-image-artifact ink drawing --ar 3:4")
+	session.AddSystemContext("<command-message>vertex-image-artifact</command-message>")
+	session.AddAssistantMessage("图片已生成")
+	if err := store.Save(context.Background(), "alice", session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+session.ID, nil)
+	req.Header.Set("X-User-ID", "alice")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body state.Session
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.WorkingDir != "" || len(body.Metadata) != 0 {
+		t.Fatalf("public session leaked internals: working_dir=%q metadata=%#v", body.WorkingDir, body.Metadata)
+	}
+	var contents []string
+	for _, message := range body.Messages {
+		if message.Hidden || message.Role == "tool" || len(message.ToolCalls) > 0 || message.ToolOutput != "" || message.ToolName != "" {
+			t.Fatalf("public message leaked internal fields: %#v", message)
+		}
+		contents = append(contents, message.Content)
+	}
+	if strings.Join(contents, "\n") != "帮我创建以下图片：ink drawing --ar 3:4\n图片已生成" {
+		t.Fatalf("unexpected public messages: %#v", contents)
+	}
+	persisted, err := store.Get(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get persisted: %v", err)
+	}
+	if !persisted.Messages[1].Hidden || !persisted.Messages[3].Hidden || !persisted.Messages[4].Hidden {
+		t.Fatalf("expected legacy internal messages to be persisted hidden: %#v", persisted.Messages)
+	}
+}
+
 func TestEnsureConsumerSecurityContextInjectedOnce(t *testing.T) {
 	session := state.NewSession(t.TempDir())
 
