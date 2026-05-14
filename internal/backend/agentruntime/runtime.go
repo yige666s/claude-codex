@@ -1401,6 +1401,15 @@ func (r *Runtime) RouteChat(req ChatRequest) JobRoutingDecision {
 		}
 		return JobRoutingDecision{}
 	}
+	if selection, ok := r.naturalRunAsJobSkillSelection(content); ok {
+		return JobRoutingDecision{
+			RunAsJob:           true,
+			JobType:            "skill",
+			Reason:             "natural language matched job skill metadata",
+			Content:            skillCommandContent(selection),
+			HideJobUserMessage: true,
+		}
+	}
 	return JobRoutingDecision{}
 }
 
@@ -1468,6 +1477,18 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	ensureConsumerSecurityContext(session)
 	if strings.HasPrefix(strings.TrimSpace(content), "/") {
 		return r.runSkillCommand(ctx, req, userID, session, content, onToken)
+	}
+	if selection, ok := r.naturalRunAsJobSkillSelection(content); ok {
+		ensureVisibleUserMessage(session, content)
+		job, jobErr := r.createSelectedSkillJob(ctx, req, session.ID, selection)
+		if jobErr != nil {
+			return runnerResult{}, jobErr
+		}
+		return runnerResult{
+			Session:   session,
+			Job:       job,
+			JobReason: "natural language matched job skill metadata",
+		}, nil
 	}
 	prompt, err := r.chatPrompt(ctx, req, content)
 	if err != nil {
@@ -1999,6 +2020,30 @@ type runAsJobSkillSelection struct {
 	Args string
 }
 
+func (r *Runtime) naturalRunAsJobSkillSelection(content string) (runAsJobSkillSelection, bool) {
+	content = strings.TrimSpace(content)
+	if r == nil || r.skills == nil || content == "" || strings.HasPrefix(content, "/") {
+		return runAsJobSkillSelection{}, false
+	}
+	skill, ok := r.skills.MatchUserInvocableSkill(content)
+	if !ok || skill == nil || !skill.UserInvocable || !skill.RunAsJob {
+		return runAsJobSkillSelection{}, false
+	}
+	return runAsJobSkillSelection{Name: skill.Name, Args: content}, true
+}
+
+func skillCommandContent(selection runAsJobSkillSelection) string {
+	name := strings.TrimPrefix(strings.TrimSpace(selection.Name), "/")
+	if name == "" {
+		return strings.TrimSpace(selection.Args)
+	}
+	content := "/" + name
+	if strings.TrimSpace(selection.Args) != "" {
+		content += " " + strings.TrimSpace(selection.Args)
+	}
+	return content
+}
+
 func selectedRunAsJobSkill(session *state.Session, startIndex int) (runAsJobSkillSelection, bool) {
 	if session == nil {
 		return runAsJobSkillSelection{}, false
@@ -2045,14 +2090,10 @@ func (r *Runtime) createSelectedSkillJob(ctx context.Context, req ChatRequest, s
 	if !skill.RunAsJob {
 		return nil, fmt.Errorf("skill /%s is not configured for job execution", selection.Name)
 	}
-	content := "/" + selection.Name
-	if strings.TrimSpace(selection.Args) != "" {
-		content += " " + strings.TrimSpace(selection.Args)
-	}
 	jobReq := ChatRequest{
 		UserID:         req.UserID,
 		SessionID:      sessionID,
-		Content:        content,
+		Content:        skillCommandContent(selection),
 		AttachmentIDs:  append([]string(nil), req.AttachmentIDs...),
 		AttachmentURLs: append([]ChatAttachmentURL(nil), req.AttachmentURLs...),
 	}
