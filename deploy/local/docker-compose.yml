@@ -80,7 +80,13 @@ services:
       retries: 20
 
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    build:
+      context: ../..
+      dockerfile: deploy/local/elasticsearch-ik.Dockerfile
+      args:
+        ELASTICSEARCH_VERSION: ${AGENT_API_ELASTICSEARCH_VERSION:-8.15.3}
+        IK_PLUGIN_URL: ${AGENT_API_ELASTICSEARCH_IK_PLUGIN_URL:-}
+    image: claude-codex-elasticsearch-ik:local
     profiles: ["search"]
     environment:
       discovery.type: single-node

@@ -49,8 +49,11 @@ The local stack includes Vertex AI embedding configuration for semantic search:
 service account environment variable to query Qdrant with Gemini embeddings.
 Set `AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED=true` with
 `AGENT_API_MESSAGE_SEARCH_BACKEND=elasticsearch` or `hybrid` to bootstrap ES
-ILM, rollover templates, and IK analyzer mappings. The Elasticsearch container
-must include the IK plugin for the default `ik_max_word` / `ik_smart` analyzers.
+ILM, rollover templates, and IK analyzer mappings. The local Elasticsearch image
+is built from `deploy/local/elasticsearch-ik.Dockerfile` and installs the IK
+plugin that provides the default `ik_max_word` / `ik_smart` analyzers. Override
+`AGENT_API_ELASTICSEARCH_VERSION` and `AGENT_API_ELASTICSEARCH_IK_PLUGIN_URL`
+when upgrading Elasticsearch or testing a pinned plugin artifact.
 
 AgentAPI also defaults `AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND=redis` locally
 and stores loaded session-context windows in Redis DB 1 with prefix
