@@ -221,7 +221,7 @@ Redis limiting uses fixed windows keyed by user ID.
 - Timeout tiers: `-llm-chat-timeout` for normal chat calls and `-llm-skill-timeout` for skill/workflow calls.
 - Quotas: `-llm-daily-token-quota`, `-llm-daily-request-quota`, and `-llm-daily-cost-quota-usd`.
 - Estimated cost: `-llm-input-cost-per-million` and `-llm-output-cost-per-million`.
-- Model routing: `-llm-model-routes default=gemini-2.5-pro,skill:vertex-image-artifact=gemini-2.5-pro`.
+- Runtime model selection: Admin UI updates SQL-backed runtime config; CLI model flags are only startup defaults.
 - Health: retryable failures update per-backend health and open a temporary circuit breaker after `-llm-failure-threshold`; cooldown is controlled by `-llm-circuit-cooldown`.
 
 When SQL storage is enabled, successful and failed provider attempts are stored

@@ -139,7 +139,7 @@ services:
       - -llm-provider
       - "${AGENT_API_LLM_PROVIDER:-vertex}"
       - -model
-      - "${AGENT_API_MODEL:-gemini-2.5-pro}"
+      - "gemini-2.5-pro"
       - -llm-max-attempts
       - "${AGENT_API_LLM_MAX_ATTEMPTS:-2}"
       - -llm-chat-timeout
