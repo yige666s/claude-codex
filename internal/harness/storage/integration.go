@@ -70,9 +70,10 @@ func convertStateMessageToTranscript(msg state.Message, session *state.Session) 
 		toolCalls := make([]ToolCall, len(msg.ToolCalls))
 		for i, tc := range msg.ToolCalls {
 			toolCalls[i] = ToolCall{
-				ID:    tc.ID,
-				Name:  tc.Name,
-				Input: tc.Input,
+				ID:               tc.ID,
+				Name:             tc.Name,
+				Input:            tc.Input,
+				ThoughtSignature: tc.ThoughtSignature,
 			}
 		}
 		transcriptMsg.ToolCalls = toolCalls
@@ -149,9 +150,10 @@ func convertTranscriptToStateMessage(msg *TranscriptMessage) state.Message {
 		toolCalls := make([]state.ToolCall, len(msg.ToolCalls))
 		for i, tc := range msg.ToolCalls {
 			toolCalls[i] = state.ToolCall{
-				ID:    tc.ID,
-				Name:  tc.Name,
-				Input: tc.Input,
+				ID:               tc.ID,
+				Name:             tc.Name,
+				Input:            tc.Input,
+				ThoughtSignature: tc.ThoughtSignature,
 			}
 		}
 		stateMsg.ToolCalls = toolCalls

@@ -192,9 +192,10 @@ func (r *legacyRuntime) Run(ctx context.Context, session *state.Session, prompt 
 		stateToolCalls := make([]state.ToolCall, len(plan.ToolCalls))
 		for i, tc := range plan.ToolCalls {
 			stateToolCalls[i] = state.ToolCall{
-				ID:    tc.ID,
-				Name:  tc.Name,
-				Input: tc.Input,
+				ID:               tc.ID,
+				Name:             tc.Name,
+				Input:            tc.Input,
+				ThoughtSignature: tc.ThoughtSignature,
 			}
 		}
 		session.AddAssistantMessageWithTools(plan.AssistantText, stateToolCalls)

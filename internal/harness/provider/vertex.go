@@ -407,9 +407,10 @@ func geminiResponseToUnified(model string, resp geminiResponse) (*MessageRespons
 				input = []byte(`{}`)
 			}
 			toolCalls = append(toolCalls, ToolCall{
-				ID:    fmt.Sprintf("vertex-call-%d", len(toolCalls)+1),
-				Name:  part.FunctionCall.Name,
-				Input: json.RawMessage(input),
+				ID:               fmt.Sprintf("vertex-call-%d", len(toolCalls)+1),
+				Name:             part.FunctionCall.Name,
+				Input:            json.RawMessage(input),
+				ThoughtSignature: part.ThoughtSignature,
 			})
 		}
 	}

@@ -61,7 +61,7 @@ func TestPlannerConvertsProviderToolCallsToEnginePlan(t *testing.T) {
 			Role:       "assistant",
 			StopReason: "tool_use",
 			ToolCalls: []ToolCall{
-				{ID: "call-1", Name: "bash", Input: []byte(`{"command":"ls"}`)},
+				{ID: "call-1", Name: "bash", Input: []byte(`{"command":"ls"}`), ThoughtSignature: "sig-1"},
 			},
 		},
 	}, "fake")
@@ -72,6 +72,9 @@ func TestPlannerConvertsProviderToolCallsToEnginePlan(t *testing.T) {
 	}
 	if len(plan.ToolCalls) != 1 || plan.ToolCalls[0].Name != "bash" {
 		t.Fatalf("unexpected plan %#v", plan)
+	}
+	if plan.ToolCalls[0].ThoughtSignature != "sig-1" {
+		t.Fatalf("thought signature was not preserved: %#v", plan.ToolCalls[0])
 	}
 }
 

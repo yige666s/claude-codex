@@ -205,7 +205,7 @@ func (e *Engine) runStream(ctx context.Context, session *state.Session, prompt s
 
 		stateToolCalls := make([]state.ToolCall, len(plan.ToolCalls))
 		for i, tc := range plan.ToolCalls {
-			stateToolCalls[i] = state.ToolCall{ID: tc.ID, Name: tc.Name, Input: tc.Input}
+			stateToolCalls[i] = state.ToolCall{ID: tc.ID, Name: tc.Name, Input: tc.Input, ThoughtSignature: tc.ThoughtSignature}
 		}
 		session.AddAssistantMessageWithTools(plan.AssistantText, stateToolCalls)
 		if err := e.executeToolCalls(ctx, session, plan.ToolCalls, interactionID); err != nil {

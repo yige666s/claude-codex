@@ -113,6 +113,72 @@ func TestVertexProviderStreamsGenerateContent(t *testing.T) {
 	}
 }
 
+func TestVertexProviderPreservesFunctionCallThoughtSignature(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{
+				"content":{"role":"model","parts":[{
+					"functionCall":{"name":"default_api:skill","args":{"name":"fireworks-tech-graph"}},
+					"thoughtSignature":"signed-thought"
+				}]},
+				"finishReason":"STOP"
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "gemini-test",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	resp, err := provider.CreateMessage(context.Background(), MessageRequest{
+		Model:    "gemini-test",
+		Messages: []Message{{Role: "user", Content: "draw architecture"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].ThoughtSignature != "signed-thought" {
+		t.Fatalf("thought signature was not preserved: %#v", resp.ToolCalls)
+	}
+
+	_, err = provider.CreateMessage(context.Background(), MessageRequest{
+		Model: "gemini-test",
+		Messages: []Message{{
+			Role: "assistant",
+			ToolCalls: []ToolCall{{
+				ID:               "call-1",
+				Name:             "default_api:skill",
+				Input:            json.RawMessage(`{"name":"fireworks-tech-graph"}`),
+				ThoughtSignature: resp.ToolCalls[0].ThoughtSignature,
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage with signed tool history: %v", err)
+	}
+	contents := body["contents"].([]interface{})
+	parts := contents[0].(map[string]interface{})["parts"].([]interface{})
+	part := parts[0].(map[string]interface{})
+	if part["thoughtSignature"] != "signed-thought" {
+		t.Fatalf("request functionCall missing thoughtSignature: %#v", part)
+	}
+}
+
 func TestVertexProviderRefreshesTokenAfterUnauthorized(t *testing.T) {
 	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
 	t.Setenv("VERTEX_LOCATION", "us-central1")

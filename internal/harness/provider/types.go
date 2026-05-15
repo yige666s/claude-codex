@@ -53,9 +53,10 @@ type ContentBlock struct {
 }
 
 type ToolCall struct {
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input,omitempty"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	Input            json.RawMessage `json:"input,omitempty"`
+	ThoughtSignature string          `json:"thought_signature,omitempty"`
 }
 
 // Tool represents a function/tool definition

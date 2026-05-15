@@ -70,6 +70,7 @@ type geminiPart struct {
 	FileData         *geminiFileData         `json:"fileData,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+	ThoughtSignature string                  `json:"thoughtSignature,omitempty"`
 }
 
 type geminiBlob struct {
@@ -273,9 +274,10 @@ func (p *GeminiProvider) CreateMessage(ctx context.Context, request MessageReque
 				input = []byte(`{}`)
 			}
 			toolCalls = append(toolCalls, ToolCall{
-				ID:    fmt.Sprintf("gemini-call-%d", len(toolCalls)+1),
-				Name:  part.FunctionCall.Name,
-				Input: json.RawMessage(input),
+				ID:               fmt.Sprintf("gemini-call-%d", len(toolCalls)+1),
+				Name:             part.FunctionCall.Name,
+				Input:            json.RawMessage(input),
+				ThoughtSignature: part.ThoughtSignature,
 			})
 		}
 	}
@@ -339,7 +341,10 @@ func geminiContentsFromMessages(messages []Message) []geminiContent {
 			if len(call.Input) > 0 {
 				_ = json.Unmarshal(call.Input, &args)
 			}
-			parts = append(parts, geminiPart{FunctionCall: &geminiFunctionCall{Name: call.Name, Args: args}})
+			parts = append(parts, geminiPart{
+				FunctionCall:     &geminiFunctionCall{Name: call.Name, Args: args},
+				ThoughtSignature: call.ThoughtSignature,
+			})
 		}
 		if len(parts) > 0 {
 			contents = append(contents, geminiContent{Role: role, Parts: parts})
@@ -481,9 +486,10 @@ func parseGeminiStreamResponse(model string, body io.Reader, idPrefix string, on
 				}
 				chunkIndex++
 				toolCalls = append(toolCalls, ToolCall{
-					ID:    fmt.Sprintf("%s-call-%d", idPrefix, chunkIndex),
-					Name:  part.FunctionCall.Name,
-					Input: json.RawMessage(input),
+					ID:               fmt.Sprintf("%s-call-%d", idPrefix, chunkIndex),
+					Name:             part.FunctionCall.Name,
+					Input:            json.RawMessage(input),
+					ThoughtSignature: part.ThoughtSignature,
 				})
 			}
 		}

@@ -997,9 +997,10 @@ func plannerToolCallsToState(calls []plannerapi.ToolCall) []state.ToolCall {
 	out := make([]state.ToolCall, len(calls))
 	for i, call := range calls {
 		out[i] = state.ToolCall{
-			ID:    call.ID,
-			Name:  call.Name,
-			Input: call.Input,
+			ID:               call.ID,
+			Name:             call.Name,
+			Input:            call.Input,
+			ThoughtSignature: call.ThoughtSignature,
 		}
 	}
 	return out

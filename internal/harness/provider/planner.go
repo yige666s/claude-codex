@@ -85,9 +85,10 @@ func toProviderMessages(messages []state.Message) []Message {
 				message.ToolCalls = make([]ToolCall, len(msg.ToolCalls))
 				for i, tc := range msg.ToolCalls {
 					message.ToolCalls[i] = ToolCall{
-						ID:    tc.ID,
-						Name:  tc.Name,
-						Input: tc.Input,
+						ID:               tc.ID,
+						Name:             tc.Name,
+						Input:            tc.Input,
+						ThoughtSignature: tc.ThoughtSignature,
 					}
 				}
 			}
@@ -166,9 +167,10 @@ func planFromResponse(resp *MessageResponse) plannerapi.Plan {
 	toolCalls := make([]plannerapi.ToolCall, len(resp.ToolCalls))
 	for i, tc := range resp.ToolCalls {
 		toolCalls[i] = plannerapi.ToolCall{
-			ID:    tc.ID,
-			Name:  tc.Name,
-			Input: tc.Input,
+			ID:               tc.ID,
+			Name:             tc.Name,
+			Input:            tc.Input,
+			ThoughtSignature: tc.ThoughtSignature,
 		}
 	}
 

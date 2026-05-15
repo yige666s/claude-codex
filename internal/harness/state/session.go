@@ -73,9 +73,10 @@ type Message struct {
 }
 
 type ToolCall struct {
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	Input            json.RawMessage `json:"input"`
+	ThoughtSignature string          `json:"thought_signature,omitempty"`
 }
 
 type MessageAttachment struct {

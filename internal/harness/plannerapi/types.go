@@ -10,9 +10,10 @@ import (
 
 // ToolCall represents a single tool invocation planned by a model/runtime.
 type ToolCall struct {
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	Input            json.RawMessage `json:"input"`
+	ThoughtSignature string          `json:"thought_signature,omitempty"`
 }
 
 // Plan is the planner/runtime output for a single turn.
