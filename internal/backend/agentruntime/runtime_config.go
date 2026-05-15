@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -12,6 +13,10 @@ import (
 const llmGovernanceConfigKey = "llm_governance"
 
 type LLMGovernanceConfigPatch struct {
+	Provider               *string  `json:"provider,omitempty"`
+	Model                  *string  `json:"model,omitempty"`
+	VertexLocation         *string  `json:"vertex_location,omitempty"`
+	ModelRoutes            *string  `json:"model_routes,omitempty"`
 	MaxAttempts            *int     `json:"max_attempts,omitempty"`
 	RetryBackoffMS         *int64   `json:"retry_backoff_ms,omitempty"`
 	ChatTimeoutMS          *int64   `json:"chat_timeout_ms,omitempty"`
@@ -28,6 +33,39 @@ type LLMGovernanceConfigPatch struct {
 type LLMGovernanceConfigStore interface {
 	LoadLLMGovernanceConfig(ctx context.Context) (LLMGovernanceConfig, bool, error)
 	SaveLLMGovernanceConfig(ctx context.Context, config LLMGovernanceConfig) error
+}
+
+type LLMModelOption struct {
+	ID             string `json:"id"`
+	Label          string `json:"label"`
+	Provider       string `json:"provider"`
+	VertexLocation string `json:"vertex_location"`
+}
+
+var allowedLLMModelOptions = []LLMModelOption{
+	{ID: "gemini-3.1-flash-lite", Label: "Gemini 3.1 Flash Lite", Provider: "vertex", VertexLocation: "global"},
+	{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro", Provider: "vertex", VertexLocation: "us-central1"},
+	{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash", Provider: "vertex", VertexLocation: "us-central1"},
+}
+
+func AllowedLLMModelOptions() []LLMModelOption {
+	out := make([]LLMModelOption, len(allowedLLMModelOptions))
+	copy(out, allowedLLMModelOptions)
+	return out
+}
+
+func LLMModelOptionFor(model string) (LLMModelOption, bool) {
+	model = strings.TrimSpace(model)
+	for _, option := range allowedLLMModelOptions {
+		if option.ID == model {
+			return option, true
+		}
+	}
+	return LLMModelOption{}, false
+}
+
+func LLMModelRoutesWithDefault(routes, model string) string {
+	return setDefaultModelRoute(routes, model)
 }
 
 type LLMGovernanceConfigManager struct {
@@ -52,6 +90,7 @@ func (m *LLMGovernanceConfigManager) Load(ctx context.Context) error {
 		return nil
 	}
 	m.mu.Lock()
+	config = mergeLLMGovernanceConfigDefaults(m.config, config)
 	m.config = config.normalized()
 	m.mu.Unlock()
 	return nil
@@ -95,6 +134,11 @@ func (m *LLMGovernanceConfigManager) Update(ctx context.Context, patch LLMGovern
 func llmGovernanceConfigStatusMap(config LLMGovernanceConfig) map[string]any {
 	config = config.normalized()
 	return map[string]any{
+		"provider":                 config.Provider,
+		"model":                    config.Model,
+		"vertex_location":          config.VertexLocation,
+		"model_routes":             config.ModelRoutes,
+		"allowed_models":           AllowedLLMModelOptions(),
 		"max_attempts":             config.MaxAttempts,
 		"retry_backoff_ms":         config.RetryBackoff.Milliseconds(),
 		"chat_timeout_ms":          config.ChatTimeout.Milliseconds(),
@@ -111,6 +155,44 @@ func llmGovernanceConfigStatusMap(config LLMGovernanceConfig) map[string]any {
 
 func applyLLMGovernanceConfigPatch(config LLMGovernanceConfig, patch LLMGovernanceConfigPatch) (LLMGovernanceConfig, error) {
 	next := config
+	if patch.Provider != nil {
+		provider := strings.ToLower(strings.TrimSpace(*patch.Provider))
+		if provider != "" && provider != "vertex" {
+			return LLMGovernanceConfig{}, fmt.Errorf("provider must be vertex")
+		}
+		if provider != "" {
+			next.Provider = provider
+		}
+	}
+	if patch.Model != nil {
+		model := strings.TrimSpace(*patch.Model)
+		option, ok := LLMModelOptionFor(model)
+		if !ok {
+			return LLMGovernanceConfig{}, fmt.Errorf("model %q is not allowed", model)
+		}
+		next.Provider = option.Provider
+		next.Model = option.ID
+		next.VertexLocation = option.VertexLocation
+		next.ModelRoutes = setDefaultModelRoute(next.ModelRoutes, option.ID)
+	}
+	if patch.VertexLocation != nil {
+		location := strings.TrimSpace(*patch.VertexLocation)
+		if next.Model != "" {
+			option, ok := LLMModelOptionFor(next.Model)
+			if ok && location != "" && location != option.VertexLocation {
+				return LLMGovernanceConfig{}, fmt.Errorf("vertex_location for %s must be %s", next.Model, option.VertexLocation)
+			}
+		}
+		if location != "" {
+			next.VertexLocation = location
+		}
+	}
+	if patch.ModelRoutes != nil {
+		next.ModelRoutes = strings.TrimSpace(*patch.ModelRoutes)
+		if next.Model != "" {
+			next.ModelRoutes = setDefaultModelRoute(next.ModelRoutes, next.Model)
+		}
+	}
 	if patch.MaxAttempts != nil {
 		if *patch.MaxAttempts <= 0 {
 			return LLMGovernanceConfig{}, fmt.Errorf("max_attempts must be greater than 0")
@@ -180,7 +262,68 @@ func applyLLMGovernanceConfigPatch(config LLMGovernanceConfig, patch LLMGovernan
 	return next.normalized(), nil
 }
 
+func mergeLLMGovernanceConfigDefaults(defaults, loaded LLMGovernanceConfig) LLMGovernanceConfig {
+	if strings.TrimSpace(loaded.Provider) == "" {
+		loaded.Provider = defaults.Provider
+	}
+	if strings.TrimSpace(loaded.Model) == "" {
+		loaded.Model = defaults.Model
+	}
+	if strings.TrimSpace(loaded.VertexLocation) == "" {
+		loaded.VertexLocation = defaults.VertexLocation
+	}
+	if strings.TrimSpace(loaded.ModelRoutes) == "" {
+		loaded.ModelRoutes = defaults.ModelRoutes
+	}
+	return loaded
+}
+
+func setDefaultModelRoute(routes, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return strings.TrimSpace(routes)
+	}
+	items := splitRuntimeConfigCSV(routes)
+	out := make([]string, 0, len(items)+1)
+	found := false
+	for _, item := range items {
+		key, _, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if key == "default" {
+			out = append(out, "default="+model)
+			found = true
+			continue
+		}
+		out = append(out, item)
+	}
+	if !found {
+		out = append([]string{"default=" + model}, out...)
+	}
+	return strings.Join(out, ",")
+}
+
+func splitRuntimeConfigCSV(value string) []string {
+	var out []string
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 type llmGovernanceConfigPayload struct {
+	Provider               string  `json:"provider,omitempty"`
+	Model                  string  `json:"model,omitempty"`
+	VertexLocation         string  `json:"vertex_location,omitempty"`
+	ModelRoutes            string  `json:"model_routes,omitempty"`
 	MaxAttempts            int     `json:"max_attempts"`
 	RetryBackoffMS         int64   `json:"retry_backoff_ms"`
 	ChatTimeoutMS          int64   `json:"chat_timeout_ms"`
@@ -197,6 +340,10 @@ type llmGovernanceConfigPayload struct {
 func llmGovernanceConfigToPayload(config LLMGovernanceConfig) llmGovernanceConfigPayload {
 	config = config.normalized()
 	return llmGovernanceConfigPayload{
+		Provider:               config.Provider,
+		Model:                  config.Model,
+		VertexLocation:         config.VertexLocation,
+		ModelRoutes:            config.ModelRoutes,
 		MaxAttempts:            config.MaxAttempts,
 		RetryBackoffMS:         config.RetryBackoff.Milliseconds(),
 		ChatTimeoutMS:          config.ChatTimeout.Milliseconds(),
@@ -213,6 +360,10 @@ func llmGovernanceConfigToPayload(config LLMGovernanceConfig) llmGovernanceConfi
 
 func llmGovernanceConfigFromPayload(payload llmGovernanceConfigPayload) LLMGovernanceConfig {
 	return LLMGovernanceConfig{
+		Provider:               payload.Provider,
+		Model:                  payload.Model,
+		VertexLocation:         payload.VertexLocation,
+		ModelRoutes:            payload.ModelRoutes,
 		MaxAttempts:            payload.MaxAttempts,
 		RetryBackoff:           time.Duration(payload.RetryBackoffMS) * time.Millisecond,
 		ChatTimeout:            time.Duration(payload.ChatTimeoutMS) * time.Millisecond,

@@ -43,12 +43,14 @@ func NewVertexProvider(cfg Config) (*VertexProvider, error) {
 		os.Getenv("GCLOUD_PROJECT"),
 	)
 	location := firstNonEmptyString(
+		cfg.VertexLocation,
 		os.Getenv("VERTEX_LOCATION"),
 		os.Getenv("GOOGLE_CLOUD_LOCATION"),
 		os.Getenv("CLOUD_ML_REGION"),
 		"us-central1",
 	)
 	anthropicLocation := firstNonEmptyString(
+		cfg.VertexAnthropicLocation,
 		os.Getenv("VERTEX_ANTHROPIC_LOCATION"),
 		os.Getenv("GOOGLE_CLOUD_ANTHROPIC_LOCATION"),
 		"global",

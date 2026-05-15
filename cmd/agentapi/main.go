@@ -130,6 +130,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	llmCfg.Model = routedModel(llmCfg.Model, *llmModelRoutes, agentruntime.Scope{})
+	if option, ok := agentruntime.LLMModelOptionFor(llmCfg.Model); ok {
+		llmCfg.Provider = option.Provider
+		llmCfg.Model = option.ID
+		llmCfg.VertexLocation = option.VertexLocation
+	}
 
 	storeCfg := storeConfig{
 		backend:            *storeBackend,
@@ -149,6 +155,10 @@ func main() {
 	jobStore := buildJobStore(storeCfg)
 	skillExecutionStore := buildSkillExecutionStore(storeCfg)
 	llmGovernanceCfg := agentruntime.LLMGovernanceConfig{
+		Provider:               llmCfg.Provider,
+		Model:                  llmCfg.Model,
+		VertexLocation:         llmCfg.VertexLocation,
+		ModelRoutes:            agentruntime.LLMModelRoutesWithDefault(*llmModelRoutes, llmCfg.Model),
 		MaxAttempts:            *llmMaxAttempts,
 		RetryBackoff:           *llmRetryBackoff,
 		ChatTimeout:            *llmChatTimeout,
@@ -205,7 +215,9 @@ func main() {
 				log.Printf("record tool denial risk event: %v", err)
 			}
 		})
-		planner, err := newGovernedPlannerForScope(llmCfg, *llmFallbacks, *llmModelRoutes, scope, llmUsageStore, llmConfigManager.Get())
+		runtimeLLMConfig := llmConfigManager.Get()
+		effectiveLLMConfig := applyRuntimeLLMConfig(llmCfg, runtimeLLMConfig)
+		planner, err := newGovernedPlannerForScope(effectiveLLMConfig, *llmFallbacks, runtimeLLMConfig.ModelRoutes, scope, llmUsageStore, runtimeLLMConfig)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -328,20 +340,26 @@ func main() {
 		provider := llmStatusProvider
 		llmStatusMu.RUnlock()
 		if provider == nil {
+			runtimeLLMConfig := llmConfigManager.Get()
+			effectiveLLMConfig := applyRuntimeLLMConfig(llmCfg, runtimeLLMConfig)
 			return agentruntime.LLMGovernanceStatus{
 				Backends: []agentruntime.LLMBackendStatus{{
-					Name:     llmCfg.Provider,
-					Provider: llmCfg.Provider,
-					Model:    llmCfg.Model,
+					Name:     effectiveLLMConfig.Provider,
+					Provider: effectiveLLMConfig.Provider,
+					Model:    effectiveLLMConfig.Model,
 					Healthy:  true,
 				}},
-				Config: map[string]any{"status": "planner has not been used yet"},
+				Config: llmConfigManager.StatusMap(),
 			}
 		}
-		return provider()
+		status := provider()
+		status.Config = llmConfigManager.StatusMap()
+		return status
 	}
 	server.SetLLMStatusProvider(llmStatusFn)
-	server.AddReadinessCheck("llm_config", llmConfigReadinessCheck(llmCfg))
+	server.AddReadinessCheck("llm_config", func(ctx context.Context) error {
+		return llmConfigReadinessCheck(applyRuntimeLLMConfig(llmCfg, llmConfigManager.Get()))(ctx)
+	})
 	server.AddReadinessCheck("llm", agentruntime.LLMReadinessCheck(llmStatusFn))
 	if strings.EqualFold(strings.TrimSpace(storeCfg.backend), "sql") {
 		readyDB := openSQLDB(storeCfg)
@@ -510,12 +528,13 @@ func buildRegistry(root string, skillManager *skills.SkillManager, allowDangerou
 }
 
 type llmConfig struct {
-	Provider string
-	Model    string
-	APIKey   string
-	Token    string
-	BaseURL  string
-	Timeout  int
+	Provider       string
+	Model          string
+	APIKey         string
+	Token          string
+	BaseURL        string
+	Timeout        int
+	VertexLocation string
 }
 
 func buildLLMConfig(providerName, model, apiKey, apiToken, apiBaseURL string, timeout int) (llmConfig, error) {
@@ -534,6 +553,9 @@ func buildLLMConfig(providerName, model, apiKey, apiToken, apiBaseURL string, ti
 		APIKey:   firstNonEmpty(apiKey, providerEnvAPIKey(providerName)),
 		Token:    firstNonEmpty(apiToken, providerEnvToken(providerName)),
 		Timeout:  timeout,
+	}
+	if strings.EqualFold(cfg.Provider, "vertex") || strings.EqualFold(cfg.Provider, "gcp") {
+		cfg.VertexLocation = firstNonEmpty(os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "us-central1")
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = defaults.Timeout
@@ -567,12 +589,13 @@ func newPlanner(cfg llmConfig) (engine.Planner, error) {
 		return providerbackend.NewPlanner(provider, cfg.Model), nil
 	default:
 		provider, err := providerbackend.NewFactory().CreateProvider(providerbackend.Config{
-			Provider: cfg.Provider,
-			APIKey:   cfg.APIKey,
-			Token:    cfg.Token,
-			BaseURL:  cfg.BaseURL,
-			Model:    cfg.Model,
-			Timeout:  cfg.Timeout,
+			Provider:       cfg.Provider,
+			APIKey:         cfg.APIKey,
+			Token:          cfg.Token,
+			BaseURL:        cfg.BaseURL,
+			Model:          cfg.Model,
+			Timeout:        cfg.Timeout,
+			VertexLocation: cfg.VertexLocation,
 		})
 		if err != nil {
 			return nil, err
@@ -587,6 +610,9 @@ func newGovernedPlannerForScope(primary llmConfig, fallbackSpec, modelRoutes str
 	for _, fallback := range parseLLMFallbacks(fallbackSpec, primary.Timeout) {
 		if fallback.Model == "" {
 			fallback.Model = primary.Model
+		}
+		if fallback.VertexLocation == "" {
+			fallback.VertexLocation = primary.VertexLocation
 		}
 		configs = append(configs, fallback)
 	}
@@ -608,6 +634,19 @@ func newGovernedPlannerForScope(primary llmConfig, fallbackSpec, modelRoutes str
 		})
 	}
 	return agentruntime.NewGovernedPlanner(backends, usageStore, governance)
+}
+
+func applyRuntimeLLMConfig(base llmConfig, runtimeConfig agentruntime.LLMGovernanceConfig) llmConfig {
+	if strings.TrimSpace(runtimeConfig.Provider) != "" {
+		base.Provider = strings.TrimSpace(runtimeConfig.Provider)
+	}
+	if strings.TrimSpace(runtimeConfig.Model) != "" {
+		base.Model = strings.TrimSpace(runtimeConfig.Model)
+	}
+	if strings.TrimSpace(runtimeConfig.VertexLocation) != "" {
+		base.VertexLocation = strings.TrimSpace(runtimeConfig.VertexLocation)
+	}
+	return base
 }
 
 func parseLLMFallbacks(value string, timeout int) []llmConfig {
@@ -1098,6 +1137,9 @@ func llmConfigReadinessCheck(cfg llmConfig) func(context.Context) error {
 		case "vertex", "gcp":
 			if strings.TrimSpace(cfg.Token) == "" && strings.TrimSpace(cfg.APIKey) == "" && !googleauth.HasGoogleApplicationCredentialsEnv() {
 				return fmt.Errorf("vertex credential is required; set GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_APPLICATION_CREDENTIALS_JSON, or VERTEX_ACCESS_TOKEN")
+			}
+			if option, ok := agentruntime.LLMModelOptionFor(strings.TrimSpace(cfg.Model)); ok && strings.TrimSpace(cfg.VertexLocation) != "" && strings.TrimSpace(cfg.VertexLocation) != option.VertexLocation {
+				return fmt.Errorf("vertex location for %s must be %s", option.ID, option.VertexLocation)
 			}
 			if !strings.Contains(strings.TrimSpace(cfg.Model), "/") && firstNonEmpty(os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")) == "" {
 				return fmt.Errorf("vertex project ID is required for short model names")

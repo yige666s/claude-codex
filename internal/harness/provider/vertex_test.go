@@ -513,3 +513,40 @@ func TestVertexEndpointBaseURLForGlobalAndMultiRegion(t *testing.T) {
 		}
 	}
 }
+
+func TestVertexProviderUsesConfigLocationOverride(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider:       "vertex",
+		Token:          "tok",
+		BaseURL:        server.URL + "/v1",
+		Model:          "gemini-3.1-flash-lite",
+		Timeout:        30,
+		VertexLocation: "global",
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	if _, err := provider.CreateMessage(context.Background(), MessageRequest{
+		Model:    "gemini-3.1-flash-lite",
+		Messages: []Message{{Role: "user", Content: "hello"}},
+	}); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	want := "/v1/projects/proj-1/locations/global/publishers/google/models/gemini-3.1-flash-lite:generateContent"
+	if gotPath != want {
+		t.Fatalf("path = %s, want %s", gotPath, want)
+	}
+}

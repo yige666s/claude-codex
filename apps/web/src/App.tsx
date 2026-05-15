@@ -3668,6 +3668,19 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
             </div>
             <div className="admin-config-grid">
               <label className="admin-field">
+                <span>Model</span>
+                <select value={configDraft.model || ""} onChange={(event) => updateConfigDraft("model", event.currentTarget.value)}>
+                  {(llm?.config?.allowed_models || []).map((option) => (
+                    <option key={option.id} value={option.id}>{option.label}</option>
+                  ))}
+                  {!llm?.config?.allowed_models?.length && <option value={configDraft.model || ""}>{configDraft.model || "No model loaded"}</option>}
+                </select>
+              </label>
+              <label className="admin-field">
+                <span>Vertex location</span>
+                <input value={modelOptionLocation(llm?.config, configDraft.model) || configDraft.vertex_location || ""} readOnly aria-label="Selected model Vertex location" />
+              </label>
+              <label className="admin-field">
                 <span>Daily token quota</span>
                 <input inputMode="numeric" value={configDraft.daily_token_quota || ""} onChange={(event) => updateConfigDraft("daily_token_quota", event.currentTarget.value)} placeholder="0 disables" />
               </label>
@@ -3809,6 +3822,10 @@ function StatusBadge({ value }: { value: string }) {
 
 function llmConfigDraftFromConfig(config: LLMGovernanceConfig): Record<string, string> {
   const keys: Array<keyof LLMGovernanceConfig> = [
+    "provider",
+    "model",
+    "vertex_location",
+    "model_routes",
     "max_attempts",
     "retry_backoff_ms",
     "chat_timeout_ms",
@@ -3825,7 +3842,9 @@ function llmConfigDraftFromConfig(config: LLMGovernanceConfig): Record<string, s
 }
 
 function llmConfigFromDraft(draft: Record<string, string>): LLMGovernanceConfig {
-  const integerKeys: Array<keyof LLMGovernanceConfig> = [
+  type IntegerLLMConfigKey = "max_attempts" | "retry_backoff_ms" | "chat_timeout_ms" | "skill_timeout_ms" | "daily_token_quota" | "daily_request_quota" | "failure_threshold" | "circuit_cooldown_seconds";
+  type DecimalLLMConfigKey = "daily_cost_quota_usd" | "input_cost_per_million" | "output_cost_per_million";
+  const integerKeys: IntegerLLMConfigKey[] = [
     "max_attempts",
     "retry_backoff_ms",
     "chat_timeout_ms",
@@ -3835,12 +3854,14 @@ function llmConfigFromDraft(draft: Record<string, string>): LLMGovernanceConfig 
     "failure_threshold",
     "circuit_cooldown_seconds"
   ];
-  const decimalKeys: Array<keyof LLMGovernanceConfig> = [
+  const decimalKeys: DecimalLLMConfigKey[] = [
     "daily_cost_quota_usd",
     "input_cost_per_million",
     "output_cost_per_million"
   ];
   const next: LLMGovernanceConfig = {};
+  const model = String(draft.model || "").trim();
+  if (model) next.model = model;
   for (const key of integerKeys) {
     const raw = String(draft[key] || "").trim();
     if (!raw) continue;
@@ -3856,6 +3877,11 @@ function llmConfigFromDraft(draft: Record<string, string>): LLMGovernanceConfig 
     next[key] = value;
   }
   return next;
+}
+
+function modelOptionLocation(config: LLMGovernanceConfig | undefined, model: string | undefined): string {
+  const selected = String(model || "").trim();
+  return config?.allowed_models?.find((option) => option.id === selected)?.vertex_location || "";
 }
 
 function AdminMetric({ label, value }: { label: string; value: string }) {

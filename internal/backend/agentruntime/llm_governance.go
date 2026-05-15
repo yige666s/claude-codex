@@ -42,6 +42,10 @@ func llmScopeFromContext(ctx context.Context) LLMScope {
 }
 
 type LLMGovernanceConfig struct {
+	Provider               string
+	Model                  string
+	VertexLocation         string
+	ModelRoutes            string
 	MaxAttempts            int
 	RetryBackoff           time.Duration
 	ChatTimeout            time.Duration
@@ -56,6 +60,17 @@ type LLMGovernanceConfig struct {
 }
 
 func (c LLMGovernanceConfig) normalized() LLMGovernanceConfig {
+	if option, ok := LLMModelOptionFor(c.Model); ok {
+		if c.Provider == "" {
+			c.Provider = option.Provider
+		}
+		if c.VertexLocation == "" {
+			c.VertexLocation = option.VertexLocation
+		}
+		if c.ModelRoutes == "" {
+			c.ModelRoutes = LLMModelRoutesWithDefault("", option.ID)
+		}
+	}
 	if c.MaxAttempts <= 0 {
 		c.MaxAttempts = 1
 	}

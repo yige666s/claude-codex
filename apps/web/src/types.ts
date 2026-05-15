@@ -235,6 +235,11 @@ export type LLMGovernanceStatus = {
 };
 
 export type LLMGovernanceConfig = {
+  provider?: string;
+  model?: string;
+  vertex_location?: string;
+  model_routes?: string;
+  allowed_models?: LLMModelOption[];
   max_attempts?: number;
   retry_backoff_ms?: number;
   chat_timeout_ms?: number;
@@ -246,6 +251,13 @@ export type LLMGovernanceConfig = {
   output_cost_per_million?: number;
   failure_threshold?: number;
   circuit_cooldown_seconds?: number;
+};
+
+export type LLMModelOption = {
+  id: string;
+  label: string;
+  provider: string;
+  vertex_location: string;
 };
 
 export type LLMUsageRecord = {

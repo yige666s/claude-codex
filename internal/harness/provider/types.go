@@ -84,10 +84,12 @@ type Usage struct {
 
 // Config represents provider configuration
 type Config struct {
-	Provider string `json:"provider"` // anthropic, openai, qwen, gemini, vertex, custom
-	APIKey   string `json:"api_key,omitempty"`
-	BaseURL  string `json:"base_url,omitempty"`
-	Token    string `json:"token,omitempty"` // Alternative to APIKey for some providers
-	Model    string `json:"model"`
-	Timeout  int    `json:"timeout_seconds"`
+	Provider                string `json:"provider"` // anthropic, openai, qwen, gemini, vertex, custom
+	APIKey                  string `json:"api_key,omitempty"`
+	BaseURL                 string `json:"base_url,omitempty"`
+	Token                   string `json:"token,omitempty"` // Alternative to APIKey for some providers
+	Model                   string `json:"model"`
+	Timeout                 int    `json:"timeout_seconds"`
+	VertexLocation          string `json:"vertex_location,omitempty"`
+	VertexAnthropicLocation string `json:"vertex_anthropic_location,omitempty"`
 }
