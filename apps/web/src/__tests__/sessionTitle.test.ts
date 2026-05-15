@@ -31,4 +31,10 @@ describe("session titles", () => {
     expect(firstUserText(item)).toBe("");
     expect(sessionTitle(item)).toBe("20260508T120000Z-demo");
   });
+
+  it("uses the stored title when list rows omit messages", () => {
+    const item = session(undefined);
+    item.title = "Generate project architecture";
+    expect(sessionTitle(item)).toBe("Generate project architecture");
+  });
 });

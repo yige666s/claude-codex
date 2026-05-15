@@ -1224,7 +1224,7 @@ export function App() {
             <div key={session.id} className={`list-item session-item ${session.id === sessionId ? "active" : ""}`}>
               <button className="session-select" onClick={() => { setSessionId(session.id); setMobileNav(false); }}>
                 <span>{sessionTitle(session)}</span>
-                <small>{(session.messages || []).filter((message) => !message.hidden).length} messages</small>
+                <small>{session.message_count ?? (session.messages || []).filter((message) => !message.hidden).length} messages</small>
               </button>
               <button className="session-delete" onClick={() => removeSession(session.id)} title="Delete session" aria-label="Delete session">
                 <Trash2 size={16} />

@@ -421,12 +421,25 @@ func (s *SQLSessionStore) ListPage(ctx context.Context, userID string, limit, of
 
 func (s *SQLSessionStore) listSessionsFromSQL(ctx context.Context, userID string, limit, offset int) ([]*state.Session, error) {
 	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
-SELECT user_id, session_id, agent_id, title, status, message_count, total_tokens,
-	working_dir, tags, description, parent_id, branch_point, metadata, archived,
-	created_at, updated_at, last_message_at
-FROM agent_sessions
-WHERE user_id = ? AND status <> ?
-ORDER BY updated_at DESC`), userID, state.SessionStatusDeleted)
+SELECT s.user_id, s.session_id, s.agent_id,
+	COALESCE(NULLIF(s.title, ''), (
+		SELECT m.content
+		FROM agent_messages m
+		WHERE m.user_id = s.user_id
+		  AND m.session_id = s.session_id
+		  AND m.status <> 2
+		  AND m.hidden = 0
+		  AND m.role = 'user'
+		  AND TRIM(m.content) <> ''
+		ORDER BY m.seq_no ASC
+		LIMIT 1
+	), '') AS title,
+	s.status, s.message_count, s.total_tokens,
+	s.working_dir, s.tags, s.description, s.parent_id, s.branch_point, s.metadata, s.archived,
+	s.created_at, s.updated_at, s.last_message_at
+FROM agent_sessions s
+WHERE s.user_id = ? AND s.status <> ?
+ORDER BY s.updated_at DESC`), userID, state.SessionStatusDeleted)
 	if err != nil {
 		return nil, err
 	}
@@ -779,6 +792,7 @@ func (s *SQLSessionStore) appendMessageOnce(ctx context.Context, userID, session
 		return state.Message{}, err
 	}
 	tokenDelta := int64(message.PromptTokens + message.CompletionTokens)
+	titleCandidate := sessionTitleCandidateFromMessage(message)
 	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_sessions
 SET message_count = (
@@ -786,6 +800,7 @@ SET message_count = (
 		WHERE user_id = ? AND session_id = ? AND status <> ?
 	),
 	total_tokens = total_tokens + ?,
+	title = CASE WHEN title = '' AND ? <> '' THEN ? ELSE title END,
 	updated_at = ?,
 	last_message_at = ?
 WHERE user_id = ? AND session_id = ?`),
@@ -793,6 +808,8 @@ WHERE user_id = ? AND session_id = ?`),
 		sessionID,
 		state.MessageStatusDeleted,
 		tokenDelta,
+		titleCandidate,
+		titleCandidate,
 		sqlTimeValue(message.CreatedAt, s.dialect),
 		sqlTimeValue(message.CreatedAt, s.dialect),
 		userID,
@@ -812,6 +829,30 @@ WHERE user_id = ? AND session_id = ?`),
 		return state.Message{}, err
 	}
 	return hydrated[0], nil
+}
+
+func sessionTitleCandidateFromMessage(message state.Message) string {
+	if message.Role != state.MessageRoleUser || message.Hidden {
+		return ""
+	}
+	if text := strings.TrimSpace(message.Content); text != "" {
+		return text
+	}
+	for _, block := range message.ContentParts {
+		if block.Type == "text" {
+			if text := strings.TrimSpace(firstNonEmptyString(block.Text, block.Content)); text != "" {
+				return text
+			}
+		}
+	}
+	for _, block := range message.ContentBlocks {
+		if block.Type == "text" {
+			if text := strings.TrimSpace(firstNonEmptyString(block.Text, block.Content)); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 func (s *SQLSessionStore) nextMessageSeq(ctx context.Context, tx *sql.Tx, userID, sessionID string) (int64, error) {

@@ -501,7 +501,7 @@ func (c *RedisSessionListCache) keyPrefix(userID string) string {
 	if prefix == "" {
 		prefix = defaultRedisSessionListPrefix
 	}
-	return fmt.Sprintf("%s:%s", prefix, userPathID(userID))
+	return fmt.Sprintf("%s:v2:%s", prefix, userPathID(userID))
 }
 
 func (c *RedisSessionListCache) readyKey(userID string) string {

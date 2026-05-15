@@ -104,10 +104,12 @@ export type MemorySettings = {
 
 export type Session = {
   id: string;
+  title?: string;
   working_dir: string;
   started_at: string;
   updated_at: string;
   messages?: Message[];
+  message_count?: number;
   description?: string;
 };
 

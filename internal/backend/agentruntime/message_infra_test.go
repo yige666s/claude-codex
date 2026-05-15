@@ -179,7 +179,7 @@ func TestRedisMessageSequenceAllocatorRoundTrip(t *testing.T) {
 
 func TestRedisSessionListCacheKeysAndPayload(t *testing.T) {
 	cache := NewRedisSessionListCacheWithPrefix(nil, time.Hour, "agentapi:session:list:")
-	if got, want := cache.zsetKey("user@example.com"), "agentapi:session:list:"+userPathID("user@example.com")+":z"; got != want {
+	if got, want := cache.zsetKey("user@example.com"), "agentapi:session:list:v2:"+userPathID("user@example.com")+":z"; got != want {
 		t.Fatalf("unexpected zset key %q", got)
 	}
 	session := &state.Session{
