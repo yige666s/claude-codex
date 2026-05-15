@@ -41,5 +41,8 @@ jobs:
             -p "$DEPLOY_PORT" \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
+            -o TCPKeepAlive=yes \
             "$DEPLOY_USER@$DEPLOY_HOST" \
             "AGENTAPI_REPO_URL='https://github.com/yige666s/claude-codex.git' AGENTAPI_BRANCH='main' /opt/agentapi/deploy.sh"

@@ -100,7 +100,7 @@ func (s *SQLSessionStore) Init(ctx context.Context) error {
 		},
 		{
 			Version:    9,
-			Statements: agentMessageSoftDeleteSchemaStatements(),
+			Statements: agentMessageSoftDeleteSchemaStatements(timeType, jsonType, s.dialect),
 		},
 		{
 			Version:    10,
@@ -222,11 +222,46 @@ func agentMessageAttachmentProcessingSchemaStatements(dialect SQLDialect) []stri
 	return []string{stmt}
 }
 
-func agentMessageSoftDeleteSchemaStatements() []string {
-	return []string{
+func agentMessageSoftDeleteSchemaStatements(timeType, jsonType string, dialect SQLDialect) []string {
+	statements := make([]string, 0, 8)
+	if dialect == SQLDialectPostgres {
+		statements = append(statements, agentMessagePostgresLegacyReconcileStatements(timeType, jsonType)...)
+	}
+	statements = append(statements,
 		`DROP INDEX IF EXISTS idx_agent_messages_session_seq`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_messages_session_active_seq ON agent_messages (user_id, session_id, seq_no) WHERE status <> 2`,
+	)
+	return statements
+}
+
+func agentMessagePostgresLegacyReconcileStatements(timeType, jsonType string) []string {
+	statements := []string{
+		`DO $$
+BEGIN
+	IF EXISTS (
+		SELECT 1
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'agent_messages'
+		  AND column_name = 'message_index'
+	) AND NOT EXISTS (
+		SELECT 1
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'agent_messages'
+		  AND column_name = 'message_id'
+	) THEN
+		DROP TABLE IF EXISTS agent_message_embedding_meta;
+		DROP TABLE IF EXISTS agent_message_attachments;
+		DROP TABLE IF EXISTS agent_messages_legacy_pre_message_module;
+		ALTER TABLE agent_messages RENAME TO agent_messages_legacy_pre_message_module;
+	END IF;
+END $$`,
 	}
+	statements = append(statements, agentMessageSchemaStatements(timeType, jsonType)...)
+	statements = append(statements, agentMessageAuxiliarySchemaStatements(timeType)...)
+	statements = append(statements, agentMessageAttachmentProcessingSchemaStatements(SQLDialectPostgres)...)
+	return statements
 }
 
 func agentMessageArchiveSchemaStatements(timeType string, dialect SQLDialect) []string {

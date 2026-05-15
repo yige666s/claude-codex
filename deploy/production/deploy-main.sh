@@ -21,6 +21,23 @@ require git
 require docker
 require curl
 
+run_with_heartbeat() {
+  local heartbeat_seconds="${AGENTAPI_DEPLOY_HEARTBEAT_SECONDS:-30}"
+  "$@" &
+  local pid=$!
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    sleep "$heartbeat_seconds"
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      echo "deployment still running: $*"
+    fi
+  done
+  set +e
+  wait "$pid"
+  local status=$?
+  set -e
+  return "$status"
+}
+
 mkdir -p "$(dirname "$app_dir")"
 
 if [ ! -d "$app_dir/.git" ]; then
@@ -41,7 +58,7 @@ else
   echo "warning: env file not found: $env_file; using process environment only" >&2
 fi
 
-docker compose "${compose_args[@]}" up -d --build
+run_with_heartbeat docker compose "${compose_args[@]}" up -d --build
 
 if [ "$prune_images" = "1" ]; then
   docker image prune -f
