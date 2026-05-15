@@ -54,8 +54,24 @@ func (m *ElasticsearchMessageIndexManager) Run(ctx context.Context) error {
 	if m == nil {
 		return fmt.Errorf("elasticsearch index manager is not configured")
 	}
-	if err := m.Bootstrap(ctx); err != nil {
-		return err
+	for {
+		if err := m.Bootstrap(ctx); err != nil {
+			if errorsIsContextDone(ctx, err) {
+				return err
+			}
+			m.logger.Printf("elasticsearch message index bootstrap failed: %v", err)
+			retryAfter := 30 * time.Second
+			if m.config.IndexMaintenanceInterval > 0 && m.config.IndexMaintenanceInterval < retryAfter {
+				retryAfter = m.config.IndexMaintenanceInterval
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retryAfter):
+				continue
+			}
+		}
+		break
 	}
 	ticker := time.NewTicker(m.config.IndexMaintenanceInterval)
 	defer ticker.Stop()

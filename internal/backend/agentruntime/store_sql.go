@@ -106,6 +106,10 @@ func (s *SQLSessionStore) Init(ctx context.Context) error {
 			Version:    10,
 			Statements: agentMessageArchiveSchemaStatements(timeType, s.dialect),
 		},
+		{
+			Version:    11,
+			Statements: agentSessionLegacyReconcileStatements(timeType, jsonType, s.dialect),
+		},
 	}); err != nil {
 		return err
 	}
@@ -149,6 +153,35 @@ func agentSessionSchemaStatements(timeType, jsonType string) []string {
 		`CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_status_last_message ON agent_sessions (user_id, status, last_message_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_status ON agent_sessions (agent_id, status)`,
 	}
+}
+
+func agentSessionLegacyReconcileStatements(timeType, jsonType string, dialect SQLDialect) []string {
+	if dialect != SQLDialectPostgres {
+		return nil
+	}
+	statements := []string{
+		`DO $$
+BEGIN
+	IF EXISTS (
+		SELECT 1
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'agent_sessions'
+		  AND column_name = 'payload'
+	) AND NOT EXISTS (
+		SELECT 1
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'agent_sessions'
+		  AND column_name = 'status'
+	) THEN
+		DROP TABLE IF EXISTS agent_sessions_legacy_pre_message_module;
+		ALTER TABLE agent_sessions RENAME TO agent_sessions_legacy_pre_message_module;
+	END IF;
+END $$`,
+	}
+	statements = append(statements, agentSessionSchemaStatements(timeType, jsonType)...)
+	return statements
 }
 
 func agentMessageSchemaStatements(timeType, jsonType string) []string {
