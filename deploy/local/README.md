@@ -5,7 +5,7 @@ This compose stack runs the production-oriented local baseline:
 - `agentapi` on `http://localhost:8081`
 - Postgres on `localhost:5432`
 - Redis on `localhost:6379`
-- MinIO/S3 on `localhost:9000` for attachments and artifacts
+- Optional MinIO/S3 on `localhost:9000` via the `minio` profile
 - Optional Elasticsearch and Qdrant search infrastructure via the `search` profile
 
 Start it with:
@@ -14,18 +14,25 @@ Start it with:
 docker compose -f deploy/local/docker-compose.yml up --build
 ```
 
-The default stack uses SQL storage, local MinIO artifacts, Redis rate limiting,
-Redis message context hot cache, JWT auth, and the built-in user system.
+The default stack uses SQL storage, S3-compatible artifacts from the configured
+endpoint, Redis rate limiting, Redis message context hot cache, JWT auth, and
+the built-in user system.
 Override provider settings with
 environment variables such as `AGENT_API_LLM_PROVIDER`, `OPENAI_API_KEY`,
 `DASHSCOPE_API_KEY`, `GEMINI_API_KEY`, or `VERTEX_*`.
 Runtime model selection is managed from the Admin UI and stored in SQL.
-Attachment upload uses the presigned flow against MinIO in this stack: AgentAPI
-signs the upload, the browser PUTs directly to MinIO, then confirms metadata
+Attachment upload uses the presigned S3-compatible flow: AgentAPI signs the
+upload, the browser PUTs directly to the object store, then confirms metadata
 back to AgentAPI. File-backed local runs fall back to the legacy multipart path.
 The message attachment worker is enabled by default for SQL deployments and
-processes pending per-message attachments into MinIO thumbnails and extracted
+processes pending per-message attachments into object-store thumbnails and extracted
 text objects.
+
+To use local MinIO instead of a remote S3/R2 endpoint:
+
+```bash
+docker compose --profile minio -f deploy/local/docker-compose.yml up --build
+```
 
 Run the message-module verification stack:
 
