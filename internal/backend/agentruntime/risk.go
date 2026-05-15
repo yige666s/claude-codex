@@ -1387,7 +1387,8 @@ func classifyRiskOperation(method, path string, parts []string) string {
 		return RiskOperationAdminAction
 	case method == http.MethodPost && path == "v1/jobs":
 		return RiskOperationJobCreate
-	case method == http.MethodPost && path == "v1/attachments":
+	case method == http.MethodPost && (path == "v1/attachments" || path == "v1/attachments/presign" ||
+		(len(parts) == 4 && parts[0] == "v1" && parts[1] == "attachments" && parts[3] == "confirm")):
 		return RiskOperationAttachmentUpload
 	case method == http.MethodPost && len(parts) == 4 && parts[0] == "v1" && parts[1] == "sessions" && parts[3] == "messages":
 		return RiskOperationChatMessage

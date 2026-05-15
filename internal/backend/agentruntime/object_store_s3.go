@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -72,6 +73,19 @@ func (s *S3ObjectStore) Get(ctx context.Context, key string) ([]byte, error) {
 	return io.ReadAll(obj)
 }
 
+func (s *S3ObjectStore) Head(ctx context.Context, key string) (ObjectInfo, error) {
+	info, err := s.client.StatObject(ctx, s.bucket, s.key(key), minio.StatObjectOptions{})
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	return ObjectInfo{
+		Key:         s.trim(info.Key),
+		SizeBytes:   info.Size,
+		ContentType: normalizedContentType(info.ContentType),
+		ETag:        info.ETag,
+	}, nil
+}
+
 func (s *S3ObjectStore) List(ctx context.Context, prefix string) ([]string, error) {
 	fullPrefix := s.key(prefix)
 	opts := minio.ListObjectsOptions{Prefix: fullPrefix, Recursive: true}
@@ -94,6 +108,21 @@ func (s *S3ObjectStore) PresignGet(ctx context.Context, key string, ttl time.Dur
 		ttl = 15 * time.Minute
 	}
 	u, err := s.client.PresignedGetObject(ctx, s.bucket, s.key(key), ttl, url.Values{})
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
+}
+
+func (s *S3ObjectStore) PresignPut(ctx context.Context, key string, ttl time.Duration, contentType string) (string, error) {
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+	headers := make(http.Header)
+	if strings.TrimSpace(contentType) != "" {
+		headers.Set("Content-Type", normalizedContentType(contentType))
+	}
+	u, err := s.client.PresignHeader(ctx, http.MethodPut, s.bucket, s.key(key), ttl, url.Values{}, headers)
 	if err != nil {
 		return "", err
 	}

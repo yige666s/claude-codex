@@ -37,6 +37,9 @@ func renderTranscript(session *state.Session, renderer *glamour.TermRenderer, st
 
 	for _, message := range session.Messages {
 		if message.Hidden {
+			if message.Role == "tool" {
+				group.consumeToolMessage(message)
+			}
 			continue
 		}
 		switch message.Role {
@@ -547,9 +550,9 @@ func renderContextOverlayDetail(session *state.Session, authStatus AuthViewData,
 	systemCount := 0
 	toolBreakdown := map[string]int{}
 	for _, msg := range session.Messages {
-		if msg.Hidden {
+		if msg.Hidden && msg.Role != "tool" {
 			hiddenCount++
-		} else {
+		} else if !msg.Hidden {
 			visibleCount++
 		}
 		if msg.Hidden && msg.Role == "user" {
@@ -809,7 +812,7 @@ func visibleMessageCount(session *state.Session) int {
 func hiddenMessageCount(session *state.Session) int {
 	count := 0
 	for _, msg := range session.Messages {
-		if msg.Hidden {
+		if msg.Hidden && msg.Role != "tool" {
 			count++
 		}
 	}

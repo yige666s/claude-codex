@@ -23,8 +23,23 @@ type ObjectStore interface {
 	Delete(ctx context.Context, key string) error
 }
 
+type ObjectInfo struct {
+	Key         string
+	SizeBytes   int64
+	ContentType string
+	ETag        string
+}
+
 type PresignObjectStore interface {
 	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
+}
+
+type PresignPutObjectStore interface {
+	PresignPut(ctx context.Context, key string, ttl time.Duration, contentType string) (string, error)
+}
+
+type HeadObjectStore interface {
+	Head(ctx context.Context, key string) (ObjectInfo, error)
 }
 
 type FileObjectStore struct {
@@ -41,6 +56,14 @@ func (s *FileObjectStore) Put(_ context.Context, key string, data []byte, _ stri
 
 func (s *FileObjectStore) Get(_ context.Context, key string) ([]byte, error) {
 	return os.ReadFile(s.path(key))
+}
+
+func (s *FileObjectStore) Head(_ context.Context, key string) (ObjectInfo, error) {
+	info, err := os.Stat(s.path(key))
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	return ObjectInfo{Key: key, SizeBytes: info.Size()}, nil
 }
 
 func (s *FileObjectStore) List(_ context.Context, prefix string) ([]string, error) {

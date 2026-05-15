@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sort"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type readinessCheck func(context.Context) error
@@ -119,5 +121,16 @@ func RedisReadinessCheck(limiter RateLimitPolicy) func(context.Context) error {
 		default:
 			return fmt.Errorf("redis limiter is not configured")
 		}
+	}
+}
+
+func RedisClientReadinessCheck(client interface {
+	Ping(context.Context) *redis.StatusCmd
+}) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if client == nil {
+			return fmt.Errorf("redis client is not configured")
+		}
+		return client.Ping(ctx).Err()
 	}
 }

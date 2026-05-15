@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -42,6 +43,9 @@ func (s *ObjectSessionStore) Get(ctx context.Context, userID, sessionID string) 
 	if err := json.Unmarshal(data, &session); err != nil {
 		return nil, err
 	}
+	if session.Status == state.SessionStatusDeleted {
+		return nil, fmt.Errorf("session not found")
+	}
 	return &session, nil
 }
 
@@ -57,7 +61,7 @@ func (s *ObjectSessionStore) List(ctx context.Context, userID string) ([]*state.
 		}
 		id := strings.TrimSuffix(filepath.Base(key), ".json")
 		session, err := s.Get(ctx, userID, id)
-		if err == nil {
+		if err == nil && session.Status != state.SessionStatusDeleted {
 			out = append(out, session)
 		}
 	}
@@ -79,7 +83,15 @@ func (s *ObjectSessionStore) Save(ctx context.Context, userID string, session *s
 }
 
 func (s *ObjectSessionStore) Delete(ctx context.Context, userID, sessionID string) error {
-	return s.objects.Delete(ctx, s.sessionKey(userID, sessionID))
+	session, err := s.getIncludingDeleted(ctx, userID, sessionID)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	softDeleteSession(session, time.Now().UTC())
+	return s.Save(ctx, userID, session)
 }
 
 func (s *ObjectSessionStore) DeleteUser(ctx context.Context, userID string) error {
@@ -87,8 +99,18 @@ func (s *ObjectSessionStore) DeleteUser(ctx context.Context, userID string) erro
 	if err != nil {
 		return err
 	}
+	now := time.Now().UTC()
 	for _, key := range keys {
-		if err := s.objects.Delete(ctx, key); err != nil {
+		if !strings.HasSuffix(key, ".json") {
+			continue
+		}
+		sessionID := strings.TrimSuffix(filepath.Base(key), ".json")
+		session, err := s.getIncludingDeleted(ctx, userID, sessionID)
+		if err != nil {
+			return err
+		}
+		softDeleteSession(session, now)
+		if err := s.Save(ctx, userID, session); err != nil {
 			return err
 		}
 	}
@@ -113,14 +135,31 @@ func (s *ObjectSessionStore) PruneBefore(ctx context.Context, cutoff time.Time) 
 		if err := json.Unmarshal(data, &session); err != nil {
 			continue
 		}
-		if session.UpdatedAt.Before(cutoff) {
-			if err := s.objects.Delete(ctx, key); err != nil {
+		if session.Status != state.SessionStatusDeleted && session.UpdatedAt.Before(cutoff) {
+			softDeleteSession(&session, time.Now().UTC())
+			data, err := json.MarshalIndent(&session, "", "  ")
+			if err != nil {
+				return pruned, err
+			}
+			if err := s.objects.Put(ctx, key, data, "application/json"); err != nil {
 				return pruned, err
 			}
 			pruned++
 		}
 	}
 	return pruned, nil
+}
+
+func (s *ObjectSessionStore) getIncludingDeleted(ctx context.Context, userID, sessionID string) (*state.Session, error) {
+	data, err := s.objects.Get(ctx, s.sessionKey(userID, sessionID))
+	if err != nil {
+		return nil, err
+	}
+	var session state.Session
+	if err := json.Unmarshal(data, &session); err != nil {
+		return nil, err
+	}
+	return &session, nil
 }
 
 func (s *ObjectSessionStore) sessionsPrefix(userID string) string {

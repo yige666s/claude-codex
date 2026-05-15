@@ -879,33 +879,6 @@ const appHTML = `<!doctype html>
       return state.refreshPromise;
     }
 
-    async function fetchAttachment(form) {
-      await ensureFreshAccess();
-      let response = await fetch("/v1/attachments", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          ...(state.accessToken ? { "Authorization": "Bearer " + state.accessToken } : {}),
-          ...(state.userId ? { "X-User-ID": state.userId } : {}),
-          ...(state.csrfToken ? { "X-CSRF-Token": state.csrfToken } : {}),
-        },
-        body: form,
-      });
-      if (response.status === 401 && await refreshAccess(true)) {
-        response = await fetch("/v1/attachments", {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            ...(state.accessToken ? { "Authorization": "Bearer " + state.accessToken } : {}),
-            ...(state.userId ? { "X-User-ID": state.userId } : {}),
-            ...(state.csrfToken ? { "X-CSRF-Token": state.csrfToken } : {}),
-          },
-          body: form,
-        });
-      }
-      return response;
-    }
-
     async function openWithFreshToken(path) {
       await ensureFreshAccess();
       window.open(path + "?token=" + encodeURIComponent(state.accessToken), "_blank");
@@ -1536,15 +1509,48 @@ const appHTML = `<!doctype html>
     async function uploadAttachment() {
       const file = $("attachmentFile").files[0];
       if (!file) return;
-      const form = new FormData();
-      form.append("file", file);
-      if (state.sessionId) form.append("session_id", state.sessionId);
-      const response = await fetchAttachment(form);
-      if (!response.ok) throw new Error(await response.text());
+      const contentType = file.type || "application/octet-stream";
+      try {
+        const presignResponse = await api("/v1/attachments/presign", {
+          method: "POST",
+          body: JSON.stringify({
+            session_id: state.sessionId || "",
+            filename: file.name,
+            content_type: contentType,
+            size_bytes: file.size,
+          }),
+        });
+        const upload = await presignResponse.json();
+        const uploadResponse = await fetch(upload.upload_url, {
+          method: upload.method || "PUT",
+          headers: upload.headers || { "Content-Type": contentType },
+          body: file,
+        });
+        if (!uploadResponse.ok) throw new Error(await uploadResponse.text());
+        await api("/v1/attachments/" + encodeURIComponent(upload.attachment_id) + "/confirm", {
+          method: "POST",
+          body: JSON.stringify({
+            session_id: state.sessionId || "",
+            filename: file.name,
+            content_type: contentType,
+            size_bytes: file.size,
+          }),
+        });
+      } catch (err) {
+        if (!String(err.message || err).includes("presigned uploads")) throw err;
+        await uploadAttachmentMultipart(file);
+      }
       $("attachmentFile").value = "";
       await loadAttachments();
       openDrawer("attachments");
       setStatus("ok", "Attachment uploaded");
+    }
+
+    async function uploadAttachmentMultipart(file) {
+      const form = new FormData();
+      form.append("file", file);
+      if (state.sessionId) form.append("session_id", state.sessionId);
+      await api("/v1/attachments", { method: "POST", body: form });
     }
 
     function downloadAttachment(id) {

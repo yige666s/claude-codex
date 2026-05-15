@@ -23,7 +23,12 @@ type SessionStore interface {
 	PruneBefore(ctx context.Context, cutoff time.Time) (int, error)
 }
 
+type SessionMetadataStore interface {
+	SaveSessionMetadata(ctx context.Context, userID string, session *state.Session) error
+}
+
 type MessageSearchResult struct {
+	MessageID    string    `json:"message_id,omitempty"`
 	SessionID    string    `json:"session_id"`
 	MessageIndex int       `json:"message_index"`
 	Role         string    `json:"role"`
@@ -31,6 +36,8 @@ type MessageSearchResult struct {
 	Snippet      string    `json:"snippet"`
 	SessionTitle string    `json:"session_title"`
 	CreatedAt    time.Time `json:"created_at"`
+	Score        float64   `json:"score,omitempty"`
+	Source       string    `json:"source,omitempty"`
 }
 
 type MessageSearchStore interface {
@@ -316,6 +323,49 @@ type RuntimeConfig struct {
 	TurnTimeout           time.Duration
 	SkillShellTimeout     time.Duration
 	SkillShellSandbox     SkillShellSandboxConfig
+	MessageSearch         MessageSearchConfig
+}
+
+type MessageSearchConfig struct {
+	Backend string
+
+	Endpoint string
+	Index    string
+	APIKey   string
+	Username string
+	Password string
+	Timeout  time.Duration
+
+	IndexManagementEnabled     bool
+	IndexLifecyclePolicy       string
+	IndexTemplateName          string
+	IndexWriteAlias            string
+	IndexAnalyzer              string
+	IndexSearchAnalyzer        string
+	IndexDowngradeAfter        time.Duration
+	IndexCloseAfter            time.Duration
+	IndexMaintenanceInterval   time.Duration
+	IndexMaintenanceBatchLimit int
+
+	QdrantEndpoint       string
+	QdrantCollection     string
+	QdrantAPIKey         string
+	QdrantScoreThreshold float64
+
+	EmbeddingProvider      string
+	EmbeddingEndpoint      string
+	EmbeddingAPIKey        string
+	EmbeddingAccessToken   string
+	EmbeddingModel         string
+	EmbeddingDimensions    int
+	EmbeddingTimeout       time.Duration
+	EmbeddingProjectID     string
+	EmbeddingLocation      string
+	EmbeddingTaskType      string
+	EmbeddingIndexTaskType string
+	EmbeddingAutoTruncate  bool
+
+	RRFK int
 }
 
 type ToolPolicy struct {

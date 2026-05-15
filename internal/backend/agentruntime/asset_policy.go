@@ -53,12 +53,23 @@ func (p AssetPolicy) withDefaults() AssetPolicy {
 }
 
 func (p AssetPolicy) Validate(filename, contentType string, data []byte) (string, string, error) {
+	return p.validate(filename, contentType, int64(len(data)), len(data) > 0, data)
+}
+
+func (p AssetPolicy) ValidateUpload(filename, contentType string, sizeBytes int64) (string, string, error) {
+	return p.validate(filename, contentType, sizeBytes, false, nil)
+}
+
+func (p AssetPolicy) validate(filename, contentType string, sizeBytes int64, sniff bool, data []byte) (string, string, error) {
 	p = p.withDefaults()
 	filename = filepath.Base(strings.TrimSpace(filename))
 	if filename == "" || filename == "." || filename == string(filepath.Separator) {
 		return "", "", fmt.Errorf("filename is required")
 	}
-	if p.MaxBytes > 0 && int64(len(data)) > p.MaxBytes {
+	if sizeBytes < 0 {
+		return "", "", fmt.Errorf("file size is required")
+	}
+	if p.MaxBytes > 0 && sizeBytes > p.MaxBytes {
 		return "", "", fmt.Errorf("file exceeds max size of %d bytes", p.MaxBytes)
 	}
 	ext := strings.ToLower(filepath.Ext(filename))
@@ -69,7 +80,7 @@ func (p AssetPolicy) Validate(filename, contentType string, data []byte) (string
 	if contentType == "" || contentType == "application/octet-stream" {
 		contentType = normalizedContentType(mime.TypeByExtension(ext))
 	}
-	if contentType == "" && len(data) > 0 {
+	if contentType == "" && sniff && len(data) > 0 {
 		contentType = normalizedContentType(http.DetectContentType(data))
 	}
 	if contentType == "application/octet-stream" {

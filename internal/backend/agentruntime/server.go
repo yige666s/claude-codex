@@ -288,6 +288,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleDeleteMemoryItem(rec, r, user, parts[2])
 	case r.Method == http.MethodPost && path == "v1/attachments":
 		s.handleCreateAttachment(rec, r, user)
+	case r.Method == http.MethodPost && path == "v1/attachments/presign":
+		s.handleCreateAttachmentPresign(rec, r, user)
 	case r.Method == http.MethodGet && path == "v1/attachments":
 		s.handleListAttachments(rec, r, user)
 	case r.Method == http.MethodGet && path == "v1/artifacts":
@@ -314,6 +316,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleDeleteSession(rec, r, user, parts[2])
 	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "v1" && parts[1] == "attachments":
 		s.handleDownloadAttachment(rec, r, user, parts[2])
+	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "v1" && parts[1] == "attachments" && parts[3] == "confirm":
+		s.handleConfirmAttachmentUpload(rec, r, user, parts[2])
 	case r.Method == http.MethodPost && len(parts) == 5 && parts[0] == "v1" && parts[1] == "attachments" && parts[3] == "memory" && parts[4] == "extract":
 		s.handleExtractAssetMemory(rec, r, user, AssetKindAttachment, parts[2])
 	case r.Method == http.MethodDelete && len(parts) == 3 && parts[0] == "v1" && parts[1] == "attachments":
@@ -1710,6 +1714,58 @@ func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusCreated, attachment)
 }
 
+func (s *Server) handleCreateAttachmentPresign(w http.ResponseWriter, r *http.Request, user User) {
+	var req struct {
+		SessionID   string `json:"session_id"`
+		Filename    string `json:"filename"`
+		ContentType string `json:"content_type"`
+		SizeBytes   int64  `json:"size_bytes"`
+		TTLSeconds  int64  `json:"ttl_seconds,omitempty"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	ttl := time.Duration(req.TTLSeconds) * time.Second
+	upload, err := s.runtime.CreatePresignedAttachmentUpload(r.Context(), user.ID, req.SessionID, req.Filename, req.ContentType, req.SizeBytes, ttl)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "attachment_presign", user, map[string]any{
+		"session_id":    req.SessionID,
+		"attachment_id": upload.AttachmentID,
+		"filename":      req.Filename,
+		"size_bytes":    req.SizeBytes,
+	})
+	writeJSON(w, http.StatusCreated, upload)
+}
+
+func (s *Server) handleConfirmAttachmentUpload(w http.ResponseWriter, r *http.Request, user User, attachmentID string) {
+	var req struct {
+		SessionID   string `json:"session_id"`
+		Filename    string `json:"filename"`
+		ContentType string `json:"content_type"`
+		SizeBytes   int64  `json:"size_bytes"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	attachment, err := s.runtime.ConfirmAttachmentUpload(r.Context(), user.ID, req.SessionID, attachmentID, req.Filename, req.ContentType, req.SizeBytes)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "attachment_confirm", user, map[string]any{
+		"session_id":    attachment.SessionID,
+		"attachment_id": attachment.ID,
+		"filename":      attachment.Filename,
+		"size_bytes":    attachment.SizeBytes,
+	})
+	writeJSON(w, http.StatusCreated, attachment)
+}
+
 func (s *Server) handleListAttachments(w http.ResponseWriter, r *http.Request, user User) {
 	items, err := s.runtime.ListAttachments(r.Context(), user.ID, r.URL.Query().Get("session_id"))
 	if err != nil {
@@ -2109,7 +2165,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request, use
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request, user User) {
-	sessions, err := s.runtime.ListSessions(r.Context(), user.ID)
+	limit := parseBoundedInt(r.URL.Query().Get("limit"), 0, 0, 500)
+	offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, 1000000)
+	sessions, err := s.runtime.ListSessionsPage(r.Context(), user.ID, limit, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

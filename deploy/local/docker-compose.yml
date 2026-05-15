@@ -1,7 +1,6 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: claude-codex-pg
     environment:
       POSTGRES_DB: ${AGENT_API_POSTGRES_DB:-agentapi}
       POSTGRES_USER: ${AGENT_API_POSTGRES_USER:-agentapi}
@@ -22,7 +21,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: claude-codex-redis
     command: redis-server --appendonly yes
     ports:
       - "${AGENT_API_REDIS_PORT:-6379}:6379"
@@ -34,16 +32,94 @@ services:
       timeout: 5s
       retries: 20
 
+  redpanda:
+    image: redpandadata/redpanda:v24.2.11
+    profiles: ["kafka"]
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - 512M
+      - --reserve-memory
+      - 0M
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+    ports:
+      - "${AGENT_API_KAFKA_PORT:-19092}:19092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${AGENT_API_ARTIFACT_S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${AGENT_API_ARTIFACT_S3_SECRET_KEY:-minioadmin}
+    ports:
+      - "${AGENT_API_MINIO_PORT:-9000}:9000"
+      - "${AGENT_API_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    profiles: ["search"]
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "${AGENT_API_ELASTICSEARCH_PORT:-9200}:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200 >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.5
+    profiles: ["search"]
+    ports:
+      - "${AGENT_API_QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
   agentapi:
     build:
       context: ../..
       dockerfile: Dockerfile.agentapi
     image: claude-codex-agentapi:local
-    container_name: claude-codex-agentapi
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     environment:
       AGENT_API_SQL_DSN: postgres://${AGENT_API_POSTGRES_USER:-agentapi}:${AGENT_API_POSTGRES_PASSWORD:-agentapi}@postgres:5432/${AGENT_API_POSTGRES_DB:-agentapi}?sslmode=disable
@@ -56,18 +132,85 @@ services:
       AGENT_API_EMAIL_VERIFICATION_TTL: ${AGENT_API_EMAIL_VERIFICATION_TTL:-24h}
       AGENT_API_RESEND_API_KEY: ${AGENT_API_RESEND_API_KEY:-}
       AGENT_API_RESEND_BASE_URL: ${AGENT_API_RESEND_BASE_URL:-}
-      AGENT_API_ARTIFACT_S3_ENDPOINT: ${AGENT_API_ARTIFACT_S3_ENDPOINT:-5c11ff96d03d238d51aef31150a87101.r2.cloudflarestorage.com}
-      AGENT_API_ARTIFACT_S3_ACCESS_KEY: ${AGENT_API_ARTIFACT_S3_ACCESS_KEY:?set Cloudflare R2 S3 access key id}
-      AGENT_API_ARTIFACT_S3_SECRET_KEY: ${AGENT_API_ARTIFACT_S3_SECRET_KEY:?set Cloudflare R2 S3 secret access key}
+      AGENT_API_ARTIFACT_STORE: ${AGENT_API_ARTIFACT_STORE:-s3}
+      AGENT_API_ARTIFACT_S3_ENDPOINT: ${AGENT_API_ARTIFACT_S3_ENDPOINT:-minio:9000}
+      AGENT_API_ARTIFACT_S3_ACCESS_KEY: ${AGENT_API_ARTIFACT_S3_ACCESS_KEY:-minioadmin}
+      AGENT_API_ARTIFACT_S3_SECRET_KEY: ${AGENT_API_ARTIFACT_S3_SECRET_KEY:-minioadmin}
       AGENT_API_ARTIFACT_S3_BUCKET: ${AGENT_API_ARTIFACT_S3_BUCKET:-agentapi}
       AGENT_API_ARTIFACT_S3_PREFIX: ${AGENT_API_ARTIFACT_S3_PREFIX:-local}
-      AGENT_API_ARTIFACT_S3_SSL: ${AGENT_API_ARTIFACT_S3_SSL:-true}
+      AGENT_API_ARTIFACT_S3_SSL: ${AGENT_API_ARTIFACT_S3_SSL:-false}
+      AGENT_API_MESSAGE_SEARCH_BACKEND: ${AGENT_API_MESSAGE_SEARCH_BACKEND:-sql}
+      AGENT_API_MESSAGE_SEARCH_ENDPOINT: ${AGENT_API_MESSAGE_SEARCH_ENDPOINT:-http://elasticsearch:9200}
+      AGENT_API_MESSAGE_SEARCH_INDEX: ${AGENT_API_MESSAGE_SEARCH_INDEX:-agent_messages}
+      AGENT_API_MESSAGE_SEARCH_API_KEY: ${AGENT_API_MESSAGE_SEARCH_API_KEY:-}
+      AGENT_API_MESSAGE_SEARCH_USERNAME: ${AGENT_API_MESSAGE_SEARCH_USERNAME:-}
+      AGENT_API_MESSAGE_SEARCH_PASSWORD: ${AGENT_API_MESSAGE_SEARCH_PASSWORD:-}
+      AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED: ${AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED:-false}
+      AGENT_API_MESSAGE_SEARCH_INDEX_LIFECYCLE_POLICY: ${AGENT_API_MESSAGE_SEARCH_INDEX_LIFECYCLE_POLICY:-}
+      AGENT_API_MESSAGE_SEARCH_INDEX_TEMPLATE: ${AGENT_API_MESSAGE_SEARCH_INDEX_TEMPLATE:-}
+      AGENT_API_MESSAGE_SEARCH_INDEX_WRITE_ALIAS: ${AGENT_API_MESSAGE_SEARCH_INDEX_WRITE_ALIAS:-}
+      AGENT_API_MESSAGE_SEARCH_INDEX_ANALYZER: ${AGENT_API_MESSAGE_SEARCH_INDEX_ANALYZER:-ik_max_word}
+      AGENT_API_MESSAGE_SEARCH_INDEX_SEARCH_ANALYZER: ${AGENT_API_MESSAGE_SEARCH_INDEX_SEARCH_ANALYZER:-ik_smart}
+      AGENT_API_MESSAGE_SEARCH_INDEX_DOWNGRADE_AFTER: ${AGENT_API_MESSAGE_SEARCH_INDEX_DOWNGRADE_AFTER:-2160h}
+      AGENT_API_MESSAGE_SEARCH_INDEX_CLOSE_AFTER: ${AGENT_API_MESSAGE_SEARCH_INDEX_CLOSE_AFTER:-4320h}
+      AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_INTERVAL: ${AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_INTERVAL:-24h}
+      AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_BATCH_LIMIT: ${AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_BATCH_LIMIT:-50}
+      AGENT_API_MESSAGE_SEARCH_QDRANT_ENDPOINT: ${AGENT_API_MESSAGE_SEARCH_QDRANT_ENDPOINT:-http://qdrant:6333}
+      AGENT_API_MESSAGE_SEARCH_QDRANT_COLLECTION: ${AGENT_API_MESSAGE_SEARCH_QDRANT_COLLECTION:-agent_messages}
+      AGENT_API_MESSAGE_SEARCH_QDRANT_API_KEY: ${AGENT_API_MESSAGE_SEARCH_QDRANT_API_KEY:-}
+      AGENT_API_MESSAGE_SEARCH_QDRANT_SCORE_THRESHOLD: ${AGENT_API_MESSAGE_SEARCH_QDRANT_SCORE_THRESHOLD:-0}
+      AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER: ${AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER:-vertex}
+      AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT: ${AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT:-}
+      AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY: ${AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY:-}
+      AGENT_API_MESSAGE_SEARCH_EMBEDDING_TOKEN: ${AGENT_API_MESSAGE_SEARCH_EMBEDDING_TOKEN:-}
+      AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID: ${AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID:-vigilant-router-378708}
+      AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION: ${AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION:-global}
+      AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL: ${AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL:-gemini-embedding-2}
+      AGENT_API_MESSAGE_SEARCH_EMBEDDING_DIMENSIONS: ${AGENT_API_MESSAGE_SEARCH_EMBEDDING_DIMENSIONS:-768}
+      AGENT_API_MESSAGE_SEARCH_EMBEDDING_TASK_TYPE: ${AGENT_API_MESSAGE_SEARCH_EMBEDDING_TASK_TYPE:-RETRIEVAL_QUERY}
+      AGENT_API_MESSAGE_SEARCH_EMBEDDING_INDEX_TASK_TYPE: ${AGENT_API_MESSAGE_SEARCH_EMBEDDING_INDEX_TASK_TYPE:-RETRIEVAL_DOCUMENT}
+      AGENT_API_MESSAGE_SEARCH_EMBEDDING_AUTO_TRUNCATE: ${AGENT_API_MESSAGE_SEARCH_EMBEDDING_AUTO_TRUNCATE:-true}
+      AGENT_API_MESSAGE_SEARCH_RRF_K: ${AGENT_API_MESSAGE_SEARCH_RRF_K:-60}
       AGENT_API_LOCAL_ARTIFACT_STAGING_RETENTION: ${AGENT_API_LOCAL_ARTIFACT_STAGING_RETENTION:-24h}
       AGENT_API_RATE_LIMIT_BACKEND: ${AGENT_API_RATE_LIMIT_BACKEND:-redis}
       AGENT_API_REDIS_URL: redis://redis:6379/0?prefix=agentapi
+      AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND: ${AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND:-redis}
+      AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL: ${AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:ctx}
+      AGENT_API_MESSAGE_CONTEXT_CACHE_TTL: ${AGENT_API_MESSAGE_CONTEXT_CACHE_TTL:-24h}
+      AGENT_API_SESSION_LIST_CACHE_BACKEND: ${AGENT_API_SESSION_LIST_CACHE_BACKEND:-redis}
+      AGENT_API_SESSION_LIST_CACHE_REDIS_URL: ${AGENT_API_SESSION_LIST_CACHE_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:session:list}
+      AGENT_API_SESSION_LIST_CACHE_TTL: ${AGENT_API_SESSION_LIST_CACHE_TTL:-10m}
+      AGENT_API_MESSAGE_SEQUENCE_BACKEND: ${AGENT_API_MESSAGE_SEQUENCE_BACKEND:-redis}
+      AGENT_API_MESSAGE_SEQUENCE_REDIS_URL: ${AGENT_API_MESSAGE_SEQUENCE_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:seq}
+      AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED: ${AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED:-true}
+      AGENT_API_MESSAGE_ATTACHMENT_WORKER_BATCH_SIZE: ${AGENT_API_MESSAGE_ATTACHMENT_WORKER_BATCH_SIZE:-25}
+      AGENT_API_MESSAGE_ATTACHMENT_WORKER_POLL_INTERVAL: ${AGENT_API_MESSAGE_ATTACHMENT_WORKER_POLL_INTERVAL:-5s}
+      AGENT_API_MESSAGE_ATTACHMENT_WORKER_PROCESS_TIMEOUT: ${AGENT_API_MESSAGE_ATTACHMENT_WORKER_PROCESS_TIMEOUT:-30s}
+      AGENT_API_MESSAGE_ATTACHMENT_THUMBNAIL_MAX_DIMENSION: ${AGENT_API_MESSAGE_ATTACHMENT_THUMBNAIL_MAX_DIMENSION:-512}
+      AGENT_API_MESSAGE_ARCHIVE_WORKER_ENABLED: ${AGENT_API_MESSAGE_ARCHIVE_WORKER_ENABLED:-false}
+      AGENT_API_MESSAGE_ARCHIVE_AFTER: ${AGENT_API_MESSAGE_ARCHIVE_AFTER:-720h}
+      AGENT_API_MESSAGE_ARCHIVE_WORKER_BATCH_SIZE: ${AGENT_API_MESSAGE_ARCHIVE_WORKER_BATCH_SIZE:-100}
+      AGENT_API_MESSAGE_ARCHIVE_WORKER_POLL_INTERVAL: ${AGENT_API_MESSAGE_ARCHIVE_WORKER_POLL_INTERVAL:-1h}
+      AGENT_API_MESSAGE_ARCHIVE_WORKER_PROCESS_TIMEOUT: ${AGENT_API_MESSAGE_ARCHIVE_WORKER_PROCESS_TIMEOUT:-2m}
+      AGENT_API_MESSAGE_ARCHIVE_PREFIX: ${AGENT_API_MESSAGE_ARCHIVE_PREFIX:-message-archive}
+      AGENT_API_MESSAGE_ARCHIVE_CLEAR_PG_PAYLOAD: ${AGENT_API_MESSAGE_ARCHIVE_CLEAR_PG_PAYLOAD:-true}
+      AGENT_API_MESSAGE_EVENTS_BACKEND: ${AGENT_API_MESSAGE_EVENTS_BACKEND:-local}
+      AGENT_API_MESSAGE_EVENTS_KAFKA_BROKERS: ${AGENT_API_MESSAGE_EVENTS_KAFKA_BROKERS:-redpanda:9092}
+      AGENT_API_MESSAGE_EVENTS_KAFKA_TOPIC: ${AGENT_API_MESSAGE_EVENTS_KAFKA_TOPIC:-agent.messages}
+      AGENT_API_MESSAGE_EVENTS_KAFKA_CLIENT_ID: ${AGENT_API_MESSAGE_EVENTS_KAFKA_CLIENT_ID:-agentapi}
+      AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_ENABLED: ${AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_ENABLED:-false}
+      AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_GROUP: ${AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_GROUP:-agentapi-message-workers}
+      AGENT_API_MESSAGE_EVENTS_KAFKA_DLQ_TOPIC: ${AGENT_API_MESSAGE_EVENTS_KAFKA_DLQ_TOPIC:-}
+      AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_ATTEMPTS: ${AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_ATTEMPTS:-3}
+      AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_BACKOFF: ${AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_BACKOFF:-1s}
+      AGENT_API_MESSAGE_EVENTS_KAFKA_PROCESS_TIMEOUT: ${AGENT_API_MESSAGE_EVENTS_KAFKA_PROCESS_TIMEOUT:-30s}
+      AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_BACKEND: ${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_BACKEND:-redis}
+      AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL: ${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:processed}
+      AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL: ${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL:-24h}
       AGENT_API_OPERATION_RATE_LIMITS: ${AGENT_API_OPERATION_RATE_LIMITS:-auth_login=20/m,auth_register=10/h,chat_message=60/m,job_create=20/m,attachment_upload=30/m,asset_download=120/m,memory_extract=30/h,data_export=5/h,account_delete=3/h,admin_action=120/m}
       AGENT_API_CORS_ALLOWED_ORIGINS: ${AGENT_API_CORS_ALLOWED_ORIGINS:-http://localhost:8081,http://localhost:5173}
       AGENT_API_LLM_PROVIDER: ${AGENT_API_LLM_PROVIDER:-vertex}
+      AGENT_API_LLM_BASE_URL: ${AGENT_API_LLM_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-}
@@ -125,11 +268,92 @@ services:
       - -jwt-secret
       - "${AGENT_API_JWT_SECRET:-local-dev-jwt-secret-change-me}"
       - -artifact-store
-      - s3
+      - "${AGENT_API_ARTIFACT_STORE:-s3}"
       - -rate-limit-backend
       - "${AGENT_API_RATE_LIMIT_BACKEND:-redis}"
       - -redis-url
       - redis://redis:6379/0?prefix=agentapi
+      - -message-context-cache-backend
+      - "${AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND:-redis}"
+      - -message-context-cache-redis-url
+      - "${AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:ctx}"
+      - -message-context-cache-ttl
+      - "${AGENT_API_MESSAGE_CONTEXT_CACHE_TTL:-24h}"
+      - -session-list-cache-backend
+      - "${AGENT_API_SESSION_LIST_CACHE_BACKEND:-redis}"
+      - -session-list-cache-redis-url
+      - "${AGENT_API_SESSION_LIST_CACHE_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:session:list}"
+      - -session-list-cache-ttl
+      - "${AGENT_API_SESSION_LIST_CACHE_TTL:-10m}"
+      - -message-sequence-backend
+      - "${AGENT_API_MESSAGE_SEQUENCE_BACKEND:-redis}"
+      - -message-sequence-redis-url
+      - "${AGENT_API_MESSAGE_SEQUENCE_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:seq}"
+      - "-message-attachment-worker-enabled=${AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED:-true}"
+      - -message-attachment-worker-batch-size
+      - "${AGENT_API_MESSAGE_ATTACHMENT_WORKER_BATCH_SIZE:-25}"
+      - -message-attachment-worker-poll-interval
+      - "${AGENT_API_MESSAGE_ATTACHMENT_WORKER_POLL_INTERVAL:-5s}"
+      - -message-attachment-worker-process-timeout
+      - "${AGENT_API_MESSAGE_ATTACHMENT_WORKER_PROCESS_TIMEOUT:-30s}"
+      - -message-attachment-thumbnail-max-dimension
+      - "${AGENT_API_MESSAGE_ATTACHMENT_THUMBNAIL_MAX_DIMENSION:-512}"
+      - "-message-archive-worker-enabled=${AGENT_API_MESSAGE_ARCHIVE_WORKER_ENABLED:-false}"
+      - -message-archive-after
+      - "${AGENT_API_MESSAGE_ARCHIVE_AFTER:-720h}"
+      - -message-archive-worker-batch-size
+      - "${AGENT_API_MESSAGE_ARCHIVE_WORKER_BATCH_SIZE:-100}"
+      - -message-archive-worker-poll-interval
+      - "${AGENT_API_MESSAGE_ARCHIVE_WORKER_POLL_INTERVAL:-1h}"
+      - -message-archive-worker-process-timeout
+      - "${AGENT_API_MESSAGE_ARCHIVE_WORKER_PROCESS_TIMEOUT:-2m}"
+      - -message-archive-prefix
+      - "${AGENT_API_MESSAGE_ARCHIVE_PREFIX:-message-archive}"
+      - "-message-archive-clear-pg-payload=${AGENT_API_MESSAGE_ARCHIVE_CLEAR_PG_PAYLOAD:-true}"
+      - "-message-search-index-management-enabled=${AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED:-false}"
+      - -message-search-index-lifecycle-policy
+      - "${AGENT_API_MESSAGE_SEARCH_INDEX_LIFECYCLE_POLICY:-}"
+      - -message-search-index-template
+      - "${AGENT_API_MESSAGE_SEARCH_INDEX_TEMPLATE:-}"
+      - -message-search-index-write-alias
+      - "${AGENT_API_MESSAGE_SEARCH_INDEX_WRITE_ALIAS:-}"
+      - -message-search-index-analyzer
+      - "${AGENT_API_MESSAGE_SEARCH_INDEX_ANALYZER:-ik_max_word}"
+      - -message-search-index-search-analyzer
+      - "${AGENT_API_MESSAGE_SEARCH_INDEX_SEARCH_ANALYZER:-ik_smart}"
+      - -message-search-index-downgrade-after
+      - "${AGENT_API_MESSAGE_SEARCH_INDEX_DOWNGRADE_AFTER:-2160h}"
+      - -message-search-index-close-after
+      - "${AGENT_API_MESSAGE_SEARCH_INDEX_CLOSE_AFTER:-4320h}"
+      - -message-search-index-maintenance-interval
+      - "${AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_INTERVAL:-24h}"
+      - -message-search-index-maintenance-batch-limit
+      - "${AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_BATCH_LIMIT:-50}"
+      - -message-events-backend
+      - "${AGENT_API_MESSAGE_EVENTS_BACKEND:-local}"
+      - -message-events-kafka-brokers
+      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_BROKERS:-redpanda:9092}"
+      - -message-events-kafka-topic
+      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_TOPIC:-agent.messages}"
+      - -message-events-kafka-client-id
+      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_CLIENT_ID:-agentapi}"
+      - "-message-events-kafka-consumer-enabled=${AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_ENABLED:-false}"
+      - -message-events-kafka-consumer-group
+      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_GROUP:-agentapi-message-workers}"
+      - -message-events-kafka-dlq-topic
+      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_DLQ_TOPIC:-}"
+      - -message-events-kafka-retry-attempts
+      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_ATTEMPTS:-3}"
+      - -message-events-kafka-retry-backoff
+      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_BACKOFF:-1s}"
+      - -message-events-kafka-process-timeout
+      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_PROCESS_TIMEOUT:-30s}"
+      - -message-events-processed-lock-backend
+      - "${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_BACKEND:-redis}"
+      - -message-events-processed-lock-redis-url
+      - "${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:processed}"
+      - -message-events-processed-lock-ttl
+      - "${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL:-24h}"
       - -operation-rate-limits
       - "${AGENT_API_OPERATION_RATE_LIMITS:-auth_login=20/m,auth_register=10/h,chat_message=60/m,job_create=20/m,attachment_upload=30/m,asset_download=120/m,memory_extract=30/h,data_export=5/h,account_delete=3/h,admin_action=120/m}"
       - -skill-dirs
@@ -139,7 +363,7 @@ services:
       - -llm-provider
       - "${AGENT_API_LLM_PROVIDER:-vertex}"
       - -model
-      - "gemini-2.5-pro"
+      - "${AGENT_API_MODEL:-gemini-2.5-pro}"
       - -llm-max-attempts
       - "${AGENT_API_LLM_MAX_ATTEMPTS:-2}"
       - -llm-chat-timeout
@@ -168,7 +392,6 @@ services:
       args:
         VITE_AGENT_API_BASE_URL: ${VITE_AGENT_API_BASE_URL:-}
     image: claude-codex-agentweb:local
-    container_name: claude-codex-agentweb
     depends_on:
       agentapi:
         condition: service_healthy
@@ -184,4 +407,8 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  minio_data:
+  elasticsearch_data:
+  qdrant_data:
   agentapi_data:
+  redpanda_data:

@@ -47,20 +47,28 @@ var ErrSessionNotRunning = errors.New("session is not running")
 var ErrRuntimeShuttingDown = errors.New("runtime is shutting down")
 
 type Runtime struct {
-	config          RuntimeConfig
-	sessions        SessionStore
-	memory          MemoryService
-	memoryExtract   MemoryExtractor
-	memoryAbstract  MemoryAbstractor
-	memoryOrganizer MemoryOrganizer
-	artifacts       *ArtifactService
-	jobs            JobStore
-	jobEvents       *jobEventBroker
-	skills          SkillCatalog
-	skillExecutions SkillExecutionStore
-	engineFactory   EngineFactory
-	riskScanner     RiskScanner
-	riskRecorder    func(context.Context, RiskEvent)
+	config           RuntimeConfig
+	sessions         SessionStore
+	messageWriter    *MessageWriteService
+	sessionLoader    *SessionLoadService
+	contextCompactor *ContextCompactionService
+	messageSearch    *MessageSearchService
+	messageCache     SessionContextCache
+	messagePublisher MessageEventPublisher
+	vectorIndexer    *AsyncMessageVectorIndexPublisher
+	localVectorIndex bool
+	memory           MemoryService
+	memoryExtract    MemoryExtractor
+	memoryAbstract   MemoryAbstractor
+	memoryOrganizer  MemoryOrganizer
+	artifacts        *ArtifactService
+	jobs             JobStore
+	jobEvents        *jobEventBroker
+	skills           SkillCatalog
+	skillExecutions  SkillExecutionStore
+	engineFactory    EngineFactory
+	riskScanner      RiskScanner
+	riskRecorder     func(context.Context, RiskEvent)
 
 	mu                    sync.Mutex
 	wg                    sync.WaitGroup
@@ -105,7 +113,7 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		config.SkillShellTimeout = 90 * time.Second
 	}
 	config.SkillShellSandbox = config.SkillShellSandbox.normalized()
-	return &Runtime{
+	runtime := &Runtime{
 		config:                config,
 		sessions:              sessions,
 		memory:                memory,
@@ -118,7 +126,135 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		runningJobs:           make(map[string]context.CancelFunc),
 		hiddenJobUserMessages: make(map[string]bool),
 		jobEvents:             newJobEventBroker(128),
+		localVectorIndex:      true,
 	}
+	if _, ok := sessions.(MessageRepository); ok {
+		if metaStore, ok := sessions.(MessageEmbeddingMetaStore); ok && messageVectorIndexingEnabled(config.MessageSearch) {
+			indexer := NewQdrantMessageVectorIndexer(config.MessageSearch, metaStore)
+			runtime.vectorIndexer = NewAsyncMessageVectorIndexPublisher(indexer, defaultMessageVectorIndexWorkers, defaultMessageVectorIndexQueueSize)
+		}
+		runtime.SetMessageContextCache(NewMemorySessionContextCache())
+	}
+	if searchStore, ok := sessions.(MessageSearchStore); ok {
+		runtime.messageSearch = NewMessageSearchService(config.MessageSearch, searchStore)
+	}
+	return runtime
+}
+
+func (r *Runtime) SetMessageWriteService(service *MessageWriteService) {
+	r.messageWriter = service
+}
+
+func (r *Runtime) SetMessageEventPublisher(publisher MessageEventPublisher) {
+	if r == nil {
+		return
+	}
+	r.messagePublisher = publisher
+	r.configureMessageServices()
+}
+
+func (r *Runtime) SetLocalMessageVectorIndexing(enabled bool) {
+	if r == nil {
+		return
+	}
+	r.localVectorIndex = enabled
+	r.configureMessageServices()
+}
+
+func (r *Runtime) SetMessageContextCache(cache SessionContextCache) {
+	if r == nil {
+		return
+	}
+	r.messageCache = cache
+	r.configureMessageServices()
+}
+
+func (r *Runtime) configureMessageServices() {
+	if r == nil {
+		return
+	}
+	repo, ok := r.sessions.(MessageRepository)
+	if !ok || repo == nil {
+		return
+	}
+	cache := r.messageCache
+	if cache == nil {
+		cache = NoopSessionContextCache{}
+	}
+	var publisher MessageEventPublisher = NoopMessageEventPublisher{}
+	if r.messagePublisher != nil {
+		publisher = CompositeMessageEventPublisher{publisher, r.messagePublisher}
+	}
+	if r.localVectorIndex && r.vectorIndexer != nil {
+		publisher = CompositeMessageEventPublisher{publisher, r.vectorIndexer}
+	}
+	r.messageWriter = NewMessageWriteService(repo, cache, publisher)
+	r.sessionLoader = NewSessionLoadService(repo, cache)
+	if marker, ok := r.sessions.(MessageContextMarker); ok && marker != nil && r.engineFactory != nil {
+		r.contextCompactor = NewContextCompactionService(
+			r.sessionLoader,
+			r.messageWriter,
+			marker,
+			LLMSummaryGenerator{RunnerFactory: r.engineFactory},
+		)
+		return
+	}
+	r.contextCompactor = nil
+}
+
+func (r *Runtime) SetSessionLoadService(service *SessionLoadService) {
+	r.sessionLoader = service
+}
+
+func (r *Runtime) SetContextCompactionService(service *ContextCompactionService) {
+	r.contextCompactor = service
+}
+
+func (r *Runtime) SetMessageSearchService(service *MessageSearchService) {
+	r.messageSearch = service
+}
+
+func (r *Runtime) WriteMessage(ctx context.Context, req MessageWriteRequest) (state.Message, error) {
+	if r == nil || r.messageWriter == nil {
+		return state.Message{}, fmt.Errorf("message write service is not configured")
+	}
+	return r.messageWriter.Write(ctx, req)
+}
+
+func (r *Runtime) LoadSessionContext(ctx context.Context, userID, sessionID string, opts SessionLoadOptions) ([]state.Message, error) {
+	if r == nil || r.sessionLoader == nil {
+		return nil, fmt.Errorf("session load service is not configured")
+	}
+	return r.sessionLoader.LoadContext(ctx, userID, sessionID, opts)
+}
+
+func (r *Runtime) CompactSessionContext(ctx context.Context, userID, sessionID string, opts ContextCompactionOptions) (ContextCompactionResult, error) {
+	if r == nil || r.contextCompactor == nil {
+		return ContextCompactionResult{}, fmt.Errorf("context compaction service is not configured")
+	}
+	return r.contextCompactor.Compact(ctx, userID, sessionID, opts)
+}
+
+func (r *Runtime) ListPendingMessageAttachments(ctx context.Context, userID string, limit int) ([]state.MessageAttachment, error) {
+	if r == nil {
+		return []state.MessageAttachment{}, nil
+	}
+	store, ok := r.sessions.(MessageAttachmentProcessorStore)
+	if !ok || store == nil {
+		return []state.MessageAttachment{}, nil
+	}
+	return store.ListPendingMessageAttachments(ctx, userID, limit)
+}
+
+func (r *Runtime) UpdateMessageAttachmentProcessing(ctx context.Context, userID, messageID, attachmentID string, status int, thumbnailKey, extractedTextKey string) error {
+	if r == nil {
+		return fmt.Errorf("message attachment processor store is not configured")
+	}
+	store, ok := r.sessions.(MessageAttachmentProcessorStore)
+	if !ok || store == nil {
+		return fmt.Errorf("message attachment processor store is not configured")
+	}
+	return store.UpdateMessageAttachmentProcessing(ctx, userID, messageID, attachmentID, status, thumbnailKey, extractedTextKey)
 }
 
 func (r *Runtime) SetMemoryExtractor(extractor MemoryExtractor) {
@@ -174,6 +310,49 @@ func (r *Runtime) ListSessions(ctx context.Context, userID string) ([]*state.Ses
 		}
 	}
 	return sessions, nil
+}
+
+func (r *Runtime) ListSessionsPage(ctx context.Context, userID string, limit, offset int) ([]*state.Session, error) {
+	if r.sessions == nil {
+		return nil, fmt.Errorf("session store is required")
+	}
+	if limit <= 0 && offset <= 0 {
+		return r.ListSessions(ctx, userID)
+	}
+	if pager, ok := r.sessions.(interface {
+		ListPage(context.Context, string, int, int) ([]*state.Session, error)
+	}); ok && pager != nil {
+		sessions, err := pager.ListPage(ctx, userID, limit, offset)
+		if err != nil {
+			return nil, err
+		}
+		for _, session := range sessions {
+			if r.hideInternalTranscriptMessages(session) {
+				if err := r.sessions.Save(ctx, userID, session); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return sessions, nil
+	}
+	sessions, err := r.ListSessions(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(sessions) {
+		return []*state.Session{}, nil
+	}
+	if limit <= 0 {
+		return sessions[offset:], nil
+	}
+	end := offset + limit
+	if end > len(sessions) {
+		end = len(sessions)
+	}
+	return sessions[offset:end], nil
 }
 
 func (r *Runtime) GetSession(ctx context.Context, userID, sessionID string) (*state.Session, error) {
@@ -271,6 +450,10 @@ func (r *Runtime) DeleteSession(ctx context.Context, userID, sessionID string) e
 	if r.sessions == nil {
 		return fmt.Errorf("session store is required")
 	}
+	deletedMessages, err := r.loadMessagesForIndexDelete(ctx, userID, sessionID)
+	if err != nil {
+		return err
+	}
 	r.Cancel(userID, sessionID)
 	if r.memory != nil {
 		if err := r.memory.DeleteSession(ctx, userID, sessionID); err != nil {
@@ -287,7 +470,14 @@ func (r *Runtime) DeleteSession(ctx context.Context, userID, sessionID string) e
 			return err
 		}
 	}
-	return r.sessions.Delete(ctx, userID, sessionID)
+	if err := r.sessions.Delete(ctx, userID, sessionID); err != nil {
+		return err
+	}
+	if r.messageCache != nil {
+		_ = r.messageCache.InvalidateContext(ctx, userID, sessionID)
+	}
+	r.publishDeletedMessageEvents(ctx, userID, deletedMessages)
+	return nil
 }
 
 func (r *Runtime) DeleteSessionMemory(ctx context.Context, userID, sessionID string) error {
@@ -754,6 +944,10 @@ func (r *Runtime) DeleteUserData(ctx context.Context, userID string) error {
 	for _, session := range r.runningSessionIDs(userID) {
 		r.Cancel(userID, session)
 	}
+	deletedMessages, err := r.loadUserMessagesForIndexDelete(ctx, userID)
+	if err != nil {
+		return err
+	}
 	if r.memory != nil {
 		if err := r.memory.DeleteUser(ctx, userID); err != nil {
 			return err
@@ -779,6 +973,7 @@ func (r *Runtime) DeleteUserData(ctx context.Context, userID string) error {
 			return err
 		}
 	}
+	r.publishDeletedMessageEvents(ctx, userID, deletedMessages)
 	return nil
 }
 
@@ -821,6 +1016,30 @@ func (r *Runtime) CreateArtifact(ctx context.Context, userID, sessionID, filenam
 
 func (r *Runtime) CreateAttachment(ctx context.Context, userID, sessionID, filename, contentType string, data []byte) (*Artifact, error) {
 	return r.createAsset(ctx, AssetKindAttachment, userID, sessionID, filename, contentType, data)
+}
+
+func (r *Runtime) CreatePresignedAttachmentUpload(ctx context.Context, userID, sessionID, filename, contentType string, sizeBytes int64, ttl time.Duration) (*PresignedAttachmentUpload, error) {
+	if r.artifacts == nil {
+		return nil, fmt.Errorf("artifact service is not configured")
+	}
+	if strings.TrimSpace(sessionID) != "" {
+		if _, err := r.GetSession(ctx, userID, sessionID); err != nil {
+			return nil, err
+		}
+	}
+	return r.artifacts.PresignAttachmentUpload(ctx, userID, sessionID, filename, contentType, sizeBytes, ttl)
+}
+
+func (r *Runtime) ConfirmAttachmentUpload(ctx context.Context, userID, sessionID, attachmentID, filename, contentType string, sizeBytes int64) (*Artifact, error) {
+	if r.artifacts == nil {
+		return nil, fmt.Errorf("artifact service is not configured")
+	}
+	if strings.TrimSpace(sessionID) != "" {
+		if _, err := r.GetSession(ctx, userID, sessionID); err != nil {
+			return nil, err
+		}
+	}
+	return r.artifacts.ConfirmAttachmentUpload(ctx, userID, sessionID, attachmentID, filename, contentType, sizeBytes)
 }
 
 func (r *Runtime) createAsset(ctx context.Context, kind, userID, sessionID, filename, contentType string, data []byte) (*Artifact, error) {
@@ -975,6 +1194,7 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 	if err != nil {
 		return err
 	}
+	startMessageCount := len(session.Messages)
 	if err := r.injectMemory(ctx, req.UserID, session); err != nil {
 		return err
 	}
@@ -1013,7 +1233,7 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 	})
 	if err != nil {
 		r.appendFailedTurn(session, displayContent, err)
-		if saveErr := r.sessions.Save(ctx, req.UserID, session); saveErr != nil {
+		if saveErr := r.persistChatSession(ctx, req.UserID, session, startMessageCount); saveErr != nil {
 			_ = sink.Send(ctx, Event{Type: "error", SessionID: session.ID, Error: err.Error()})
 			return errors.Join(err, saveErr)
 		}
@@ -1025,7 +1245,7 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 		return fmt.Errorf("runner returned no session")
 	}
 	r.sanitizeSessionAttachmentBlocks(session)
-	if err := r.sessions.Save(ctx, req.UserID, session); err != nil {
+	if err := r.persistChatSession(ctx, req.UserID, session, startMessageCount); err != nil {
 		return err
 	}
 	if result.Job != nil {
@@ -1049,6 +1269,141 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 		return err
 	}
 	return sink.Send(ctx, Event{Type: "done", SessionID: session.ID})
+}
+
+func (r *Runtime) persistChatSession(ctx context.Context, userID string, session *state.Session, startMessageCount int) error {
+	if r == nil || session == nil {
+		return fmt.Errorf("session is required")
+	}
+	if r.messageWriter == nil || startMessageCount < 0 || startMessageCount > len(session.Messages) {
+		if err := r.sessions.Save(ctx, userID, session); err != nil {
+			return err
+		}
+		r.publishSavedTurnMessageEvents(ctx, userID, session, startMessageCount)
+		return nil
+	}
+	if startMessageCount < len(session.Messages) {
+		created, err := r.messageWriter.WriteMany(ctx, userID, session.ID, session.Messages[startMessageCount:])
+		if err != nil {
+			return err
+		}
+		copy(session.Messages[startMessageCount:], created)
+	}
+	if metadataStore, ok := r.sessions.(SessionMetadataStore); ok && metadataStore != nil {
+		return metadataStore.SaveSessionMetadata(ctx, userID, session)
+	}
+	return r.sessions.Save(ctx, userID, session)
+}
+
+func (r *Runtime) publishSavedTurnMessageEvents(ctx context.Context, userID string, session *state.Session, startMessageCount int) {
+	if r == nil || session == nil || startMessageCount < 0 {
+		return
+	}
+	if r.messagePublisher == nil && (!r.localVectorIndex || r.vectorIndexer == nil) {
+		return
+	}
+	messages := session.Messages
+	if startMessageCount >= len(messages) {
+		saved, err := r.sessions.Get(ctx, userID, session.ID)
+		if err != nil {
+			log.Printf("load saved messages for event publishing failed: user=%s session=%s: %v", userID, session.ID, err)
+			return
+		}
+		if saved != nil {
+			messages = saved.Messages
+		}
+	}
+	if startMessageCount >= len(messages) {
+		return
+	}
+	for _, message := range messages[startMessageCount:] {
+		if strings.TrimSpace(message.ID) == "" {
+			continue
+		}
+		event := MessageEvent{
+			Type:      MessageEventCreated,
+			UserID:    userID,
+			SessionID: session.ID,
+			Message:   message,
+			CreatedAt: time.Now().UTC(),
+		}
+		if r.messagePublisher != nil {
+			if err := r.messagePublisher.PublishMessageEvent(ctx, event); err != nil {
+				log.Printf("publish message event failed: user=%s session=%s message=%s: %v", event.UserID, event.SessionID, event.Message.ID, err)
+			}
+		}
+		if r.localVectorIndex && r.vectorIndexer != nil {
+			_ = r.vectorIndexer.PublishMessageEvent(ctx, event)
+		}
+	}
+}
+
+type messageListStore interface {
+	ListMessages(ctx context.Context, userID, sessionID string) ([]state.Message, error)
+}
+
+func (r *Runtime) loadMessagesForIndexDelete(ctx context.Context, userID, sessionID string) ([]state.Message, error) {
+	store, ok := r.sessions.(messageListStore)
+	if !ok || store == nil {
+		return nil, nil
+	}
+	messages, err := store.ListMessages(ctx, userID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return cloneStateMessages(messages), nil
+}
+
+func (r *Runtime) loadUserMessagesForIndexDelete(ctx context.Context, userID string) ([]state.Message, error) {
+	if r.sessions == nil {
+		return nil, nil
+	}
+	sessions, err := r.sessions.List(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]state.Message, 0)
+	for _, session := range sessions {
+		if session == nil || strings.TrimSpace(session.ID) == "" {
+			continue
+		}
+		messages, err := r.loadMessagesForIndexDelete(ctx, userID, session.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, messages...)
+	}
+	return out, nil
+}
+
+func (r *Runtime) publishDeletedMessageEvents(ctx context.Context, userID string, messages []state.Message) {
+	if r == nil || len(messages) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	for _, message := range messages {
+		if strings.TrimSpace(message.ID) == "" {
+			continue
+		}
+		message.UserID = firstNonEmptyString(message.UserID, userID)
+		message.Status = state.MessageStatusDeleted
+		message.UpdatedAt = now
+		event := MessageEvent{
+			Type:      MessageEventDeleted,
+			UserID:    message.UserID,
+			SessionID: message.SessionID,
+			Message:   message,
+			CreatedAt: now,
+		}
+		if r.messagePublisher != nil {
+			if err := r.messagePublisher.PublishMessageEvent(ctx, event); err != nil {
+				log.Printf("publish deleted message event failed: user=%s session=%s message=%s: %v", event.UserID, event.SessionID, message.ID, err)
+			}
+		}
+		if r.localVectorIndex && r.vectorIndexer != nil {
+			_ = r.vectorIndexer.PublishMessageEvent(ctx, event)
+		}
+	}
 }
 
 func (r *Runtime) afterTurnMemory(ctx context.Context, userID string, session *state.Session) error {
@@ -1286,6 +1641,12 @@ func (r *Runtime) ListJobs(ctx context.Context, userID, sessionID string) ([]*Jo
 }
 
 func (r *Runtime) SearchMessages(ctx context.Context, userID, query string, limit, offset int) ([]MessageSearchResult, error) {
+	if r != nil && r.messageSearch != nil {
+		return r.messageSearch.SearchMessages(ctx, userID, query, limit, offset)
+	}
+	if r == nil {
+		return []MessageSearchResult{}, nil
+	}
 	store, ok := r.sessions.(MessageSearchStore)
 	if !ok || store == nil {
 		return []MessageSearchResult{}, nil
@@ -1366,6 +1727,9 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	r.mu.Unlock()
 	for _, cancel := range cancels {
 		cancel()
+	}
+	if r.vectorIndexer != nil {
+		_ = r.vectorIndexer.Close(ctx)
 	}
 	done := make(chan struct{})
 	go func() {
@@ -1692,10 +2056,16 @@ func (r *Runtime) sanitizeSessionAttachmentBlocks(session *state.Session) {
 		return
 	}
 	for i := range session.Messages {
+		if len(session.Messages[i].ContentParts) > 0 {
+			session.Messages[i].ContentParts = sanitizeAttachmentContentBlocks(session.Messages[i].ContentParts)
+			session.Messages[i].ContentBlocks = session.Messages[i].ContentParts
+			continue
+		}
 		if len(session.Messages[i].ContentBlocks) == 0 {
 			continue
 		}
 		session.Messages[i].ContentBlocks = sanitizeAttachmentContentBlocks(session.Messages[i].ContentBlocks)
+		session.Messages[i].ContentParts = session.Messages[i].ContentBlocks
 	}
 }
 

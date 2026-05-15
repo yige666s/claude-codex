@@ -47,6 +47,9 @@ func (s *FileSessionStore) Get(_ context.Context, userID, sessionID string) (*st
 	if err := json.Unmarshal(data, &session); err != nil {
 		return nil, err
 	}
+	if session.Status == state.SessionStatusDeleted {
+		return nil, os.ErrNotExist
+	}
 	return &session, nil
 }
 
@@ -66,7 +69,7 @@ func (s *FileSessionStore) List(_ context.Context, userID string) ([]*state.Sess
 		}
 		sessionID := strings.TrimSuffix(entry.Name(), ".json")
 		session, err := s.Get(context.Background(), userID, sessionID)
-		if err == nil {
+		if err == nil && session.Status != state.SessionStatusDeleted {
 			out = append(out, session)
 		}
 	}
@@ -94,19 +97,41 @@ func (s *FileSessionStore) Save(_ context.Context, userID string, session *state
 }
 
 func (s *FileSessionStore) Delete(_ context.Context, userID, sessionID string) error {
-	err := os.Remove(s.sessionPath(userID, sessionID))
+	session, err := s.getIncludingDeleted(userID, sessionID)
 	if os.IsNotExist(err) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	softDeleteSession(session, time.Now().UTC())
+	return s.Save(context.Background(), userID, session)
 }
 
 func (s *FileSessionStore) DeleteUser(_ context.Context, userID string) error {
-	err := os.RemoveAll(s.sessionsDir(userID))
+	entries, err := os.ReadDir(s.sessionsDir(userID))
 	if os.IsNotExist(err) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		sessionID := strings.TrimSuffix(entry.Name(), ".json")
+		session, err := s.getIncludingDeleted(userID, sessionID)
+		if err != nil {
+			return err
+		}
+		softDeleteSession(session, now)
+		if err := s.Save(context.Background(), userID, session); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *FileSessionStore) PruneBefore(ctx context.Context, cutoff time.Time) (int, error) {
@@ -129,8 +154,13 @@ func (s *FileSessionStore) PruneBefore(ctx context.Context, cutoff time.Time) (i
 		if err := json.Unmarshal(data, &session); err != nil {
 			return nil
 		}
-		if session.UpdatedAt.Before(cutoff) {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		if session.Status != state.SessionStatusDeleted && session.UpdatedAt.Before(cutoff) {
+			softDeleteSession(&session, time.Now().UTC())
+			data, err := json.MarshalIndent(&session, "", "  ")
+			if err != nil {
+				return err
+			}
+			if err := fsutil.WriteFileAtomic(path, data, 0o644); err != nil {
 				return err
 			}
 			pruned++
@@ -141,6 +171,39 @@ func (s *FileSessionStore) PruneBefore(ctx context.Context, cutoff time.Time) (i
 		return 0, nil
 	}
 	return pruned, err
+}
+
+func (s *FileSessionStore) getIncludingDeleted(userID, sessionID string) (*state.Session, error) {
+	path := s.sessionPath(userID, sessionID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var session state.Session
+	if err := json.Unmarshal(data, &session); err != nil {
+		return nil, err
+	}
+	return &session, nil
+}
+
+func softDeleteSession(session *state.Session, at time.Time) {
+	if session == nil {
+		return
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	session.Status = state.SessionStatusDeleted
+	session.Archived = true
+	session.UpdatedAt = at
+	if session.Metadata == nil {
+		session.Metadata = map[string]string{}
+	}
+	session.Metadata["deleted_at"] = at.Format(time.RFC3339Nano)
+	for i := range session.Messages {
+		session.Messages[i].Status = state.MessageStatusDeleted
+		session.Messages[i].UpdatedAt = at
+	}
 }
 
 func (s *FileSessionStore) sessionsDir(userID string) string {

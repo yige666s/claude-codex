@@ -32,6 +32,26 @@ func (m *Message) EstimateTokens() int {
 	if m.Content != "" {
 		total += estimateTokens(m.Content)
 	}
+	for _, block := range m.ContentParts {
+		if block.Text != "" {
+			total += estimateTokens(block.Text)
+		}
+		if block.Content != "" {
+			total += estimateTokens(block.Content)
+		}
+		total += 8
+	}
+	if len(m.ContentParts) == 0 {
+		for _, block := range m.ContentBlocks {
+			if block.Text != "" {
+				total += estimateTokens(block.Text)
+			}
+			if block.Content != "" {
+				total += estimateTokens(block.Content)
+			}
+			total += 8
+		}
+	}
 
 	// Tool input/output
 	if len(m.ToolInput) > 0 {

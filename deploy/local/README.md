@@ -5,39 +5,71 @@ This compose stack runs the production-oriented local baseline:
 - `agentapi` on `http://localhost:8081`
 - Postgres on `localhost:5432`
 - Redis on `localhost:6379`
-- Cloudflare R2 for attachments and artifacts
+- MinIO/S3 on `localhost:9000` for attachments and artifacts
+- Optional Elasticsearch and Qdrant search infrastructure via the `search` profile
 
 Start it with:
 
 ```bash
-mkdir -p secrets
-# Put a Vertex-enabled service account JSON at:
-# secrets/vertex-service-account.json
-export GOOGLE_APPLICATION_CREDENTIALS="secrets/vertex-service-account.json"
-export VERTEX_PROJECT_ID="vigilant-router-378708"
-export VERTEX_LOCATION="us-central1"
-export AGENT_API_ARTIFACT_S3_ACCESS_KEY="REPLACE_WITH_R2_ACCESS_KEY_ID"
-export AGENT_API_ARTIFACT_S3_SECRET_KEY="REPLACE_WITH_R2_SECRET_ACCESS_KEY"
 docker compose -f deploy/local/docker-compose.yml up --build
 ```
 
-The default stack uses Vertex (`gemini-2.5-pro`), SQL storage, Cloudflare R2
-artifacts, Redis rate limiting, JWT auth, and the built-in user system. Override
-provider settings with environment variables such as `AGENT_API_LLM_PROVIDER`,
-`OPENAI_API_KEY`, `DASHSCOPE_API_KEY`, `GEMINI_API_KEY`, or `VERTEX_*`.
+The default stack uses SQL storage, local MinIO artifacts, Redis rate limiting,
+Redis message context hot cache, JWT auth, and the built-in user system.
+Override provider settings with
+environment variables such as `AGENT_API_LLM_PROVIDER`, `OPENAI_API_KEY`,
+`DASHSCOPE_API_KEY`, `GEMINI_API_KEY`, or `VERTEX_*`.
 Runtime model selection is managed from the Admin UI and stored in SQL.
+Attachment upload uses the presigned flow against MinIO in this stack: AgentAPI
+signs the upload, the browser PUTs directly to MinIO, then confirms metadata
+back to AgentAPI. File-backed local runs fall back to the legacy multipart path.
+The message attachment worker is enabled by default for SQL deployments and
+processes pending per-message attachments into MinIO thumbnails and extracted
+text objects.
 
-Cloudflare R2 defaults:
+Run the message-module verification stack:
 
 ```bash
-export AGENT_API_ARTIFACT_S3_ENDPOINT="5c11ff96d03d238d51aef31150a87101.r2.cloudflarestorage.com"
-export AGENT_API_ARTIFACT_S3_BUCKET="agentapi"
-export AGENT_API_ARTIFACT_S3_PREFIX="local"
-export AGENT_API_ARTIFACT_S3_SSL=true
+deploy/local/verify-message-module.sh
 ```
 
-Use an R2 S3 access key and secret from the Cloudflare dashboard. The
-`CLOUDFLARE_API_TOKEN` used by `wrangler` cannot be used as the S3 secret.
+To include Elasticsearch and Qdrant in the local stack:
+
+```bash
+docker compose --profile search -f deploy/local/docker-compose.yml up --build
+```
+
+The local stack includes Vertex AI embedding configuration for semantic search:
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER=vertex`,
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID=vigilant-router-378708`,
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION=global`,
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL=gemini-embedding-2`, and
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_DIMENSIONS=768`. Set
+`AGENT_API_MESSAGE_SEARCH_BACKEND=semantic` or `hybrid` plus a Vertex token or
+service account environment variable to query Qdrant with Gemini embeddings.
+Set `AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED=true` with
+`AGENT_API_MESSAGE_SEARCH_BACKEND=elasticsearch` or `hybrid` to bootstrap ES
+ILM, rollover templates, and IK analyzer mappings. The Elasticsearch container
+must include the IK plugin for the default `ik_max_word` / `ik_smart` analyzers.
+
+AgentAPI also defaults `AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND=redis` locally
+and stores loaded session-context windows in Redis DB 1 with prefix
+`agentapi:message:ctx`. Override `AGENT_API_MESSAGE_CONTEXT_CACHE_TTL` or set
+the backend to `memory` / `none` when testing cache behavior.
+
+Kafka message events are available through the optional `kafka` profile:
+
+```bash
+AGENT_API_MESSAGE_EVENTS_BACKEND=kafka \
+AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_ENABLED=true \
+AGENT_API_MESSAGE_SEARCH_BACKEND=semantic \
+docker compose --profile kafka --profile search -f deploy/local/docker-compose.yml up --build
+```
+
+The producer writes `message.created` events to `agent.messages`. The built-in
+consumer uses Redis processed locks and currently drives the Qdrant vector
+indexing worker; the same Kafka consumer foundation is intended for the
+Elasticsearch/OpenSearch indexing worker.
 
 Useful checks:
 

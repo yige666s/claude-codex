@@ -38,6 +38,7 @@ func (s *FileSessionStore) SearchMessages(ctx context.Context, userID, query str
 				continue
 			}
 			matches = append(matches, MessageSearchResult{
+				MessageID:    message.ID,
 				SessionID:    session.ID,
 				MessageIndex: index,
 				Role:         message.Role,

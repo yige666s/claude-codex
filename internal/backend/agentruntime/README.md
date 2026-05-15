@@ -167,12 +167,31 @@ The runtime supports consumer data controls:
 User-uploaded inputs and agent-generated outputs share SQL metadata plus object
 storage, but they are separated by asset kind:
 
-- Attachments are user-uploaded input files. Public upload is only exposed as `POST /v1/attachments`.
+- Attachments are user-uploaded input files. Production uploads should use
+  `POST /v1/attachments/presign`, direct `PUT` to the returned object-store
+  URL, then `POST /v1/attachments/{id}/confirm`. Legacy multipart
+  `POST /v1/attachments` remains available for file-backed local development.
 - Artifacts are agent/skill/LLM-generated output files. Public artifact APIs only list, download, and delete generated outputs.
 - Skill/runtime scopes receive an `ArtifactWriter`; `cmd/agentapi` exposes it to the model as the safe `Artifact` tool. The tool writes bytes through the runtime to the configured object store and records metadata as `kind=artifact`.
 - Attachments and artifacts are checked by `AssetPolicy`: default max size is 64 MiB, dangerous/unknown extensions are rejected, and MIME types are restricted to common image, PDF, text, CSV, JSON, and Office document formats. Override size with `-asset-max-bytes`.
 - `agent_artifacts`: asset ID, kind, user ID, session ID, object key, filename, content type, size, creation/deletion timestamps.
 - Object bytes are stored in the configured object store.
+
+Presigned attachment upload flow:
+
+1. Client calls `POST /v1/attachments/presign` with `session_id`, `filename`,
+   `content_type`, and `size_bytes`.
+2. AgentAPI validates filename/MIME/size, generates an attachment ID and S3/R2
+   presigned `PUT` URL, and returns the required upload headers.
+3. Client uploads the file bytes directly to S3/R2.
+4. Client calls `POST /v1/attachments/{id}/confirm` with the same metadata.
+5. AgentAPI verifies the object exists via `HEAD`, checks size/content type, and
+   records the attachment metadata in SQL.
+
+This keeps large file bytes off the AgentAPI request path while preserving
+server-side authorization, validation, and metadata ownership.
+For browser uploads, configure the S3/R2 bucket CORS policy to allow authenticated
+`PUT` requests with the returned `Content-Type` header from the web origin.
 
 Cloudflare R2 configuration:
 
@@ -204,6 +223,27 @@ Deleting a session also deletes attachments and artifacts linked to that
 session. Deleting an account deletes all attachments and artifacts for the user
 and removes the object bytes.
 
+Uploaded attachments are stored through the configured object store. Message
+`content_parts` keep only sanitized attachment references, while SQL stores the
+per-message attachment metadata in `agent_message_attachments` for replay,
+search indexing, thumbnail extraction, and embedding workers. The built-in
+message attachment worker can claim pending records, strip image metadata by
+re-encoding JPEG/PNG bytes, generate JPEG thumbnails, and extract basic PDF/text
+content into derived object-store keys. When message search is configured, the
+worker also indexes extracted attachment text as independent attachment
+documents/vectors that still point back to the parent message. Completion
+updates `embedding_status`, `thumbnail_key`, and `extracted_text_key`.
+
+Key attachment worker flags:
+
+- `-message-attachment-worker-enabled` starts the worker when SQL message
+  attachment storage and an object store are configured.
+- `-message-attachment-worker-batch-size 25` and
+  `-message-attachment-worker-poll-interval 5s` control queue polling.
+- `-message-attachment-worker-process-timeout 30s` bounds one attachment.
+- `-message-attachment-thumbnail-max-dimension 512` controls generated
+  thumbnail dimensions.
+
 ## Rate Limiting
 
 - `-rate-limit-backend memory` is the single-process default.
@@ -211,6 +251,112 @@ and removes the object bytes.
 - `-rate-limit-backend gateway` or `none` disables app-level limiting for deployments that enforce limits at the edge.
 
 Redis limiting uses fixed windows keyed by user ID.
+
+## Message Context Cache
+
+- `-message-context-cache-backend memory` keeps loaded session context in the process-local cache.
+- `-message-context-cache-backend redis -message-context-cache-redis-url redis://:pw@host:6379/1?prefix=agentapi:message:ctx` enables the shared Redis hot cache for `SessionLoadService`.
+- `-message-context-cache-backend none` disables the hot cache and always reads from durable message storage.
+- `-message-context-cache-ttl 24h` controls Redis cache expiry.
+
+The Redis URL accepts the same database path style as the rate limiter and a
+`prefix` query parameter. When Redis is selected, `/readyz` includes a
+`message_context_cache` Redis ping check.
+
+## Session List Cache
+
+- `-session-list-cache-backend redis -session-list-cache-redis-url redis://:pw@host:6379/1?prefix=agentapi:session:list` enables the Redis session list cache for SQL-backed sessions.
+- `-session-list-cache-ttl 10m` controls how long each user's list snapshot stays warm.
+- `GET /v1/sessions?limit=50&offset=100` uses the same runtime path and can be served from Redis once the user list has been warmed.
+
+The cache stores session metadata only: a per-user sorted set orders session IDs
+by `updated_at`, and a per-user hash stores the session-list JSON payload. It
+does not store transcript messages.
+
+## Message Archive
+
+SQL message storage supports a two-layer retention path for old payloads:
+PostgreSQL keeps message/session indexes plus `archive_uri`,
+`archive_checksum`, and `archived_at`, while the full message payload is written
+to the configured artifact object store.
+
+- `-message-archive-worker-enabled` starts the background archive worker.
+- `-message-archive-after 720h` archives messages older than 30 days.
+- `-message-archive-prefix message-archive` controls the object-store prefix.
+- `-message-archive-clear-pg-payload=true` clears large SQL payload fields after
+  the gzip archive object is uploaded and checksummed.
+
+When the artifact store is S3/R2, archived message objects are stored under keys
+such as `message-archive/year=2026/month=04/user_hash=.../session_id=.../*.json.gz`.
+Session and message reads transparently hydrate archived payloads from the
+object store when it is configured.
+
+## Message Events And Kafka
+
+- `-message-events-backend local` is the default and keeps asynchronous message
+  post-processing in the AgentAPI process.
+- `-message-events-backend kafka -message-events-kafka-brokers host:9092`
+  publishes `message.created` events to Kafka topic `agent.messages`, keyed by
+  `session_id`.
+- `-message-events-backend dual` publishes to Kafka while also keeping local
+  in-process processing enabled.
+- `-message-events-kafka-consumer-enabled` starts the built-in consumer worker.
+  The current handler consumes Kafka message events and writes semantic vectors
+  to Qdrant when `-message-search-backend semantic` or `hybrid` is configured.
+- `-message-events-kafka-dlq-topic agent.messages.dlq` enables a dead-letter
+  topic after configured retries fail.
+- `-message-events-processed-lock-backend redis` enables Redis idempotency locks
+  keyed by processor and `message_id`; failed processing releases the lock so
+  Kafka redelivery can retry.
+
+Kafka readiness is reported as `kafka_message_events` when Kafka publishing or
+the built-in consumer is enabled.
+
+## Message Search
+
+- `-message-search-backend sql` keeps the local SQL/file fallback.
+- `-message-search-backend elasticsearch -message-search-endpoint http://localhost:9200 -message-search-index agent_messages` uses Elasticsearch for full-text search.
+- `-message-search-backend opensearch` uses the same endpoint/index/auth flags for OpenSearch.
+- `-message-search-backend semantic` uses Qdrant plus an embedding provider.
+- `-message-search-backend hybrid` runs full-text and semantic search, then fuses results with RRF.
+
+Environment variables follow the `AGENT_API_MESSAGE_SEARCH_*` prefix, for example
+`AGENT_API_MESSAGE_SEARCH_ENDPOINT`, `AGENT_API_MESSAGE_SEARCH_QDRANT_ENDPOINT`,
+and `AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT`.
+
+Semantic search supports OpenAI-compatible embeddings and Vertex AI Gemini
+embeddings. For Vertex AI, set `AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER=vertex`,
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID`, `AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION`,
+and `AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL`. The local compose defaults are
+wired for project `vigilant-router-378708`, location `global`, model
+`gemini-embedding-2`, query task `RETRIEVAL_QUERY`, index task
+`RETRIEVAL_DOCUMENT`, and 768 dimensions. Authentication uses
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_TOKEN`, `VERTEX_ACCESS_TOKEN`,
+`GOOGLE_OAUTH_ACCESS_TOKEN`, `GOOGLE_ACCESS_TOKEN`, service account env vars, or
+`gcloud auth print-access-token`.
+
+When the backend is `semantic` or `hybrid`, message writes also enqueue an
+asynchronous vector indexing job. The worker extracts searchable message text,
+generates an embedding, creates the Qdrant collection on first use, upserts the
+point payload, and records the vector ID/model version in SQL embedding metadata.
+
+For Elasticsearch-backed full-text search, enable
+`AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED=true` to let AgentAPI create
+and maintain the message index lifecycle. The bootstrap step writes an ILM
+policy, a rollover index template, and an initial `{alias}-000001` write index
+when the alias is missing. Text fields use Chinese IK analyzers by default:
+`AGENT_API_MESSAGE_SEARCH_INDEX_ANALYZER=ik_max_word` for indexing and
+`AGENT_API_MESSAGE_SEARCH_INDEX_SEARCH_ANALYZER=ik_smart` for querying. The ES
+cluster must have the IK plugin installed before enabling this in production.
+
+Managed ES indices roll over at 30 days through ILM. The AgentAPI maintenance
+worker additionally downgrades old backing indices to read-only with fewer
+replicas after `AGENT_API_MESSAGE_SEARCH_INDEX_DOWNGRADE_AFTER` (default `2160h`,
+90 days) and closes them after `AGENT_API_MESSAGE_SEARCH_INDEX_CLOSE_AFTER`
+(default `4320h`, 180 days). Set
+`AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_INTERVAL` and
+`AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_BATCH_LIMIT` to tune maintenance
+frequency and per-pass work.
 
 ## LLM Governance
 

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -48,6 +49,74 @@ func TestFileSessionStoreScopesSessionsByUser(t *testing.T) {
 	}
 }
 
+func TestFileSessionStoreDeleteSoftDeletesMessages(t *testing.T) {
+	store := NewFileSessionStore(t.TempDir())
+	ctx := context.Background()
+	session, err := store.Create(ctx, "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	session.AddUserMessage("keep an audit trail")
+	session.AddAssistantMessage("kept")
+	if err := store.Save(ctx, "alice", session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	if err := store.Delete(ctx, "alice", session.ID); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	if _, err := store.Get(ctx, "alice", session.ID); err == nil {
+		t.Fatal("soft-deleted session should be hidden from normal reads")
+	}
+	deleted, err := store.getIncludingDeleted("alice", session.ID)
+	if err != nil {
+		t.Fatalf("load soft-deleted session: %v", err)
+	}
+	if deleted.Status != state.SessionStatusDeleted {
+		t.Fatalf("session was not soft deleted: %#v", deleted)
+	}
+	if len(deleted.Messages) != 2 || deleted.Messages[0].Status != state.MessageStatusDeleted || deleted.Messages[1].Status != state.MessageStatusDeleted {
+		t.Fatalf("messages were not soft deleted: %#v", deleted.Messages)
+	}
+}
+
+func TestObjectSessionStoreDeleteSoftDeletesMessages(t *testing.T) {
+	objects := NewFileObjectStore(t.TempDir())
+	store := NewObjectSessionStore(objects, "sessions")
+	ctx := context.Background()
+	session, err := store.Create(ctx, "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	session.AddUserMessage("keep an audit trail")
+	session.AddAssistantMessage("kept")
+	if err := store.Save(ctx, "alice", session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	if err := store.Delete(ctx, "alice", session.ID); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	if _, err := store.Get(ctx, "alice", session.ID); err == nil {
+		t.Fatal("soft-deleted session should be hidden from normal reads")
+	}
+	data, err := objects.Get(ctx, store.sessionKey("alice", session.ID))
+	if err != nil {
+		t.Fatalf("load soft-deleted object: %v", err)
+	}
+	var deleted state.Session
+	if err := json.Unmarshal(data, &deleted); err != nil {
+		t.Fatalf("decode soft-deleted object: %v", err)
+	}
+	if deleted.Status != state.SessionStatusDeleted {
+		t.Fatalf("session was not soft deleted: %#v", deleted)
+	}
+	if len(deleted.Messages) != 2 || deleted.Messages[0].Status != state.MessageStatusDeleted || deleted.Messages[1].Status != state.MessageStatusDeleted {
+		t.Fatalf("messages were not soft deleted: %#v", deleted.Messages)
+	}
+	if err := store.Delete(ctx, "alice", "missing-session"); err != nil {
+		t.Fatalf("missing delete should remain idempotent: %v", err)
+	}
+}
+
 func TestRuntimeHidesWorkspaceContextAcknowledgementOnRead(t *testing.T) {
 	store := NewFileSessionStore(t.TempDir())
 	runtime := NewRuntime(RuntimeConfig{}, store, nil, nil, func(Scope) Runner { return echoRunner{} })
@@ -66,6 +135,87 @@ func TestRuntimeHidesWorkspaceContextAcknowledgementOnRead(t *testing.T) {
 	}
 	if len(read.Messages) != 1 || !read.Messages[0].Hidden {
 		t.Fatalf("expected workspace context acknowledgement to be hidden: %#v", read.Messages)
+	}
+}
+
+func TestRuntimeChatPublishesMessageEvents(t *testing.T) {
+	store := NewFileSessionStore(t.TempDir())
+	runtime := NewRuntime(RuntimeConfig{}, store, nil, nil, func(Scope) Runner { return echoRunner{} })
+	publisher := &captureMessagePublisher{}
+	runtime.SetMessageEventPublisher(publisher)
+	session, err := store.Create(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "hello"}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if len(publisher.events) == 0 {
+		t.Fatal("expected chat to publish message events")
+	}
+	if publisher.events[len(publisher.events)-1].SessionID != session.ID {
+		t.Fatalf("unexpected event session: %#v", publisher.events)
+	}
+}
+
+func TestRuntimeDeleteSessionPublishesDeletedMessageEvents(t *testing.T) {
+	store := newRuntimeMessageWriteStore(t.TempDir())
+	runtime := NewRuntime(RuntimeConfig{}, store, nil, nil, func(Scope) Runner { return echoRunner{} })
+	publisher := &captureMessagePublisher{}
+	runtime.SetMessageEventPublisher(publisher)
+	session, err := store.Create(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.AppendMessage(context.Background(), "alice", session.ID, state.Message{
+		Role:    state.MessageRoleUser,
+		Content: "delete me",
+	}); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	if err := runtime.DeleteSession(context.Background(), "alice", session.ID); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	if len(publisher.events) != 1 {
+		t.Fatalf("expected one deleted event, got %#v", publisher.events)
+	}
+	event := publisher.events[0]
+	if event.Type != MessageEventDeleted || event.Message.Status != state.MessageStatusDeleted || event.Message.ID == "" {
+		t.Fatalf("unexpected deleted event: %#v", event)
+	}
+}
+
+func TestRuntimeChatUsesMessageWriteServiceForNewMessages(t *testing.T) {
+	store := newRuntimeMessageWriteStore(t.TempDir())
+	runtime := NewRuntime(RuntimeConfig{}, store, nil, nil, func(Scope) Runner { return echoRunner{} })
+	publisher := &captureMessagePublisher{}
+	runtime.SetMessageEventPublisher(publisher)
+	session, err := store.Create(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "hello"}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if store.saveCalls != 0 {
+		t.Fatalf("expected chat to avoid SessionStore.Save, got %d calls", store.saveCalls)
+	}
+	if store.metadataSaves == 0 {
+		t.Fatal("expected chat to persist session metadata separately")
+	}
+	messages, err := store.LoadSessionMessages(context.Background(), "alice", session.ID, SessionLoadOptions{MaxMessages: 10, IncludeSystem: true})
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if len(messages) < 3 {
+		t.Fatalf("expected hidden context plus user/assistant messages, got %#v", messages)
+	}
+	if len(publisher.events) != len(messages) {
+		t.Fatalf("expected one event per written message, events=%d messages=%d", len(publisher.events), len(messages))
+	}
+	if got := messages[len(messages)-1].Content; got != "assistant: hello" {
+		t.Fatalf("unexpected assistant message: %q", got)
 	}
 }
 
@@ -1022,6 +1172,13 @@ func TestSQLSessionStoreSyncsMessages(t *testing.T) {
 	if len(messages) != 2 || messages[1].Content != "replacement" {
 		t.Fatalf("expected replaced messages, got %#v", messages)
 	}
+	var rawCount, deletedCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0) FROM agent_messages WHERE user_id = $1 AND session_id = $2`, userID, session.ID).Scan(&rawCount, &deletedCount); err != nil {
+		t.Fatalf("count raw messages: %v", err)
+	}
+	if rawCount != 3 || deletedCount != 1 {
+		t.Fatalf("expected replace to soft-delete removed messages, raw=%d deleted=%d", rawCount, deletedCount)
+	}
 
 	session.AddAssistantMessage("invalid utf8: \xe6..")
 	if err := store.Save(ctx, userID, session); err != nil {
@@ -1033,6 +1190,122 @@ func TestSQLSessionStoreSyncsMessages(t *testing.T) {
 	}
 	if !strings.Contains(messages[len(messages)-1].Content, "\uFFFD..") {
 		t.Fatalf("expected invalid utf8 to be sanitized, got %q", messages[len(messages)-1].Content)
+	}
+	if err := store.Delete(ctx, userID, session.ID); err != nil {
+		t.Fatalf("soft delete session: %v", err)
+	}
+	if _, err := store.Get(ctx, userID, session.ID); err == nil {
+		t.Fatal("deleted session should be hidden from normal reads")
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0) FROM agent_messages WHERE user_id = $1 AND session_id = $2`, userID, session.ID).Scan(&rawCount, &deletedCount); err != nil {
+		t.Fatalf("count soft-deleted messages: %v", err)
+	}
+	if rawCount == 0 || rawCount != deletedCount {
+		t.Fatalf("expected all messages retained and soft deleted, raw=%d deleted=%d", rawCount, deletedCount)
+	}
+}
+
+func TestSQLMessageModuleIntegration(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("AGENT_RUNTIME_TEST_PG_DSN"))
+	if dsn == "" {
+		t.Skip("set AGENT_RUNTIME_TEST_PG_DSN to run postgres integration test")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open pg: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	sessionStore := NewSQLSessionStoreWithDialect(db, SQLDialectPostgres)
+	if err := sessionStore.Init(ctx); err != nil {
+		t.Fatalf("init sql session store: %v", err)
+	}
+	artifactStore := NewSQLArtifactStoreWithDialect(db, SQLDialectPostgres)
+	if err := artifactStore.Init(ctx); err != nil {
+		t.Fatalf("init sql artifact store: %v", err)
+	}
+	userID := "sql-message-module-" + time.Now().UTC().Format("20060102T150405.000000000")
+	defer func() { _ = sessionStore.DeleteUser(context.Background(), userID) }()
+
+	session, err := sessionStore.Create(ctx, userID, t.TempDir())
+	if err != nil {
+		t.Fatalf("create sql session: %v", err)
+	}
+	artifactService := NewArtifactService(artifactStore, NewFileObjectStore(t.TempDir()), "objects")
+	attachment, err := artifactService.Create(ctx, AssetKindAttachment, userID, session.ID, "photo.png", "image/png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+
+	writer := NewMessageWriteService(sessionStore, NewMemorySessionContextCache(), NoopMessageEventPublisher{})
+	created, err := writer.Write(ctx, MessageWriteRequest{
+		UserID:    userID,
+		SessionID: session.ID,
+		Message: state.Message{
+			Role:    state.MessageRoleUser,
+			Content: "please inspect the multimodal attachment",
+			ContentParts: []publictypes.ContentBlock{
+				{Type: "text", Text: "please inspect the multimodal attachment"},
+				{Type: "image", Source: map[string]interface{}{
+					"type":          "base64",
+					"attachment_id": attachment.ID,
+					"media_type":    "image/png",
+					"filename":      "photo.png",
+					"data":          "should-not-persist",
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("write multimodal message: %v", err)
+	}
+	if len(created.Attachments) != 1 || created.Attachments[0].StorageKey == "" || created.Attachments[0].FileType != "image" {
+		t.Fatalf("expected hydrated attachment metadata, got %#v", created.Attachments)
+	}
+
+	messages, err := sessionStore.ListMessages(ctx, userID, session.ID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || len(messages[0].Attachments) != 1 {
+		t.Fatalf("expected message attachment metadata, got %#v", messages)
+	}
+	if got := messages[0].ContentParts[1].Source; got["type"] != "attachment_ref" || got["data"] != nil {
+		t.Fatalf("expected sanitized attachment ref, got %#v", got)
+	}
+
+	loaded, err := NewSessionLoadService(sessionStore, NewMemorySessionContextCache()).LoadContext(ctx, userID, session.ID, SessionLoadOptions{MaxMessages: 10, MaxTokens: 1000})
+	if err != nil {
+		t.Fatalf("load session context: %v", err)
+	}
+	if len(loaded) != 1 || len(loaded[0].Attachments) != 1 {
+		t.Fatalf("expected context load to hydrate attachments, got %#v", loaded)
+	}
+	results, err := sessionStore.SearchMessages(ctx, userID, "multimodal", 10, 0)
+	if err != nil {
+		t.Fatalf("search messages: %v", err)
+	}
+	if len(results) != 1 || results[0].MessageID != created.ID {
+		t.Fatalf("expected search result for created message, got %#v", results)
+	}
+
+	pending, err := sessionStore.ListPendingMessageAttachments(ctx, userID, 10)
+	if err != nil {
+		t.Fatalf("list pending attachments: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != attachment.ID {
+		t.Fatalf("expected one pending attachment, got %#v", pending)
+	}
+	if err := sessionStore.UpdateMessageAttachmentProcessing(ctx, userID, created.ID, attachment.ID, state.MessageAttachmentEmbeddingDone, "thumbs/photo.png", "extracted/photo.txt"); err != nil {
+		t.Fatalf("update attachment processing: %v", err)
+	}
+	messages, err = sessionStore.ListMessages(ctx, userID, session.ID)
+	if err != nil {
+		t.Fatalf("list messages after processing: %v", err)
+	}
+	if messages[0].Attachments[0].EmbeddingStatus != state.MessageAttachmentEmbeddingDone || messages[0].Attachments[0].ThumbnailKey != "thumbs/photo.png" || messages[0].Attachments[0].ExtractedTextKey != "extracted/photo.txt" {
+		t.Fatalf("expected processed attachment metadata, got %#v", messages[0].Attachments[0])
 	}
 }
 
@@ -2087,6 +2360,106 @@ func TestServerAttachmentAndArtifactRoutes(t *testing.T) {
 	server.ServeHTTP(delRec, delReq)
 	if delRec.Code != http.StatusOK {
 		t.Fatalf("delete status = %d body=%s", delRec.Code, delRec.Body.String())
+	}
+}
+
+func TestServerPresignedAttachmentUploadConfirmFlow(t *testing.T) {
+	authService := &AuthService{
+		Store:      newMemoryUserStore(),
+		JWTSecret:  "secret",
+		AccessTTL:  time.Minute,
+		RefreshTTL: time.Hour,
+	}
+	server := NewServer(testRuntime(t), JWTAuthenticator{Secret: "secret"}, NewRateLimiter(20, time.Minute), nil)
+	server.SetAuthService(authService)
+	objects := newPresignObjectStore("https://r2.example.com/signed/get")
+	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Fatalf("upload method = %s, want PUT", r.Method)
+		}
+		key, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/"))
+		if err != nil {
+			t.Fatalf("unescape key: %v", err)
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upload: %v", err)
+		}
+		if err := objects.Put(r.Context(), key, data, r.Header.Get("Content-Type")); err != nil {
+			t.Fatalf("store upload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer uploadServer.Close()
+	objects.signedPutBase = uploadServer.URL
+	server.runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), objects, "artifacts"))
+
+	authSession := registerTestUser(t, server, "presigned-asset@example.com")
+	session := createTestSession(t, server, authSession.AccessToken)
+
+	presignReq := httptest.NewRequest(http.MethodPost, "/v1/attachments/presign", strings.NewReader(`{"session_id":"`+session.ID+`","filename":"hello.txt","content_type":"text/plain","size_bytes":16}`))
+	presignReq.Header.Set("Authorization", "Bearer "+authSession.AccessToken)
+	presignReq.Header.Set("Content-Type", "application/json")
+	presignRec := httptest.NewRecorder()
+	server.ServeHTTP(presignRec, presignReq)
+	if presignRec.Code != http.StatusCreated {
+		t.Fatalf("presign status = %d body=%s", presignRec.Code, presignRec.Body.String())
+	}
+	var upload PresignedAttachmentUpload
+	if err := json.Unmarshal(presignRec.Body.Bytes(), &upload); err != nil {
+		t.Fatalf("decode presign: %v", err)
+	}
+	if upload.AttachmentID == "" || upload.UploadURL == "" || upload.Method != http.MethodPut {
+		t.Fatalf("unexpected upload payload: %#v", upload)
+	}
+
+	directUploadReq, err := http.NewRequest(http.MethodPut, upload.UploadURL, strings.NewReader("hello attachment"))
+	if err != nil {
+		t.Fatalf("build direct upload: %v", err)
+	}
+	for key, value := range upload.Headers {
+		directUploadReq.Header.Set(key, value)
+	}
+	directUploadResp, err := http.DefaultClient.Do(directUploadReq)
+	if err != nil {
+		t.Fatalf("direct upload: %v", err)
+	}
+	_ = directUploadResp.Body.Close()
+	if directUploadResp.StatusCode != http.StatusOK {
+		t.Fatalf("direct upload status = %s", directUploadResp.Status)
+	}
+
+	confirmReq := httptest.NewRequest(http.MethodPost, "/v1/attachments/"+upload.AttachmentID+"/confirm", strings.NewReader(`{"session_id":"`+session.ID+`","filename":"hello.txt","content_type":"text/plain","size_bytes":15}`))
+	confirmReq.Header.Set("Authorization", "Bearer "+authSession.AccessToken)
+	confirmReq.Header.Set("Content-Type", "application/json")
+	confirmRec := httptest.NewRecorder()
+	server.ServeHTTP(confirmRec, confirmReq)
+	if confirmRec.Code != http.StatusBadRequest || !strings.Contains(confirmRec.Body.String(), "size mismatch") {
+		t.Fatalf("confirm mismatch status = %d body=%s", confirmRec.Code, confirmRec.Body.String())
+	}
+
+	confirmReq = httptest.NewRequest(http.MethodPost, "/v1/attachments/"+upload.AttachmentID+"/confirm", strings.NewReader(`{"session_id":"`+session.ID+`","filename":"hello.txt","content_type":"text/plain","size_bytes":16}`))
+	confirmReq.Header.Set("Authorization", "Bearer "+authSession.AccessToken)
+	confirmReq.Header.Set("Content-Type", "application/json")
+	confirmRec = httptest.NewRecorder()
+	server.ServeHTTP(confirmRec, confirmReq)
+	if confirmRec.Code != http.StatusCreated {
+		t.Fatalf("confirm status = %d body=%s", confirmRec.Code, confirmRec.Body.String())
+	}
+	var attachment Artifact
+	if err := json.Unmarshal(confirmRec.Body.Bytes(), &attachment); err != nil {
+		t.Fatalf("decode attachment: %v", err)
+	}
+	if attachment.ID != upload.AttachmentID || attachment.SizeBytes != 16 || attachment.Kind != AssetKindAttachment {
+		t.Fatalf("unexpected attachment: %#v", attachment)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/attachments/"+attachment.ID, nil)
+	getReq.Header.Set("Authorization", "Bearer "+authSession.AccessToken)
+	getRec := httptest.NewRecorder()
+	server.ServeHTTP(getRec, getReq)
+	if getRec.Body.String() != "hello attachment" {
+		t.Fatalf("download body = %q", getRec.Body.String())
 	}
 }
 
@@ -4001,17 +4374,20 @@ func (r *captureContentRunner) RunContent(_ context.Context, session *state.Sess
 }
 
 type presignObjectStore struct {
-	data      map[string][]byte
-	signedURL string
-	getCount  int
+	data          map[string][]byte
+	contentTypes  map[string]string
+	signedURL     string
+	signedPutBase string
+	getCount      int
 }
 
 func newPresignObjectStore(signedURL string) *presignObjectStore {
-	return &presignObjectStore{data: make(map[string][]byte), signedURL: signedURL}
+	return &presignObjectStore{data: make(map[string][]byte), contentTypes: make(map[string]string), signedURL: signedURL}
 }
 
-func (s *presignObjectStore) Put(_ context.Context, key string, data []byte, _ string) error {
+func (s *presignObjectStore) Put(_ context.Context, key string, data []byte, contentType string) error {
 	s.data[key] = append([]byte(nil), data...)
+	s.contentTypes[key] = normalizedContentType(contentType)
 	return nil
 }
 
@@ -4044,6 +4420,24 @@ func (s *presignObjectStore) PresignGet(_ context.Context, _ string, ttl time.Du
 		return "", errors.New("ttl is required")
 	}
 	return s.signedURL, nil
+}
+
+func (s *presignObjectStore) PresignPut(_ context.Context, key string, ttl time.Duration, _ string) (string, error) {
+	if ttl <= 0 {
+		return "", errors.New("ttl is required")
+	}
+	if strings.TrimSpace(s.signedPutBase) == "" {
+		return "", errors.New("put base URL is required")
+	}
+	return strings.TrimRight(s.signedPutBase, "/") + "/" + url.PathEscape(key), nil
+}
+
+func (s *presignObjectStore) Head(_ context.Context, key string) (ObjectInfo, error) {
+	data, ok := s.data[key]
+	if !ok {
+		return ObjectInfo{}, errors.New("not found")
+	}
+	return ObjectInfo{Key: key, SizeBytes: int64(len(data)), ContentType: s.contentTypes[key]}, nil
 }
 
 type blockingRunner struct {
@@ -4614,4 +5008,108 @@ func (s *collectSink) hasEvent(kind string) bool {
 		}
 	}
 	return false
+}
+
+type runtimeMessageWriteStore struct {
+	session       *state.Session
+	messages      []state.Message
+	saveCalls     int
+	metadataSaves int
+}
+
+func newRuntimeMessageWriteStore(workingDir string) *runtimeMessageWriteStore {
+	return &runtimeMessageWriteStore{session: state.NewSession(workingDir)}
+}
+
+func (s *runtimeMessageWriteStore) Create(_ context.Context, userID, workingDir string) (*state.Session, error) {
+	s.session = state.NewSession(workingDir)
+	s.session.UserID = userID
+	s.session.Metadata = map[string]string{"user_id_hash": userPathID(userID)}
+	return cloneRuntimeMessageWriteSession(s.session, s.messages), nil
+}
+
+func (s *runtimeMessageWriteStore) Get(_ context.Context, userID, sessionID string) (*state.Session, error) {
+	if s.session == nil || s.session.ID != sessionID {
+		return nil, os.ErrNotExist
+	}
+	clone := cloneRuntimeMessageWriteSession(s.session, s.messages)
+	clone.UserID = userID
+	return clone, nil
+}
+
+func (s *runtimeMessageWriteStore) List(context.Context, string) ([]*state.Session, error) {
+	return []*state.Session{cloneRuntimeMessageWriteSession(s.session, s.messages)}, nil
+}
+
+func (s *runtimeMessageWriteStore) Save(_ context.Context, _ string, session *state.Session) error {
+	s.saveCalls++
+	s.session = cloneRuntimeMessageWriteSession(session, session.Messages)
+	s.messages = cloneStateMessages(session.Messages)
+	return nil
+}
+
+func (s *runtimeMessageWriteStore) SaveSessionMetadata(_ context.Context, userID string, session *state.Session) error {
+	s.metadataSaves++
+	clone := cloneRuntimeMessageWriteSession(session, nil)
+	clone.UserID = userID
+	clone.Messages = cloneStateMessages(s.messages)
+	s.session = clone
+	return nil
+}
+
+func (s *runtimeMessageWriteStore) Delete(context.Context, string, string) error {
+	s.session = nil
+	s.messages = nil
+	return nil
+}
+
+func (s *runtimeMessageWriteStore) DeleteUser(context.Context, string) error {
+	s.session = nil
+	s.messages = nil
+	return nil
+}
+
+func (s *runtimeMessageWriteStore) PruneBefore(context.Context, time.Time) (int, error) {
+	return 0, nil
+}
+
+func (s *runtimeMessageWriteStore) AppendMessage(_ context.Context, userID, sessionID string, message state.Message) (state.Message, error) {
+	for _, existing := range s.messages {
+		if strings.TrimSpace(message.ID) != "" && existing.ID == message.ID {
+			return existing, nil
+		}
+	}
+	message = normalizeWriteMessage(message, userID, sessionID, time.Now().UTC())
+	message.SeqNo = int64(len(s.messages) + 1)
+	s.messages = append(s.messages, message)
+	if s.session != nil {
+		s.session.Messages = cloneStateMessages(s.messages)
+		s.session.MessageCount = len(s.messages)
+		s.session.UpdatedAt = message.CreatedAt
+		s.session.LastMessageAt = message.CreatedAt
+	}
+	return message, nil
+}
+
+func (s *runtimeMessageWriteStore) LoadSessionMessages(_ context.Context, _, _ string, opts SessionLoadOptions) ([]state.Message, error) {
+	messages := cloneStateMessages(s.messages)
+	if opts.MaxMessages > 0 && len(messages) > opts.MaxMessages {
+		messages = messages[len(messages)-opts.MaxMessages:]
+	}
+	return messages, nil
+}
+
+func (s *runtimeMessageWriteStore) ListMessages(context.Context, string, string) ([]state.Message, error) {
+	return cloneStateMessages(s.messages), nil
+}
+
+func cloneRuntimeMessageWriteSession(session *state.Session, messages []state.Message) *state.Session {
+	if session == nil {
+		return nil
+	}
+	clone := *session
+	clone.Tags = append([]string(nil), session.Tags...)
+	clone.Metadata = cloneStringMap(session.Metadata)
+	clone.Messages = cloneStateMessages(messages)
+	return &clone
 }

@@ -10,13 +10,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"claude-codex/internal/harness/state"
 )
 
 type SQLSessionStore struct {
-	db      *sql.DB
-	dialect SQLDialect
+	db             *sql.DB
+	dialect        SQLDialect
+	messageArchive *MessageArchiveObjectStore
+	sessionList    SessionListCache
+	messageSeq     MessageSequenceAllocator
 }
+
+const sqlMessageColumns = `message_id, session_id, user_id, seq_no, parent_id, role, content_type, content,
+	content_parts, tool_call_id, tool_name, tool_input, tool_output, tool_calls,
+	prompt_tokens, completion_tokens, status, is_context_used, model_id, run_id,
+	hidden, created_at, updated_at, archive_uri, archive_checksum, archived_at`
 
 func NewSQLSessionStore(db *sql.DB) *SQLSessionStore {
 	return NewSQLSessionStoreWithDialect(db, SQLDialectQuestion)
@@ -29,67 +39,241 @@ func NewSQLSessionStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLSessionSt
 	return &SQLSessionStore{db: db, dialect: dialect}
 }
 
+func (s *SQLSessionStore) SetMessageArchiveObjectStore(objects ObjectStore, prefix string) {
+	if s == nil || objects == nil {
+		return
+	}
+	s.messageArchive = NewMessageArchiveObjectStore(objects, prefix)
+}
+
+func (s *SQLSessionStore) SetSessionListCache(cache SessionListCache) {
+	if s == nil {
+		return
+	}
+	s.sessionList = cache
+}
+
+func (s *SQLSessionStore) SetMessageSequenceAllocator(allocator MessageSequenceAllocator) {
+	if s == nil {
+		return
+	}
+	s.messageSeq = allocator
+}
+
 func (s *SQLSessionStore) Init(ctx context.Context) error {
 	timeType := s.dialect.TimeType()
+	jsonType := "TEXT"
+	if s.dialect == SQLDialectPostgres {
+		jsonType = "JSONB"
+	}
 	if err := RunSQLMigrations(ctx, s.db, s.dialect, []SQLMigration{
 		{
-			Version: 1,
-			Statements: []string{
-				`CREATE TABLE IF NOT EXISTS agent_sessions (
-	user_id TEXT NOT NULL,
-	session_id TEXT NOT NULL,
-	updated_at ` + timeType + ` NOT NULL,
-	payload TEXT NOT NULL,
-	PRIMARY KEY (user_id, session_id)
-)`,
-				`CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_updated ON agent_sessions (user_id, updated_at)`,
-			},
+			Version:    1,
+			Statements: agentSessionSchemaStatements(timeType, jsonType),
 		},
 		{
-			Version: 4,
-			Statements: []string{
-				`CREATE TABLE IF NOT EXISTS agent_messages (
-	user_id TEXT NOT NULL,
-	session_id TEXT NOT NULL,
-	message_index INTEGER NOT NULL,
-	role TEXT NOT NULL,
-	content TEXT NOT NULL DEFAULT '',
-	tool_name TEXT NOT NULL DEFAULT '',
-	tool_call_id TEXT NOT NULL DEFAULT '',
-	tool_input TEXT NOT NULL DEFAULT '',
-	tool_output TEXT NOT NULL DEFAULT '',
-	tool_calls TEXT NOT NULL DEFAULT '',
-	hidden INTEGER NOT NULL DEFAULT 0,
-	created_at ` + timeType + ` NOT NULL,
-	payload TEXT NOT NULL,
-	PRIMARY KEY (user_id, session_id, message_index)
-)`,
-				`CREATE INDEX IF NOT EXISTS idx_agent_messages_user_created ON agent_messages (user_id, created_at)`,
-				`CREATE INDEX IF NOT EXISTS idx_agent_messages_session_created ON agent_messages (user_id, session_id, created_at)`,
-				`CREATE INDEX IF NOT EXISTS idx_agent_messages_role_created ON agent_messages (user_id, role, created_at)`,
-			},
+			Version:    4,
+			Statements: agentMessageSchemaStatements(timeType, jsonType),
 		},
 		{
 			Version:    5,
-			Statements: []string{},
+			Statements: agentMessageAuxiliarySchemaStatements(timeType),
+		},
+		{
+			Version: 6,
+			Statements: append([]string{
+				`DROP TABLE IF EXISTS agent_message_embedding_meta`,
+				`DROP TABLE IF EXISTS agent_message_attachments`,
+				`DROP TABLE IF EXISTS agent_messages`,
+				`DROP TABLE IF EXISTS agent_sessions`,
+			}, append(agentSessionSchemaStatements(timeType, jsonType), append(agentMessageSchemaStatements(timeType, jsonType), agentMessageAuxiliarySchemaStatements(timeType)...)...)...),
+		},
+		{
+			Version: 7,
+			Statements: append([]string{
+				`DROP TABLE IF EXISTS agent_message_attachments`,
+			}, agentMessageAttachmentSchemaStatements(timeType)...),
+		},
+		{
+			Version:    8,
+			Statements: agentMessageAttachmentProcessingSchemaStatements(s.dialect),
+		},
+		{
+			Version:    9,
+			Statements: agentMessageSoftDeleteSchemaStatements(),
+		},
+		{
+			Version:    10,
+			Statements: agentMessageArchiveSchemaStatements(timeType, s.dialect),
 		},
 	}); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_sessions", "updated_at"); err != nil {
+	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_sessions", "created_at", "updated_at", "last_message_at"); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_messages", "created_at"); err != nil {
+	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_messages", "created_at", "updated_at"); err != nil {
+		return err
+	}
+	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_messages", "archived_at"); err != nil {
 		return err
 	}
 	if err := s.initMessageSearchIndexes(ctx); err != nil {
 		return err
 	}
-	return s.BackfillMessages(ctx)
+	return nil
+}
+
+func agentSessionSchemaStatements(timeType, jsonType string) []string {
+	return []string{
+		`CREATE TABLE IF NOT EXISTS agent_sessions (
+	user_id TEXT NOT NULL,
+	session_id TEXT NOT NULL,
+	agent_id TEXT NOT NULL DEFAULT '',
+	title TEXT NOT NULL DEFAULT '',
+	status INTEGER NOT NULL DEFAULT 1,
+	message_count INTEGER NOT NULL DEFAULT 0,
+	total_tokens BIGINT NOT NULL DEFAULT 0,
+	working_dir TEXT NOT NULL DEFAULT '',
+	tags ` + jsonType + ` NOT NULL DEFAULT '[]',
+	description TEXT NOT NULL DEFAULT '',
+	parent_id TEXT NOT NULL DEFAULT '',
+	branch_point INTEGER NOT NULL DEFAULT 0,
+	metadata ` + jsonType + ` NOT NULL DEFAULT '{}',
+	archived INTEGER NOT NULL DEFAULT 0,
+	created_at ` + timeType + ` NOT NULL,
+	updated_at ` + timeType + ` NOT NULL,
+	last_message_at ` + timeType + `,
+	PRIMARY KEY (user_id, session_id)
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_status_last_message ON agent_sessions (user_id, status, last_message_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_status ON agent_sessions (agent_id, status)`,
+	}
+}
+
+func agentMessageSchemaStatements(timeType, jsonType string) []string {
+	return []string{
+		`CREATE TABLE IF NOT EXISTS agent_messages (
+	message_id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	user_id TEXT NOT NULL,
+	seq_no BIGINT NOT NULL,
+	parent_id TEXT NOT NULL DEFAULT '',
+	role TEXT NOT NULL,
+	content_type TEXT NOT NULL DEFAULT 'text',
+	content TEXT NOT NULL DEFAULT '',
+	content_parts ` + jsonType + ` NOT NULL DEFAULT '[]',
+	tool_call_id TEXT NOT NULL DEFAULT '',
+	tool_name TEXT NOT NULL DEFAULT '',
+	tool_input ` + jsonType + ` NOT NULL DEFAULT '{}',
+	tool_output TEXT NOT NULL DEFAULT '',
+	tool_calls ` + jsonType + ` NOT NULL DEFAULT '[]',
+	prompt_tokens INTEGER NOT NULL DEFAULT 0,
+	completion_tokens INTEGER NOT NULL DEFAULT 0,
+	status INTEGER NOT NULL DEFAULT 1,
+	is_context_used INTEGER NOT NULL DEFAULT 1,
+	model_id TEXT NOT NULL DEFAULT '',
+	run_id TEXT NOT NULL DEFAULT '',
+	hidden INTEGER NOT NULL DEFAULT 0,
+	created_at ` + timeType + ` NOT NULL,
+	updated_at ` + timeType + ` NOT NULL
+)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_messages_session_active_seq ON agent_messages (user_id, session_id, seq_no) WHERE status <> 2`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_messages_session_created ON agent_messages (user_id, session_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_messages_run_id ON agent_messages (run_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_messages_user_created ON agent_messages (user_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_messages_role_created ON agent_messages (user_id, role, created_at)`,
+	}
+}
+
+func agentMessageAuxiliarySchemaStatements(timeType string) []string {
+	return append(agentMessageAttachmentSchemaStatements(timeType), agentMessageEmbeddingSchemaStatements(timeType)...)
+}
+
+func agentMessageAttachmentSchemaStatements(timeType string) []string {
+	return []string{
+		`CREATE TABLE IF NOT EXISTS agent_message_attachments (
+	attachment_id TEXT NOT NULL,
+	message_id TEXT NOT NULL,
+	session_id TEXT NOT NULL,
+	user_id TEXT NOT NULL,
+	file_type TEXT NOT NULL,
+	mime_type TEXT NOT NULL,
+	file_name TEXT NOT NULL DEFAULT '',
+	file_size BIGINT NOT NULL DEFAULT 0,
+	storage_key TEXT NOT NULL,
+	thumbnail_key TEXT NOT NULL DEFAULT '',
+	embedding_status INTEGER NOT NULL DEFAULT 0,
+	created_at ` + timeType + ` NOT NULL,
+	PRIMARY KEY (message_id, attachment_id)
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_message_attachments_message ON agent_message_attachments (message_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_message_attachments_session ON agent_message_attachments (session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_message_attachments_user_status ON agent_message_attachments (user_id, embedding_status, created_at)`,
+	}
+}
+
+func agentMessageAttachmentProcessingSchemaStatements(dialect SQLDialect) []string {
+	stmt := `ALTER TABLE agent_message_attachments ADD COLUMN `
+	if dialect == SQLDialectPostgres {
+		stmt += `IF NOT EXISTS `
+	}
+	stmt += `extracted_text_key TEXT NOT NULL DEFAULT ''`
+	return []string{stmt}
+}
+
+func agentMessageSoftDeleteSchemaStatements() []string {
+	return []string{
+		`DROP INDEX IF EXISTS idx_agent_messages_session_seq`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_messages_session_active_seq ON agent_messages (user_id, session_id, seq_no) WHERE status <> 2`,
+	}
+}
+
+func agentMessageArchiveSchemaStatements(timeType string, dialect SQLDialect) []string {
+	columnPrefix := `ALTER TABLE agent_messages ADD COLUMN `
+	if dialect == SQLDialectPostgres {
+		columnPrefix += `IF NOT EXISTS `
+	}
+	return []string{
+		columnPrefix + `archive_uri TEXT NOT NULL DEFAULT ''`,
+		columnPrefix + `archive_checksum TEXT NOT NULL DEFAULT ''`,
+		columnPrefix + `archived_at ` + timeType,
+		`CREATE INDEX IF NOT EXISTS idx_agent_messages_archive_due ON agent_messages (created_at, archived_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_messages_archive_uri ON agent_messages (archive_uri)`,
+	}
+}
+
+func agentMessageEmbeddingSchemaStatements(timeType string) []string {
+	return []string{
+		`CREATE TABLE IF NOT EXISTS agent_message_embedding_meta (
+	embedding_id TEXT PRIMARY KEY,
+	message_id TEXT NOT NULL,
+	session_id TEXT NOT NULL,
+	user_id TEXT NOT NULL,
+	chunk_index INTEGER NOT NULL DEFAULT 0,
+	vector_id TEXT NOT NULL,
+	model_version TEXT NOT NULL DEFAULT '',
+	created_at ` + timeType + ` NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_message_embedding_message ON agent_message_embedding_meta (message_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_message_embedding_user ON agent_message_embedding_meta (user_id)`,
+	}
+}
+
+type MessageEmbeddingMeta struct {
+	EmbeddingID  string
+	MessageID    string
+	SessionID    string
+	UserID       string
+	ChunkIndex   int
+	VectorID     string
+	ModelVersion string
+	CreatedAt    time.Time
 }
 
 func (s *SQLSessionStore) Create(ctx context.Context, userID, workingDir string) (*state.Session, error) {
 	session := state.NewSession(workingDir)
+	session.UserID = userID
 	if session.Metadata == nil {
 		session.Metadata = map[string]string{}
 	}
@@ -101,33 +285,91 @@ func (s *SQLSessionStore) Create(ctx context.Context, userID, workingDir string)
 }
 
 func (s *SQLSessionStore) Get(ctx context.Context, userID, sessionID string) (*state.Session, error) {
-	var payload string
-	if err := s.db.QueryRowContext(ctx, s.dialect.Bind(`SELECT payload FROM agent_sessions WHERE user_id = ? AND session_id = ?`), userID, sessionID).Scan(&payload); err != nil {
+	row := s.db.QueryRowContext(ctx, s.dialect.Bind(`
+SELECT user_id, session_id, agent_id, title, status, message_count, total_tokens,
+	working_dir, tags, description, parent_id, branch_point, metadata, archived,
+	created_at, updated_at, last_message_at
+FROM agent_sessions
+WHERE user_id = ? AND session_id = ? AND status <> ?`), userID, sessionID, state.SessionStatusDeleted)
+	session, err := scanSQLSession(row)
+	if err != nil {
 		return nil, err
 	}
-	var session state.Session
-	if err := json.Unmarshal([]byte(payload), &session); err != nil {
+	messages, err := s.ListMessages(ctx, userID, sessionID)
+	if err != nil {
 		return nil, err
 	}
-	return &session, nil
+	session.Messages = messages
+	return session, nil
 }
 
 func (s *SQLSessionStore) List(ctx context.Context, userID string) ([]*state.Session, error) {
-	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`SELECT payload FROM agent_sessions WHERE user_id = ? ORDER BY updated_at DESC`), userID)
+	if s.sessionList != nil {
+		if sessions, ok, err := s.sessionList.GetSessions(ctx, userID, 0, 0); err != nil {
+			return nil, err
+		} else if ok {
+			return sessions, nil
+		}
+	}
+	sessions, err := s.listSessionsFromSQL(ctx, userID, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	if s.sessionList != nil {
+		if err := s.sessionList.SetSessions(ctx, userID, sessions); err != nil {
+			return nil, err
+		}
+	}
+	return sessions, nil
+}
+
+func (s *SQLSessionStore) ListPage(ctx context.Context, userID string, limit, offset int) ([]*state.Session, error) {
+	if limit <= 0 {
+		return s.List(ctx, userID)
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if s.sessionList != nil {
+		if sessions, ok, err := s.sessionList.GetSessions(ctx, userID, offset, limit); err != nil {
+			return nil, err
+		} else if ok {
+			return sessions, nil
+		}
+	}
+	sessions, err := s.List(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if offset >= len(sessions) {
+		return []*state.Session{}, nil
+	}
+	end := offset + limit
+	if end > len(sessions) {
+		end = len(sessions)
+	}
+	return sessions[offset:end], nil
+}
+
+func (s *SQLSessionStore) listSessionsFromSQL(ctx context.Context, userID string, limit, offset int) ([]*state.Session, error) {
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
+SELECT user_id, session_id, agent_id, title, status, message_count, total_tokens,
+	working_dir, tags, description, parent_id, branch_point, metadata, archived,
+	created_at, updated_at, last_message_at
+FROM agent_sessions
+WHERE user_id = ? AND status <> ?
+ORDER BY updated_at DESC`), userID, state.SessionStatusDeleted)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := make([]*state.Session, 0)
 	for rows.Next() {
-		var payload string
-		if err := rows.Scan(&payload); err != nil {
+		session, err := scanSQLSession(rows)
+		if err != nil {
 			return nil, err
 		}
-		var session state.Session
-		if err := json.Unmarshal([]byte(payload), &session); err == nil {
-			out = append(out, &session)
-		}
+		out = append(out, session)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -142,24 +384,12 @@ func (s *SQLSessionStore) Save(ctx context.Context, userID string, session *stat
 	if session == nil {
 		return fmt.Errorf("session is required")
 	}
-	sessionForSQL := sanitizeSessionForSQL(session)
-	payload, err := json.Marshal(sessionForSQL)
-	if err != nil {
-		return err
-	}
-	updatedAt := sessionForSQL.UpdatedAt
-	if updatedAt.IsZero() {
-		updatedAt = time.Now().UTC()
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, s.dialect.Bind(`
-INSERT INTO agent_sessions (user_id, session_id, updated_at, payload)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(user_id, session_id) DO UPDATE SET updated_at = excluded.updated_at, payload = excluded.payload`),
-		userID, sessionForSQL.ID, sqlTimeValue(updatedAt, s.dialect), string(payload)); err != nil {
+	sessionForSQL, err := s.saveSessionMetadataTx(ctx, tx, userID, session)
+	if err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -167,7 +397,94 @@ ON CONFLICT(user_id, session_id) DO UPDATE SET updated_at = excluded.updated_at,
 		_ = tx.Rollback()
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if s.sessionList != nil {
+		return s.sessionList.UpsertSession(ctx, userID, sessionForSQL)
+	}
+	return nil
+}
+
+func (s *SQLSessionStore) SaveSessionMetadata(ctx context.Context, userID string, session *state.Session) error {
+	if session == nil {
+		return fmt.Errorf("session is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	sessionForSQL, err := s.saveSessionMetadataTx(ctx, tx, userID, session)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if s.sessionList != nil {
+		return s.sessionList.UpsertSession(ctx, userID, sessionForSQL)
+	}
+	return nil
+}
+
+func (s *SQLSessionStore) saveSessionMetadataTx(ctx context.Context, tx *sql.Tx, userID string, session *state.Session) (*state.Session, error) {
+	sessionForSQL := sanitizeSessionForSQL(session)
+	sessionForSQL.UserID = sanitizeSQLText(userID)
+	normalizeSessionForSQL(sessionForSQL)
+	updatedAt := sessionForSQL.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	tags, err := json.Marshal(sessionForSQL.Tags)
+	if err != nil {
+		return nil, err
+	}
+	metadata, err := json.Marshal(sessionForSQL.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, s.dialect.Bind(`
+INSERT INTO agent_sessions (
+	user_id, session_id, agent_id, title, status, message_count, total_tokens,
+	working_dir, tags, description, parent_id, branch_point, metadata, archived,
+	created_at, updated_at, last_message_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(user_id, session_id) DO UPDATE SET
+	agent_id = excluded.agent_id,
+	title = excluded.title,
+	status = excluded.status,
+	message_count = excluded.message_count,
+	total_tokens = excluded.total_tokens,
+	working_dir = excluded.working_dir,
+	tags = excluded.tags,
+	description = excluded.description,
+	parent_id = excluded.parent_id,
+	branch_point = excluded.branch_point,
+	metadata = excluded.metadata,
+	archived = excluded.archived,
+	updated_at = excluded.updated_at,
+	last_message_at = excluded.last_message_at`),
+		userID,
+		sessionForSQL.ID,
+		sessionForSQL.AgentID,
+		sessionForSQL.Title,
+		sessionForSQL.Status,
+		sessionForSQL.MessageCount,
+		sessionForSQL.TotalTokens,
+		sessionForSQL.WorkingDir,
+		string(tags),
+		sessionForSQL.Description,
+		sessionForSQL.ParentID,
+		sessionForSQL.BranchPoint,
+		string(metadata),
+		sqlIntFromBool(sessionForSQL.Archived),
+		sqlTimeValue(sessionForSQL.StartedAt, s.dialect),
+		sqlTimeValue(updatedAt, s.dialect),
+		nullableSQLTimeValue(zeroTimeAsNil(sessionForSQL.LastMessageAt), s.dialect)); err != nil {
+		return nil, err
+	}
+	return sessionForSQL, nil
 }
 
 func (s *SQLSessionStore) Delete(ctx context.Context, userID, sessionID string) error {
@@ -175,15 +492,42 @@ func (s *SQLSessionStore) Delete(ctx context.Context, userID, sessionID string) 
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`DELETE FROM agent_messages WHERE user_id = ? AND session_id = ?`), userID, sessionID); err != nil {
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_messages
+SET status = ?,
+	updated_at = ?
+WHERE user_id = ? AND session_id = ? AND status <> ?`),
+		state.MessageStatusDeleted,
+		sqlTimeValue(now, s.dialect),
+		userID,
+		sessionID,
+		state.MessageStatusDeleted,
+	); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`DELETE FROM agent_sessions WHERE user_id = ? AND session_id = ?`), userID, sessionID); err != nil {
+	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_sessions
+SET status = ?, archived = ?, updated_at = ?
+WHERE user_id = ? AND session_id = ? AND status <> ?`),
+		state.SessionStatusDeleted,
+		sqlIntFromBool(true),
+		sqlTimeValue(now, s.dialect),
+		userID,
+		sessionID,
+		state.SessionStatusDeleted,
+	); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if s.sessionList != nil {
+		return s.sessionList.RemoveSession(ctx, userID, sessionID)
+	}
+	return nil
 }
 
 func (s *SQLSessionStore) DeleteUser(ctx context.Context, userID string) error {
@@ -191,19 +535,44 @@ func (s *SQLSessionStore) DeleteUser(ctx context.Context, userID string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`DELETE FROM agent_messages WHERE user_id = ?`), userID); err != nil {
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_messages
+SET status = ?,
+	updated_at = ?
+WHERE user_id = ? AND status <> ?`),
+		state.MessageStatusDeleted,
+		sqlTimeValue(now, s.dialect),
+		userID,
+		state.MessageStatusDeleted,
+	); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`DELETE FROM agent_sessions WHERE user_id = ?`), userID); err != nil {
+	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_sessions
+SET status = ?, archived = ?, updated_at = ?
+WHERE user_id = ? AND status <> ?`),
+		state.SessionStatusDeleted,
+		sqlIntFromBool(true),
+		sqlTimeValue(now, s.dialect),
+		userID,
+		state.SessionStatusDeleted,
+	); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if s.sessionList != nil {
+		return s.sessionList.InvalidateUser(ctx, userID)
+	}
+	return nil
 }
 
 func (s *SQLSessionStore) PruneBefore(ctx context.Context, cutoff time.Time) (int, error) {
-	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`SELECT user_id, session_id FROM agent_sessions WHERE updated_at < ?`), sqlTimeValue(cutoff, s.dialect))
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`SELECT user_id, session_id FROM agent_sessions WHERE updated_at < ? AND status <> ?`), sqlTimeValue(cutoff, s.dialect), state.SessionStatusDeleted)
 	if err != nil {
 		return 0, err
 	}
@@ -233,24 +602,318 @@ func (s *SQLSessionStore) PruneBefore(ctx context.Context, cutoff time.Time) (in
 
 func (s *SQLSessionStore) ListMessages(ctx context.Context, userID, sessionID string) ([]state.Message, error) {
 	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
-SELECT payload FROM agent_messages WHERE user_id = ? AND session_id = ? ORDER BY message_index ASC`), userID, sessionID)
+SELECT `+sqlMessageColumns+`
+FROM agent_messages
+WHERE user_id = ? AND session_id = ? AND status <> ?
+ORDER BY seq_no ASC`), userID, sessionID, state.MessageStatusDeleted)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	messages := make([]state.Message, 0)
 	for rows.Next() {
-		var payload string
-		if err := rows.Scan(&payload); err != nil {
-			return nil, err
-		}
-		var message state.Message
-		if err := json.Unmarshal([]byte(payload), &message); err != nil {
+		message, err := scanSQLMessage(rows)
+		if err != nil {
 			return nil, err
 		}
 		messages = append(messages, message)
 	}
-	return messages, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return s.hydrateSQLMessages(ctx, userID, messages)
+}
+
+func (s *SQLSessionStore) AppendMessage(ctx context.Context, userID, sessionID string, message state.Message) (state.Message, error) {
+	if strings.TrimSpace(userID) == "" {
+		return state.Message{}, fmt.Errorf("user ID is required")
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return state.Message{}, fmt.Errorf("session ID is required")
+	}
+	releaseSeqLock, err := s.acquireMessageSeqLock(ctx, userID, sessionID)
+	if err != nil {
+		return state.Message{}, err
+	}
+	if releaseSeqLock != nil {
+		defer func() { _ = releaseSeqLock(context.Background()) }()
+	}
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		created, err := s.appendMessageOnce(ctx, userID, sessionID, message)
+		if err == nil {
+			return created, nil
+		}
+		lastErr = err
+		if s.messageSeq != nil {
+			if syncErr := s.syncMessageSeqToSQL(ctx, userID, sessionID); syncErr != nil {
+				return state.Message{}, fmt.Errorf("%w; sync redis message seq: %v", err, syncErr)
+			}
+		}
+		if s.messageSeq == nil || attempt > 0 || !isMessageSeqConflict(err) {
+			break
+		}
+	}
+	return state.Message{}, lastErr
+}
+
+func (s *SQLSessionStore) acquireMessageSeqLock(ctx context.Context, userID, sessionID string) (func(context.Context) error, error) {
+	locker, ok := s.messageSeq.(MessageSequenceLocker)
+	if !ok || locker == nil {
+		return nil, nil
+	}
+	return locker.AcquireMessageSeqLock(ctx, userID, sessionID)
+}
+
+func (s *SQLSessionStore) appendMessageOnce(ctx context.Context, userID, sessionID string, message state.Message) (state.Message, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return state.Message{}, err
+	}
+	if strings.TrimSpace(message.ID) != "" {
+		existing, ok, err := s.findMessageByID(ctx, tx, userID, sessionID, message.ID)
+		if err != nil {
+			_ = tx.Rollback()
+			return state.Message{}, err
+		}
+		if ok {
+			if err := tx.Commit(); err != nil {
+				return state.Message{}, err
+			}
+			hydrated, err := s.hydrateSQLMessages(ctx, userID, []state.Message{existing})
+			if err != nil {
+				return state.Message{}, err
+			}
+			return hydrated[0], nil
+		}
+	}
+	var sessionStartedRaw any
+	if err := tx.QueryRowContext(ctx, s.dialect.Bind(`SELECT created_at FROM agent_sessions WHERE user_id = ? AND session_id = ? AND status <> ?`), userID, sessionID, state.SessionStatusDeleted).Scan(&sessionStartedRaw); err != nil {
+		_ = tx.Rollback()
+		if errors.Is(err, sql.ErrNoRows) {
+			return state.Message{}, fmt.Errorf("session %s not found", sessionID)
+		}
+		return state.Message{}, err
+	}
+	sessionStartedAt, err := parseSQLTime(sessionStartedRaw)
+	if err != nil {
+		_ = tx.Rollback()
+		return state.Message{}, err
+	}
+	nextSeq, err := s.nextMessageSeq(ctx, tx, userID, sessionID)
+	if err != nil {
+		_ = tx.Rollback()
+		return state.Message{}, err
+	}
+	message = normalizeMessageForSQL(message, userID, sessionID, nextSeq, sessionStartedAt)
+	if err := insertSQLMessage(ctx, tx, s.dialect, message); err != nil {
+		_ = tx.Rollback()
+		return state.Message{}, err
+	}
+	tokenDelta := int64(message.PromptTokens + message.CompletionTokens)
+	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_sessions
+SET message_count = (
+		SELECT COUNT(*) FROM agent_messages
+		WHERE user_id = ? AND session_id = ? AND status <> ?
+	),
+	total_tokens = total_tokens + ?,
+	updated_at = ?,
+	last_message_at = ?
+WHERE user_id = ? AND session_id = ?`),
+		userID,
+		sessionID,
+		state.MessageStatusDeleted,
+		tokenDelta,
+		sqlTimeValue(message.CreatedAt, s.dialect),
+		sqlTimeValue(message.CreatedAt, s.dialect),
+		userID,
+		sessionID,
+	); err != nil {
+		_ = tx.Rollback()
+		return state.Message{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return state.Message{}, err
+	}
+	if s.sessionList != nil {
+		_ = s.sessionList.InvalidateUser(ctx, userID)
+	}
+	hydrated, err := s.hydrateSQLMessages(ctx, userID, []state.Message{message})
+	if err != nil {
+		return state.Message{}, err
+	}
+	return hydrated[0], nil
+}
+
+func (s *SQLSessionStore) nextMessageSeq(ctx context.Context, tx *sql.Tx, userID, sessionID string) (int64, error) {
+	if s.messageSeq != nil {
+		maxSeq, err := s.maxMessageSeqTx(ctx, tx, userID, sessionID)
+		if err != nil {
+			return 0, err
+		}
+		if err := s.reconcileMessageSeq(ctx, userID, sessionID, maxSeq); err != nil {
+			return 0, err
+		}
+		return s.messageSeq.NextMessageSeq(ctx, userID, sessionID)
+	}
+	var nextSeq int64
+	if err := tx.QueryRowContext(ctx, s.dialect.Bind(`SELECT COALESCE(MAX(seq_no), 0) + 1 FROM agent_messages WHERE user_id = ? AND session_id = ?`), userID, sessionID).Scan(&nextSeq); err != nil {
+		return 0, err
+	}
+	return nextSeq, nil
+}
+
+func (s *SQLSessionStore) syncMessageSeqToSQL(ctx context.Context, userID, sessionID string) error {
+	if s.messageSeq == nil {
+		return nil
+	}
+	var maxSeq int64
+	if err := s.db.QueryRowContext(ctx, s.dialect.Bind(`SELECT COALESCE(MAX(seq_no), 0) FROM agent_messages WHERE user_id = ? AND session_id = ?`), userID, sessionID).Scan(&maxSeq); err != nil {
+		return err
+	}
+	return s.reconcileMessageSeq(ctx, userID, sessionID, maxSeq)
+}
+
+func (s *SQLSessionStore) maxMessageSeqTx(ctx context.Context, tx *sql.Tx, userID, sessionID string) (int64, error) {
+	var maxSeq int64
+	if err := tx.QueryRowContext(ctx, s.dialect.Bind(`SELECT COALESCE(MAX(seq_no), 0) FROM agent_messages WHERE user_id = ? AND session_id = ?`), userID, sessionID).Scan(&maxSeq); err != nil {
+		return 0, err
+	}
+	return maxSeq, nil
+}
+
+func (s *SQLSessionStore) reconcileMessageSeq(ctx context.Context, userID, sessionID string, maxSeq int64) error {
+	if reconciler, ok := s.messageSeq.(MessageSequenceReconciler); ok && reconciler != nil {
+		return reconciler.ReconcileMessageSeq(ctx, userID, sessionID, maxSeq)
+	}
+	return s.messageSeq.SetMessageSeqFloor(ctx, userID, sessionID, maxSeq)
+}
+
+func isMessageSeqConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "idx_agent_messages_session_active_seq") {
+		return true
+	}
+	return strings.Contains(text, "unique") &&
+		strings.Contains(text, "user_id") &&
+		strings.Contains(text, "session_id") &&
+		strings.Contains(text, "seq_no")
+}
+
+func (s *SQLSessionStore) LoadSessionMessages(ctx context.Context, userID, sessionID string, opts SessionLoadOptions) ([]state.Message, error) {
+	opts = normalizeSessionLoadOptions(opts)
+	predicates := []string{
+		"user_id = ?",
+		"session_id = ?",
+		"status = ?",
+		"is_context_used = 1",
+	}
+	args := []any{userID, sessionID, state.MessageStatusNormal}
+	if !opts.IncludeSystem {
+		predicates = append(predicates, "role <> ?", "content_type <> ?")
+		args = append(args, state.MessageRoleSystem, state.MessageContentTypeSummary)
+	}
+	args = append(args, opts.MaxMessages)
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
+SELECT `+sqlMessageColumns+`
+FROM agent_messages
+WHERE `+strings.Join(predicates, " AND ")+`
+ORDER BY seq_no DESC
+LIMIT ?`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	reversed := make([]state.Message, 0, opts.MaxMessages)
+	for rows.Next() {
+		message, err := scanSQLMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		reversed = append(reversed, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	messages := make([]state.Message, 0, len(reversed))
+	for i := len(reversed) - 1; i >= 0; i-- {
+		messages = append(messages, reversed[i])
+	}
+	return s.hydrateSQLMessages(ctx, userID, messages)
+}
+
+func (s *SQLSessionStore) LoadLatestSummaryMessage(ctx context.Context, userID, sessionID string) (state.Message, bool, error) {
+	row := s.db.QueryRowContext(ctx, s.dialect.Bind(`
+SELECT `+sqlMessageColumns+`
+FROM agent_messages
+WHERE user_id = ? AND session_id = ? AND status = ? AND is_context_used = 1
+	AND (role = ? OR content_type = ?)
+ORDER BY seq_no DESC
+LIMIT 1`),
+		userID,
+		sessionID,
+		state.MessageStatusNormal,
+		state.MessageRoleSystem,
+		state.MessageContentTypeSummary,
+	)
+	message, err := scanSQLMessage(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return state.Message{}, false, nil
+		}
+		return state.Message{}, false, err
+	}
+	hydrated, err := s.hydrateSQLMessages(ctx, userID, []state.Message{message})
+	if err != nil {
+		return state.Message{}, false, err
+	}
+	return hydrated[0], true, nil
+}
+
+func (s *SQLSessionStore) MarkMessagesContextUnused(ctx context.Context, userID, sessionID string, messageIDs []string) (int, error) {
+	if len(messageIDs) == 0 {
+		return 0, nil
+	}
+	ids := make([]string, 0, len(messageIDs))
+	args := []any{state.MessageStatusTruncated, sqlTimeValue(time.Now().UTC(), s.dialect), userID, sessionID}
+	for _, id := range messageIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		ids = append(ids, id)
+		args = append(args, id)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(ids))
+	for i := range placeholders {
+		placeholders[i] = "?"
+	}
+	query := s.dialect.Bind(`
+UPDATE agent_messages
+SET is_context_used = 0,
+	status = ?,
+	updated_at = ?
+WHERE user_id = ?
+  AND session_id = ?
+  AND message_id IN (` + strings.Join(placeholders, ",") + `)
+  AND status = ?`)
+	args = append(args, state.MessageStatusNormal)
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return int(affected), nil
 }
 
 func (s *SQLSessionStore) SearchMessages(ctx context.Context, userID, query string, limit, offset int) ([]MessageSearchResult, error) {
@@ -270,15 +933,17 @@ func (s *SQLSessionStore) SearchMessages(ctx context.Context, userID, query stri
 		matchOperator = "ILIKE"
 	}
 	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(fmt.Sprintf(`
-SELECT m.session_id, m.message_index, m.role, m.content, m.tool_output, m.created_at, s.payload
+SELECT m.message_id, m.session_id, m.seq_no, m.role, m.content, m.tool_output, m.created_at, s.title, s.description
 FROM agent_messages m
 JOIN agent_sessions s ON s.user_id = m.user_id AND s.session_id = m.session_id
 WHERE m.user_id = ?
+  AND m.status = ?
+  AND s.status <> ?
   AND m.hidden = 0
   AND m.role <> 'tool'
   AND (m.content %s ? ESCAPE '\' OR m.tool_output %s ? ESCAPE '\')
 ORDER BY m.created_at DESC
-LIMIT ? OFFSET ?`, matchOperator, matchOperator)), userID, pattern, pattern, limit, offset)
+LIMIT ? OFFSET ?`, matchOperator, matchOperator)), userID, state.MessageStatusNormal, state.SessionStatusDeleted, pattern, pattern, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -286,25 +951,135 @@ LIMIT ? OFFSET ?`, matchOperator, matchOperator)), userID, pattern, pattern, lim
 	out := make([]MessageSearchResult, 0, limit)
 	for rows.Next() {
 		var result MessageSearchResult
-		var content, toolOutput, sessionPayload string
+		var content, toolOutput, title, description string
+		var seqNo int64
 		var createdRaw any
-		if err := rows.Scan(&result.SessionID, &result.MessageIndex, &result.Role, &content, &toolOutput, &createdRaw, &sessionPayload); err != nil {
+		if err := rows.Scan(&result.MessageID, &result.SessionID, &seqNo, &result.Role, &content, &toolOutput, &createdRaw, &title, &description); err != nil {
 			return nil, err
 		}
 		createdAt, err := parseSQLTime(createdRaw)
 		if err != nil {
 			return nil, err
 		}
-		var session state.Session
-		_ = json.Unmarshal([]byte(sessionPayload), &session)
 		searchable := messageSearchContent(content, toolOutput, query)
+		if seqNo > 0 {
+			result.MessageIndex = int(seqNo - 1)
+		}
 		result.Content = searchable
 		result.Snippet = messageSearchSnippet(searchable, query, 160)
-		result.SessionTitle = searchSessionTitle(&session)
+		result.SessionTitle = firstNonEmptyString(title, description, result.SessionID)
 		result.CreatedAt = createdAt
 		out = append(out, result)
 	}
 	return out, rows.Err()
+}
+
+func (s *SQLSessionStore) HydrateMessageSearchResults(ctx context.Context, userID string, results []MessageSearchResult) ([]MessageSearchResult, error) {
+	if len(results) == 0 {
+		return []MessageSearchResult{}, nil
+	}
+	ids := make([]string, 0, len(results))
+	seen := make(map[string]bool)
+	for _, result := range results {
+		id := strings.TrimSpace(result.MessageID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return results, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := []any{userID, state.MessageStatusNormal, state.SessionStatusDeleted}
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
+SELECT m.message_id, m.session_id, m.seq_no, m.role, m.content, m.tool_output, m.created_at, s.title, s.description
+FROM agent_messages m
+JOIN agent_sessions s ON s.user_id = m.user_id AND s.session_id = m.session_id
+WHERE m.user_id = ?
+  AND m.status = ?
+  AND s.status <> ?
+  AND m.message_id IN (`+strings.Join(placeholders, ",")+`)`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	hydrated := make(map[string]MessageSearchResult, len(ids))
+	for rows.Next() {
+		var result MessageSearchResult
+		var content, toolOutput, title, description string
+		var seqNo int64
+		var createdRaw any
+		if err := rows.Scan(&result.MessageID, &result.SessionID, &seqNo, &result.Role, &content, &toolOutput, &createdRaw, &title, &description); err != nil {
+			return nil, err
+		}
+		createdAt, err := parseSQLTime(createdRaw)
+		if err != nil {
+			return nil, err
+		}
+		if seqNo > 0 {
+			result.MessageIndex = int(seqNo - 1)
+		}
+		result.Content = firstNonEmptyString(content, toolOutput)
+		result.Snippet = messageSearchSnippet(result.Content, "", 160)
+		result.SessionTitle = firstNonEmptyString(title, description, result.SessionID)
+		result.CreatedAt = createdAt
+		hydrated[result.MessageID] = result
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := append([]MessageSearchResult(nil), results...)
+	for i, result := range out {
+		full, ok := hydrated[result.MessageID]
+		if !ok {
+			continue
+		}
+		full.Score = result.Score
+		full.Source = result.Source
+		if strings.TrimSpace(result.Snippet) != "" {
+			full.Snippet = result.Snippet
+		}
+		out[i] = full
+	}
+	return out, nil
+}
+
+func (s *SQLSessionStore) SaveMessageEmbeddingMeta(ctx context.Context, meta MessageEmbeddingMeta) error {
+	meta.EmbeddingID = strings.TrimSpace(meta.EmbeddingID)
+	meta.MessageID = strings.TrimSpace(meta.MessageID)
+	meta.SessionID = strings.TrimSpace(meta.SessionID)
+	meta.UserID = strings.TrimSpace(meta.UserID)
+	meta.VectorID = strings.TrimSpace(meta.VectorID)
+	if meta.EmbeddingID == "" || meta.MessageID == "" || meta.SessionID == "" || meta.UserID == "" || meta.VectorID == "" {
+		return fmt.Errorf("message embedding meta requires embedding, message, session, user, and vector IDs")
+	}
+	if meta.CreatedAt.IsZero() {
+		meta.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
+INSERT INTO agent_message_embedding_meta (
+	embedding_id, message_id, session_id, user_id, chunk_index, vector_id, model_version, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(embedding_id) DO UPDATE SET
+	vector_id = excluded.vector_id,
+	model_version = excluded.model_version,
+	created_at = excluded.created_at`),
+		meta.EmbeddingID,
+		meta.MessageID,
+		meta.SessionID,
+		meta.UserID,
+		meta.ChunkIndex,
+		meta.VectorID,
+		meta.ModelVersion,
+		sqlTimeValue(meta.CreatedAt, s.dialect),
+	)
+	return err
 }
 
 func (s *SQLSessionStore) initMessageSearchIndexes(ctx context.Context) error {
@@ -324,102 +1099,596 @@ func (s *SQLSessionStore) initMessageSearchIndexes(ctx context.Context) error {
 }
 
 func (s *SQLSessionStore) BackfillMessages(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT user_id, payload FROM agent_sessions`)
-	if err != nil {
+	return nil
+}
+
+func (s *SQLSessionStore) replaceMessages(ctx context.Context, tx *sql.Tx, userID string, session *state.Session) error {
+	normalized := make([]state.Message, 0, len(session.Messages))
+	for index, message := range session.Messages {
+		message = normalizeMessageForSQL(message, userID, session.ID, int64(index+1), session.StartedAt)
+		normalized = append(normalized, message)
+	}
+	if err := softDeleteSessionMessagesForReplace(ctx, tx, s.dialect, userID, session.ID); err != nil {
 		return err
 	}
-	defer rows.Close()
-	type pendingSession struct {
-		userID  string
-		session *state.Session
-	}
-	var pending []pendingSession
-	for rows.Next() {
-		var userID, payload string
-		if err := rows.Scan(&userID, &payload); err != nil {
-			return err
-		}
-		var session state.Session
-		if err := json.Unmarshal([]byte(payload), &session); err != nil {
-			continue
-		}
-		pending = append(pending, pendingSession{userID: userID, session: &session})
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, item := range pending {
-		var count int
-		err := s.db.QueryRowContext(ctx, s.dialect.Bind(`SELECT COUNT(*) FROM agent_messages WHERE user_id = ? AND session_id = ?`), item.userID, item.session.ID).Scan(&count)
-		if err != nil {
-			return err
-		}
-		if count > 0 {
-			continue
-		}
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if err := s.replaceMessages(ctx, tx, item.userID, item.session); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		if err := tx.Commit(); err != nil {
+	for _, message := range normalized {
+		if err := upsertSQLMessage(ctx, tx, s.dialect, message); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *SQLSessionStore) replaceMessages(ctx context.Context, tx *sql.Tx, userID string, session *state.Session) error {
-	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`DELETE FROM agent_messages WHERE user_id = ? AND session_id = ?`), userID, session.ID); err != nil {
+func softDeleteSessionMessagesForReplace(ctx context.Context, tx *sql.Tx, dialect SQLDialect, userID, sessionID string) error {
+	_, err := tx.ExecContext(ctx, dialect.Bind(`
+UPDATE agent_messages
+SET status = ?,
+	updated_at = ?
+WHERE user_id = ?
+  AND session_id = ?
+  AND status <> ?`),
+		state.MessageStatusDeleted,
+		sqlTimeValue(time.Now().UTC(), dialect),
+		userID,
+		sessionID,
+		state.MessageStatusDeleted,
+	)
+	return err
+}
+
+func (s *SQLSessionStore) findMessageByID(ctx context.Context, tx *sql.Tx, userID, sessionID, messageID string) (state.Message, bool, error) {
+	row := tx.QueryRowContext(ctx, s.dialect.Bind(`
+SELECT `+sqlMessageColumns+`
+FROM agent_messages
+WHERE user_id = ? AND session_id = ? AND message_id = ?`), userID, sessionID, messageID)
+	message, err := scanSQLMessage(row)
+	if err == nil {
+		return message, true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return state.Message{}, false, nil
+	}
+	return state.Message{}, false, err
+}
+
+func insertSQLMessage(ctx context.Context, tx *sql.Tx, dialect SQLDialect, message state.Message) error {
+	return writeSQLMessage(ctx, tx, dialect, message, false)
+}
+
+func upsertSQLMessage(ctx context.Context, tx *sql.Tx, dialect SQLDialect, message state.Message) error {
+	return writeSQLMessage(ctx, tx, dialect, message, true)
+}
+
+func writeSQLMessage(ctx context.Context, tx *sql.Tx, dialect SQLDialect, message state.Message, upsert bool) error {
+	contentParts := message.ContentParts
+	if len(contentParts) == 0 && len(message.ContentBlocks) > 0 {
+		contentParts = message.ContentBlocks
+	}
+	if len(contentParts) > 0 {
+		contentParts = normalizeMessageContentParts(contentParts)
+		message.ContentParts = contentParts
+		message.ContentBlocks = contentParts
+	}
+	contentPartsJSON, err := json.Marshal(contentParts)
+	if err != nil {
 		return err
 	}
-	for index, message := range session.Messages {
-		payload, err := json.Marshal(message)
-		if err != nil {
-			return err
-		}
-		toolCalls, err := json.Marshal(message.ToolCalls)
-		if err != nil {
-			return err
-		}
-		createdAt := message.CreatedAt
-		if createdAt.IsZero() {
-			base := session.StartedAt
-			if base.IsZero() {
-				base = time.Now().UTC()
-			}
-			createdAt = base.Add(time.Duration(index) * time.Millisecond)
-		}
-		hidden := 0
-		if message.Hidden {
-			hidden = 1
-		}
-		if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+	toolInput := message.ToolInput
+	if len(toolInput) == 0 {
+		toolInput = json.RawMessage(`{}`)
+	}
+	toolCalls, err := json.Marshal(message.ToolCalls)
+	if err != nil {
+		return err
+	}
+	query := `
 INSERT INTO agent_messages (
-	user_id, session_id, message_index, role, content, tool_name, tool_call_id,
-	tool_input, tool_output, tool_calls, hidden, created_at, payload
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-			userID,
-			session.ID,
-			index,
-			message.Role,
-			message.Content,
-			message.ToolName,
-			message.ToolCallID,
-			sanitizeSQLText(string(message.ToolInput)),
-			message.ToolOutput,
-			sanitizeSQLText(string(toolCalls)),
-			hidden,
-			sqlTimeValue(createdAt, s.dialect),
-			sanitizeSQLText(string(payload)),
-		); err != nil {
+	message_id, session_id, user_id, seq_no, parent_id, role, content_type, content,
+	content_parts, tool_call_id, tool_name, tool_input, tool_output, tool_calls,
+	prompt_tokens, completion_tokens, status, is_context_used, model_id, run_id,
+	hidden, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if upsert {
+		query += `
+ON CONFLICT(message_id) DO UPDATE SET
+	session_id = excluded.session_id,
+	user_id = excluded.user_id,
+	seq_no = excluded.seq_no,
+	parent_id = excluded.parent_id,
+	role = excluded.role,
+	content_type = excluded.content_type,
+	content = excluded.content,
+	content_parts = excluded.content_parts,
+	tool_call_id = excluded.tool_call_id,
+	tool_name = excluded.tool_name,
+	tool_input = excluded.tool_input,
+	tool_output = excluded.tool_output,
+	tool_calls = excluded.tool_calls,
+	prompt_tokens = excluded.prompt_tokens,
+	completion_tokens = excluded.completion_tokens,
+	status = excluded.status,
+	is_context_used = excluded.is_context_used,
+	model_id = excluded.model_id,
+	run_id = excluded.run_id,
+	hidden = excluded.hidden,
+	updated_at = excluded.updated_at`
+	}
+	_, err = tx.ExecContext(ctx, dialect.Bind(query),
+		message.ID,
+		message.SessionID,
+		message.UserID,
+		message.SeqNo,
+		message.ParentID,
+		message.Role,
+		message.ContentType,
+		message.Content,
+		string(contentPartsJSON),
+		message.ToolCallID,
+		message.ToolName,
+		sanitizeSQLText(string(toolInput)),
+		message.ToolOutput,
+		sanitizeSQLText(string(toolCalls)),
+		message.PromptTokens,
+		message.CompletionTokens,
+		message.Status,
+		sqlIntFromBool(message.IsContextUsed),
+		message.ModelID,
+		message.RunID,
+		sqlIntFromBool(message.Hidden),
+		sqlTimeValue(message.CreatedAt, dialect),
+		sqlTimeValue(message.UpdatedAt, dialect),
+	)
+	if err != nil {
+		return err
+	}
+	return insertSQLMessageAttachments(ctx, tx, dialect, message)
+}
+
+func insertSQLMessageAttachments(ctx context.Context, tx *sql.Tx, dialect SQLDialect, message state.Message) error {
+	refs := messageAttachmentRefs(message)
+	if len(refs) == 0 {
+		return nil
+	}
+	for _, ref := range refs {
+		artifact, err := findSQLAttachmentArtifact(ctx, tx, dialect, message.UserID, ref.ID)
+		if err != nil {
+			return err
+		}
+		ref = mergeMessageAttachmentMetadata(ref, artifact)
+		ref.MessageID = message.ID
+		ref.SessionID = firstNonEmptyString(message.SessionID, ref.SessionID)
+		ref.UserID = firstNonEmptyString(message.UserID, ref.UserID)
+		_, err = tx.ExecContext(ctx, dialect.Bind(`
+INSERT INTO agent_message_attachments (
+	attachment_id, message_id, session_id, user_id, file_type, mime_type,
+	file_name, file_size, storage_key, thumbnail_key, extracted_text_key, embedding_status, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(message_id, attachment_id) DO UPDATE SET
+	file_type = excluded.file_type,
+	mime_type = excluded.mime_type,
+	file_name = excluded.file_name,
+	file_size = excluded.file_size,
+	storage_key = excluded.storage_key,
+	thumbnail_key = excluded.thumbnail_key,
+	extracted_text_key = excluded.extracted_text_key,
+	embedding_status = excluded.embedding_status`),
+			ref.ID,
+			ref.MessageID,
+			ref.SessionID,
+			ref.UserID,
+			ref.FileType,
+			ref.MimeType,
+			ref.FileName,
+			ref.FileSize,
+			ref.StorageKey,
+			ref.ThumbnailKey,
+			ref.ExtractedTextKey,
+			ref.EmbeddingStatus,
+			sqlTimeValue(ref.CreatedAt, dialect),
+		)
+		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func findSQLAttachmentArtifact(ctx context.Context, tx *sql.Tx, dialect SQLDialect, userID, attachmentID string) (*Artifact, error) {
+	userID = strings.TrimSpace(userID)
+	attachmentID = strings.TrimSpace(attachmentID)
+	if userID == "" || attachmentID == "" {
+		return nil, nil
+	}
+	row := tx.QueryRowContext(ctx, dialect.Bind(`
+SELECT artifact_id, kind, user_id, session_id, job_id, object_key, filename, content_type, size_bytes, created_at, deleted_at
+FROM agent_artifacts
+WHERE user_id = ? AND artifact_id = ? AND kind = ? AND deleted_at IS NULL`), userID, attachmentID, AssetKindAttachment)
+	artifact, err := scanArtifactRows(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil && isMissingSQLTableError(err) {
+		return nil, nil
+	}
+	return artifact, err
+}
+
+func isMissingSQLTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "no such table") ||
+		strings.Contains(text, "undefined_table") ||
+		strings.Contains(text, "sqlstate 42p01") ||
+		(strings.Contains(text, "relation") && strings.Contains(text, "does not exist"))
+}
+
+func (s *SQLSessionStore) hydrateMessageAttachments(ctx context.Context, userID string, messages []state.Message) ([]state.Message, error) {
+	if len(messages) == 0 {
+		return messages, nil
+	}
+	ids := make([]string, 0, len(messages))
+	indexByID := make(map[string]int, len(messages))
+	for i, message := range messages {
+		id := strings.TrimSpace(message.ID)
+		if id == "" {
+			continue
+		}
+		messages[i].Attachments = nil
+		ids = append(ids, id)
+		indexByID[id] = i
+	}
+	if len(ids) == 0 {
+		return messages, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	userPredicate := ""
+	if strings.TrimSpace(userID) != "" {
+		userPredicate = "user_id = ? AND "
+		args = append(args, userID)
+	}
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
+SELECT attachment_id, message_id, session_id, user_id, file_type, mime_type,
+	file_name, file_size, storage_key, thumbnail_key, extracted_text_key, embedding_status, created_at
+FROM agent_message_attachments
+WHERE `+userPredicate+`message_id IN (`+strings.Join(placeholders, ",")+`)
+ORDER BY created_at ASC`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		attachment, err := scanSQLMessageAttachment(rows)
+		if err != nil {
+			return nil, err
+		}
+		index, ok := indexByID[attachment.MessageID]
+		if !ok {
+			continue
+		}
+		messages[index].Attachments = append(messages[index].Attachments, attachment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+func (s *SQLSessionStore) ListPendingMessageAttachments(ctx context.Context, userID string, limit int) ([]state.MessageAttachment, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
+SELECT attachment_id, message_id, session_id, user_id, file_type, mime_type,
+	file_name, file_size, storage_key, thumbnail_key, extracted_text_key, embedding_status, created_at
+FROM agent_message_attachments
+WHERE user_id = ? AND embedding_status = ?
+ORDER BY created_at ASC
+LIMIT ?`), userID, state.MessageAttachmentEmbeddingPending, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]state.MessageAttachment, 0, limit)
+	for rows.Next() {
+		attachment, err := scanSQLMessageAttachment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, attachment)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLSessionStore) ListPendingMessageAttachmentsForProcessing(ctx context.Context, limit int) ([]state.MessageAttachment, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
+SELECT attachment_id, message_id, session_id, user_id, file_type, mime_type,
+	file_name, file_size, storage_key, thumbnail_key, extracted_text_key, embedding_status, created_at
+FROM agent_message_attachments
+WHERE embedding_status = ?
+ORDER BY created_at ASC
+LIMIT ?`), state.MessageAttachmentEmbeddingPending, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]state.MessageAttachment, 0, limit)
+	for rows.Next() {
+		attachment, err := scanSQLMessageAttachment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, attachment)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLSessionStore) UpdateMessageAttachmentProcessing(ctx context.Context, userID, messageID, attachmentID string, status int, thumbnailKey, extractedTextKey string) error {
+	if status == 0 {
+		status = state.MessageAttachmentEmbeddingPending
+	}
+	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_message_attachments
+SET embedding_status = ?,
+	thumbnail_key = ?,
+	extracted_text_key = ?
+WHERE user_id = ?
+  AND message_id = ?
+  AND attachment_id = ?`), status, strings.TrimSpace(thumbnailKey), strings.TrimSpace(extractedTextKey), userID, messageID, attachmentID)
+	return err
+}
+
+func scanSQLMessageAttachment(scanner sqlScanner) (state.MessageAttachment, error) {
+	var attachment state.MessageAttachment
+	var createdRaw any
+	if err := scanner.Scan(
+		&attachment.ID,
+		&attachment.MessageID,
+		&attachment.SessionID,
+		&attachment.UserID,
+		&attachment.FileType,
+		&attachment.MimeType,
+		&attachment.FileName,
+		&attachment.FileSize,
+		&attachment.StorageKey,
+		&attachment.ThumbnailKey,
+		&attachment.ExtractedTextKey,
+		&attachment.EmbeddingStatus,
+		&createdRaw,
+	); err != nil {
+		return state.MessageAttachment{}, err
+	}
+	createdAt, err := parseSQLTime(createdRaw)
+	if err != nil {
+		return state.MessageAttachment{}, err
+	}
+	attachment.CreatedAt = createdAt
+	return attachment, nil
+}
+
+type sqlScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSQLSession(scanner sqlScanner) (*state.Session, error) {
+	var session state.Session
+	var tagsRaw, metadataRaw string
+	var archived int
+	var startedRaw, updatedRaw, lastRaw any
+	if err := scanner.Scan(
+		&session.UserID,
+		&session.ID,
+		&session.AgentID,
+		&session.Title,
+		&session.Status,
+		&session.MessageCount,
+		&session.TotalTokens,
+		&session.WorkingDir,
+		&tagsRaw,
+		&session.Description,
+		&session.ParentID,
+		&session.BranchPoint,
+		&metadataRaw,
+		&archived,
+		&startedRaw,
+		&updatedRaw,
+		&lastRaw,
+	); err != nil {
+		return nil, err
+	}
+	startedAt, err := parseSQLTime(startedRaw)
+	if err != nil {
+		return nil, err
+	}
+	updatedAt, err := parseSQLTime(updatedRaw)
+	if err != nil {
+		return nil, err
+	}
+	lastMessageAt, err := parseSQLTime(lastRaw)
+	if err != nil {
+		return nil, err
+	}
+	session.StartedAt = startedAt
+	session.UpdatedAt = updatedAt
+	session.LastMessageAt = lastMessageAt
+	session.Archived = archived != 0
+	if session.Status == 0 {
+		session.Status = state.SessionStatusActive
+	}
+	if strings.TrimSpace(tagsRaw) != "" {
+		_ = json.Unmarshal([]byte(tagsRaw), &session.Tags)
+	}
+	if strings.TrimSpace(metadataRaw) != "" {
+		_ = json.Unmarshal([]byte(metadataRaw), &session.Metadata)
+	}
+	if session.Metadata == nil {
+		session.Metadata = map[string]string{}
+	}
+	return &session, nil
+}
+
+func scanSQLMessage(scanner sqlScanner) (state.Message, error) {
+	var message state.Message
+	var contentPartsRaw, toolInputRaw, toolCallsRaw string
+	var contextUsed, hidden int
+	var createdRaw, updatedRaw, archivedRaw any
+	if err := scanner.Scan(
+		&message.ID,
+		&message.SessionID,
+		&message.UserID,
+		&message.SeqNo,
+		&message.ParentID,
+		&message.Role,
+		&message.ContentType,
+		&message.Content,
+		&contentPartsRaw,
+		&message.ToolCallID,
+		&message.ToolName,
+		&toolInputRaw,
+		&message.ToolOutput,
+		&toolCallsRaw,
+		&message.PromptTokens,
+		&message.CompletionTokens,
+		&message.Status,
+		&contextUsed,
+		&message.ModelID,
+		&message.RunID,
+		&hidden,
+		&createdRaw,
+		&updatedRaw,
+		&message.ArchiveURI,
+		&message.ArchiveChecksum,
+		&archivedRaw,
+	); err != nil {
+		return state.Message{}, err
+	}
+	createdAt, err := parseSQLTime(createdRaw)
+	if err != nil {
+		return state.Message{}, err
+	}
+	updatedAt, err := parseSQLTime(updatedRaw)
+	if err != nil {
+		return state.Message{}, err
+	}
+	archivedAt, err := parseNullableSQLTime(archivedRaw)
+	if err != nil {
+		return state.Message{}, err
+	}
+	message.CreatedAt = createdAt
+	message.UpdatedAt = updatedAt
+	message.ArchivedAt = archivedAt
+	message.IsContextUsed = contextUsed != 0
+	message.Hidden = hidden != 0
+	if strings.TrimSpace(contentPartsRaw) != "" {
+		_ = json.Unmarshal([]byte(contentPartsRaw), &message.ContentParts)
+		message.ContentBlocks = message.ContentParts
+	}
+	if strings.TrimSpace(toolInputRaw) != "" && toolInputRaw != "{}" {
+		message.ToolInput = json.RawMessage(toolInputRaw)
+	}
+	if strings.TrimSpace(toolCallsRaw) != "" {
+		_ = json.Unmarshal([]byte(toolCallsRaw), &message.ToolCalls)
+	}
+	return message, nil
+}
+
+func normalizeSessionForSQL(session *state.Session) {
+	if session.Status == 0 {
+		session.Status = state.SessionStatusActive
+	}
+	if session.Archived {
+		session.Status = state.SessionStatusArchived
+	}
+	if session.StartedAt.IsZero() {
+		session.StartedAt = time.Now().UTC()
+	}
+	if session.UpdatedAt.IsZero() {
+		session.UpdatedAt = session.StartedAt
+	}
+	session.MessageCount = len(session.Messages)
+	session.TotalTokens = int64(session.Usage.TotalTokens)
+	if len(session.Messages) > 0 {
+		last := session.Messages[len(session.Messages)-1]
+		if !last.CreatedAt.IsZero() {
+			session.LastMessageAt = last.CreatedAt
+		}
+	}
+}
+
+func normalizeMessageForSQL(message state.Message, userID, sessionID string, seqNo int64, sessionStartedAt time.Time) state.Message {
+	if message.ID == "" {
+		message.ID = stateMessageID()
+	}
+	message.UserID = userID
+	message.SessionID = sessionID
+	message.SeqNo = seqNo
+	if message.Status == 0 {
+		message.Status = state.MessageStatusNormal
+	}
+	if message.ContentType == "" {
+		message.ContentType = inferSQLMessageContentType(message)
+	}
+	if len(message.ContentParts) == 0 && len(message.ContentBlocks) > 0 {
+		message.ContentParts = message.ContentBlocks
+	}
+	if len(message.ContentParts) > 0 {
+		message.ContentParts = normalizeMessageContentParts(message.ContentParts)
+		message.ContentBlocks = message.ContentParts
+	}
+	if message.CreatedAt.IsZero() {
+		base := sessionStartedAt
+		if base.IsZero() {
+			base = time.Now().UTC()
+		}
+		message.CreatedAt = base.Add(time.Duration(seqNo-1) * time.Millisecond)
+	}
+	if message.UpdatedAt.IsZero() {
+		message.UpdatedAt = message.CreatedAt
+	}
+	if message.Status == state.MessageStatusNormal {
+		message.IsContextUsed = true
+	}
+	return sanitizeMessageForSQL(message)
+}
+
+func inferSQLMessageContentType(message state.Message) string {
+	if len(message.ContentParts) > 0 || len(message.ContentBlocks) > 0 {
+		return state.MessageContentTypeMultipart
+	}
+	if message.Role == state.MessageRoleTool || message.ToolCallID != "" || message.ToolOutput != "" {
+		return state.MessageContentTypeToolResult
+	}
+	if len(message.ToolCalls) > 0 {
+		return state.MessageContentTypeToolCall
+	}
+	return state.MessageContentTypeText
+}
+
+func stateMessageID() string {
+	return uuid.NewString()
+}
+
+func sqlIntFromBool(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func zeroTimeAsNil(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	return &value
 }
 
 func sanitizeSessionForSQL(session *state.Session) *state.Session {
@@ -428,6 +1697,9 @@ func sanitizeSessionForSQL(session *state.Session) *state.Session {
 	}
 	clone := *session
 	clone.ID = sanitizeSQLText(clone.ID)
+	clone.UserID = sanitizeSQLText(clone.UserID)
+	clone.AgentID = sanitizeSQLText(clone.AgentID)
+	clone.Title = sanitizeSQLText(clone.Title)
 	clone.WorkingDir = sanitizeSQLText(clone.WorkingDir)
 	clone.Description = sanitizeSQLText(clone.Description)
 	clone.ParentID = sanitizeSQLText(clone.ParentID)
@@ -445,11 +1717,20 @@ func sanitizeSessionForSQL(session *state.Session) *state.Session {
 }
 
 func sanitizeMessageForSQL(message state.Message) state.Message {
+	message.ID = sanitizeSQLText(message.ID)
+	message.SessionID = sanitizeSQLText(message.SessionID)
+	message.UserID = sanitizeSQLText(message.UserID)
+	message.ParentID = sanitizeSQLText(message.ParentID)
 	message.Role = sanitizeSQLText(message.Role)
+	message.ContentType = sanitizeSQLText(message.ContentType)
 	message.Content = sanitizeSQLText(message.Content)
 	message.ToolName = sanitizeSQLText(message.ToolName)
 	message.ToolCallID = sanitizeSQLText(message.ToolCallID)
 	message.ToolOutput = sanitizeSQLText(message.ToolOutput)
+	message.ModelID = sanitizeSQLText(message.ModelID)
+	message.RunID = sanitizeSQLText(message.RunID)
+	message.ArchiveURI = sanitizeSQLText(message.ArchiveURI)
+	message.ArchiveChecksum = sanitizeSQLText(message.ArchiveChecksum)
 	for i := range message.ToolCalls {
 		message.ToolCalls[i].ID = sanitizeSQLText(message.ToolCalls[i].ID)
 		message.ToolCalls[i].Name = sanitizeSQLText(message.ToolCalls[i].Name)

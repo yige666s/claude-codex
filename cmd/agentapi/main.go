@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"claude-codex/internal/backend/agentruntime"
 	"claude-codex/internal/backend/googleauth"
 	"claude-codex/internal/harness/anthropic"
@@ -52,6 +54,39 @@ func main() {
 	sqlMaxOpen := flag.Int("sql-max-open-conns", envInt("AGENT_API_SQL_MAX_OPEN_CONNS", 20), "max open SQL connections")
 	sqlMaxIdle := flag.Int("sql-max-idle-conns", envInt("AGENT_API_SQL_MAX_IDLE_CONNS", 10), "max idle SQL connections")
 	sqlConnMaxLifetime := flag.Duration("sql-conn-max-lifetime", envDuration("AGENT_API_SQL_CONN_MAX_LIFETIME", 30*time.Minute), "max SQL connection lifetime")
+	messageSearchBackend := flag.String("message-search-backend", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_BACKEND"), "sql"), "message search backend: sql, elasticsearch, opensearch, semantic, or hybrid")
+	messageSearchEndpoint := flag.String("message-search-endpoint", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_ENDPOINT"), os.Getenv("AGENT_API_MESSAGE_SEARCH_URL")), "Elasticsearch/OpenSearch endpoint for message search")
+	messageSearchIndex := flag.String("message-search-index", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX"), "agent_messages"), "Elasticsearch/OpenSearch index for message search")
+	messageSearchAPIKey := flag.String("message-search-api-key", os.Getenv("AGENT_API_MESSAGE_SEARCH_API_KEY"), "Elasticsearch/OpenSearch API key for message search")
+	messageSearchUsername := flag.String("message-search-username", os.Getenv("AGENT_API_MESSAGE_SEARCH_USERNAME"), "Elasticsearch/OpenSearch username for message search")
+	messageSearchPassword := flag.String("message-search-password", os.Getenv("AGENT_API_MESSAGE_SEARCH_PASSWORD"), "Elasticsearch/OpenSearch password for message search")
+	messageSearchTimeout := flag.Duration("message-search-timeout", envDuration("AGENT_API_MESSAGE_SEARCH_TIMEOUT", 5*time.Second), "message search backend request timeout")
+	messageSearchIndexManagementEnabled := flag.Bool("message-search-index-management-enabled", envBool("AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED", false), "enable Elasticsearch message index lifecycle/template maintenance")
+	messageSearchIndexLifecyclePolicy := flag.String("message-search-index-lifecycle-policy", os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_LIFECYCLE_POLICY"), "Elasticsearch ILM policy name for message search indices")
+	messageSearchIndexTemplate := flag.String("message-search-index-template", os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_TEMPLATE"), "Elasticsearch index template name for message search indices")
+	messageSearchIndexWriteAlias := flag.String("message-search-index-write-alias", os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_WRITE_ALIAS"), "Elasticsearch write alias for rollover-backed message search indices")
+	messageSearchIndexAnalyzer := flag.String("message-search-index-analyzer", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_ANALYZER"), "ik_max_word"), "Elasticsearch analyzer for indexed message text")
+	messageSearchIndexSearchAnalyzer := flag.String("message-search-index-search-analyzer", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_SEARCH_ANALYZER"), "ik_smart"), "Elasticsearch search analyzer for message text queries")
+	messageSearchIndexDowngradeAfter := flag.Duration("message-search-index-downgrade-after", envDuration("AGENT_API_MESSAGE_SEARCH_INDEX_DOWNGRADE_AFTER", 90*24*time.Hour), "age after which message search indices are downgraded to read-only")
+	messageSearchIndexCloseAfter := flag.Duration("message-search-index-close-after", envDuration("AGENT_API_MESSAGE_SEARCH_INDEX_CLOSE_AFTER", 180*24*time.Hour), "age after which message search indices are closed")
+	messageSearchIndexMaintenanceInterval := flag.Duration("message-search-index-maintenance-interval", envDuration("AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_INTERVAL", 24*time.Hour), "Elasticsearch message index maintenance interval")
+	messageSearchIndexMaintenanceBatchLimit := flag.Int("message-search-index-maintenance-batch-limit", envInt("AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_BATCH_LIMIT", 50), "max Elasticsearch message indices to downgrade or close per maintenance pass")
+	messageSearchQdrantEndpoint := flag.String("message-search-qdrant-endpoint", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_ENDPOINT"), os.Getenv("AGENT_API_QDRANT_ENDPOINT")), "Qdrant endpoint for semantic message search")
+	messageSearchQdrantCollection := flag.String("message-search-qdrant-collection", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_COLLECTION"), "agent_messages"), "Qdrant collection for semantic message search")
+	messageSearchQdrantAPIKey := flag.String("message-search-qdrant-api-key", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_API_KEY"), os.Getenv("AGENT_API_QDRANT_API_KEY")), "Qdrant API key for semantic message search")
+	messageSearchQdrantScoreThreshold := flag.Float64("message-search-qdrant-score-threshold", envFloat64("AGENT_API_MESSAGE_SEARCH_QDRANT_SCORE_THRESHOLD", 0), "minimum Qdrant semantic search score; 0 disables")
+	messageSearchEmbeddingProvider := flag.String("message-search-embedding-provider", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER"), os.Getenv("AGENT_API_EMBEDDING_PROVIDER")), "embedding provider for semantic message search: openai or vertex")
+	messageSearchEmbeddingEndpoint := flag.String("message-search-embedding-endpoint", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT"), os.Getenv("AGENT_API_EMBEDDING_ENDPOINT")), "embedding endpoint for semantic message search; OpenAI-compatible base URL or Vertex AI base URL")
+	messageSearchEmbeddingAPIKey := flag.String("message-search-embedding-api-key", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"), os.Getenv("OPENAI_API_KEY")), "embedding API key for OpenAI-compatible semantic message search")
+	messageSearchEmbeddingAccessToken := flag.String("message-search-embedding-token", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_TOKEN"), os.Getenv("VERTEX_ACCESS_TOKEN"), os.Getenv("GOOGLE_OAUTH_ACCESS_TOKEN"), os.Getenv("GOOGLE_ACCESS_TOKEN")), "OAuth access token for Vertex AI semantic message search; service account env or gcloud are used when empty")
+	messageSearchEmbeddingModel := flag.String("message-search-embedding-model", os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL"), "embedding model for semantic message search")
+	messageSearchEmbeddingDimensions := flag.Int("message-search-embedding-dimensions", envInt("AGENT_API_MESSAGE_SEARCH_EMBEDDING_DIMENSIONS", 0), "embedding vector dimensions; 0 uses provider default")
+	messageSearchEmbeddingProjectID := flag.String("message-search-embedding-project-id", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID"), os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")), "Google Cloud project ID for Vertex AI embeddings")
+	messageSearchEmbeddingLocation := flag.String("message-search-embedding-location", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION"), os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "global"), "Vertex AI location for embeddings")
+	messageSearchEmbeddingTaskType := flag.String("message-search-embedding-task-type", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_TASK_TYPE"), "RETRIEVAL_QUERY"), "Vertex AI embedding task_type for search queries")
+	messageSearchEmbeddingIndexTaskType := flag.String("message-search-embedding-index-task-type", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_INDEX_TASK_TYPE"), "RETRIEVAL_DOCUMENT"), "Vertex AI embedding task_type for indexed message documents")
+	messageSearchEmbeddingAutoTruncate := flag.Bool("message-search-embedding-auto-truncate", envBool("AGENT_API_MESSAGE_SEARCH_EMBEDDING_AUTO_TRUNCATE", true), "allow Vertex AI embedding input auto truncation")
+	messageSearchRRFK := flag.Int("message-search-rrf-k", envInt("AGENT_API_MESSAGE_SEARCH_RRF_K", 60), "RRF k constant for hybrid message search ranking")
 	workspace := flag.String("workspace", mustWorkingDir(), "default working directory")
 	userWorkspaceRoot := flag.String("user-workspace-root", os.Getenv("AGENT_API_USER_WORKSPACE_ROOT"), "root directory for per-user sandboxed workspaces")
 	allowCustomWorkingDir := flag.Bool("allow-custom-working-dir", envBool("AGENT_API_ALLOW_CUSTOM_WORKING_DIR", false), "allow request-provided working_dir when no user workspace root is configured")
@@ -112,6 +147,39 @@ func main() {
 	operationRateLimits := flag.String("operation-rate-limits", os.Getenv("AGENT_API_OPERATION_RATE_LIMITS"), "comma-separated operation rate limits such as chat_message=60/m,job_create=20/m,data_export=5/h")
 	redisURL := flag.String("redis-url", os.Getenv("AGENT_API_REDIS_URL"), "Redis URL for distributed rate limiting")
 	redisFailOpen := flag.Bool("redis-fail-open", envBool("AGENT_API_REDIS_FAIL_OPEN", false), "allow requests when Redis rate limit is unavailable")
+	messageContextCacheBackend := flag.String("message-context-cache-backend", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND"), "memory"), "message context cache backend: memory, redis, or none")
+	messageContextCacheRedisURL := flag.String("message-context-cache-redis-url", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")), "Redis URL for message context cache")
+	messageContextCacheTTL := flag.Duration("message-context-cache-ttl", envDuration("AGENT_API_MESSAGE_CONTEXT_CACHE_TTL", 24*time.Hour), "message context cache TTL")
+	sessionListCacheBackend := flag.String("session-list-cache-backend", firstNonEmpty(os.Getenv("AGENT_API_SESSION_LIST_CACHE_BACKEND"), "none"), "session list cache backend: redis or none")
+	sessionListCacheRedisURL := flag.String("session-list-cache-redis-url", firstNonEmpty(os.Getenv("AGENT_API_SESSION_LIST_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")), "Redis URL for session list zset pagination cache")
+	sessionListCacheTTL := flag.Duration("session-list-cache-ttl", envDuration("AGENT_API_SESSION_LIST_CACHE_TTL", 10*time.Minute), "session list cache TTL")
+	messageSequenceBackend := flag.String("message-sequence-backend", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEQUENCE_BACKEND"), "redis"), "message seq_no allocator backend: redis or sql")
+	messageSequenceRedisURL := flag.String("message-sequence-redis-url", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEQUENCE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")), "Redis URL for message seq_no allocator")
+	messageEventsBackend := flag.String("message-events-backend", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_BACKEND"), "local"), "message event backend: local, kafka, dual, or none")
+	messageEventsKafkaBrokers := flag.String("message-events-kafka-brokers", os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_BROKERS"), "comma-separated Kafka brokers for message events")
+	messageEventsKafkaTopic := flag.String("message-events-kafka-topic", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_TOPIC"), "agent.messages"), "Kafka topic for message events")
+	messageEventsKafkaClientID := flag.String("message-events-kafka-client-id", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_CLIENT_ID"), "agentapi"), "Kafka client ID for message events")
+	messageEventsKafkaConsumerEnabled := flag.Bool("message-events-kafka-consumer-enabled", envBool("AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_ENABLED", false), "consume Kafka message events with the built-in worker")
+	messageEventsKafkaConsumerGroup := flag.String("message-events-kafka-consumer-group", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_GROUP"), "agentapi-message-workers"), "Kafka consumer group for the built-in message event worker")
+	messageEventsKafkaDLQTopic := flag.String("message-events-kafka-dlq-topic", os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_DLQ_TOPIC"), "optional Kafka dead-letter topic for failed message events")
+	messageEventsKafkaRetryAttempts := flag.Int("message-events-kafka-retry-attempts", envInt("AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_ATTEMPTS", 3), "Kafka message event consumer retry attempts")
+	messageEventsKafkaRetryBackoff := flag.Duration("message-events-kafka-retry-backoff", envDuration("AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_BACKOFF", time.Second), "Kafka message event consumer retry backoff")
+	messageEventsKafkaProcessTimeout := flag.Duration("message-events-kafka-process-timeout", envDuration("AGENT_API_MESSAGE_EVENTS_KAFKA_PROCESS_TIMEOUT", 30*time.Second), "Kafka message event processing timeout")
+	messageEventsProcessedLockBackend := flag.String("message-events-processed-lock-backend", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_BACKEND"), "redis"), "message event processed lock backend: redis or none")
+	messageEventsProcessedLockRedisURL := flag.String("message-events-processed-lock-redis-url", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL"), os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")), "Redis URL for Kafka message event processed locks")
+	messageEventsProcessedLockTTL := flag.Duration("message-events-processed-lock-ttl", envDuration("AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL", 24*time.Hour), "message event processed lock TTL")
+	messageAttachmentWorkerEnabled := flag.Bool("message-attachment-worker-enabled", envBool("AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED", true), "enable async message attachment processing worker")
+	messageAttachmentWorkerBatchSize := flag.Int("message-attachment-worker-batch-size", envInt("AGENT_API_MESSAGE_ATTACHMENT_WORKER_BATCH_SIZE", 25), "message attachment worker batch size")
+	messageAttachmentWorkerPollInterval := flag.Duration("message-attachment-worker-poll-interval", envDuration("AGENT_API_MESSAGE_ATTACHMENT_WORKER_POLL_INTERVAL", 5*time.Second), "message attachment worker poll interval")
+	messageAttachmentWorkerProcessTimeout := flag.Duration("message-attachment-worker-process-timeout", envDuration("AGENT_API_MESSAGE_ATTACHMENT_WORKER_PROCESS_TIMEOUT", 30*time.Second), "message attachment worker per-attachment timeout")
+	messageAttachmentThumbnailMaxDimension := flag.Int("message-attachment-thumbnail-max-dimension", envInt("AGENT_API_MESSAGE_ATTACHMENT_THUMBNAIL_MAX_DIMENSION", 512), "max width or height for generated attachment thumbnails")
+	messageArchiveWorkerEnabled := flag.Bool("message-archive-worker-enabled", envBool("AGENT_API_MESSAGE_ARCHIVE_WORKER_ENABLED", false), "enable async archive of old SQL messages into the artifact object store")
+	messageArchiveAfter := flag.Duration("message-archive-after", envDuration("AGENT_API_MESSAGE_ARCHIVE_AFTER", 30*24*time.Hour), "archive SQL message payloads older than this duration")
+	messageArchiveWorkerBatchSize := flag.Int("message-archive-worker-batch-size", envInt("AGENT_API_MESSAGE_ARCHIVE_WORKER_BATCH_SIZE", 100), "message archive worker batch size")
+	messageArchiveWorkerPollInterval := flag.Duration("message-archive-worker-poll-interval", envDuration("AGENT_API_MESSAGE_ARCHIVE_WORKER_POLL_INTERVAL", time.Hour), "message archive worker poll interval")
+	messageArchiveWorkerProcessTimeout := flag.Duration("message-archive-worker-process-timeout", envDuration("AGENT_API_MESSAGE_ARCHIVE_WORKER_PROCESS_TIMEOUT", 2*time.Minute), "message archive worker per-message timeout")
+	messageArchivePrefix := flag.String("message-archive-prefix", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_ARCHIVE_PREFIX"), "message-archive"), "object-store prefix for archived message payloads")
+	messageArchiveClearPGPayload := flag.Bool("message-archive-clear-pg-payload", envBool("AGENT_API_MESSAGE_ARCHIVE_CLEAR_PG_PAYLOAD", true), "clear large SQL message payload fields after archive upload succeeds")
 	retentionDays := flag.Int("retention-days", envInt("AGENT_API_RETENTION_DAYS", 0), "delete sessions and memory older than this many days on startup; 0 disables")
 	localArtifactStagingRetention := flag.Duration("local-artifact-staging-retention", envDuration("AGENT_API_LOCAL_ARTIFACT_STAGING_RETENTION", 24*time.Hour), "delete local generated artifact staging files older than this after object-store upload; 0 disables")
 	shutdownTimeout := flag.Duration("shutdown-timeout", envDuration("AGENT_API_SHUTDOWN_TIMEOUT", 30*time.Second), "max time to drain HTTP requests and active agent work after SIGINT/SIGTERM")
@@ -280,28 +348,177 @@ func main() {
 		s3SSL:       *artifactS3SSL,
 		maxBytes:    *assetMaxBytes,
 	})
-	runtime := agentruntime.NewRuntime(
-		agentruntime.RuntimeConfig{
-			DefaultWorkingDir:     *workspace,
-			UserWorkspaceRoot:     *userWorkspaceRoot,
-			AllowCustomWorkingDir: *allowCustomWorkingDir,
-			TurnTimeout:           *turnTimeout,
-			SkillShellTimeout:     *skillShellTimeout,
-			SkillShellSandbox: agentruntime.SkillShellSandboxConfig{
-				Runner:    *skillShellRunner,
-				Image:     *skillSandboxImage,
-				Network:   *skillSandboxNetwork,
-				Memory:    *skillSandboxMemory,
-				CPUs:      *skillSandboxCPUs,
-				PidsLimit: *skillSandboxPidsLimit,
-				TmpfsSize: *skillSandboxTmpfsSize,
-			},
+	runtimeConfig := agentruntime.RuntimeConfig{
+		DefaultWorkingDir:     *workspace,
+		UserWorkspaceRoot:     *userWorkspaceRoot,
+		AllowCustomWorkingDir: *allowCustomWorkingDir,
+		TurnTimeout:           *turnTimeout,
+		SkillShellTimeout:     *skillShellTimeout,
+		MessageSearch: agentruntime.MessageSearchConfig{
+			Backend:                    *messageSearchBackend,
+			Endpoint:                   *messageSearchEndpoint,
+			Index:                      *messageSearchIndex,
+			APIKey:                     *messageSearchAPIKey,
+			Username:                   *messageSearchUsername,
+			Password:                   *messageSearchPassword,
+			Timeout:                    *messageSearchTimeout,
+			IndexManagementEnabled:     *messageSearchIndexManagementEnabled,
+			IndexLifecyclePolicy:       *messageSearchIndexLifecyclePolicy,
+			IndexTemplateName:          *messageSearchIndexTemplate,
+			IndexWriteAlias:            *messageSearchIndexWriteAlias,
+			IndexAnalyzer:              *messageSearchIndexAnalyzer,
+			IndexSearchAnalyzer:        *messageSearchIndexSearchAnalyzer,
+			IndexDowngradeAfter:        *messageSearchIndexDowngradeAfter,
+			IndexCloseAfter:            *messageSearchIndexCloseAfter,
+			IndexMaintenanceInterval:   *messageSearchIndexMaintenanceInterval,
+			IndexMaintenanceBatchLimit: *messageSearchIndexMaintenanceBatchLimit,
+			QdrantEndpoint:             *messageSearchQdrantEndpoint,
+			QdrantCollection:           *messageSearchQdrantCollection,
+			QdrantAPIKey:               *messageSearchQdrantAPIKey,
+			QdrantScoreThreshold:       *messageSearchQdrantScoreThreshold,
+			EmbeddingProvider:          *messageSearchEmbeddingProvider,
+			EmbeddingEndpoint:          *messageSearchEmbeddingEndpoint,
+			EmbeddingAPIKey:            *messageSearchEmbeddingAPIKey,
+			EmbeddingAccessToken:       *messageSearchEmbeddingAccessToken,
+			EmbeddingModel:             *messageSearchEmbeddingModel,
+			EmbeddingDimensions:        *messageSearchEmbeddingDimensions,
+			EmbeddingTimeout:           *messageSearchTimeout,
+			EmbeddingProjectID:         *messageSearchEmbeddingProjectID,
+			EmbeddingLocation:          *messageSearchEmbeddingLocation,
+			EmbeddingTaskType:          *messageSearchEmbeddingTaskType,
+			EmbeddingIndexTaskType:     *messageSearchEmbeddingIndexTaskType,
+			EmbeddingAutoTruncate:      *messageSearchEmbeddingAutoTruncate,
+			RRFK:                       *messageSearchRRFK,
 		},
+		SkillShellSandbox: agentruntime.SkillShellSandboxConfig{
+			Runner:    *skillShellRunner,
+			Image:     *skillSandboxImage,
+			Network:   *skillSandboxNetwork,
+			Memory:    *skillSandboxMemory,
+			CPUs:      *skillSandboxCPUs,
+			PidsLimit: *skillSandboxPidsLimit,
+			TmpfsSize: *skillSandboxTmpfsSize,
+		},
+	}
+	runtime := agentruntime.NewRuntime(
+		runtimeConfig,
 		sessionStore,
 		memoryService,
 		skillCatalog,
 		engineFactory,
 	)
+	kafkaConfig := agentruntime.KafkaMessageEventConfig{
+		Brokers:        splitCSV(*messageEventsKafkaBrokers),
+		Topic:          *messageEventsKafkaTopic,
+		ClientID:       *messageEventsKafkaClientID,
+		GroupID:        *messageEventsKafkaConsumerGroup,
+		DLQTopic:       *messageEventsKafkaDLQTopic,
+		RetryAttempts:  *messageEventsKafkaRetryAttempts,
+		RetryBackoff:   *messageEventsKafkaRetryBackoff,
+		ProcessTimeout: *messageEventsKafkaProcessTimeout,
+	}
+	publishKafkaEvents, localVectorIndexing := messageEventsBackendMode(*messageEventsBackend)
+	runtime.SetLocalMessageVectorIndexing(localVectorIndexing)
+	var kafkaMessagePublisher agentruntime.MessageEventPublisher
+	var kafkaPublisherCloser interface{ Close() error }
+	if publishKafkaEvents {
+		publisher, closer := buildKafkaMessageEventPublisher(kafkaConfig)
+		kafkaMessagePublisher = publisher
+		runtime.SetMessageEventPublisher(publisher)
+		kafkaPublisherCloser = closer
+		defer func() {
+			if kafkaPublisherCloser != nil {
+				if err := kafkaPublisherCloser.Close(); err != nil {
+					log.Printf("close kafka message event publisher: %v", err)
+				}
+			}
+		}()
+	}
+	var kafkaConsumer *agentruntime.KafkaMessageEventConsumerWorker
+	var kafkaProcessedLockRedisClient interface{ Close() error }
+	if *messageEventsKafkaConsumerEnabled {
+		kafkaConsumer, kafkaProcessedLockRedisClient = buildKafkaMessageEventConsumerWorker(
+			kafkaConfig,
+			runtimeConfig.MessageSearch,
+			sessionStore,
+			*messageEventsProcessedLockBackend,
+			*messageEventsProcessedLockRedisURL,
+			*messageEventsProcessedLockTTL,
+		)
+		consumerCtx, cancelConsumer := context.WithCancel(context.Background())
+		defer cancelConsumer()
+		go func() {
+			if err := kafkaConsumer.Run(consumerCtx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("kafka message event consumer stopped: %v", err)
+			}
+		}()
+		defer func() {
+			cancelConsumer()
+			if err := kafkaConsumer.Close(); err != nil {
+				log.Printf("close kafka message event consumer: %v", err)
+			}
+			if kafkaProcessedLockRedisClient != nil {
+				if err := kafkaProcessedLockRedisClient.Close(); err != nil {
+					log.Printf("close kafka message event processed lock redis client: %v", err)
+				}
+			}
+		}()
+	}
+	var messageContextRedisClient interface {
+		Ping(context.Context) *redis.StatusCmd
+		Close() error
+	}
+	var sessionListRedisClient interface {
+		Ping(context.Context) *redis.StatusCmd
+		Close() error
+	}
+	var messageSequenceRedisClient interface {
+		Ping(context.Context) *redis.StatusCmd
+		Close() error
+	}
+	if setter, ok := sessionStore.(interface {
+		SetMessageSequenceAllocator(agentruntime.MessageSequenceAllocator)
+	}); ok {
+		allocator, redisClient := buildMessageSequenceAllocator(*messageSequenceBackend, *messageSequenceRedisURL)
+		setter.SetMessageSequenceAllocator(allocator)
+		messageSequenceRedisClient = redisClient
+		if messageSequenceRedisClient != nil {
+			defer func() {
+				if err := messageSequenceRedisClient.Close(); err != nil {
+					log.Printf("close message sequence redis client: %v", err)
+				}
+			}()
+		}
+	}
+	if setter, ok := sessionStore.(interface {
+		SetSessionListCache(agentruntime.SessionListCache)
+	}); ok {
+		cache, redisClient := buildSessionListCache(*sessionListCacheBackend, *sessionListCacheRedisURL, *sessionListCacheTTL)
+		setter.SetSessionListCache(cache)
+		sessionListRedisClient = redisClient
+		if sessionListRedisClient != nil {
+			defer func() {
+				if err := sessionListRedisClient.Close(); err != nil {
+					log.Printf("close session list redis client: %v", err)
+				}
+			}()
+		}
+	}
+	if _, ok := sessionStore.(agentruntime.MessageRepository); ok {
+		cache, redisClient := buildMessageContextCache(*messageContextCacheBackend, *messageContextCacheRedisURL, *messageContextCacheTTL)
+		messageContextRedisClient = redisClient
+		runtime.SetMessageContextCache(cache)
+		if messageContextRedisClient != nil {
+			defer func() {
+				if err := messageContextRedisClient.Close(); err != nil {
+					log.Printf("close message context redis client: %v", err)
+				}
+			}()
+		}
+	}
+	if kafkaMessagePublisher != nil {
+		runtime.SetMessageEventPublisher(kafkaMessagePublisher)
+	}
 	runtime.SetMemoryExtractor(agentruntime.NewHybridMemoryExtractor(
 		agentruntime.NewLLMMemoryExtractor(engineFactory),
 		agentruntime.NewRuleMemoryExtractor(),
@@ -311,6 +528,79 @@ func main() {
 		agentruntime.NewRuleMemoryOrganizer(),
 	))
 	runtime.SetArtifactService(artifactService)
+	var messageArchiveObjectStore *agentruntime.MessageArchiveObjectStore
+	if setter, ok := sessionStore.(interface {
+		SetMessageArchiveObjectStore(agentruntime.ObjectStore, string)
+	}); ok && artifactService != nil && artifactService.Objects != nil {
+		setter.SetMessageArchiveObjectStore(artifactService.Objects, *messageArchivePrefix)
+		messageArchiveObjectStore = agentruntime.NewMessageArchiveObjectStore(artifactService.Objects, *messageArchivePrefix)
+	}
+	attachmentWorkerStarted := false
+	if *messageAttachmentWorkerEnabled {
+		if queue, ok := sessionStore.(agentruntime.MessageAttachmentProcessingQueue); ok && artifactService != nil && artifactService.Objects != nil {
+			worker := agentruntime.NewMessageAttachmentWorker(queue, artifactService, agentruntime.MessageAttachmentWorkerConfig{
+				BatchSize:             *messageAttachmentWorkerBatchSize,
+				PollInterval:          *messageAttachmentWorkerPollInterval,
+				ProcessTimeout:        *messageAttachmentWorkerProcessTimeout,
+				ThumbnailMaxDimension: *messageAttachmentThumbnailMaxDimension,
+				ContentIndexer:        buildMessageAttachmentContentIndexer(runtimeConfig.MessageSearch, sessionStore),
+			}, log.Default())
+			workerCtx, cancelWorker := context.WithCancel(context.Background())
+			defer cancelWorker()
+			go func() {
+				if err := worker.Run(workerCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("message attachment worker stopped: %v", err)
+				}
+			}()
+			attachmentWorkerStarted = true
+		} else {
+			log.Printf("message attachment worker disabled: SQL message attachment queue and artifact object store are required")
+		}
+	}
+	archiveWorkerStarted := false
+	if *messageArchiveWorkerEnabled {
+		if queue, ok := sessionStore.(agentruntime.MessageArchiveQueue); ok && messageArchiveObjectStore != nil {
+			worker := agentruntime.NewMessageArchiveWorker(queue, messageArchiveObjectStore, agentruntime.MessageArchiveWorkerConfig{
+				ArchiveAfter:   *messageArchiveAfter,
+				BatchSize:      *messageArchiveWorkerBatchSize,
+				PollInterval:   *messageArchiveWorkerPollInterval,
+				ProcessTimeout: *messageArchiveWorkerProcessTimeout,
+				ClearPGPayload: *messageArchiveClearPGPayload,
+			}, log.Default())
+			workerCtx, cancelWorker := context.WithCancel(context.Background())
+			defer cancelWorker()
+			go func() {
+				if err := worker.Run(workerCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("message archive worker stopped: %v", err)
+				}
+			}()
+			archiveWorkerStarted = true
+		} else {
+			log.Printf("message archive worker disabled: SQL message archive queue and artifact object store are required")
+		}
+	}
+	messageSearchIndexManagerStarted := false
+	if *messageSearchIndexManagementEnabled {
+		normalizedBackend := strings.ToLower(strings.TrimSpace(*messageSearchBackend))
+		if normalizedBackend == "elastic" || normalizedBackend == "fulltext" || normalizedBackend == "full-text" {
+			normalizedBackend = "elasticsearch"
+		}
+		if normalizedBackend != "elasticsearch" && normalizedBackend != "hybrid" {
+			log.Printf("message search index manager disabled: backend %s does not use Elasticsearch lifecycle management", *messageSearchBackend)
+		} else if strings.TrimSpace(*messageSearchEndpoint) == "" {
+			log.Printf("message search index manager disabled: message search endpoint is required")
+		} else {
+			manager := agentruntime.NewElasticsearchMessageIndexManager(runtimeConfig.MessageSearch, log.Default())
+			managerCtx, cancelManager := context.WithCancel(context.Background())
+			defer cancelManager()
+			go func() {
+				if err := manager.Run(managerCtx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("elasticsearch message index manager stopped: %v", err)
+				}
+			}()
+			messageSearchIndexManagerStarted = true
+		}
+	}
 	runtime.SetJobStore(jobStore)
 	runtime.SetSkillExecutionStore(skillExecutionStore)
 	riskScanner := agentruntime.NewBasicRiskScanner()
@@ -368,6 +658,18 @@ func main() {
 	if strings.EqualFold(strings.TrimSpace(*rateLimitBackend), "redis") {
 		server.AddReadinessCheck("redis", agentruntime.RedisReadinessCheck(limiter))
 	}
+	if strings.EqualFold(strings.TrimSpace(*messageContextCacheBackend), "redis") && messageContextRedisClient != nil {
+		server.AddReadinessCheck("message_context_cache", agentruntime.RedisClientReadinessCheck(messageContextRedisClient))
+	}
+	if strings.EqualFold(strings.TrimSpace(*sessionListCacheBackend), "redis") && sessionListRedisClient != nil {
+		server.AddReadinessCheck("session_list_cache", agentruntime.RedisClientReadinessCheck(sessionListRedisClient))
+	}
+	if strings.EqualFold(strings.TrimSpace(*messageSequenceBackend), "redis") && messageSequenceRedisClient != nil {
+		server.AddReadinessCheck("message_sequence", agentruntime.RedisClientReadinessCheck(messageSequenceRedisClient))
+	}
+	if publishKafkaEvents || *messageEventsKafkaConsumerEnabled {
+		server.AddReadinessCheck("kafka_message_events", agentruntime.KafkaBrokerReadinessCheck(kafkaConfig.Brokers))
+	}
 	if artifactService != nil && artifactService.Objects != nil {
 		server.AddReadinessCheck("object_store", agentruntime.ObjectStoreReadinessCheck(artifactService.Objects, "agentapi"))
 	}
@@ -410,6 +712,12 @@ func main() {
 	log.Printf("admin API enabled: %t", strings.TrimSpace(*adminToken) != "")
 	log.Printf("user system enabled: %t", authService != nil)
 	log.Printf("rate limit backend: %s", *rateLimitBackend)
+	log.Printf("message context cache backend: %s ttl=%s", *messageContextCacheBackend, *messageContextCacheTTL)
+	log.Printf("session list cache backend: %s ttl=%s", *sessionListCacheBackend, *sessionListCacheTTL)
+	log.Printf("message events backend: %s kafka_consumer=%t topic=%s", *messageEventsBackend, *messageEventsKafkaConsumerEnabled, *messageEventsKafkaTopic)
+	log.Printf("message attachment worker: enabled=%t started=%t batch=%d interval=%s", *messageAttachmentWorkerEnabled, attachmentWorkerStarted, *messageAttachmentWorkerBatchSize, *messageAttachmentWorkerPollInterval)
+	log.Printf("message archive worker: enabled=%t started=%t after=%s batch=%d interval=%s prefix=%s clear_pg_payload=%t", *messageArchiveWorkerEnabled, archiveWorkerStarted, *messageArchiveAfter, *messageArchiveWorkerBatchSize, *messageArchiveWorkerPollInterval, *messageArchivePrefix, *messageArchiveClearPGPayload)
+	log.Printf("message search index manager: enabled=%t started=%t analyzer=%s search_analyzer=%s downgrade_after=%s close_after=%s interval=%s", *messageSearchIndexManagementEnabled, messageSearchIndexManagerStarted, *messageSearchIndexAnalyzer, *messageSearchIndexSearchAnalyzer, *messageSearchIndexDowngradeAfter, *messageSearchIndexCloseAfter, *messageSearchIndexMaintenanceInterval)
 	log.Printf("operation rate limits enabled: %t", true)
 	log.Printf("artifact store: %s", *artifactStore)
 	log.Printf("asset max bytes: %d", *assetMaxBytes)
@@ -1115,6 +1423,160 @@ func buildRateLimiter(backend, redisURL string, limit int, window time.Duration,
 		return agentruntime.NoopRateLimiter{}
 	default:
 		return agentruntime.NewRateLimiter(limit, window)
+	}
+}
+
+func buildMessageContextCache(backend, redisURL string, ttl time.Duration) (agentruntime.SessionContextCache, interface {
+	Ping(context.Context) *redis.StatusCmd
+	Close() error
+}) {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "redis":
+		client, err := agentruntime.NewRedisClientFromURL(redisURL)
+		if err != nil {
+			log.Fatalf("init redis message context cache: %v", err)
+		}
+		return agentruntime.NewRedisSessionContextCacheWithPrefix(client, ttl, agentruntime.RedisPrefixFromURL(redisURL)), client
+	case "none", "off", "disabled":
+		return agentruntime.NoopSessionContextCache{}, nil
+	default:
+		return agentruntime.NewMemorySessionContextCache(), nil
+	}
+}
+
+func buildSessionListCache(backend, redisURL string, ttl time.Duration) (agentruntime.SessionListCache, interface {
+	Ping(context.Context) *redis.StatusCmd
+	Close() error
+}) {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "redis":
+		client, err := agentruntime.NewRedisClientFromURL(redisURL)
+		if err != nil {
+			log.Fatalf("init redis session list cache: %v", err)
+		}
+		return agentruntime.NewRedisSessionListCacheWithPrefix(client, ttl, agentruntime.RedisPrefixFromURL(redisURL)), client
+	default:
+		return nil, nil
+	}
+}
+
+func buildMessageSequenceAllocator(backend, redisURL string) (agentruntime.MessageSequenceAllocator, interface {
+	Ping(context.Context) *redis.StatusCmd
+	Close() error
+}) {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "redis":
+		client, err := agentruntime.NewRedisClientFromURL(redisURL)
+		if err != nil {
+			log.Fatalf("init redis message sequence allocator: %v", err)
+		}
+		return agentruntime.NewRedisMessageSequenceAllocatorWithPrefix(client, agentruntime.RedisPrefixFromURL(redisURL)), client
+	default:
+		return nil, nil
+	}
+}
+
+func messageEventsBackendMode(backend string) (publishKafka bool, localVectorIndexing bool) {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "kafka":
+		return true, false
+	case "dual", "both", "local+kafka", "kafka+local":
+		return true, true
+	case "none", "off", "disabled":
+		return false, false
+	default:
+		return false, true
+	}
+}
+
+func buildKafkaMessageEventPublisher(config agentruntime.KafkaMessageEventConfig) (agentruntime.MessageEventPublisher, interface{ Close() error }) {
+	writer, err := agentruntime.NewKafkaMessageEventWriter(config)
+	if err != nil {
+		log.Fatalf("init kafka message event publisher: %v", err)
+	}
+	return agentruntime.NewKafkaMessageEventPublisher(writer, config.Topic), writer
+}
+
+func buildKafkaMessageEventConsumerWorker(
+	config agentruntime.KafkaMessageEventConfig,
+	searchConfig agentruntime.MessageSearchConfig,
+	sessionStore agentruntime.SessionStore,
+	processedLockBackend string,
+	processedLockRedisURL string,
+	processedLockTTL time.Duration,
+) (*agentruntime.KafkaMessageEventConsumerWorker, interface{ Close() error }) {
+	reader, err := agentruntime.NewKafkaMessageEventReader(config)
+	if err != nil {
+		log.Fatalf("init kafka message event consumer reader: %v", err)
+	}
+	handlers := make([]agentruntime.MessageEventHandler, 0, 2)
+	if agentruntime.MessageFullTextIndexingEnabled(searchConfig) {
+		handlers = append(handlers, agentruntime.NewMessageFullTextIndexEventHandler(
+			agentruntime.NewHTTPMessageFullTextIndexer(searchConfig),
+		))
+	}
+	if agentruntime.MessageVectorIndexingEnabled(searchConfig) {
+		metaStore, ok := sessionStore.(agentruntime.MessageEmbeddingMetaStore)
+		if !ok {
+			log.Fatalf("kafka message vector indexing requires a message embedding meta store")
+		}
+		indexer := agentruntime.NewQdrantMessageVectorIndexer(searchConfig, metaStore)
+		handlers = append(handlers, agentruntime.NewMessageVectorIndexEventHandler(indexer))
+	}
+	if len(handlers) == 0 {
+		log.Fatalf("kafka message event consumer requires Elasticsearch/OpenSearch full-text indexing or Qdrant vector indexing configuration")
+	}
+	var handler agentruntime.MessageEventHandler = handlers[0]
+	if len(handlers) > 1 {
+		handler = agentruntime.CompositeMessageEventHandler(handlers)
+	}
+	consumer := agentruntime.NewKafkaMessageEventConsumerWorker(reader, handler, config)
+	consumer.SetProcessor("search-index")
+	if strings.TrimSpace(config.DLQTopic) != "" {
+		dlqConfig := config
+		dlqConfig.Topic = config.DLQTopic
+		writer, err := agentruntime.NewKafkaMessageEventWriter(dlqConfig)
+		if err != nil {
+			log.Fatalf("init kafka message event dlq writer: %v", err)
+		}
+		consumer.SetDLQWriter(writer)
+	}
+	var redisClient interface{ Close() error }
+	switch strings.ToLower(strings.TrimSpace(processedLockBackend)) {
+	case "redis":
+		client, err := agentruntime.NewRedisClientFromURL(processedLockRedisURL)
+		if err != nil {
+			log.Fatalf("init kafka message event processed lock redis client: %v", err)
+		}
+		consumer.SetProcessedLock(agentruntime.NewRedisMessageEventProcessedLock(client, agentruntime.RedisPrefixFromURL(processedLockRedisURL), processedLockTTL))
+		redisClient = client
+	case "none", "off", "disabled":
+	default:
+		log.Fatalf("unsupported message event processed lock backend: %s", processedLockBackend)
+	}
+	return consumer, redisClient
+}
+
+func buildMessageAttachmentContentIndexer(searchConfig agentruntime.MessageSearchConfig, sessionStore agentruntime.SessionStore) agentruntime.MessageAttachmentContentIndexer {
+	indexers := make([]agentruntime.MessageAttachmentContentIndexer, 0, 2)
+	if agentruntime.MessageFullTextIndexingEnabled(searchConfig) {
+		indexers = append(indexers, agentruntime.NewHTTPMessageFullTextIndexer(searchConfig))
+	}
+	if agentruntime.MessageVectorIndexingEnabled(searchConfig) {
+		metaStore, ok := sessionStore.(agentruntime.MessageEmbeddingMetaStore)
+		if !ok {
+			log.Printf("message attachment vector indexing disabled: message embedding meta store is required")
+		} else {
+			indexers = append(indexers, agentruntime.NewQdrantMessageVectorIndexer(searchConfig, metaStore))
+		}
+	}
+	switch len(indexers) {
+	case 0:
+		return nil
+	case 1:
+		return indexers[0]
+	default:
+		return agentruntime.CompositeMessageAttachmentContentIndexer(indexers)
 	}
 }
 

@@ -24,6 +24,16 @@ type Artifact struct {
 	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
 }
 
+type PresignedAttachmentUpload struct {
+	AttachmentID string            `json:"attachment_id"`
+	UploadURL    string            `json:"upload_url"`
+	Method       string            `json:"method"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	ExpiresAt    time.Time         `json:"expires_at"`
+	ObjectKey    string            `json:"object_key,omitempty"`
+	MaxBytes     int64             `json:"max_bytes"`
+}
+
 const (
 	AssetKindArtifact   = "artifact"
 	AssetKindAttachment = "attachment"
@@ -106,6 +116,106 @@ func (s *ArtifactService) CreateWithJob(ctx context.Context, kind, userID, sessi
 	}
 	if err := s.Store.Create(ctx, artifact); err != nil {
 		_ = s.Objects.Delete(ctx, key)
+		return nil, err
+	}
+	return artifact, nil
+}
+
+func (s *ArtifactService) PresignAttachmentUpload(ctx context.Context, userID, sessionID, filename, contentType string, sizeBytes int64, ttl time.Duration) (*PresignedAttachmentUpload, error) {
+	if s == nil || s.Store == nil || s.Objects == nil {
+		return nil, fmt.Errorf("artifact service is not configured")
+	}
+	presigner, ok := s.Objects.(PresignPutObjectStore)
+	if !ok {
+		return nil, fmt.Errorf("object store does not support presigned uploads")
+	}
+	if strings.TrimSpace(userID) == "" {
+		return nil, fmt.Errorf("user ID is required")
+	}
+	filename, contentType, err := s.Policy.ValidateUpload(filename, contentType, sizeBytes)
+	if err != nil {
+		return nil, err
+	}
+	id, err := newArtifactID()
+	if err != nil {
+		return nil, err
+	}
+	key := joinObjectKey(s.Prefix, "users", userPathID(userID), AssetKindAttachment+"s", id, filepath.Base(filename))
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+	uploadURL, err := presigner.PresignPut(ctx, key, ttl, contentType)
+	if err != nil {
+		return nil, err
+	}
+	return &PresignedAttachmentUpload{
+		AttachmentID: id,
+		UploadURL:    uploadURL,
+		Method:       "PUT",
+		Headers:      map[string]string{"Content-Type": contentType},
+		ExpiresAt:    time.Now().UTC().Add(ttl),
+		ObjectKey:    key,
+		MaxBytes:     s.Policy.withDefaults().MaxBytes,
+	}, nil
+}
+
+func (s *ArtifactService) ConfirmAttachmentUpload(ctx context.Context, userID, sessionID, attachmentID, filename, contentType string, sizeBytes int64) (*Artifact, error) {
+	if s == nil || s.Store == nil || s.Objects == nil {
+		return nil, fmt.Errorf("artifact service is not configured")
+	}
+	header, ok := s.Objects.(HeadObjectStore)
+	if !ok {
+		return nil, fmt.Errorf("object store does not support upload confirmation")
+	}
+	if strings.TrimSpace(userID) == "" {
+		return nil, fmt.Errorf("user ID is required")
+	}
+	attachmentID = strings.TrimSpace(attachmentID)
+	if attachmentID == "" || strings.ContainsAny(attachmentID, `/\`) {
+		return nil, fmt.Errorf("attachment ID is required")
+	}
+	if existing, err := s.Store.Get(ctx, userID, attachmentID, AssetKindAttachment); err == nil {
+		return existing, nil
+	}
+	filename, contentType, err := s.Policy.ValidateUpload(filename, contentType, sizeBytes)
+	if err != nil {
+		return nil, err
+	}
+	key := joinObjectKey(s.Prefix, "users", userPathID(userID), AssetKindAttachment+"s", attachmentID, filepath.Base(filename))
+	info, err := header.Head(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("uploaded object not found: %w", err)
+	}
+	if info.SizeBytes < 0 {
+		return nil, fmt.Errorf("uploaded object size is unavailable")
+	}
+	maxBytes := s.Policy.withDefaults().MaxBytes
+	if maxBytes > 0 && info.SizeBytes > maxBytes {
+		_ = s.Objects.Delete(ctx, key)
+		return nil, fmt.Errorf("file exceeds max size of %d bytes", maxBytes)
+	}
+	if sizeBytes > 0 && info.SizeBytes != sizeBytes {
+		return nil, fmt.Errorf("uploaded object size mismatch: got %d want %d", info.SizeBytes, sizeBytes)
+	}
+	if normalized := normalizedContentType(info.ContentType); normalized != "" && normalized != contentType {
+		return nil, fmt.Errorf("uploaded object content type mismatch: got %q want %q", normalized, contentType)
+	}
+	artifact := &Artifact{
+		ID:          attachmentID,
+		Kind:        AssetKindAttachment,
+		UserID:      userID,
+		SessionID:   sessionID,
+		JobID:       jobIDFromContext(ctx),
+		ObjectKey:   key,
+		Filename:    filepath.Base(filename),
+		ContentType: contentType,
+		SizeBytes:   info.SizeBytes,
+		CreatedAt:   time.Now().UTC(),
+	}
+	if err := s.Store.Create(ctx, artifact); err != nil {
+		if existing, getErr := s.Store.Get(ctx, userID, attachmentID, AssetKindAttachment); getErr == nil {
+			return existing, nil
+		}
 		return nil, err
 	}
 	return artifact, nil

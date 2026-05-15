@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"claude-codex/internal/backend/agentruntime"
 	"claude-codex/internal/harness/skills"
@@ -155,6 +156,76 @@ func TestSkillScopedRegistryDefaultsToNoToolsWithoutPolicy(t *testing.T) {
 	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, allowed)
 	if names := descriptorNameSet(registry); len(names) != 0 {
 		t.Fatalf("skill-scoped registry without an explicit policy should expose no tools: %#v", names)
+	}
+}
+
+func TestBuildMessageContextCacheSelectsBackends(t *testing.T) {
+	cache, client := buildMessageContextCache("memory", "", time.Hour)
+	if _, ok := cache.(*agentruntime.MemorySessionContextCache); !ok {
+		t.Fatalf("expected memory cache, got %T", cache)
+	}
+	if client != nil {
+		t.Fatalf("memory cache should not create redis client")
+	}
+
+	cache, client = buildMessageContextCache("none", "", time.Hour)
+	if _, ok := cache.(agentruntime.NoopSessionContextCache); !ok {
+		t.Fatalf("expected noop cache, got %T", cache)
+	}
+	if client != nil {
+		t.Fatalf("noop cache should not create redis client")
+	}
+
+	cache, client = buildMessageContextCache("redis", "redis://localhost:6379/1?prefix=agentapi:message:ctx", time.Hour)
+	if _, ok := cache.(*agentruntime.RedisSessionContextCache); !ok {
+		t.Fatalf("expected redis cache, got %T", cache)
+	}
+	if client == nil {
+		t.Fatal("redis cache should create redis client")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close redis client: %v", err)
+	}
+}
+
+func TestBuildMessageSequenceAllocatorSelectsBackends(t *testing.T) {
+	allocator, client := buildMessageSequenceAllocator("sql", "")
+	if allocator != nil {
+		t.Fatalf("sql sequence backend should not create allocator, got %T", allocator)
+	}
+	if client != nil {
+		t.Fatalf("sql sequence backend should not create redis client")
+	}
+
+	allocator, client = buildMessageSequenceAllocator("redis", "redis://localhost:6379/1?prefix=agentapi:message:seq")
+	if _, ok := allocator.(*agentruntime.RedisMessageSequenceAllocator); !ok {
+		t.Fatalf("expected redis sequence allocator, got %T", allocator)
+	}
+	if client == nil {
+		t.Fatal("redis sequence allocator should create redis client")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close redis client: %v", err)
+	}
+}
+
+func TestMessageEventsBackendMode(t *testing.T) {
+	cases := []struct {
+		backend     string
+		wantKafka   bool
+		wantLocal   bool
+		description string
+	}{
+		{backend: "local", wantLocal: true, description: "local keeps in-process vector indexing"},
+		{backend: "kafka", wantKafka: true, description: "kafka publishes only to kafka"},
+		{backend: "dual", wantKafka: true, wantLocal: true, description: "dual publishes to both"},
+		{backend: "none", description: "none disables message events"},
+	}
+	for _, tc := range cases {
+		gotKafka, gotLocal := messageEventsBackendMode(tc.backend)
+		if gotKafka != tc.wantKafka || gotLocal != tc.wantLocal {
+			t.Fatalf("%s: got kafka=%t local=%t", tc.description, gotKafka, gotLocal)
+		}
 	}
 }
 

@@ -1,8 +1,6 @@
 package state
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -10,21 +8,68 @@ import (
 	"sort"
 	"time"
 
+	"github.com/google/uuid"
+
 	"claude-codex/internal/public/fsutil"
 	publictypes "claude-codex/internal/public/types"
 )
 
+const (
+	SessionStatusActive   = 1
+	SessionStatusArchived = 2
+	SessionStatusDeleted  = 3
+)
+
+const (
+	MessageRoleUser      = "user"
+	MessageRoleAssistant = "assistant"
+	MessageRoleSystem    = "system"
+	MessageRoleTool      = "tool"
+)
+
+const (
+	MessageContentTypeText       = "text"
+	MessageContentTypeMultipart  = "multipart"
+	MessageContentTypeToolCall   = "tool_call"
+	MessageContentTypeToolResult = "tool_result"
+	MessageContentTypeSummary    = "summary"
+)
+
+const (
+	MessageStatusNormal    = 1
+	MessageStatusDeleted   = 2
+	MessageStatusTruncated = 3
+)
+
 type Message struct {
-	Role          string                     `json:"role"`
-	Content       string                     `json:"content,omitempty"`
-	ContentBlocks []publictypes.ContentBlock `json:"content_blocks,omitempty"`
-	ToolName      string                     `json:"tool_name,omitempty"`
-	ToolCallID    string                     `json:"tool_call_id,omitempty"` // Anthropic tool_use ID
-	ToolInput     json.RawMessage            `json:"tool_input,omitempty"`
-	ToolOutput    string                     `json:"tool_output,omitempty"`
-	ToolCalls     []ToolCall                 `json:"tool_calls,omitempty"` // For assistant messages with tool_use
-	CreatedAt     time.Time                  `json:"created_at"`
-	Hidden        bool                       `json:"hidden,omitempty"` // hidden messages are not shown in the TUI
+	ID               string                     `json:"id,omitempty"`
+	SessionID        string                     `json:"session_id,omitempty"`
+	UserID           string                     `json:"user_id,omitempty"`
+	SeqNo            int64                      `json:"seq_no,omitempty"`
+	ParentID         string                     `json:"parent_id,omitempty"`
+	Role             string                     `json:"role"`
+	ContentType      string                     `json:"content_type,omitempty"`
+	Content          string                     `json:"content,omitempty"`
+	ContentParts     []publictypes.ContentBlock `json:"content_parts,omitempty"`
+	ContentBlocks    []publictypes.ContentBlock `json:"content_blocks,omitempty"`
+	Attachments      []MessageAttachment        `json:"attachments,omitempty"`
+	ToolName         string                     `json:"tool_name,omitempty"`
+	ToolCallID       string                     `json:"tool_call_id,omitempty"` // Anthropic tool_use ID
+	ToolInput        json.RawMessage            `json:"tool_input,omitempty"`
+	ToolOutput       string                     `json:"tool_output,omitempty"`
+	ToolCalls        []ToolCall                 `json:"tool_calls,omitempty"` // For assistant messages with tool_use
+	PromptTokens     int                        `json:"prompt_tokens,omitempty"`
+	CompletionTokens int                        `json:"completion_tokens,omitempty"`
+	Status           int                        `json:"status,omitempty"`
+	IsContextUsed    bool                       `json:"is_context_used,omitempty"`
+	ModelID          string                     `json:"model_id,omitempty"`
+	RunID            string                     `json:"run_id,omitempty"`
+	ArchiveURI       string                     `json:"archive_uri,omitempty"`
+	ArchiveChecksum  string                     `json:"archive_checksum,omitempty"`
+	ArchivedAt       *time.Time                 `json:"archived_at,omitempty"`
+	CreatedAt        time.Time                  `json:"created_at"`
+	UpdatedAt        time.Time                  `json:"updated_at,omitempty"`
+	Hidden           bool                       `json:"hidden,omitempty"` // hidden messages are not shown in the TUI
 }
 
 type ToolCall struct {
@@ -33,19 +78,48 @@ type ToolCall struct {
 	Input json.RawMessage `json:"input"`
 }
 
+type MessageAttachment struct {
+	ID               string    `json:"id"`
+	MessageID        string    `json:"message_id,omitempty"`
+	SessionID        string    `json:"session_id,omitempty"`
+	UserID           string    `json:"user_id,omitempty"`
+	FileType         string    `json:"file_type"`
+	MimeType         string    `json:"mime_type"`
+	FileName         string    `json:"file_name,omitempty"`
+	FileSize         int64     `json:"file_size,omitempty"`
+	StorageKey       string    `json:"storage_key,omitempty"`
+	ThumbnailKey     string    `json:"thumbnail_key,omitempty"`
+	ExtractedTextKey string    `json:"extracted_text_key,omitempty"`
+	EmbeddingStatus  int       `json:"embedding_status,omitempty"`
+	CreatedAt        time.Time `json:"created_at,omitempty"`
+}
+
+const (
+	MessageAttachmentEmbeddingPending = 0
+	MessageAttachmentEmbeddingDone    = 1
+	MessageAttachmentEmbeddingFailed  = 2
+)
+
 type Session struct {
-	ID          string            `json:"id"`
-	WorkingDir  string            `json:"working_dir"`
-	StartedAt   time.Time         `json:"started_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	Usage       Usage             `json:"usage"`
-	Messages    []Message         `json:"messages"`
-	Tags        []string          `json:"tags,omitempty"`
-	Description string            `json:"description,omitempty"`
-	ParentID    string            `json:"parent_id,omitempty"`    // For branching
-	BranchPoint int               `json:"branch_point,omitempty"` // Turn number where branch occurred
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	Archived    bool              `json:"archived,omitempty"`
+	ID            string            `json:"id"`
+	UserID        string            `json:"user_id,omitempty"`
+	AgentID       string            `json:"agent_id,omitempty"`
+	Title         string            `json:"title,omitempty"`
+	Status        int               `json:"status,omitempty"`
+	WorkingDir    string            `json:"working_dir"`
+	StartedAt     time.Time         `json:"started_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+	LastMessageAt time.Time         `json:"last_message_at,omitempty"`
+	Usage         Usage             `json:"usage"`
+	Messages      []Message         `json:"messages"`
+	MessageCount  int               `json:"message_count,omitempty"`
+	TotalTokens   int64             `json:"total_tokens,omitempty"`
+	Tags          []string          `json:"tags,omitempty"`
+	Description   string            `json:"description,omitempty"`
+	ParentID      string            `json:"parent_id,omitempty"`    // For branching
+	BranchPoint   int               `json:"branch_point,omitempty"` // Turn number where branch occurred
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	Archived      bool              `json:"archived,omitempty"`
 }
 
 type Usage struct {
@@ -61,6 +135,7 @@ func NewSession(workingDir string) *Session {
 	now := time.Now().UTC()
 	return &Session{
 		ID:         newID(),
+		Status:     SessionStatusActive,
 		WorkingDir: workingDir,
 		StartedAt:  now,
 		UpdatedAt:  now,
@@ -69,74 +144,55 @@ func NewSession(workingDir string) *Session {
 }
 
 func (s *Session) AddUserMessage(content string) {
-	s.append(Message{
-		Role:      "user",
-		Content:   content,
-		CreatedAt: time.Now().UTC(),
-	})
+	s.append(newTextMessage(MessageRoleUser, content, false))
 	s.Usage.RecordInput(content)
 }
 
 func (s *Session) AddHiddenUserMessage(content string) {
-	s.append(Message{
-		Role:      "user",
-		Content:   content,
-		Hidden:    true,
-		CreatedAt: time.Now().UTC(),
-	})
+	s.append(newTextMessage(MessageRoleUser, content, true))
 	s.Usage.RecordInput(content)
 }
 
 // AddSystemContext injects a hidden context message that is sent to the model
 // but not displayed in the TUI transcript.
 func (s *Session) AddSystemContext(content string) {
-	s.append(Message{
-		Role:      "user",
-		Content:   content,
-		Hidden:    true,
-		CreatedAt: time.Now().UTC(),
-	})
+	s.append(newTextMessage(MessageRoleUser, content, true))
 	s.Usage.RecordInput(content)
 }
 
 func (s *Session) AddAssistantMessage(content string) {
-	s.append(Message{
-		Role:      "assistant",
-		Content:   content,
-		CreatedAt: time.Now().UTC(),
-	})
+	s.append(newTextMessage(MessageRoleAssistant, content, false))
 	s.Usage.RecordOutput(content)
 }
 
 func (s *Session) AddHiddenAssistantMessage(content string) {
-	s.append(Message{
-		Role:      "assistant",
-		Content:   content,
-		Hidden:    true,
-		CreatedAt: time.Now().UTC(),
-	})
+	s.append(newTextMessage(MessageRoleAssistant, content, true))
 	s.Usage.RecordOutput(content)
 }
 
 func (s *Session) AddAssistantMessageWithTools(content string, toolCalls []ToolCall) {
-	s.append(Message{
-		Role:      "assistant",
-		Content:   content,
-		ToolCalls: toolCalls,
-		CreatedAt: time.Now().UTC(),
-	})
+	message := newTextMessage(MessageRoleAssistant, content, false)
+	message.ContentType = MessageContentTypeToolCall
+	message.ToolCalls = toolCalls
+	s.append(message)
 	s.Usage.RecordOutput(content)
 }
 
 func (s *Session) AddToolResult(callID, toolName string, input json.RawMessage, output string) {
+	now := time.Now().UTC()
 	s.append(Message{
-		Role:       "tool",
-		ToolCallID: callID,
-		ToolName:   toolName,
-		ToolInput:  input,
-		ToolOutput: output,
-		Hidden:     true,
-		CreatedAt:  time.Now().UTC(),
+		ID:            newID(),
+		Role:          "tool",
+		ContentType:   MessageContentTypeToolResult,
+		ToolCallID:    callID,
+		ToolName:      toolName,
+		ToolInput:     input,
+		ToolOutput:    output,
+		Status:        MessageStatusNormal,
+		IsContextUsed: true,
+		Hidden:        true,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	})
 	s.Usage.RecordOutput(output)
 }
@@ -225,8 +281,58 @@ func LoadLatestSession(home string) (*Session, error) {
 }
 
 func (s *Session) append(message Message) {
+	if message.ID == "" {
+		message.ID = newID()
+	}
+	if message.Status == 0 {
+		message.Status = MessageStatusNormal
+	}
+	if message.ContentType == "" {
+		message.ContentType = inferMessageContentType(message)
+	}
+	if message.CreatedAt.IsZero() {
+		message.CreatedAt = time.Now().UTC()
+	}
+	if message.UpdatedAt.IsZero() {
+		message.UpdatedAt = message.CreatedAt
+	}
+	message.SeqNo = int64(len(s.Messages) + 1)
+	message.SessionID = s.ID
+	message.UserID = s.UserID
+	message.IsContextUsed = true
 	s.Messages = append(s.Messages, message)
 	s.UpdatedAt = message.CreatedAt
+	s.LastMessageAt = message.CreatedAt
+	s.MessageCount = len(s.Messages)
+	s.TotalTokens = int64(s.Usage.TotalTokens)
+}
+
+func newTextMessage(role, content string, hidden bool) Message {
+	now := time.Now().UTC()
+	return Message{
+		ID:            newID(),
+		Role:          role,
+		ContentType:   MessageContentTypeText,
+		Content:       content,
+		Status:        MessageStatusNormal,
+		IsContextUsed: true,
+		Hidden:        hidden,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+}
+
+func inferMessageContentType(message Message) string {
+	if len(message.ContentParts) > 0 || len(message.ContentBlocks) > 0 {
+		return MessageContentTypeMultipart
+	}
+	if message.Role == MessageRoleTool || message.ToolCallID != "" || message.ToolOutput != "" {
+		return MessageContentTypeToolResult
+	}
+	if len(message.ToolCalls) > 0 {
+		return MessageContentTypeToolCall
+	}
+	return MessageContentTypeText
 }
 
 func (u *Usage) RecordInput(value string) {
@@ -244,12 +350,7 @@ func (u *Usage) RecordOutput(value string) {
 }
 
 func newID() string {
-	buffer := make([]byte, 6)
-	if _, err := rand.Read(buffer); err != nil {
-		return time.Now().UTC().Format("20060102T150405.000000000Z")
-	}
-
-	return time.Now().UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(buffer)
+	return uuid.NewString()
 }
 
 func estimateTokens(value string) int {
