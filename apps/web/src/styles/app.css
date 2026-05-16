@@ -1192,11 +1192,36 @@ label.composer-upload {
   gap: 8px;
 }
 .composer .send,
-.composer .stop-generation {
+.composer .stop-generation,
+.composer .live-control {
   width: var(--composer-control-size);
   height: var(--composer-control-size);
   min-width: var(--composer-control-size);
   min-height: var(--composer-control-size);
+}
+.composer .live-control {
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+}
+.composer .live-control:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--active-bg);
+}
+.composer .live-control.active {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.composer .live-control:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 .composer-error {
   min-height: 34px;

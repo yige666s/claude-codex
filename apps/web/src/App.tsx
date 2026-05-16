@@ -17,6 +17,8 @@ import {
   Menu,
   MessageCircle,
   MessageSquarePlus,
+  Mic,
+  MicOff,
   PanelLeft,
   PlayCircle,
   RefreshCw,
@@ -139,6 +141,7 @@ export function App() {
   const [highlightedMessageIndex, setHighlightedMessageIndex] = useState<number | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
   const [busyChat, setBusyChat] = useState(false);
+  const [liveStatus, setLiveStatus] = useState<"idle" | "connecting" | "listening" | "error">("idle");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState("");
@@ -167,6 +170,13 @@ export function App() {
   });
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const liveSocketRef = useRef<WebSocket | null>(null);
+  const liveMediaRef = useRef<MediaStream | null>(null);
+  const liveAudioContextRef = useRef<AudioContext | null>(null);
+  const liveProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const liveSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const livePlaybackContextRef = useRef<AudioContext | null>(null);
+  const livePlaybackTimeRef = useRef(0);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const jobSourceRef = useRef<EventSource | null>(null);
   const jobReconnectTimerRef = useRef<number | null>(null);
@@ -230,7 +240,10 @@ export function App() {
       });
       loadMemorySettings().catch(() => {});
     }
-    return () => closeJobStream();
+    return () => {
+      closeJobStream();
+      stopLiveMode(false);
+    };
   }, [api]);
 
   useEffect(() => {
@@ -284,6 +297,7 @@ export function App() {
   useEffect(() => {
     if (!sessionId) return;
     refreshSessionData(sessionId).catch((error) => showError(error));
+    stopLiveMode(false);
   }, [sessionId]);
 
   useEffect(() => {
@@ -831,6 +845,159 @@ export function App() {
     setStatus({ tone: "idle", text: "Cancelled" });
   }
 
+  async function startLiveMode() {
+    if (!sessionId || liveStatus !== "idle") return;
+    if (typeof WebSocket === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setRuntimeError("Live voice is unavailable in this browser.");
+      setLiveStatus("error");
+      return;
+    }
+    stopLiveMode(false);
+    setRuntimeError("");
+    setAssistantDraft("");
+    setLiveStatus("connecting");
+    setStatus({ tone: "busy", text: "Connecting live voice" });
+    const socket = new WebSocket(api.liveSessionURL(sessionId));
+    liveSocketRef.current = socket;
+    socket.onmessage = (message) => {
+      try {
+        void handleLiveRuntimeEvent(JSON.parse(message.data) as RuntimeEvent, socket);
+      } catch {
+        // Ignore malformed live frames; the socket error handler covers transport failures.
+      }
+    };
+    socket.onerror = () => {
+      if (liveSocketRef.current !== socket) return;
+      setLiveStatus("error");
+      setStatus({ tone: "error", text: "Live voice failed" });
+    };
+    socket.onclose = () => {
+      if (liveSocketRef.current !== socket) return;
+      cleanupLiveAudio();
+      liveSocketRef.current = null;
+      setLiveStatus("idle");
+      setStatus((current) => current.tone === "error" ? current : { tone: "idle", text: "Live voice stopped" });
+    };
+  }
+
+  function stopLiveMode(sendEnd = true) {
+    const socket = liveSocketRef.current;
+    cleanupLiveAudio();
+    liveSocketRef.current = null;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      if (sendEnd) {
+        socket.send(JSON.stringify({ type: "audio_end" }));
+        socket.send(JSON.stringify({ type: "close" }));
+      }
+      socket.close();
+    }
+    setLiveStatus("idle");
+  }
+
+  async function handleLiveRuntimeEvent(event: RuntimeEvent, socket: WebSocket) {
+    if (event.type === "live_ready") {
+      setStatus({ tone: "busy", text: "Live voice connected" });
+      return;
+    }
+    if (event.type === "live_setup_complete") {
+      try {
+        await startLiveCapture(socket);
+      } catch (error) {
+        setRuntimeError(errorMessage(error));
+        setLiveStatus("error");
+        setStatus({ tone: "error", text: "Microphone unavailable" });
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "close" }));
+        }
+        socket.close();
+      }
+      return;
+    }
+    if (event.type === "live_transcript" && event.role === "assistant") {
+      setAssistantDraft((current) => current + (event.content || ""));
+      return;
+    }
+    if (event.type === "live_audio") {
+      playLiveAudio(event.data);
+      return;
+    }
+    if (event.type === "live_interrupted") {
+      setAssistantDraft("");
+      return;
+    }
+    handleRuntimeEvent(event);
+    if (event.type === "message" && event.role === "assistant") {
+      void refreshSessionData(sessionId, { revealNewArtifacts: true });
+    }
+  }
+
+  async function startLiveCapture(socket: WebSocket) {
+    if (liveMediaRef.current) return;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+    const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) throw new Error("AudioContext is unavailable.");
+    const audioContext = new AudioContextCtor();
+    const source = audioContext.createMediaStreamSource(stream);
+    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+    processor.onaudioprocess = (event) => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      const pcm = downsampleToPCM16(event.inputBuffer.getChannelData(0), audioContext.sampleRate, 16000);
+      if (!pcm.length) return;
+      socket.send(JSON.stringify({
+        type: "audio",
+        mime_type: "audio/pcm;rate=16000",
+        data: bytesToBase64(pcm)
+      }));
+    };
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+    liveMediaRef.current = stream;
+    liveAudioContextRef.current = audioContext;
+    liveSourceRef.current = source;
+    liveProcessorRef.current = processor;
+    setLiveStatus("listening");
+    setStatus({ tone: "busy", text: "Listening" });
+  }
+
+  function cleanupLiveAudio() {
+    liveProcessorRef.current?.disconnect();
+    liveSourceRef.current?.disconnect();
+    liveMediaRef.current?.getTracks().forEach((track) => track.stop());
+    void liveAudioContextRef.current?.close();
+    liveProcessorRef.current = null;
+    liveSourceRef.current = null;
+    liveMediaRef.current = null;
+    liveAudioContextRef.current = null;
+    void livePlaybackContextRef.current?.close();
+    livePlaybackContextRef.current = null;
+    livePlaybackTimeRef.current = 0;
+  }
+
+  function playLiveAudio(data: unknown) {
+    const payload = data as { data?: string; mime_type?: string };
+    if (!payload?.data) return;
+    const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) return;
+    const sampleRate = sampleRateFromMime(payload.mime_type || "") || 24000;
+    const pcm = base64ToPCM16(payload.data);
+    if (!pcm.length) return;
+    const context = livePlaybackContextRef.current || new AudioContextCtor({ sampleRate });
+    livePlaybackContextRef.current = context;
+    const buffer = context.createBuffer(1, pcm.length, sampleRate);
+    const channel = buffer.getChannelData(0);
+    for (let index = 0; index < pcm.length; index += 1) {
+      channel[index] = Math.max(-1, Math.min(1, pcm[index] / 32768));
+    }
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    const startAt = Math.max(context.currentTime + 0.02, livePlaybackTimeRef.current || 0);
+    source.start(startAt);
+    livePlaybackTimeRef.current = startAt + buffer.duration;
+  }
+
   async function uploadAttachment(fileList: FileList | null) {
     const file = fileList?.[0];
     if (!file) return;
@@ -1359,7 +1526,7 @@ export function App() {
               title="Upload attachment"
               aria-label="Upload attachment"
               onClick={() => attachmentInputRef.current?.click()}
-              disabled={uploading}
+              disabled={uploading || liveStatus !== "idle"}
             >
               <FileUp size={18} />
             </button>
@@ -1371,13 +1538,13 @@ export function App() {
               aria-hidden="true"
               accept=".png,.jpg,.jpeg,.jfif,.webp,.gif,.avif,.bmp,.tif,.tiff,.heic,.heif,.pdf,.txt,.md,.csv,.json,.docx,.xlsx,.pptx,image/png,image/jpeg,image/pjpeg,image/webp,image/gif,image/avif,image/bmp,image/tiff,image/heic,image/heif,application/pdf,text/plain,text/markdown,text/csv,application/json"
               onChange={(event) => uploadAttachment(event.currentTarget.files)}
-              disabled={uploading}
+              disabled={uploading || liveStatus !== "idle"}
             />
             <textarea
               ref={composerInputRef}
               value={draft}
               aria-label="Message"
-              placeholder="输入消息，或用 /skills 调用工作流"
+              placeholder={liveStatus === "listening" ? "Live voice is listening" : "输入消息，或用 /skills 调用工作流"}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -1385,15 +1552,26 @@ export function App() {
                   sendMessage();
                 }
               }}
+              disabled={liveStatus !== "idle"}
               rows={1}
             />
             <div className="composer-actions">
+              <button
+                type="button"
+                className={`live-control ${liveStatus !== "idle" ? "active" : ""}`}
+                onClick={() => liveStatus === "idle" ? void startLiveMode() : stopLiveMode()}
+                disabled={!sessionId || busyChat}
+                title={liveStatus === "idle" ? "Start live voice" : "Stop live voice"}
+                aria-label={liveStatus === "idle" ? "Start live voice" : "Stop live voice"}
+              >
+                {liveStatus === "idle" ? <Mic size={18} /> : <MicOff size={18} />}
+              </button>
               {busyChat ? (
                 <button className="stop-generation" onClick={cancelChat} title="Stop generation" aria-label="Stop generation">
                   <span><Square size={16} fill="currentColor" /></span>
                 </button>
               ) : (
-                <button className="primary send" onClick={sendMessage} disabled={(!draft.trim() && pendingAttachments.length === 0) || !sessionId} title="Send" aria-label="Send">
+                <button className="primary send" onClick={sendMessage} disabled={liveStatus !== "idle" || (!draft.trim() && pendingAttachments.length === 0) || !sessionId} title="Send" aria-label="Send">
                   <Send size={21} />
                 </button>
               )}
@@ -4304,6 +4482,49 @@ function rightPanelLabel(tab: RightPanelTab): string {
   if (tab === "jobs") return "jobs";
   if (tab === "attachments") return "attachments";
   return "artifacts";
+}
+
+function downsampleToPCM16(input: Float32Array, inputSampleRate: number, targetSampleRate: number): Uint8Array {
+  if (!input.length || inputSampleRate <= 0 || targetSampleRate <= 0) return new Uint8Array();
+  const ratio = Math.max(inputSampleRate / targetSampleRate, 1);
+  const outputLength = Math.floor(input.length / ratio);
+  const bytes = new Uint8Array(outputLength * 2);
+  const view = new DataView(bytes.buffer);
+  for (let index = 0; index < outputLength; index += 1) {
+    const start = Math.floor(index * ratio);
+    const end = Math.min(Math.floor((index + 1) * ratio), input.length);
+    let total = 0;
+    const count = Math.max(end - start, 1);
+    for (let sourceIndex = start; sourceIndex < end; sourceIndex += 1) {
+      total += input[sourceIndex] || 0;
+    }
+    const sample = Math.max(-1, Math.min(1, total / count));
+    view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+  }
+  return bytes;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return window.btoa(binary);
+}
+
+function base64ToPCM16(value: string): Int16Array {
+  const binary = window.atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
+}
+
+function sampleRateFromMime(mime: string): number {
+  const match = /(?:^|;)rate=(\d+)/i.exec(mime);
+  return match ? Number.parseInt(match[1], 10) : 0;
 }
 
 function resizeComposerInput(element: HTMLTextAreaElement | null) {
