@@ -110,6 +110,10 @@ func (s *SQLSessionStore) Init(ctx context.Context) error {
 			Version:    11,
 			Statements: agentSessionLegacyReconcileStatements(timeType, jsonType, s.dialect),
 		},
+		{
+			Version:    12,
+			Statements: agentMessageLifecycleConstraintStatements(s.dialect),
+		},
 	}); err != nil {
 		return err
 	}
@@ -182,6 +186,48 @@ END $$`,
 	}
 	statements = append(statements, agentSessionSchemaStatements(timeType, jsonType)...)
 	return statements
+}
+
+func agentMessageLifecycleConstraintStatements(dialect SQLDialect) []string {
+	if dialect != SQLDialectPostgres {
+		return nil
+	}
+	return []string{
+		`DROP TABLE IF EXISTS agent_message_embedding_meta_legacy_pre_message_module`,
+		`DROP TABLE IF EXISTS agent_messages_legacy_pre_message_module`,
+		`DROP TABLE IF EXISTS agent_sessions_legacy_pre_message_module`,
+		`DELETE FROM agent_message_attachments a WHERE NOT EXISTS (
+			SELECT 1 FROM agent_messages m WHERE m.message_id = a.message_id
+		)`,
+		`DELETE FROM agent_message_embedding_meta e WHERE NOT EXISTS (
+			SELECT 1 FROM agent_messages m WHERE m.message_id = e.message_id
+		)`,
+		`DELETE FROM agent_messages m WHERE NOT EXISTS (
+			SELECT 1 FROM agent_sessions s WHERE s.user_id = m.user_id AND s.session_id = m.session_id
+		)`,
+		postgresAddForeignKeyIfMissing("fk_agent_messages_session",
+			"agent_messages",
+			"FOREIGN KEY (user_id, session_id) REFERENCES agent_sessions(user_id, session_id) ON DELETE CASCADE"),
+		postgresAddForeignKeyIfMissing("fk_agent_message_attachments_message",
+			"agent_message_attachments",
+			"FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE"),
+		postgresAddForeignKeyIfMissing("fk_agent_message_embedding_meta_message",
+			"agent_message_embedding_meta",
+			"FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE"),
+	}
+}
+
+func postgresAddForeignKeyIfMissing(name, table, definition string) string {
+	return `DO $$
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1
+		FROM pg_constraint
+		WHERE conname = '` + name + `'
+	) THEN
+		ALTER TABLE ` + table + ` ADD CONSTRAINT ` + name + ` ` + definition + `;
+	END IF;
+END $$`
 }
 
 func agentMessageSchemaStatements(timeType, jsonType string) []string {

@@ -109,7 +109,32 @@ func (s *SQLSkillRegistry) Init(ctx context.Context) error {
 			return err
 		}
 	}
-	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skills", "created_at", "updated_at", "published_at")
+	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skills", "created_at", "updated_at", "published_at"); err != nil {
+		return err
+	}
+	if err := s.ensureLifecycleConstraints(ctx); err != nil {
+		return err
+	}
+	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skill_versions", "created_at", "published_at")
+}
+
+func (s *SQLSkillRegistry) ensureLifecycleConstraints(ctx context.Context) error {
+	if s.dialect != SQLDialectPostgres {
+		return nil
+	}
+	for _, stmt := range []string{
+		`DELETE FROM agent_skill_versions v WHERE NOT EXISTS (
+			SELECT 1 FROM agent_skills s WHERE s.name = v.skill_name
+		)`,
+		postgresAddForeignKeyIfMissing("fk_agent_skill_versions_skill",
+			"agent_skill_versions",
+			"FOREIGN KEY (skill_name) REFERENCES agent_skills(name) ON DELETE CASCADE"),
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SQLSkillRegistry) SyncLoadedSkills(ctx context.Context, loaded []*skills.SkillDefinition) error {

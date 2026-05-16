@@ -289,7 +289,39 @@ func (s *SQLEvaluationStore) Init(ctx context.Context) error {
 	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_eval_results", "created_at"); err != nil {
 		return err
 	}
+	if err := s.ensureLifecycleConstraints(ctx); err != nil {
+		return err
+	}
 	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_eval_reviews", "created_at", "updated_at")
+}
+
+func (s *SQLEvaluationStore) ensureLifecycleConstraints(ctx context.Context) error {
+	if s.dialect != SQLDialectPostgres {
+		return nil
+	}
+	for _, stmt := range []string{
+		`DELETE FROM agent_eval_reviews rv WHERE NOT EXISTS (
+			SELECT 1 FROM agent_eval_results r WHERE r.id = rv.result_id
+		) OR EXISTS (
+			SELECT 1 FROM agent_eval_results r
+			WHERE r.id = rv.result_id
+			  AND NOT EXISTS (SELECT 1 FROM agent_eval_runs er WHERE er.id = r.run_id)
+		)`,
+		`DELETE FROM agent_eval_results r WHERE NOT EXISTS (
+			SELECT 1 FROM agent_eval_runs er WHERE er.id = r.run_id
+		)`,
+		postgresAddForeignKeyIfMissing("fk_agent_eval_results_run",
+			"agent_eval_results",
+			"FOREIGN KEY (run_id) REFERENCES agent_eval_runs(id) ON DELETE CASCADE"),
+		postgresAddForeignKeyIfMissing("fk_agent_eval_reviews_result",
+			"agent_eval_reviews",
+			"FOREIGN KEY (result_id) REFERENCES agent_eval_results(id) ON DELETE CASCADE"),
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SQLEvaluationStore) CreateEvaluationRun(ctx context.Context, run EvaluationRun) (EvaluationRun, error) {

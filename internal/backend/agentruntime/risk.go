@@ -519,7 +519,29 @@ func (s *SQLRiskStore) Init(ctx context.Context) error {
 	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_risk_scores", "last_event_at", "updated_at"); err != nil {
 		return err
 	}
+	if err := s.ensureLifecycleConstraints(ctx); err != nil {
+		return err
+	}
 	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_risk_reviews", "created_at", "updated_at", "resolved_at")
+}
+
+func (s *SQLRiskStore) ensureLifecycleConstraints(ctx context.Context) error {
+	if s.dialect != SQLDialectPostgres {
+		return nil
+	}
+	for _, stmt := range []string{
+		`DELETE FROM agent_risk_reviews rv WHERE NOT EXISTS (
+			SELECT 1 FROM agent_risk_events e WHERE e.id = rv.risk_event_id
+		)`,
+		postgresAddForeignKeyIfMissing("fk_agent_risk_reviews_event",
+			"agent_risk_reviews",
+			"FOREIGN KEY (risk_event_id) REFERENCES agent_risk_events(id) ON DELETE CASCADE"),
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SQLRiskStore) RecordRiskEvent(ctx context.Context, event RiskEvent) error {

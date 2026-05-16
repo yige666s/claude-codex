@@ -299,7 +299,29 @@ func (s *SQLJobStore) Init(ctx context.Context) error {
 	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_jobs", "created_at", "updated_at", "started_at", "finished_at"); err != nil {
 		return err
 	}
+	if err := s.ensureLifecycleConstraints(ctx); err != nil {
+		return err
+	}
 	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_job_events", "created_at")
+}
+
+func (s *SQLJobStore) ensureLifecycleConstraints(ctx context.Context) error {
+	if s.dialect != SQLDialectPostgres {
+		return nil
+	}
+	for _, stmt := range []string{
+		`DELETE FROM agent_job_events e WHERE NOT EXISTS (
+			SELECT 1 FROM agent_jobs j WHERE j.job_id = e.job_id
+		)`,
+		postgresAddForeignKeyIfMissing("fk_agent_job_events_job",
+			"agent_job_events",
+			"FOREIGN KEY (job_id) REFERENCES agent_jobs(job_id) ON DELETE CASCADE"),
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SQLJobStore) CreateJob(ctx context.Context, job *Job) error {
