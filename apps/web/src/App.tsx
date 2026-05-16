@@ -182,7 +182,6 @@ export function App() {
   const livePresentationRef = useRef(livePresentation);
   const liveAudioChunkCountRef = useRef(0);
   const livePlaybackQueueRef = useRef(Promise.resolve());
-  const liveAssistantAudioActiveUntilRef = useRef(0);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const jobSourceRef = useRef<EventSource | null>(null);
   const jobReconnectTimerRef = useRef<number | null>(null);
@@ -867,7 +866,6 @@ export function App() {
     setAssistantDraft("");
     liveAudioChunkCountRef.current = 0;
     livePlaybackQueueRef.current = Promise.resolve();
-    liveAssistantAudioActiveUntilRef.current = 0;
     if (livePresentation === "audio") {
       try {
         await ensureLivePlaybackContext();
@@ -952,7 +950,6 @@ export function App() {
     if (event.type === "live_interrupted") {
       setAssistantDraft("");
       livePlaybackTimeRef.current = 0;
-      liveAssistantAudioActiveUntilRef.current = 0;
       setStatus({ tone: "idle", text: "Voice interrupted" });
       return;
     }
@@ -984,7 +981,6 @@ export function App() {
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
     processor.onaudioprocess = (event) => {
       if (socket.readyState !== WebSocket.OPEN) return;
-      if (livePresentationRef.current === "audio" && Date.now() < liveAssistantAudioActiveUntilRef.current) return;
       const pcm = downsampleToPCM16(event.inputBuffer.getChannelData(0), audioContext.sampleRate, 16000);
       if (!pcm.length) return;
       socket.send(JSON.stringify({
@@ -1016,7 +1012,6 @@ export function App() {
     livePlaybackContextRef.current = null;
     livePlaybackTimeRef.current = 0;
     livePlaybackQueueRef.current = Promise.resolve();
-    liveAssistantAudioActiveUntilRef.current = 0;
   }
 
   async function ensureLivePlaybackContext(): Promise<AudioContext> {
@@ -1052,8 +1047,6 @@ export function App() {
     const startAt = Math.max(context.currentTime + 0.02, livePlaybackTimeRef.current || 0);
     source.start(startAt);
     livePlaybackTimeRef.current = startAt + buffer.duration;
-    const activeForMs = Math.max(0, (livePlaybackTimeRef.current - context.currentTime) * 1000) + 300;
-    liveAssistantAudioActiveUntilRef.current = Math.max(liveAssistantAudioActiveUntilRef.current, Date.now() + activeForMs);
   }
 
   async function uploadAttachment(fileList: FileList | null) {
