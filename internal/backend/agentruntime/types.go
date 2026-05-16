@@ -231,6 +231,22 @@ type Event struct {
 	Data      json.RawMessage `json:"data,omitempty"`
 }
 
+type LiveRequest struct {
+	UserID    string
+	SessionID string
+}
+
+type LiveClientEvent struct {
+	Type     string `json:"type"`
+	MIMEType string `json:"mime_type,omitempty"`
+	Data     string `json:"data,omitempty"`
+	Content  string `json:"content,omitempty"`
+}
+
+type LiveClientStream interface {
+	ReceiveLiveClientEvent(context.Context) (LiveClientEvent, error)
+}
+
 type ChatRequest struct {
 	UserID         string
 	SessionID      string
@@ -324,6 +340,22 @@ type RuntimeConfig struct {
 	SkillShellTimeout     time.Duration
 	SkillShellSandbox     SkillShellSandboxConfig
 	MessageSearch         MessageSearchConfig
+	Live                  LiveConfig
+}
+
+type LiveConfig struct {
+	Enabled                    bool
+	Provider                   string
+	Model                      string
+	VertexProjectID            string
+	VertexLocation             string
+	VertexBaseURL              string
+	VertexAPIVersion           string
+	InputAudioMIMEType         string
+	OutputAudioMIMEType        string
+	InputTranscriptionEnabled  bool
+	OutputTranscriptionEnabled bool
+	SessionTimeout             time.Duration
 }
 
 type MessageSearchConfig struct {

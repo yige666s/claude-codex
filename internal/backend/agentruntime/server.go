@@ -334,6 +334,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleDeleteSessionMemory(rec, r, user, parts[2])
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "v1" && parts[1] == "sessions" && parts[3] == "ws":
 		s.handleWebSocket(rec, r, user, parts[2])
+	case r.Method == http.MethodGet && len(parts) == 5 && parts[0] == "v1" && parts[1] == "sessions" && parts[3] == "live" && parts[4] == "ws":
+		s.handleLiveWebSocket(rec, r, user, parts[2])
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "v1" && parts[1] == "sessions" && parts[3] == "cancel":
 		s.handleCancel(rec, r, user, parts[2])
 	case r.Method == http.MethodGet && path == "v1/skills":
@@ -2126,6 +2128,46 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, user Us
 		default:
 			_ = sink.Send(ctx, Event{Type: "error", SessionID: sessionID, Error: "unknown websocket message type"})
 		}
+	}
+}
+
+func (s *Server) handleLiveWebSocket(w http.ResponseWriter, r *http.Request, user User, sessionID string) {
+	conn, err := s.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		s.logf("live_ws_upgrade_error user=%s session=%s error=%v", user.ID, sessionID, err)
+		return
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	sink := &websocketEventSink{conn: conn}
+	stream := &websocketLiveClientStream{conn: conn}
+	if err := s.runtime.Live(ctx, LiveRequest{UserID: user.ID, SessionID: sessionID}, stream, sink); err != nil {
+		s.logf("live_ws_error user=%s session=%s error=%v", user.ID, sessionID, err)
+	}
+}
+
+type websocketLiveClientStream struct {
+	conn *websocket.Conn
+}
+
+func (s *websocketLiveClientStream) ReceiveLiveClientEvent(ctx context.Context) (LiveClientEvent, error) {
+	type result struct {
+		event LiveClientEvent
+		err   error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		var event LiveClientEvent
+		err := s.conn.ReadJSON(&event)
+		ch <- result{event: event, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return LiveClientEvent{}, ctx.Err()
+	case result := <-ch:
+		return result.event, result.err
 	}
 }
 

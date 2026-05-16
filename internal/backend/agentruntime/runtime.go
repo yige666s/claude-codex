@@ -55,6 +55,7 @@ type Runtime struct {
 	messageSearch    *MessageSearchService
 	messageCache     SessionContextCache
 	messagePublisher MessageEventPublisher
+	live             *VertexLiveService
 	vectorIndexer    *AsyncMessageVectorIndexPublisher
 	localVectorIndex bool
 	memory           MemoryService
@@ -138,6 +139,9 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 	if searchStore, ok := sessions.(MessageSearchStore); ok {
 		runtime.messageSearch = NewMessageSearchService(config.MessageSearch, searchStore)
 	}
+	if config.Live.Enabled {
+		runtime.live = NewVertexLiveService(config.Live, runtime, nil)
+	}
 	return runtime
 }
 
@@ -214,6 +218,10 @@ func (r *Runtime) SetMessageSearchService(service *MessageSearchService) {
 	r.messageSearch = service
 }
 
+func (r *Runtime) SetLiveService(service *VertexLiveService) {
+	r.live = service
+}
+
 func (r *Runtime) WriteMessage(ctx context.Context, req MessageWriteRequest) (state.Message, error) {
 	if r == nil || r.messageWriter == nil {
 		return state.Message{}, fmt.Errorf("message write service is not configured")
@@ -233,6 +241,13 @@ func (r *Runtime) CompactSessionContext(ctx context.Context, userID, sessionID s
 		return ContextCompactionResult{}, fmt.Errorf("context compaction service is not configured")
 	}
 	return r.contextCompactor.Compact(ctx, userID, sessionID, opts)
+}
+
+func (r *Runtime) Live(ctx context.Context, req LiveRequest, input LiveClientStream, sink EventSink) error {
+	if r == nil || r.live == nil {
+		return fmt.Errorf("live mode is not configured")
+	}
+	return r.live.Run(ctx, req, input, sink)
 }
 
 func (r *Runtime) ListPendingMessageAttachments(ctx context.Context, userID string, limit int) ([]state.MessageAttachment, error) {
@@ -1269,6 +1284,98 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 		return err
 	}
 	return sink.Send(ctx, Event{Type: "done", SessionID: session.ID})
+}
+
+func (r *Runtime) LiveSystemInstruction(ctx context.Context, userID, sessionID string) string {
+	if r == nil {
+		return ""
+	}
+	var parts []string
+	session, err := r.GetSession(ctx, userID, sessionID)
+	if err != nil || session == nil {
+		return consumerSecuritySystemContext
+	}
+	parts = append(parts, consumerSecuritySystemContext)
+	if r.memory != nil {
+		if memory, err := r.memory.LoadContext(ctx, userID, session); err == nil && strings.TrimSpace(memory) != "" {
+			parts = append(parts, memory)
+		}
+	}
+	if r.sessionLoader != nil {
+		messages, err := r.sessionLoader.LoadContext(ctx, userID, sessionID, SessionLoadOptions{
+			MaxMessages:  30,
+			MaxTokens:    12000,
+			LoadStrategy: SessionLoadStrategySlidingWindow,
+		})
+		if err == nil && len(messages) > 0 {
+			var transcript strings.Builder
+			for _, message := range messages {
+				if message.Hidden || (message.Role != state.MessageRoleUser && message.Role != state.MessageRoleAssistant) {
+					continue
+				}
+				content := strings.TrimSpace(message.Content)
+				if content == "" {
+					continue
+				}
+				if transcript.Len() > 0 {
+					transcript.WriteString("\n")
+				}
+				transcript.WriteString(message.Role)
+				transcript.WriteString(": ")
+				transcript.WriteString(content)
+			}
+			if transcript.Len() > 0 {
+				parts = append(parts, "Recent conversation context:\n"+transcript.String())
+			}
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func (r *Runtime) RecordLiveTurn(ctx context.Context, userID, sessionID, userText, assistantText, model string) error {
+	if r == nil {
+		return fmt.Errorf("runtime is not configured")
+	}
+	session, err := r.GetSession(ctx, userID, sessionID)
+	if err != nil {
+		return err
+	}
+	startMessageCount := len(session.Messages)
+	now := time.Now().UTC()
+	if strings.TrimSpace(userText) != "" {
+		session.Messages = append(session.Messages, state.Message{
+			Role:        state.MessageRoleUser,
+			ContentType: state.MessageContentTypeText,
+			Content:     strings.TrimSpace(userText),
+			Status:      state.MessageStatusNormal,
+			ModelID:     model,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		})
+	}
+	if strings.TrimSpace(assistantText) != "" {
+		session.Messages = append(session.Messages, state.Message{
+			Role:        state.MessageRoleAssistant,
+			ContentType: state.MessageContentTypeText,
+			Content:     strings.TrimSpace(assistantText),
+			Status:      state.MessageStatusNormal,
+			ModelID:     model,
+			CreatedAt:   now.Add(time.Millisecond),
+			UpdatedAt:   now.Add(time.Millisecond),
+		})
+	}
+	if len(session.Messages) == startMessageCount {
+		return nil
+	}
+	if err := r.persistChatSession(ctx, userID, session, startMessageCount); err != nil {
+		return err
+	}
+	if r.memory != nil {
+		if err := r.afterTurnMemory(ctx, userID, session); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) persistChatSession(ctx context.Context, userID string, session *state.Session, startMessageCount int) error {

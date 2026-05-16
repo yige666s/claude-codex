@@ -589,6 +589,14 @@ export class ApiClient {
     return this.apiURL(`/v1/jobs/${encodeURIComponent(jobId)}/events?${params.toString()}`);
   }
 
+  liveSessionURL(sessionId: string): string {
+    const params = new URLSearchParams();
+    if (this.auth?.access_token) params.set("token", this.auth.access_token);
+    const path = `/v1/sessions/${encodeURIComponent(sessionId)}/live/ws`;
+    const url = this.apiURL(params.size ? `${path}?${params.toString()}` : path);
+    return url.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+  }
+
   async chatResponse(sessionId: string, content: string, attachmentIds: string[] = [], signal?: AbortSignal): Promise<Response> {
     await this.ensureFreshAccess();
     const response = await fetch(this.apiURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {

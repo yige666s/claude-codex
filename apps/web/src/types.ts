@@ -485,6 +485,14 @@ export type RuntimeEvent = {
   job_id?: string;
   job?: Job;
   job_reason?: string;
+  data?: unknown;
+};
+
+export type LiveClientEvent = {
+  type: "audio" | "audio_end" | "activity_start" | "activity_end" | "text" | "close";
+  mime_type?: string;
+  data?: string;
+  content?: string;
 };
 
 export type JobEvent = {

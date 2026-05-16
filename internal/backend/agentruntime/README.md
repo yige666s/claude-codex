@@ -569,3 +569,27 @@ go run ./cmd/agentapi -llm-provider custom -api-base-url http://localhost:11434/
 go run ./cmd/agentapi -llm-provider vertex -model gemini-1.5-pro
 go run ./cmd/agentapi -llm-provider vertex -model claude-sonnet-4-5@20250929
 ```
+
+### Gemini Live mode
+
+`cmd/agentapi` can expose a dedicated Gemini Live bridge at
+`GET /v1/sessions/{session_id}/live/ws` when `AGENT_API_LIVE_ENABLED=true`.
+This is separate from the normal chat `generateContent` path. The browser sends
+base64 PCM audio frames:
+
+```json
+{"type":"audio","mime_type":"audio/pcm;rate=16000","data":"...base64..."}
+```
+
+The server connects to Vertex `BidiGenerateContent`, requests audio output plus
+input/output transcription, streams `live_audio` events back to the browser, and
+persists completed transcription turns as normal user/assistant messages. Those
+messages continue through `MessageWriteService`, memory extraction, Kafka,
+Elasticsearch, and Qdrant indexing.
+
+Relevant settings:
+
+- `AGENT_API_LIVE_MODEL=gemini-live-2.5-flash-preview-native-audio-09-2025`
+- `AGENT_API_LIVE_VERTEX_LOCATION=us-central1`
+- `AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED=true`
+- `AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED=true`

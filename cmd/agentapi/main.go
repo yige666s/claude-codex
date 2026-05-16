@@ -108,6 +108,18 @@ func main() {
 	llmOutputCostPerMillion := flag.Float64("llm-output-cost-per-million", envFloat64("AGENT_API_LLM_OUTPUT_COST_PER_MILLION", 2.50), "estimated output token cost per 1M tokens")
 	llmFailureThreshold := flag.Int("llm-failure-threshold", envInt("AGENT_API_LLM_FAILURE_THRESHOLD", 3), "consecutive retryable failures before temporarily disabling a backend")
 	llmCircuitCooldown := flag.Duration("llm-circuit-cooldown", envDuration("AGENT_API_LLM_CIRCUIT_COOLDOWN", time.Minute), "duration to skip a backend after circuit breaker opens")
+	liveEnabled := flag.Bool("live-enabled", envBool("AGENT_API_LIVE_ENABLED", false), "enable Gemini Live websocket mode")
+	liveProvider := flag.String("live-provider", firstNonEmpty(os.Getenv("AGENT_API_LIVE_PROVIDER"), "vertex"), "live provider: vertex")
+	liveModel := flag.String("live-model", firstNonEmpty(os.Getenv("AGENT_API_LIVE_MODEL"), "gemini-live-2.5-flash-preview-native-audio-09-2025"), "Vertex Gemini Live model")
+	liveVertexProjectID := flag.String("live-vertex-project-id", firstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_PROJECT_ID"), os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")), "Google Cloud project ID for Vertex Live")
+	liveVertexLocation := flag.String("live-vertex-location", firstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_LOCATION"), os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "us-central1"), "Vertex location for Gemini Live")
+	liveVertexBaseURL := flag.String("live-vertex-base-url", os.Getenv("AGENT_API_LIVE_VERTEX_BASE_URL"), "optional Vertex Live websocket/API base URL")
+	liveVertexAPIVersion := flag.String("live-vertex-api-version", firstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_API_VERSION"), "v1beta1"), "Vertex Live websocket API version")
+	liveInputAudioMIME := flag.String("live-input-audio-mime-type", firstNonEmpty(os.Getenv("AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE"), "audio/pcm;rate=16000"), "input audio MIME type sent to Gemini Live")
+	liveOutputAudioMIME := flag.String("live-output-audio-mime-type", os.Getenv("AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE"), "fallback output audio MIME type for Gemini Live")
+	liveInputTranscription := flag.Bool("live-input-transcription-enabled", envBool("AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED", true), "request input audio transcription from Gemini Live")
+	liveOutputTranscription := flag.Bool("live-output-transcription-enabled", envBool("AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED", true), "request output audio transcription from Gemini Live")
+	liveSessionTimeout := flag.Duration("live-session-timeout", envDuration("AGENT_API_LIVE_SESSION_TIMEOUT", 10*time.Minute), "max duration for one Gemini Live websocket session")
 	authMode := flag.String("auth-mode", firstNonEmpty(os.Getenv("AGENT_API_AUTH_MODE"), "auto"), "auth mode: auto, jwt, cookie, trusted-header, header, none")
 	authToken := flag.String("auth-token", os.Getenv("AGENT_API_AUTH_TOKEN"), "optional bearer token required for API requests")
 	userHeader := flag.String("user-header", "X-User-ID", "header containing authenticated consumer user ID")
@@ -389,6 +401,20 @@ func main() {
 			EmbeddingIndexTaskType:     *messageSearchEmbeddingIndexTaskType,
 			EmbeddingAutoTruncate:      *messageSearchEmbeddingAutoTruncate,
 			RRFK:                       *messageSearchRRFK,
+		},
+		Live: agentruntime.LiveConfig{
+			Enabled:                    *liveEnabled,
+			Provider:                   *liveProvider,
+			Model:                      *liveModel,
+			VertexProjectID:            *liveVertexProjectID,
+			VertexLocation:             *liveVertexLocation,
+			VertexBaseURL:              *liveVertexBaseURL,
+			VertexAPIVersion:           *liveVertexAPIVersion,
+			InputAudioMIMEType:         *liveInputAudioMIME,
+			OutputAudioMIMEType:        *liveOutputAudioMIME,
+			InputTranscriptionEnabled:  *liveInputTranscription,
+			OutputTranscriptionEnabled: *liveOutputTranscription,
+			SessionTimeout:             *liveSessionTimeout,
 		},
 		SkillShellSandbox: agentruntime.SkillShellSandboxConfig{
 			Runner:    *skillShellRunner,

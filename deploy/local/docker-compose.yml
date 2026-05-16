@@ -238,6 +238,18 @@ services:
       VERTEX_BASE_URL: ${VERTEX_BASE_URL:-}
       VERTEX_IMAGE_MODEL: ${VERTEX_IMAGE_MODEL:-}
       VERTEX_IMAGE_ASPECT_RATIO: ${VERTEX_IMAGE_ASPECT_RATIO:-}
+      AGENT_API_LIVE_ENABLED: ${AGENT_API_LIVE_ENABLED:-false}
+      AGENT_API_LIVE_PROVIDER: ${AGENT_API_LIVE_PROVIDER:-vertex}
+      AGENT_API_LIVE_MODEL: ${AGENT_API_LIVE_MODEL:-gemini-live-2.5-flash-preview-native-audio-09-2025}
+      AGENT_API_LIVE_VERTEX_PROJECT_ID: ${AGENT_API_LIVE_VERTEX_PROJECT_ID:-}
+      AGENT_API_LIVE_VERTEX_LOCATION: ${AGENT_API_LIVE_VERTEX_LOCATION:-us-central1}
+      AGENT_API_LIVE_VERTEX_BASE_URL: ${AGENT_API_LIVE_VERTEX_BASE_URL:-}
+      AGENT_API_LIVE_VERTEX_API_VERSION: ${AGENT_API_LIVE_VERTEX_API_VERSION:-v1beta1}
+      AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE: ${AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE:-audio/pcm;rate=16000}
+      AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE: ${AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE:-}
+      AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED: ${AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED:-true}
+      AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED: ${AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED:-true}
+      AGENT_API_LIVE_SESSION_TIMEOUT: ${AGENT_API_LIVE_SESSION_TIMEOUT:-10m}
     ports:
       - "${AGENT_API_PORT:-8081}:8081"
     stop_grace_period: ${AGENT_API_STOP_GRACE_PERIOD:-35s}
@@ -379,6 +391,21 @@ services:
       - "${AGENT_API_LLM_DAILY_TOKEN_QUOTA:-500000}"
       - -llm-daily-request-quota
       - "${AGENT_API_LLM_DAILY_REQUEST_QUOTA:-1000}"
+      - "-live-enabled=${AGENT_API_LIVE_ENABLED:-false}"
+      - -live-provider
+      - "${AGENT_API_LIVE_PROVIDER:-vertex}"
+      - -live-model
+      - "${AGENT_API_LIVE_MODEL:-gemini-live-2.5-flash-preview-native-audio-09-2025}"
+      - -live-vertex-location
+      - "${AGENT_API_LIVE_VERTEX_LOCATION:-us-central1}"
+      - -live-vertex-api-version
+      - "${AGENT_API_LIVE_VERTEX_API_VERSION:-v1beta1}"
+      - -live-input-audio-mime-type
+      - "${AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE:-audio/pcm;rate=16000}"
+      - "-live-input-transcription-enabled=${AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED:-true}"
+      - "-live-output-transcription-enabled=${AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED:-true}"
+      - -live-session-timeout
+      - "${AGENT_API_LIVE_SESSION_TIMEOUT:-10m}"
       - -retention-days
       - "${AGENT_API_RETENTION_DAYS:-30}"
       - -shutdown-timeout
