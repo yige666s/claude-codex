@@ -179,6 +179,8 @@ export function App() {
   const liveSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const livePlaybackContextRef = useRef<AudioContext | null>(null);
   const livePlaybackTimeRef = useRef(0);
+  const livePresentationRef = useRef(livePresentation);
+  const liveAudioChunkCountRef = useRef(0);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const jobSourceRef = useRef<EventSource | null>(null);
   const jobReconnectTimerRef = useRef<number | null>(null);
@@ -309,6 +311,10 @@ export function App() {
   useEffect(() => {
     resizeComposerInput(composerInputRef.current);
   }, [draft]);
+
+  useEffect(() => {
+    livePresentationRef.current = livePresentation;
+  }, [livePresentation]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -857,6 +863,7 @@ export function App() {
     stopLiveMode(false);
     setRuntimeError("");
     setAssistantDraft("");
+    liveAudioChunkCountRef.current = 0;
     if (livePresentation === "audio") {
       try {
         await ensureLivePlaybackContext();
@@ -924,13 +931,16 @@ export function App() {
       }
       return;
     }
+    const presentation = livePresentationRef.current;
     if (event.type === "live_transcript" && event.role === "assistant") {
-      if (livePresentation === "audio") return;
+      if (presentation === "audio") return;
       setAssistantDraft((current) => current + (event.content || ""));
       return;
     }
     if (event.type === "live_audio") {
-      if (livePresentation === "audio") {
+      if (presentation === "audio") {
+        liveAudioChunkCountRef.current += 1;
+        setStatus({ tone: "busy", text: "Playing voice" });
         await playLiveAudio(event.data);
       }
       return;
@@ -939,9 +949,14 @@ export function App() {
       setAssistantDraft("");
       return;
     }
-    if (event.type === "message" && event.role === "assistant" && livePresentation === "audio") {
+    if (event.type === "message" && event.role === "assistant" && presentation === "audio") {
       setAssistantDraft("");
-      setStatus({ tone: "ok", text: "Voice response played" });
+      setStatus(liveAudioChunkCountRef.current > 0
+        ? { tone: "ok", text: "Voice response played" }
+        : { tone: "error", text: "No voice audio received" });
+      if (liveAudioChunkCountRef.current === 0) {
+        setRuntimeError("The model returned a transcript but no playable audio frames.");
+      }
       return;
     }
     handleRuntimeEvent(event);
@@ -994,10 +1009,10 @@ export function App() {
     livePlaybackTimeRef.current = 0;
   }
 
-  async function ensureLivePlaybackContext(sampleRate = 24000): Promise<AudioContext> {
+  async function ensureLivePlaybackContext(): Promise<AudioContext> {
     const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextCtor) throw new Error("AudioContext is unavailable.");
-    const context = livePlaybackContextRef.current || new AudioContextCtor({ sampleRate });
+    const context = livePlaybackContextRef.current || new AudioContextCtor();
     livePlaybackContextRef.current = context;
     if (context.state === "suspended") {
       await context.resume();
@@ -1009,14 +1024,12 @@ export function App() {
     const payload = data as { data?: string; mime_type?: string };
     if (!payload?.data) return;
     const sampleRate = sampleRateFromMime(payload.mime_type || "") || 24000;
-    const pcm = base64ToPCM16(payload.data);
-    if (!pcm.length) return;
-    const context = await ensureLivePlaybackContext(sampleRate);
-    const buffer = context.createBuffer(1, pcm.length, sampleRate);
+    const samples = base64PCMToFloat32(payload.data, payload.mime_type || "");
+    if (!samples.length) return;
+    const context = await ensureLivePlaybackContext();
+    const buffer = context.createBuffer(1, samples.length, sampleRate);
     const channel = buffer.getChannelData(0);
-    for (let index = 0; index < pcm.length; index += 1) {
-      channel[index] = Math.max(-1, Math.min(1, pcm[index] / 32768));
-    }
+    channel.set(samples);
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.connect(context.destination);
@@ -4562,13 +4575,25 @@ function bytesToBase64(bytes: Uint8Array): string {
   return window.btoa(binary);
 }
 
-function base64ToPCM16(value: string): Int16Array {
+function base64ToBytes(value: string): Uint8Array {
   const binary = window.atob(value);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) {
     bytes[index] = binary.charCodeAt(index);
   }
-  return new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
+  return bytes;
+}
+
+function base64PCMToFloat32(value: string, mimeType: string): Float32Array {
+  const bytes = base64ToBytes(value);
+  const sampleCount = Math.floor(bytes.byteLength / 2);
+  const samples = new Float32Array(sampleCount);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const littleEndian = !/audio\/l16/i.test(mimeType);
+  for (let index = 0; index < sampleCount; index += 1) {
+    samples[index] = Math.max(-1, Math.min(1, view.getInt16(index * 2, littleEndian) / 32768));
+  }
+  return samples;
 }
 
 function sampleRateFromMime(mime: string): number {

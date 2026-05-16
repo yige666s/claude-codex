@@ -75,6 +75,33 @@ func TestLiveTurnAccumulatorEmitsAudioAndTranscripts(t *testing.T) {
 	}
 }
 
+func TestLiveTurnAccumulatorAcceptsSnakeCaseInlineAudio(t *testing.T) {
+	message := map[string]any{
+		"serverContent": map[string]any{
+			"modelTurn": map[string]any{
+				"parts": []any{
+					map[string]any{"inline_data": map[string]any{"mime_type": "audio/L16;rate=24000", "data": "AQID"}},
+				},
+			},
+		},
+	}
+	var turn liveTurnAccumulator
+	events, _, err := turn.consume(message, "")
+	if err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	if len(events) != 1 || events[0].Type != "live_audio" {
+		t.Fatalf("unexpected events: %#v", events)
+	}
+	var audio map[string]string
+	if err := json.Unmarshal(events[0].Data, &audio); err != nil {
+		t.Fatalf("decode audio payload: %v", err)
+	}
+	if audio["mime_type"] != "audio/L16;rate=24000" || audio["data"] != "AQID" {
+		t.Fatalf("unexpected audio payload: %#v", audio)
+	}
+}
+
 func TestRuntimeRecordLiveTurnPersistsMessagesAndMemory(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileSessionStore(root)

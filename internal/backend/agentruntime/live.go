@@ -342,11 +342,11 @@ func liveOutputAudioParts(content map[string]any, fallbackMIME string) []map[str
 	out := make([]map[string]any, 0, len(parts))
 	for _, item := range parts {
 		part, _ := item.(map[string]any)
-		inlineData, _ := part["inlineData"].(map[string]any)
+		inlineData, _ := firstLiveMap(part["inlineData"], part["inline_data"])
 		if len(inlineData) == 0 {
 			continue
 		}
-		mimeType, _ := inlineData["mimeType"].(string)
+		mimeType := firstLiveString(inlineData["mimeType"], inlineData["mime_type"])
 		data, _ := inlineData["data"].(string)
 		if data == "" || (!strings.HasPrefix(mimeType, "audio/") && fallbackMIME == "") {
 			continue
@@ -357,6 +357,24 @@ func liveOutputAudioParts(content map[string]any, fallbackMIME string) []map[str
 		out = append(out, map[string]any{"mime_type": mimeType, "data": data})
 	}
 	return out
+}
+
+func firstLiveMap(values ...any) (map[string]any, bool) {
+	for _, value := range values {
+		if mapped, ok := value.(map[string]any); ok && len(mapped) > 0 {
+			return mapped, true
+		}
+	}
+	return nil, false
+}
+
+func firstLiveString(values ...any) string {
+	for _, value := range values {
+		if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 type liveReadyPayload struct {
