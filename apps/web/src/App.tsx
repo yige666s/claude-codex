@@ -3941,7 +3941,7 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
 
   return (
     <div className="admin-skill-layout">
-      <section className="admin-list-panel">
+      <section className="admin-list-panel evaluation-list-panel">
         <div className="admin-list-tools">
           <label className="admin-field">
             <span>User ID</span>

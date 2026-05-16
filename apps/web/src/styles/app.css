@@ -1877,6 +1877,12 @@ label.composer-upload {
   display: grid;
   gap: 10px;
 }
+.evaluation-list-panel .admin-list-tools {
+  max-height: min(62vh, 560px);
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
 .admin-filter-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2817,6 +2823,16 @@ label.composer-upload {
   }
   .admin-list-panel {
     max-height: 360px;
+  }
+  .evaluation-list-panel {
+    max-height: min(72vh, 640px);
+    overflow: auto;
+    display: block;
+  }
+  .evaluation-list-panel .admin-list-tools,
+  .evaluation-list-panel .admin-skill-list {
+    max-height: none;
+    overflow: visible;
   }
   .app-shell {
     height: 100vh;
