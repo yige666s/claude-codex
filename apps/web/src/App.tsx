@@ -31,6 +31,7 @@ import {
   Star,
   Trash2,
   UserX,
+  Volume2,
   X
 } from "lucide-react";
 import { ApiClient, ApiError } from "./api/client";
@@ -142,6 +143,7 @@ export function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [busyChat, setBusyChat] = useState(false);
   const [liveStatus, setLiveStatus] = useState<"idle" | "connecting" | "listening" | "error">("idle");
+  const [livePresentation, setLivePresentation] = useState<"audio" | "text">("audio");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState("");
@@ -855,6 +857,15 @@ export function App() {
     stopLiveMode(false);
     setRuntimeError("");
     setAssistantDraft("");
+    if (livePresentation === "audio") {
+      try {
+        await ensureLivePlaybackContext();
+      } catch {
+        setRuntimeError("Audio playback is unavailable in this browser.");
+        setLiveStatus("error");
+        return;
+      }
+    }
     setLiveStatus("connecting");
     setStatus({ tone: "busy", text: "Connecting live voice" });
     const socket = new WebSocket(api.liveSessionURL(sessionId));
@@ -914,15 +925,23 @@ export function App() {
       return;
     }
     if (event.type === "live_transcript" && event.role === "assistant") {
+      if (livePresentation === "audio") return;
       setAssistantDraft((current) => current + (event.content || ""));
       return;
     }
     if (event.type === "live_audio") {
-      playLiveAudio(event.data);
+      if (livePresentation === "audio") {
+        await playLiveAudio(event.data);
+      }
       return;
     }
     if (event.type === "live_interrupted") {
       setAssistantDraft("");
+      return;
+    }
+    if (event.type === "message" && event.role === "assistant" && livePresentation === "audio") {
+      setAssistantDraft("");
+      setStatus({ tone: "ok", text: "Voice response played" });
       return;
     }
     handleRuntimeEvent(event);
@@ -975,16 +994,24 @@ export function App() {
     livePlaybackTimeRef.current = 0;
   }
 
-  function playLiveAudio(data: unknown) {
+  async function ensureLivePlaybackContext(sampleRate = 24000): Promise<AudioContext> {
+    const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) throw new Error("AudioContext is unavailable.");
+    const context = livePlaybackContextRef.current || new AudioContextCtor({ sampleRate });
+    livePlaybackContextRef.current = context;
+    if (context.state === "suspended") {
+      await context.resume();
+    }
+    return context;
+  }
+
+  async function playLiveAudio(data: unknown) {
     const payload = data as { data?: string; mime_type?: string };
     if (!payload?.data) return;
-    const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextCtor) return;
     const sampleRate = sampleRateFromMime(payload.mime_type || "") || 24000;
     const pcm = base64ToPCM16(payload.data);
     if (!pcm.length) return;
-    const context = livePlaybackContextRef.current || new AudioContextCtor({ sampleRate });
-    livePlaybackContextRef.current = context;
+    const context = await ensureLivePlaybackContext(sampleRate);
     const buffer = context.createBuffer(1, pcm.length, sampleRate);
     const channel = buffer.getChannelData(0);
     for (let index = 0; index < pcm.length; index += 1) {
@@ -1556,6 +1583,28 @@ export function App() {
               rows={1}
             />
             <div className="composer-actions">
+              <div className="live-output-mode" role="group" aria-label="Live output mode">
+                <button
+                  type="button"
+                  className={livePresentation === "text" ? "active" : ""}
+                  onClick={() => setLivePresentation("text")}
+                  disabled={liveStatus !== "idle"}
+                  title="Text output"
+                  aria-label="Text output"
+                >
+                  <MessageCircle size={16} />
+                </button>
+                <button
+                  type="button"
+                  className={livePresentation === "audio" ? "active" : ""}
+                  onClick={() => setLivePresentation("audio")}
+                  disabled={liveStatus !== "idle"}
+                  title="Audio output"
+                  aria-label="Audio output"
+                >
+                  <Volume2 size={16} />
+                </button>
+              </div>
               <button
                 type="button"
                 className={`live-control ${liveStatus !== "idle" ? "active" : ""}`}

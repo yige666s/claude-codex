@@ -1191,6 +1191,38 @@ label.composer-upload {
   align-items: center;
   gap: 8px;
 }
+.live-output-mode {
+  height: var(--composer-control-size);
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.live-output-mode button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+}
+.live-output-mode button:hover:not(:disabled),
+.live-output-mode button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--active-bg);
+}
+.live-output-mode button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 .composer .send,
 .composer .stop-generation,
 .composer .live-control {
