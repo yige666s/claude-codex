@@ -444,6 +444,103 @@ export type RiskReviewSummary = {
   items: RiskReviewItem[];
 };
 
+export type EvaluationScope = {
+  from?: string;
+  to?: string;
+  subject_type?: "job" | "session" | "skill_execution" | string;
+  user_id?: string;
+  session_id?: string;
+  job_id?: string;
+  job_status?: string;
+  skill_name?: string;
+  provider?: string;
+  model?: string;
+};
+
+export type EvaluationThresholds = {
+  min_success_rate?: number;
+  max_tool_error_rate?: number;
+  max_llm_error_rate?: number;
+  max_high_risk_count?: number;
+  max_p95_latency_ms?: number;
+  max_cost_usd?: number;
+  max_empty_output_rate?: number;
+};
+
+export type EvaluationRun = {
+  id: string;
+  name: string;
+  status: "pending" | "running" | "completed" | "failed" | string;
+  trigger?: string;
+  scope: EvaluationScope;
+  started_at: string;
+  completed_at?: string;
+  total: number;
+  passed: number;
+  failed: number;
+  warning: number;
+  metrics?: Record<string, unknown>;
+  threshold_status?: string;
+  summary?: string;
+};
+
+export type EvaluationFinding = {
+  severity: "info" | "warning" | "error" | string;
+  code: string;
+  message: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type EvaluationResult = {
+  id: string;
+  run_id: string;
+  subject_type: "job" | "session" | "skill_execution" | string;
+  subject_id: string;
+  user_id?: string;
+  session_id?: string;
+  job_id?: string;
+  skill_name?: string;
+  provider?: string;
+  model?: string;
+  status: "passed" | "failed" | "warning" | string;
+  score: number;
+  input?: string;
+  output?: string;
+  metrics?: Record<string, unknown>;
+  findings?: EvaluationFinding[];
+  created_at: string;
+};
+
+export type EvaluationReview = {
+  id: string;
+  result_id: string;
+  status: "pending" | "passed" | "failed" | "ignored" | string;
+  reviewer?: string;
+  note?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type EvaluationRunSummary = {
+  run_id?: string;
+  total: number;
+  passed: number;
+  failed: number;
+  warning: number;
+  pass_rate: number;
+  failure_rate: number;
+  warning_rate: number;
+  metrics?: Record<string, unknown>;
+  threshold_status?: string;
+};
+
+export type EvaluationRunReport = {
+  run: EvaluationRun;
+  results: EvaluationResult[];
+  reviews: EvaluationReview[];
+  summary: EvaluationRunSummary;
+};
+
 export type Asset = {
   id: string;
   kind: "attachment" | "artifact";

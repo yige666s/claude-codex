@@ -148,6 +148,12 @@ func main() {
 	corsAllowedOrigins := flag.String("cors-allowed-origins", os.Getenv("AGENT_API_CORS_ALLOWED_ORIGINS"), "comma-separated browser origins allowed for CORS")
 	corsAllowCredentials := flag.Bool("cors-allow-credentials", envBool("AGENT_API_CORS_ALLOW_CREDENTIALS", true), "allow credentials for CORS allowlisted origins")
 	adminToken := flag.String("admin-token", os.Getenv("AGENT_API_ADMIN_TOKEN"), "shared token required for admin APIs")
+	evalDailyEnabled := flag.Bool("eval-daily-enabled", envBool("AGENT_API_EVAL_DAILY_ENABLED", true), "enable daily incremental agent evaluation at UTC+8 05:00")
+	evalDailyHour := flag.Int("eval-daily-hour", envInt("AGENT_API_EVAL_DAILY_HOUR", 5), "daily evaluation local hour in UTC+8")
+	evalDailyMinute := flag.Int("eval-daily-minute", envInt("AGENT_API_EVAL_DAILY_MINUTE", 0), "daily evaluation local minute in UTC+8")
+	evalDailyUserIDs := flag.String("eval-daily-user-ids", os.Getenv("AGENT_API_EVAL_DAILY_USER_IDS"), "comma-separated user IDs for daily evaluation; empty uses active built-in users when available")
+	evalDailyBatchLimit := flag.Int("eval-daily-batch-limit", envInt("AGENT_API_EVAL_DAILY_BATCH_LIMIT", 200), "max users processed per daily evaluation pass")
+	evalDailyTimeout := flag.Duration("eval-daily-timeout", envDuration("AGENT_API_EVAL_DAILY_TIMEOUT", 10*time.Minute), "timeout for one daily evaluation pass")
 	trustedUserHeader := flag.String("trusted-user-header", firstNonEmpty(os.Getenv("AGENT_API_TRUSTED_USER_HEADER"), "X-User-ID"), "trusted gateway user ID header")
 	trustedSecretHeader := flag.String("trusted-secret-header", os.Getenv("AGENT_API_TRUSTED_SECRET_HEADER"), "header required for trusted-header auth")
 	trustedSecret := flag.String("trusted-secret", os.Getenv("AGENT_API_TRUSTED_SECRET"), "secret value required for trusted-header auth")
@@ -234,6 +240,7 @@ func main() {
 	riskStore := buildRiskStore(storeCfg)
 	jobStore := buildJobStore(storeCfg)
 	skillExecutionStore := buildSkillExecutionStore(storeCfg)
+	evaluationStore := buildEvaluationStore(storeCfg)
 	llmGovernanceCfg := agentruntime.LLMGovernanceConfig{
 		Provider:               llmCfg.Provider,
 		Model:                  llmCfg.Model,
@@ -650,7 +657,26 @@ func main() {
 	server.SetAdminToken(*adminToken)
 	server.SetSkillRegistry(skillRegistrySetup.registry)
 	server.SetLLMUsageStore(llmUsageStore)
+	server.SetEvaluationStore(evaluationStore)
 	server.SetLLMGovernanceConfigManager(llmConfigManager)
+	stopDailyEvaluation := server.StartDailyEvaluationScheduler(agentruntime.DailyEvaluationConfig{
+		Enabled:     *evalDailyEnabled,
+		Location:    time.FixedZone("UTC+8", 8*60*60),
+		Hour:        *evalDailyHour,
+		Minute:      *evalDailyMinute,
+		SubjectType: agentruntime.EvaluationSubjectJob,
+		UserIDs:     splitCSV(*evalDailyUserIDs),
+		BatchLimit:  *evalDailyBatchLimit,
+		Timeout:     *evalDailyTimeout,
+		Thresholds: agentruntime.EvaluationThresholds{
+			MinSuccessRate:   0.85,
+			MaxToolErrorRate: 0.05,
+			MaxLLMErrorRate:  0.05,
+			MaxHighRiskCount: 0,
+			MaxP95LatencyMS:  10000,
+		},
+	})
+	defer stopDailyEvaluation()
 	llmStatusFn := func() agentruntime.LLMGovernanceStatus {
 		llmStatusMu.RLock()
 		provider := llmStatusProvider
@@ -764,6 +790,7 @@ func main() {
 	}
 	log.Printf("cors allowed origins: %s", *corsAllowedOrigins)
 	log.Printf("csrf enabled: %t", *csrfEnabled)
+	log.Printf("daily evaluation: enabled=%t schedule=UTC+8 %02d:%02d batch_limit=%d explicit_users=%d", *evalDailyEnabled, *evalDailyHour, *evalDailyMinute, *evalDailyBatchLimit, len(splitCSV(*evalDailyUserIDs)))
 	if err := httpListenAndServe(*addr, server, *shutdownTimeout); err != nil {
 		log.Fatal(err)
 	}
@@ -1251,6 +1278,25 @@ func buildSkillExecutionStore(cfg storeConfig) agentruntime.SkillExecutionStore 
 	store := agentruntime.NewMemorySkillExecutionStore()
 	if err := store.Init(ctx); err != nil {
 		log.Fatalf("init memory skill execution store: %v", err)
+	}
+	return store
+}
+
+func buildEvaluationStore(cfg storeConfig) agentruntime.EvaluationStore {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		db := openSQLDB(cfg)
+		dialect := agentruntime.ParseSQLDialect(firstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+		store := agentruntime.NewSQLEvaluationStoreWithDialect(db, dialect)
+		if err := store.Init(ctx); err != nil {
+			log.Fatalf("init sql evaluation store: %v", err)
+		}
+		return store
+	}
+	store := agentruntime.NewMemoryEvaluationStore()
+	if err := store.Init(ctx); err != nil {
+		log.Fatalf("init memory evaluation store: %v", err)
 	}
 	return store
 }

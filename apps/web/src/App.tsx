@@ -35,7 +35,7 @@ import {
   X
 } from "lucide-react";
 import { ApiClient, ApiError } from "./api/client";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogRecord, AuditLogSummary, AuthSession, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, ReadinessStatus, RiskEvent, RiskReviewSummary, RiskSummary, RuntimeEvent, Session, Skill, SkillExecution, SkillExecutionSummary, SkillPolicyConfig, SkillReviewResult, SkillVersion } from "./types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogRecord, AuditLogSummary, AuthSession, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, EvaluationThresholds, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, ReadinessStatus, RiskEvent, RiskReviewSummary, RiskSummary, RuntimeEvent, Session, Skill, SkillExecution, SkillExecutionSummary, SkillPolicyConfig, SkillReviewResult, SkillVersion } from "./types";
 import { readSSEStream } from "./lib/sse";
 import { sessionTitle } from "./lib/sessionTitle";
 
@@ -83,7 +83,7 @@ type ServiceStatus = Status & {
 type RightPanelTab = "skills" | "jobs" | "attachments" | "artifacts";
 type RightPanelSearch = Record<RightPanelTab, string>;
 type JobStreamStatus = "idle" | "connecting" | "live" | "reconnecting" | "failed";
-type AdminSection = "skills" | "users" | "jobs-assets" | "health-cost" | "audit";
+type AdminSection = "skills" | "users" | "jobs-assets" | "health-cost" | "audit" | "evaluation";
 
 type ConfirmDialog = {
   title: string;
@@ -2579,7 +2579,7 @@ function AdminConsole({
   const [summary, setSummary] = useState<SkillExecutionSummary | null>(null);
   const [policyTarget, setPolicyTarget] = useState<AdminSkill | null>(null);
   const token = adminToken.trim();
-  const adminSectionTitle = adminSection === "users" ? "User Management" : adminSection === "jobs-assets" ? "Session / Job / Artifact Troubleshooting" : adminSection === "health-cost" ? "Runtime Health & Cost" : adminSection === "audit" ? "Audit Logs & Risk Control" : "Skill Management";
+  const adminSectionTitle = adminSection === "users" ? "User Management" : adminSection === "jobs-assets" ? "Session / Job / Artifact Troubleshooting" : adminSection === "health-cost" ? "Runtime Health & Cost" : adminSection === "audit" ? "Audit Logs & Risk Control" : adminSection === "evaluation" ? "Agent Evaluation" : "Skill Management";
   const adminSectionDescription = adminSection === "users"
     ? "Search users, inspect account state, and disable, ban, or reactivate access."
     : adminSection === "jobs-assets"
@@ -2588,7 +2588,9 @@ function AdminConsole({
         ? "Watch readiness checks, LLM backend health, token usage, latency, and estimated cost."
         : adminSection === "audit"
           ? "Review sensitive operations, high-risk actions, request IDs, user scope, and metadata for investigations."
-      : "Publish, review, configure policy, and inspect execution health for registry-backed skills.";
+          : adminSection === "evaluation"
+            ? "Run lightweight evaluations over real runtime data, inspect pass/fail findings, and close review items."
+            : "Publish, review, configure policy, and inspect execution health for registry-backed skills.";
   const selectedSkill = skills.find((skill) => skill.name === selectedName) || null;
   const reviewIssues = review?.issues || [];
   const filteredSkills = useMemo(() => skills.filter((skill) => {
@@ -2705,6 +2707,7 @@ function AdminConsole({
           <button className={adminSection === "jobs-assets" ? "active" : ""} onClick={() => setAdminSection("jobs-assets")}><Briefcase size={18} /> Jobs & assets</button>
           <button className={adminSection === "health-cost" ? "active" : ""} onClick={() => setAdminSection("health-cost")}><Activity size={18} /> Health & cost</button>
           <button className={adminSection === "audit" ? "active" : ""} onClick={() => setAdminSection("audit")}><FileText size={18} /> Audit logs</button>
+          <button className={adminSection === "evaluation" ? "active" : ""} onClick={() => setAdminSection("evaluation")}><ShieldCheck size={18} /> Evaluation</button>
         </nav>
         <div className="admin-token-box">
           <label>
@@ -2762,6 +2765,8 @@ function AdminConsole({
           <AdminHealthCostPanel api={api} adminToken={adminToken} />
         ) : adminSection === "audit" ? (
           <AdminAuditPanel api={api} adminToken={adminToken} />
+        ) : adminSection === "evaluation" ? (
+          <AdminEvaluationPanel api={api} adminToken={adminToken} />
         ) : (
           <div className="admin-skill-layout">
             <section className="admin-list-panel">
@@ -3700,6 +3705,464 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
               <p className="muted-text">Select a risk event to inspect details.</p>
             )}
             <pre className="admin-code-block">{selectedRisk ? JSON.stringify({ metadata: selectedRisk.metadata || {}, request_id: selectedRisk.request_id || "" }, null, 2) : "{}"}</pre>
+          </section>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken: string }) {
+  const [runs, setRuns] = useState<EvaluationRun[]>([]);
+  const [summary, setSummary] = useState<EvaluationRunSummary | null>(null);
+  const [results, setResults] = useState<EvaluationResult[]>([]);
+  const [reviews, setReviews] = useState<EvaluationReview[]>([]);
+  const [selectedRunID, setSelectedRunID] = useState("");
+  const [selectedResultID, setSelectedResultID] = useState("");
+  const [userID, setUserID] = useState("");
+  const [sessionID, setSessionID] = useState("");
+  const [jobID, setJobID] = useState("");
+  const [skillName, setSkillName] = useState("");
+  const [provider, setProvider] = useState("");
+  const [model, setModel] = useState("");
+  const [subjectType, setSubjectType] = useState("job");
+  const [runStatusFilter, setRunStatusFilter] = useState("all");
+  const [resultStatusFilter, setResultStatusFilter] = useState("failed");
+  const [days, setDays] = useState(7);
+  const [thresholdDraft, setThresholdDraft] = useState({
+    min_success_rate: "0.85",
+    max_tool_error_rate: "0.05",
+    max_llm_error_rate: "0.05",
+    max_high_risk_count: "0",
+    max_p95_latency_ms: "10000",
+    max_cost_usd: ""
+  });
+  const [loading, setLoading] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [exportBusy, setExportBusy] = useState("");
+  const [reviewBusy, setReviewBusy] = useState("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const token = adminToken.trim();
+  const cleanUserID = userID.trim();
+  const selectedRun = runs.find((run) => run.id === selectedRunID) || runs[0] || null;
+  const selectedResult = results.find((result) => result.id === selectedResultID) || results[0] || null;
+  const reviewsByResultID = useMemo(() => {
+    const map = new Map<string, EvaluationReview[]>();
+    reviews.forEach((review) => {
+      const list = map.get(review.result_id) || [];
+      list.push(review);
+      map.set(review.result_id, list);
+    });
+    return map;
+  }, [reviews]);
+
+  const updateThresholdDraft = (key: keyof typeof thresholdDraft, value: string) => {
+    setThresholdDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  const loadEvaluation = async (runID = selectedRunID) => {
+    if (!token) return;
+    setLoading(true);
+    setError("");
+    try {
+      const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+      const [summaryPayload, nextReviews] = await Promise.all([
+        api.adminOpsEvaluationSummary(token, { from, status: runStatusFilter, limit: 500 }),
+        api.adminOpsEvaluationReviews(token, { status: "all", limit: 500 })
+      ]);
+      setSummary(summaryPayload.summary);
+      setRuns(summaryPayload.runs);
+      setReviews(nextReviews);
+      const nextRunID = runID && summaryPayload.runs.some((run) => run.id === runID) ? runID : summaryPayload.runs[0]?.id || "";
+      setSelectedRunID(nextRunID);
+      if (nextRunID) {
+        const report = await api.adminOpsEvaluationRun(token, nextRunID, 500);
+        const filtered = filterEvaluationResults(report.results, {
+          status: resultStatusFilter,
+          userID: cleanUserID,
+          sessionID: sessionID.trim(),
+          jobID: jobID.trim(),
+          skillName: skillName.trim(),
+          provider: provider.trim(),
+          model: model.trim(),
+          subjectType
+        });
+        setResults(filtered);
+        setReviews((current) => mergeEvaluationReviews(current, report.reviews));
+        setSelectedResultID((current) => {
+          if (current && filtered.some((result) => result.id === current)) return current;
+          return filtered[0]?.id || "";
+        });
+      } else {
+        setResults([]);
+        setSelectedResultID("");
+      }
+      setNotice(`Loaded ${summaryPayload.runs.length} eval runs`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createRun = async () => {
+    if (!token || !cleanUserID) {
+      setError("Enter a user ID before running evaluation.");
+      return;
+    }
+    setRunning(true);
+    setError("");
+    try {
+      const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+      const report = await api.createEvaluationRun(token, {
+        name: `${subjectType}_quality_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}`,
+        trigger: "admin_ui",
+        scope: {
+          from,
+          subject_type: subjectType,
+          user_id: cleanUserID,
+          session_id: sessionID.trim(),
+          job_id: jobID.trim(),
+          skill_name: skillName.trim(),
+          provider: provider.trim(),
+          model: model.trim()
+        },
+        thresholds: buildEvaluationThresholds(thresholdDraft)
+      });
+      setRuns((current) => [report.run, ...current.filter((run) => run.id !== report.run.id)]);
+      setSummary(report.summary);
+      setResults(report.results);
+      setReviews((current) => mergeEvaluationReviews(current, report.reviews));
+      setSelectedRunID(report.run.id);
+      setSelectedResultID(report.results[0]?.id || "");
+      setNotice(`Evaluation completed: ${report.run.passed} passed, ${report.run.failed} failed, ${report.run.warning} warnings`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const openRun = async (runID: string) => {
+    setSelectedRunID(runID);
+    if (!token) return;
+    setLoading(true);
+    setError("");
+    try {
+      const report = await api.adminOpsEvaluationRun(token, runID, 500);
+      const filtered = filterEvaluationResults(report.results, {
+        status: resultStatusFilter,
+        userID: cleanUserID,
+        sessionID: sessionID.trim(),
+        jobID: jobID.trim(),
+        skillName: skillName.trim(),
+        provider: provider.trim(),
+        model: model.trim(),
+        subjectType
+      });
+      setResults(filtered);
+      setReviews((current) => mergeEvaluationReviews(current, report.reviews));
+      setSelectedResultID(filtered[0]?.id || "");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const updateReview = async (review: EvaluationReview, status: string) => {
+    if (!token) return;
+    setReviewBusy(review.id);
+    setError("");
+    try {
+      const updated = await api.updateEvaluationReview(token, review.id, {
+        status,
+        reviewer: "admin",
+        note: status === "ignored" ? "ignored from Admin UI" : "reviewed from Admin UI"
+      });
+      setReviews((current) => mergeEvaluationReviews(current, [updated]));
+      setNotice(`Review ${updated.id} marked ${updated.status}`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setReviewBusy("");
+    }
+  };
+
+  const exportResultsCSV = async () => {
+    if (!token) return;
+    setExportBusy("csv");
+    setError("");
+    try {
+      const content = await api.adminOpsEvaluationResultsCSV(token, {
+        runId: selectedRunID || selectedRun?.id,
+        status: resultStatusFilter,
+        userId: cleanUserID,
+        sessionId: sessionID.trim(),
+        jobId: jobID.trim(),
+        skillName: skillName.trim(),
+        provider: provider.trim(),
+        model: model.trim(),
+        subjectType,
+        limit: 1000
+      });
+      downloadTextFile(`evaluation-results-${selectedRunID || "filtered"}.csv`, content, "text/csv;charset=utf-8");
+      setNotice("Evaluation results CSV exported");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setExportBusy("");
+    }
+  };
+
+  const exportSummaryMarkdown = async () => {
+    if (!token) return;
+    setExportBusy("markdown");
+    setError("");
+    try {
+      const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+      const content = await api.adminOpsEvaluationSummaryMarkdown(token, { from, status: runStatusFilter, limit: 500 });
+      downloadTextFile("evaluation-summary.md", content, "text/markdown;charset=utf-8");
+      setNotice("Evaluation summary Markdown exported");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setExportBusy("");
+    }
+  };
+
+  useEffect(() => {
+    if (token) void loadEvaluation();
+  }, [token]);
+
+  const selectedResultReviews = selectedResult ? reviewsByResultID.get(selectedResult.id) || [] : [];
+  const metrics = summary?.metrics || selectedRun?.metrics || {};
+
+  return (
+    <div className="admin-skill-layout">
+      <section className="admin-list-panel">
+        <div className="admin-list-tools">
+          <label className="admin-field">
+            <span>User ID</span>
+            <input value={userID} onChange={(event) => setUserID(event.currentTarget.value)} placeholder="required for new eval" aria-label="Evaluation user ID" />
+          </label>
+          <div className="admin-filter-row">
+            <select value={subjectType} onChange={(event) => setSubjectType(event.currentTarget.value)} aria-label="Evaluation subject">
+              <option value="job">Jobs</option>
+              <option value="session">Sessions</option>
+              <option value="skill_execution">Skill executions</option>
+            </select>
+            <select value={String(days)} onChange={(event) => setDays(Number(event.currentTarget.value))} aria-label="Evaluation time window">
+              <option value="1">Last 24h</option>
+              <option value="7">Last 7d</option>
+              <option value="30">Last 30d</option>
+              <option value="90">Last 90d</option>
+            </select>
+          </div>
+          <div className="admin-filter-row">
+            <select value={runStatusFilter} onChange={(event) => setRunStatusFilter(event.currentTarget.value)} aria-label="Evaluation run status">
+              <option value="all">All runs</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+              <option value="running">Running</option>
+            </select>
+            <select value={resultStatusFilter} onChange={(event) => setResultStatusFilter(event.currentTarget.value)} aria-label="Evaluation result status">
+              <option value="all">All results</option>
+              <option value="failed">Failed</option>
+              <option value="warning">Warning</option>
+              <option value="passed">Passed</option>
+            </select>
+          </div>
+          <label className="admin-field">
+            <span>Session ID</span>
+            <input value={sessionID} onChange={(event) => setSessionID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation session ID" />
+          </label>
+          <label className="admin-field">
+            <span>Job ID</span>
+            <input value={jobID} onChange={(event) => setJobID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation job ID" />
+          </label>
+          <label className="admin-field">
+            <span>Skill / model</span>
+            <input value={skillName} onChange={(event) => setSkillName(event.currentTarget.value)} placeholder="skill name" aria-label="Evaluation skill name" />
+          </label>
+          <div className="admin-filter-row">
+            <input value={provider} onChange={(event) => setProvider(event.currentTarget.value)} placeholder="provider" aria-label="Evaluation provider" />
+            <input value={model} onChange={(event) => setModel(event.currentTarget.value)} placeholder="model" aria-label="Evaluation model" />
+          </div>
+          <div className="admin-filter-row">
+            <label className="admin-field">
+              <span>Min success</span>
+              <input inputMode="decimal" value={thresholdDraft.min_success_rate} onChange={(event) => updateThresholdDraft("min_success_rate", event.currentTarget.value)} aria-label="Minimum success rate threshold" />
+            </label>
+            <label className="admin-field">
+              <span>Max tool error</span>
+              <input inputMode="decimal" value={thresholdDraft.max_tool_error_rate} onChange={(event) => updateThresholdDraft("max_tool_error_rate", event.currentTarget.value)} aria-label="Maximum tool error rate threshold" />
+            </label>
+          </div>
+          <div className="admin-filter-row">
+            <label className="admin-field">
+              <span>Max LLM error</span>
+              <input inputMode="decimal" value={thresholdDraft.max_llm_error_rate} onChange={(event) => updateThresholdDraft("max_llm_error_rate", event.currentTarget.value)} aria-label="Maximum LLM error rate threshold" />
+            </label>
+            <label className="admin-field">
+              <span>Max high risk</span>
+              <input inputMode="numeric" value={thresholdDraft.max_high_risk_count} onChange={(event) => updateThresholdDraft("max_high_risk_count", event.currentTarget.value)} aria-label="Maximum high risk count threshold" />
+            </label>
+          </div>
+          <div className="admin-filter-row">
+            <label className="admin-field">
+              <span>Max P95 ms</span>
+              <input inputMode="numeric" value={thresholdDraft.max_p95_latency_ms} onChange={(event) => updateThresholdDraft("max_p95_latency_ms", event.currentTarget.value)} aria-label="Maximum P95 latency threshold" />
+            </label>
+            <label className="admin-field">
+              <span>Max cost USD</span>
+              <input inputMode="decimal" value={thresholdDraft.max_cost_usd} onChange={(event) => updateThresholdDraft("max_cost_usd", event.currentTarget.value)} placeholder="optional" aria-label="Maximum cost threshold" />
+            </label>
+          </div>
+          <div className="admin-action-row compact">
+            <button className="primary skill-action" onClick={createRun} disabled={running || !token || !cleanUserID}>
+              <PlayCircle size={16} />
+              <span>{running ? "Running" : "Run eval"}</span>
+            </button>
+            <button className="skill-action" onClick={() => loadEvaluation()} disabled={loading || !token}>
+              <RefreshCw size={16} />
+              <span>{loading ? "Loading" : "Load"}</span>
+            </button>
+            <button className="skill-action" onClick={exportResultsCSV} disabled={exportBusy === "csv" || !token}>
+              <Download size={16} />
+              <span>{exportBusy === "csv" ? "Exporting" : "CSV"}</span>
+            </button>
+            <button className="skill-action" onClick={exportSummaryMarkdown} disabled={exportBusy === "markdown" || !token}>
+              <FileText size={16} />
+              <span>{exportBusy === "markdown" ? "Exporting" : "Report"}</span>
+            </button>
+          </div>
+        </div>
+        <div className="admin-skill-list">
+          {runs.map((run) => (
+            <button key={run.id} className={`admin-skill-row ${run.id === selectedRun?.id ? "active" : ""}`} onClick={() => openRun(run.id)}>
+              <Activity size={18} />
+              <span>
+                <strong>{run.name}</strong>
+                <small>{run.id} · {formatTime(run.completed_at || run.started_at)}</small>
+              </span>
+              <StatusBadge value={run.threshold_status || run.status} />
+            </button>
+          ))}
+          {!runs.length && <div className="empty-small">{loading ? "Loading..." : "No eval runs"}</div>}
+        </div>
+      </section>
+      <section className="admin-detail-panel">
+        {(error || notice) && (
+          <div className={`admin-inline-banner ${error ? "error" : "ok"}`} role="status">
+            {error ? <AlertCircle size={16} /> : <ShieldCheck size={16} />}
+            <span>{error || notice}</span>
+            <button className="icon ghost" onClick={() => { setError(""); setNotice(""); }} title="Dismiss" aria-label="Dismiss">
+              <X size={14} />
+            </button>
+          </div>
+        )}
+        <div className="admin-skill-head">
+          <div>
+            <h2>{selectedRun?.name || "Evaluation overview"}</h2>
+            <small>{selectedRun ? `${selectedRun.id} · ${selectedRun.scope?.user_id || "user scope"}` : "No run selected"}</small>
+          </div>
+          {selectedRun && <StatusBadge value={selectedRun.threshold_status || selectedRun.status} />}
+        </div>
+        <div className="admin-metrics">
+          <AdminMetric label="Pass rate" value={formatPercent(summary?.pass_rate ?? selectedRunPassRate(selectedRun))} />
+          <AdminMetric label="Failed" value={String(summary?.failed ?? selectedRun?.failed ?? 0)} />
+          <AdminMetric label="Warning" value={String(summary?.warning ?? selectedRun?.warning ?? 0)} />
+          <AdminMetric label="P95 latency" value={`${metricNumber(metrics, "p95_latency_ms")} ms`} />
+          <AdminMetric label="Tokens" value={formatNumber(metricNumber(metrics, "total_tokens"))} />
+          <AdminMetric label="Cost" value={formatUSD(metricNumber(metrics, "estimated_cost_usd"))} />
+          <AdminMetric label="High risk" value={String(metricNumber(metrics, "high_risk_count"))} />
+          <AdminMetric label="Threshold failed" value={String(metricNumber(metrics, "threshold_failed_count"))} />
+          <AdminMetric label="Reviews" value={String(reviews.filter((review) => review.status === "pending").length)} />
+        </div>
+        <div className="admin-detail-grid">
+          <section className="admin-card wide">
+            <div className="admin-card-head">
+              <h3>Results</h3>
+              <small>{results.length} shown</small>
+            </div>
+            <div className="admin-table">
+              {results.slice(0, 24).map((result) => (
+                <button key={result.id} className={`admin-table-row button-row ${result.id === selectedResult?.id ? "active" : ""}`} onClick={() => setSelectedResultID(result.id)}>
+                  <StatusBadge value={result.status} />
+                  <span>
+                    <strong>{result.subject_type}:{result.subject_id}</strong>
+                    <small>{[result.user_id, result.session_id, result.job_id, result.skill_name].filter(Boolean).join(" · ") || "runtime record"}</small>
+                  </span>
+                  <small>{formatNumber(Math.round((result.score || 0) * 100))}</small>
+                  {(result.findings || []).slice(0, 2).map((finding) => <em key={`${result.id}-${finding.code}`}>{finding.code}: {finding.message}</em>)}
+                </button>
+              ))}
+              {!results.length && <p className="muted-text">No results in this filter.</p>}
+            </div>
+          </section>
+          <section className="admin-card">
+            <div className="admin-card-head">
+              <h3>Selected result</h3>
+              {selectedResult && <StatusBadge value={selectedResult.status} />}
+            </div>
+            {selectedResult ? (
+              <div className="admin-facts">
+                <SkillFact label="Subject" value={`${selectedResult.subject_type}:${selectedResult.subject_id}`} />
+                <SkillFact label="Score" value={String(selectedResult.score)} />
+                <SkillFact label="Provider" value={[selectedResult.provider, selectedResult.model].filter(Boolean).join(" / ") || "none"} />
+                <SkillFact label="Created" value={formatTime(selectedResult.created_at)} />
+                <SkillFact label="Session" value={selectedResult.session_id || "none"} />
+                <SkillFact label="Job" value={selectedResult.job_id || "none"} />
+              </div>
+            ) : (
+              <p className="muted-text">Select a result to inspect findings.</p>
+            )}
+          </section>
+          <section className="admin-card">
+            <div className="admin-card-head">
+              <h3>Findings</h3>
+            </div>
+            <div className="admin-table">
+              {(selectedResult?.findings || []).map((finding) => (
+                <div key={`${finding.code}-${finding.message}`} className={`review-issue ${finding.severity}`}>
+                  <strong>{finding.code}</strong>
+                  <span>{finding.message}</span>
+                </div>
+              ))}
+              {selectedResult && !selectedResult.findings?.length && <p className="muted-text">No findings for this result.</p>}
+            </div>
+          </section>
+          <section className="admin-card wide">
+            <div className="admin-card-head">
+              <h3>Review items</h3>
+            </div>
+            <div className="admin-table">
+              {selectedResultReviews.map((review) => (
+                <div key={review.id} className="admin-table-row">
+                  <StatusBadge value={review.status} />
+                  <span>
+                    <strong>{review.id}</strong>
+                    <small>{review.note || "No note"}</small>
+                  </span>
+                  <small>{formatTime(review.updated_at)}</small>
+                  <button className="small ghost" disabled={reviewBusy === review.id} onClick={() => updateReview(review, "passed")}>Pass</button>
+                  <button className="small danger" disabled={reviewBusy === review.id} onClick={() => updateReview(review, "ignored")}>Ignore</button>
+                </div>
+              ))}
+              {!selectedResultReviews.length && <p className="muted-text">No review items for the selected result.</p>}
+            </div>
+          </section>
+          <section className="admin-card wide">
+            <div className="admin-card-head">
+              <h3>Input / output</h3>
+            </div>
+            <pre className="admin-code-block">{selectedResult ? JSON.stringify({
+              input: selectedResult.input || "",
+              output: selectedResult.output || "",
+              metrics: selectedResult.metrics || {}
+            }, null, 2) : "{}"}</pre>
           </section>
         </div>
       </section>
@@ -4697,6 +5160,73 @@ function formatNumber(value: number): string {
 function formatUSD(value: number): string {
   if (!Number.isFinite(value)) return "$0.00";
   return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: value < 1 ? 4 : 2 }).format(value);
+}
+
+function metricNumber(metrics: Record<string, unknown> | undefined, key: string): number {
+  const value = metrics?.[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function selectedRunPassRate(run: EvaluationRun | null): number {
+  if (!run || !run.total) return 0;
+  return run.passed / run.total;
+}
+
+function buildEvaluationThresholds(draft: Record<string, string>): EvaluationThresholds {
+  const thresholds: EvaluationThresholds = {};
+  setOptionalNumber(thresholds, "min_success_rate", draft.min_success_rate);
+  setOptionalNumber(thresholds, "max_tool_error_rate", draft.max_tool_error_rate);
+  setOptionalNumber(thresholds, "max_llm_error_rate", draft.max_llm_error_rate);
+  setOptionalNumber(thresholds, "max_high_risk_count", draft.max_high_risk_count, true);
+  setOptionalNumber(thresholds, "max_p95_latency_ms", draft.max_p95_latency_ms, true);
+  setOptionalNumber(thresholds, "max_cost_usd", draft.max_cost_usd);
+  return thresholds;
+}
+
+function setOptionalNumber(target: EvaluationThresholds, key: keyof EvaluationThresholds, raw: string | undefined, integer = false): void {
+  const clean = String(raw || "").trim();
+  if (!clean) return;
+  const parsed = Number(clean);
+  if (!Number.isFinite(parsed)) return;
+  target[key] = integer ? Math.max(0, Math.round(parsed)) : Math.max(0, parsed);
+}
+
+function downloadTextFile(filename: string, content: string, type: string): void {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function mergeEvaluationReviews(current: EvaluationReview[], next: EvaluationReview[]): EvaluationReview[] {
+  const byID = new Map<string, EvaluationReview>();
+  current.forEach((review) => byID.set(review.id, review));
+  next.forEach((review) => byID.set(review.id, review));
+  return Array.from(byID.values()).sort((a, b) => String(b.updated_at || b.created_at).localeCompare(String(a.updated_at || a.created_at)));
+}
+
+function filterEvaluationResults(results: EvaluationResult[], filter: { status: string; userID: string; sessionID: string; jobID: string; skillName: string; provider: string; model: string; subjectType: string }): EvaluationResult[] {
+  return results.filter((result) => {
+    if (filter.status !== "all" && result.status !== filter.status) return false;
+    if (filter.subjectType !== "all" && result.subject_type !== filter.subjectType) return false;
+    if (filter.userID && result.user_id !== filter.userID) return false;
+    if (filter.sessionID && result.session_id !== filter.sessionID) return false;
+    if (filter.jobID && result.job_id !== filter.jobID) return false;
+    if (filter.skillName && result.skill_name !== filter.skillName) return false;
+    if (filter.provider && result.provider !== filter.provider) return false;
+    if (filter.model && result.model !== filter.model) return false;
+    return true;
+  });
 }
 
 function auditRecordSummary(record: AuditLogRecord): string {

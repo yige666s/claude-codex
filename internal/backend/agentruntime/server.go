@@ -41,6 +41,7 @@ type Server struct {
 	audit            AuditLogger
 	risk             RiskStore
 	riskScanner      RiskScanner
+	evaluation       EvaluationStore
 	operationLimiter *OperationRateLimiter
 	adminToken       string
 	skillRegistry    SkillRegistryAdminStore
@@ -130,6 +131,13 @@ func (s *Server) SetLLMStatusProvider(provider func() LLMGovernanceStatus) {
 
 func (s *Server) SetLLMUsageStore(store LLMUsageAdminStore) {
 	s.llmUsage = store
+}
+
+func (s *Server) SetEvaluationStore(store EvaluationStore) {
+	if s == nil {
+		return
+	}
+	s.evaluation = store
 }
 
 func (s *Server) SetLLMGovernanceConfigManager(manager *LLMGovernanceConfigManager) {
@@ -679,6 +687,8 @@ func (s *Server) handleAdminOps(w http.ResponseWriter, r *http.Request, user Use
 		s.handleAdminOpsUpdateRiskReview(w, r, user, parts[5])
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "risk":
 		s.handleAdminOpsRisk(w, r)
+	case len(parts) >= 5 && parts[3] == "eval":
+		s.handleAdminOpsEval(w, r, user, parts)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}

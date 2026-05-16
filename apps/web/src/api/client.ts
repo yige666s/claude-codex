@@ -1,5 +1,5 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, MessageSearchResult, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, MessageSearchResult, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -512,6 +512,99 @@ export class ApiClient {
     return response.review;
   }
 
+  async createEvaluationRun(adminToken: string, payload: { name?: string; trigger?: string; scope: EvaluationScope; thresholds?: EvaluationThresholds }): Promise<EvaluationRunReport> {
+    const response = await this.fetchJSON<EvaluationRunReport>("/v1/admin/ops/eval/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify(payload)
+    });
+    return normalizeEvaluationReport(response);
+  }
+
+  async adminOpsEvaluationRuns(adminToken: string, options: { status?: string; trigger?: string; limit?: number } = {}): Promise<EvaluationRun[]> {
+    const params = new URLSearchParams();
+    if (options.status && options.status !== "all") params.set("status", options.status);
+    if (options.trigger) params.set("trigger", options.trigger);
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    const payload = await this.fetchJSON<{ runs: EvaluationRun[] }>(`/v1/admin/ops/eval/runs${query ? `?${query}` : ""}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return payload.runs || [];
+  }
+
+  async adminOpsEvaluationRun(adminToken: string, id: string, limit = 500): Promise<EvaluationRunReport> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    const payload = await this.fetchJSON<EvaluationRunReport>(`/v1/admin/ops/eval/runs/${encodeURIComponent(id)}?${params.toString()}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return normalizeEvaluationReport(payload);
+  }
+
+  async adminOpsEvaluationResults(adminToken: string, options: { runId?: string; status?: string; subjectType?: string; userId?: string; sessionId?: string; jobId?: string; skillName?: string; provider?: string; model?: string; limit?: number } = {}): Promise<EvaluationResult[]> {
+    const params = evaluationResultParams(options);
+    const query = params.toString();
+    const payload = await this.fetchJSON<{ results: EvaluationResult[] }>(`/v1/admin/ops/eval/results${query ? `?${query}` : ""}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return payload.results || [];
+  }
+
+  async adminOpsEvaluationReviews(adminToken: string, options: { resultId?: string; status?: string; limit?: number } = {}): Promise<EvaluationReview[]> {
+    const params = new URLSearchParams();
+    if (options.resultId) params.set("result_id", options.resultId);
+    if (options.status && options.status !== "all") params.set("status", options.status);
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    const payload = await this.fetchJSON<{ reviews: EvaluationReview[] }>(`/v1/admin/ops/eval/reviews${query ? `?${query}` : ""}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return payload.reviews || [];
+  }
+
+  async adminOpsEvaluationSummary(adminToken: string, options: { from?: string; to?: string; status?: string; trigger?: string; limit?: number } = {}): Promise<{ summary: EvaluationRunSummary; runs: EvaluationRun[] }> {
+    const params = evaluationSummaryParams(options);
+    const query = params.toString();
+    const payload = await this.fetchJSON<{ summary: EvaluationRunSummary; runs: EvaluationRun[] }>(`/v1/admin/ops/eval/summary${query ? `?${query}` : ""}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return {
+      summary: normalizeEvaluationSummary(payload.summary),
+      runs: payload.runs || []
+    };
+  }
+
+  async adminOpsEvaluationResultsCSV(adminToken: string, options: { runId?: string; status?: string; subjectType?: string; userId?: string; sessionId?: string; jobId?: string; skillName?: string; provider?: string; model?: string; limit?: number } = {}): Promise<string> {
+    const params = evaluationResultParams(options);
+    params.set("format", "csv");
+    const query = params.toString();
+    return this.fetchText(`/v1/admin/ops/eval/results?${query}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+  }
+
+  async adminOpsEvaluationSummaryMarkdown(adminToken: string, options: { from?: string; to?: string; status?: string; trigger?: string; limit?: number } = {}): Promise<string> {
+    const params = evaluationSummaryParams(options);
+    params.set("format", "markdown");
+    const query = params.toString();
+    return this.fetchText(`/v1/admin/ops/eval/summary?${query}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+  }
+
+  async updateEvaluationReview(adminToken: string, id: string, payload: { status: string; reviewer?: string; note?: string }): Promise<EvaluationReview> {
+    const response = await this.fetchJSON<{ review: EvaluationReview }>(`/v1/admin/ops/eval/reviews/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({
+        status: payload.status,
+        reviewer: payload.reviewer || "",
+        note: payload.note || ""
+      })
+    });
+    return response.review;
+  }
+
   async searchMessages(query: string, limit = 20, offset = 0): Promise<MessageSearchResult[]> {
     const params = new URLSearchParams({
       q: query,
@@ -639,6 +732,21 @@ export class ApiClient {
     return (await response.json()) as T;
   }
 
+  private async fetchText(path: string, options: RequestInit = {}, retry = true): Promise<string> {
+    await this.ensureFreshAccess();
+    const response = await fetch(this.apiURL(path), {
+      ...options,
+      credentials: "include",
+      headers: this.headers(options.headers)
+    });
+    if (response.status === 401 && retry && this.auth?.refresh_token) {
+      await this.refresh();
+      return this.fetchText(path, options, false);
+    }
+    if (!response.ok) throw await toApiError(response);
+    return response.text();
+  }
+
   private async ensureFreshAccess(): Promise<void> {
     if (!this.auth?.refresh_token) return;
     const expiresAt = new Date(this.auth.expires_at).getTime();
@@ -724,6 +832,55 @@ export function joinAPIURL(baseURL: string, path: string): string {
   const cleanBase = baseURL.trim().replace(/\/+$/, "");
   if (!cleanBase) return cleanPath;
   return `${cleanBase}${cleanPath}`;
+}
+
+function normalizeEvaluationReport(report: EvaluationRunReport): EvaluationRunReport {
+  return {
+    ...report,
+    results: report.results || [],
+    reviews: report.reviews || [],
+    summary: normalizeEvaluationSummary(report.summary)
+  };
+}
+
+function normalizeEvaluationSummary(summary: EvaluationRunSummary | undefined): EvaluationRunSummary {
+  return {
+    run_id: summary?.run_id || "",
+    total: summary?.total || 0,
+    passed: summary?.passed || 0,
+    failed: summary?.failed || 0,
+    warning: summary?.warning || 0,
+    pass_rate: summary?.pass_rate || 0,
+    failure_rate: summary?.failure_rate || 0,
+    warning_rate: summary?.warning_rate || 0,
+    metrics: summary?.metrics || {},
+    threshold_status: summary?.threshold_status || ""
+  };
+}
+
+function evaluationResultParams(options: { runId?: string; status?: string; subjectType?: string; userId?: string; sessionId?: string; jobId?: string; skillName?: string; provider?: string; model?: string; limit?: number } = {}): URLSearchParams {
+  const params = new URLSearchParams();
+  if (options.runId) params.set("run_id", options.runId);
+  if (options.status && options.status !== "all") params.set("status", options.status);
+  if (options.subjectType && options.subjectType !== "all") params.set("subject_type", options.subjectType);
+  if (options.userId) params.set("user_id", options.userId);
+  if (options.sessionId) params.set("session_id", options.sessionId);
+  if (options.jobId) params.set("job_id", options.jobId);
+  if (options.skillName) params.set("skill_name", options.skillName);
+  if (options.provider) params.set("provider", options.provider);
+  if (options.model) params.set("model", options.model);
+  if (options.limit) params.set("limit", String(options.limit));
+  return params;
+}
+
+function evaluationSummaryParams(options: { from?: string; to?: string; status?: string; trigger?: string; limit?: number } = {}): URLSearchParams {
+  const params = new URLSearchParams();
+  if (options.from) params.set("from", options.from);
+  if (options.to) params.set("to", options.to);
+  if (options.status && options.status !== "all") params.set("status", options.status);
+  if (options.trigger) params.set("trigger", options.trigger);
+  if (options.limit) params.set("limit", String(options.limit));
+  return params;
 }
 
 async function toApiError(response: Response): Promise<ApiError> {
