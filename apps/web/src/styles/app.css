@@ -2586,7 +2586,7 @@ label.composer-upload {
   max-height: min(720px, calc(100vh - 48px));
   max-height: min(720px, calc(100dvh - 48px));
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
@@ -2633,12 +2633,15 @@ label.composer-upload {
   background: var(--accent-soft);
   color: var(--accent-strong);
 }
-.memory-list {
+.memory-scroll-area {
   min-height: 0;
+  overflow: auto;
+  background: var(--panel-soft);
+}
+.memory-list {
   padding: 14px;
   display: grid;
   gap: 10px;
-  overflow: auto;
   background: var(--panel-soft);
 }
 .memory-maintenance {
@@ -2647,6 +2650,7 @@ label.composer-upload {
   gap: 8px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
+  overflow-wrap: anywhere;
 }
 .memory-maintenance-header {
   display: flex;

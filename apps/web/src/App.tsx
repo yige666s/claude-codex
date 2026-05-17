@@ -5927,33 +5927,34 @@ function MemoryModal({
             <option value="profile">Profile</option>
           </select>
         </div>
-        <div className="memory-maintenance">
-          <div className="memory-maintenance-header">
-            <strong>Suggestions</strong>
-            <small>{actions.filter((action) => action.status !== "dismissed").length} pending</small>
-          </div>
-          {actions.length ? actions.map((action) => (
-            <div key={action.id} className={`memory-maintenance-action ${action.status}`}>
-              <div>
-                <strong>{action.type.split("_").join(" ")}</strong>
-                <p>{action.reason}</p>
-                <small>{Math.round((action.confidence || 0) * 100)}% confidence · {action.memory_ids.length} memories</small>
-              </div>
-              <div className="memory-maintenance-buttons">
-                <button type="button" onClick={() => onApplyMaintenance(action)} disabled={action.status !== "pending"}>Apply</button>
-                <button type="button" onClick={() => onDismissMaintenance(action)} disabled={action.status !== "pending"}>Dismiss</button>
-              </div>
+        <div className="memory-scroll-area">
+          <div className="memory-maintenance">
+            <div className="memory-maintenance-header">
+              <strong>Suggestions</strong>
+              <small>{actions.filter((action) => action.status !== "dismissed").length} pending</small>
             </div>
-          )) : (
-            <div className="memory-empty compact">No maintenance suggestions</div>
-          )}
-        </div>
-        <div className="memory-list">
-          {loading && <div className="memory-empty">Loading memory...</div>}
-          {!loading && error && <div className="memory-empty error-text">{error}</div>}
-          {!loading && !error && !items.length && <div className="memory-empty">No saved memory</div>}
-          {!loading && !error && items.map((item) => (
-            <article key={item.id} className="memory-item">
+            {actions.length ? actions.map((action) => (
+              <div key={action.id} className={`memory-maintenance-action ${action.status}`}>
+                <div>
+                  <strong>{action.type.split("_").join(" ")}</strong>
+                  <p>{action.reason}</p>
+                  <small>{Math.round((action.confidence || 0) * 100)}% confidence · {action.memory_ids.length} memories</small>
+                </div>
+                <div className="memory-maintenance-buttons">
+                  <button type="button" onClick={() => onApplyMaintenance(action)} disabled={action.status !== "pending"}>Apply</button>
+                  <button type="button" onClick={() => onDismissMaintenance(action)} disabled={action.status !== "pending"}>Dismiss</button>
+                </div>
+              </div>
+            )) : (
+              <div className="memory-empty compact">No maintenance suggestions</div>
+            )}
+          </div>
+          <div className="memory-list">
+            {loading && <div className="memory-empty">Loading memory...</div>}
+            {!loading && error && <div className="memory-empty error-text">{error}</div>}
+            {!loading && !error && !items.length && <div className="memory-empty">No saved memory</div>}
+            {!loading && !error && items.map((item) => (
+              <article key={item.id} className="memory-item">
               {editingId === item.id ? (
                 <div className="memory-editor">
                   <textarea value={draftContent} onChange={(event) => setDraftContent(event.target.value)} aria-label="Memory content" />
@@ -6029,8 +6030,9 @@ function MemoryModal({
                   </div>
                 </>
               )}
-            </article>
-          ))}
+              </article>
+            ))}
+          </div>
         </div>
       </section>
     </div>
