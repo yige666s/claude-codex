@@ -108,6 +108,42 @@ export type MemorySettings = {
   updated_at: string;
 };
 
+export type PersonalizationSettings = {
+  profile: {
+    nickname?: string;
+    occupation?: string;
+    about?: string;
+  };
+  style: {
+    preset: string;
+    tone: string;
+  };
+  traits: {
+    warmth: string;
+    enthusiasm: string;
+    headings_and_lists: string;
+    emoji: string;
+  };
+  custom_instructions: string;
+  feature_flags: {
+    quick_answers: boolean;
+    use_saved_memory: boolean;
+    use_chat_history: boolean;
+    use_browser_memory: boolean;
+  };
+  version: number;
+  updated_at: string;
+};
+
+export type BrowserMemoryRequest = {
+  url?: string;
+  title?: string;
+  content?: string;
+  session_id?: string;
+  visibility?: string;
+  tags?: string[];
+};
+
 export type Session = {
   id: string;
   title?: string;

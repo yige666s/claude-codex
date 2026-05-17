@@ -1640,6 +1640,22 @@ label.composer-upload {
   font-size: 14px;
   line-height: 1.45;
 }
+.settings-section-title {
+  padding: 18px 0 6px;
+}
+.settings-section-title strong {
+  display: block;
+  font-size: 14px;
+  color: #f7f7f8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.settings-section-title p {
+  margin: 6px 0 0;
+  color: #b7b7b9;
+  font-size: 13px;
+  line-height: 1.4;
+}
 .settings-action,
 .switch-button {
   min-height: 42px;
@@ -1657,6 +1673,14 @@ label.composer-upload {
 .settings-action:hover:not(:disabled),
 .switch-button:hover {
   background: #3a3a3a;
+}
+.settings-action.primary {
+  border-color: #168fff;
+  background: #168fff;
+  color: #fff;
+}
+.settings-action.primary:hover:not(:disabled) {
+  background: #0c7ee8;
 }
 .settings-action:disabled {
   opacity: 0.45;
@@ -1681,6 +1705,99 @@ label.composer-upload {
   display: flex;
   gap: 10px;
   align-items: center;
+}
+.settings-fieldset {
+  padding: 18px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  display: grid;
+  gap: 12px;
+}
+.settings-fieldset strong {
+  font-size: 16px;
+}
+.settings-fieldset p {
+  max-width: 620px;
+  margin: -4px 0 0;
+  color: #b7b7b9;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.settings-trait-grid,
+.settings-input-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.settings-input-label {
+  display: grid;
+  gap: 8px;
+  color: #f3f3f3;
+  font-size: 14px;
+  font-weight: 650;
+}
+.settings-label-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.settings-char-count {
+  color: #a8a8ac;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.settings-select,
+.settings-input,
+.settings-textarea {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: #2d2d2d;
+  color: #f8f8f8;
+  font: inherit;
+}
+.settings-select,
+.settings-input {
+  padding: 0 12px;
+}
+.settings-textarea {
+  min-height: 96px;
+  padding: 12px;
+  resize: vertical;
+  line-height: 1.45;
+}
+.settings-textarea.compact {
+  min-height: 76px;
+}
+.settings-select:focus,
+.settings-input:focus,
+.settings-textarea:focus {
+  border-color: #168fff;
+  outline: none;
+}
+.settings-footer-actions {
+  position: sticky;
+  bottom: -30px;
+  margin: 12px -28px -30px;
+  padding: 14px 28px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  background: #232323;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.settings-save-state {
+  margin-right: auto;
+  color: #a8a8ac;
+  font-size: 13px;
+  font-weight: 650;
+}
+.settings-save-state.dirty {
+  color: #f5d06f;
 }
 
 .admin-shell {
@@ -2265,6 +2382,15 @@ label.composer-upload {
   .settings-action-group {
     justify-content: flex-end;
     flex-wrap: wrap;
+  }
+  .settings-trait-grid,
+  .settings-input-grid {
+    grid-template-columns: 1fr;
+  }
+  .settings-footer-actions {
+    bottom: -22px;
+    margin: 12px -18px -22px;
+    padding: 14px 18px;
   }
 }
 .skill-modal {

@@ -473,6 +473,149 @@ func TestRuntimeMemorySettingsDisableCaptureAndContext(t *testing.T) {
 	}
 }
 
+func TestRuntimePersonalizationSettingsAndInjection(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	memory := NewFileMemoryService(root)
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root}, NewFileSessionStore(root), memory, nil, func(Scope) Runner { return echoRunner{} })
+
+	settings, err := runtime.GetPersonalizationSettings(ctx, "alice")
+	if err != nil {
+		t.Fatalf("get default personalization: %v", err)
+	}
+	if settings.Style.Preset != "default" || !settings.FeatureFlags.UseSavedMemory || !settings.FeatureFlags.UseChatHistory {
+		t.Fatalf("unexpected defaults: %#v", settings)
+	}
+	settings.Profile.Occupation = "产品经理"
+	settings.CustomInstructions = "默认使用中文回复"
+	settings.Style.Preset = "professional_reliable"
+	settings.Traits.HeadingsAndLists = "enhanced"
+	settings.FeatureFlags.UseSavedMemory = false
+	settings.FeatureFlags.UseChatHistory = false
+	settings.FeatureFlags.UseBrowserMemory = true
+	implicit := newConversationMemoryItem("alice", "", "User occupation: engineer")
+	implicit.Status = MemoryStatusActive
+	if _, err := memory.UpdateMemoryItem(ctx, "alice", implicit); err != nil {
+		t.Fatalf("seed implicit memory: %v", err)
+	}
+	settings, err = runtime.UpdatePersonalizationSettings(ctx, "alice", settings)
+	if err != nil {
+		t.Fatalf("update personalization: %v", err)
+	}
+	if settings.Version <= 1 {
+		t.Fatalf("expected version increment, got %#v", settings)
+	}
+	personalized, err := memory.ListMemoryItems(ctx, "alice", MemoryItemFilter{Namespace: MemoryNamespacePersonalization, Status: MemoryStatusActive})
+	if err != nil {
+		t.Fatalf("list personalization memory: %v", err)
+	}
+	if len(personalized) != 2 {
+		t.Fatalf("expected occupation and custom instruction memory, got %#v", personalized)
+	}
+	regularListed, err := runtime.ListMemoryItems(ctx, "alice", MemoryItemFilter{Status: MemoryStatusActive})
+	if err != nil {
+		t.Fatalf("list regular memory: %v", err)
+	}
+	if len(regularListed) != 0 {
+		t.Fatalf("managed personalization memory should be hidden from default memory listing, got %#v", regularListed)
+	}
+	archivedImplicit, err := memory.GetMemoryItem(ctx, "alice", implicit.ID)
+	if err != nil {
+		t.Fatalf("get implicit memory: %v", err)
+	}
+	if archivedImplicit.Status != MemoryStatusArchived || archivedImplicit.Metadata["conflict_strategy"] != "explicit_personalization" {
+		t.Fatalf("implicit memory should be archived by explicit personalization, got %#v", archivedImplicit)
+	}
+
+	session := state.NewSession(root)
+	if err := runtime.injectPersonalization(ctx, "alice", session); err != nil {
+		t.Fatalf("inject personalization: %v", err)
+	}
+	if len(session.Messages) != 1 || !strings.Contains(session.Messages[0].Content, "默认使用中文回复") || !strings.Contains(session.Messages[0].Content, "产品经理") {
+		t.Fatalf("personalization context missing expected content: %#v", session.Messages)
+	}
+	if !strings.Contains(session.Messages[0].Content, "Quick answer policy") {
+		t.Fatalf("quick answers should add explicit prompt policy: %#v", session.Messages[0].Content)
+	}
+
+	item := newConversationMemoryItem("alice", session.ID, "User prefers very long English answers.")
+	item.Status = MemoryStatusActive
+	if _, err := memory.UpdateMemoryItem(ctx, "alice", item); err != nil {
+		t.Fatalf("seed memory item: %v", err)
+	}
+	if err := runtime.injectMemory(ctx, "alice", session); err != nil {
+		t.Fatalf("inject memory: %v", err)
+	}
+	if session.Metadata[memoryInjectedKey] == "true" {
+		t.Fatalf("memory should not be injected when personalization disables saved memory: %#v", session.Messages)
+	}
+	browserItem, err := runtime.SaveBrowserMemory(ctx, "alice", BrowserMemoryRequest{
+		URL:       "https://example.com/docs#setup",
+		Title:     "Setup Guide",
+		Content:   "The current browser page says the product should use Chinese onboarding copy.",
+		SessionID: session.ID,
+		Tags:      []string{"docs"},
+	})
+	if err != nil {
+		t.Fatalf("save browser memory: %v", err)
+	}
+	if browserItem.Namespace != MemoryNamespaceBrowser || browserItem.Source != MemorySourceBrowser || browserItem.SourceRefs[0].URI != "https://example.com/docs" {
+		t.Fatalf("unexpected browser memory item: %#v", browserItem)
+	}
+	if err := runtime.injectBrowserMemory(ctx, "alice", session); err != nil {
+		t.Fatalf("inject browser memory: %v", err)
+	}
+	if session.Metadata[browserMemoryInjectedKey] != "true" || !strings.Contains(session.Messages[len(session.Messages)-1].Content, "Chinese onboarding copy") {
+		t.Fatalf("browser memory should be injected when enabled: %#v", session.Messages)
+	}
+	if err := runtime.DeleteUserMemory(ctx, "alice"); err != nil {
+		t.Fatalf("delete saved memory: %v", err)
+	}
+	settingsAfterMemoryDelete, err := runtime.GetPersonalizationSettings(ctx, "alice")
+	if err != nil {
+		t.Fatalf("get personalization after saved memory delete: %v", err)
+	}
+	if settingsAfterMemoryDelete.Profile.Occupation != "产品经理" || settingsAfterMemoryDelete.CustomInstructions == "" {
+		t.Fatalf("saved memory delete should preserve personalization settings, got %#v", settingsAfterMemoryDelete)
+	}
+	personalized, err = memory.ListMemoryItems(ctx, "alice", MemoryItemFilter{Namespace: MemoryNamespacePersonalization, Status: MemoryStatusActive})
+	if err != nil {
+		t.Fatalf("list personalization after saved memory delete: %v", err)
+	}
+	if len(personalized) != 2 {
+		t.Fatalf("saved memory delete should preserve managed personalization memory, got %#v", personalized)
+	}
+	browserItems, err := memory.ListMemoryItems(ctx, "alice", MemoryItemFilter{Namespace: MemoryNamespaceBrowser, Status: MemoryStatusActive})
+	if err != nil {
+		t.Fatalf("list browser memory after saved memory delete: %v", err)
+	}
+	if len(browserItems) != 0 {
+		t.Fatalf("saved memory delete should remove browser memory, got %#v", browserItems)
+	}
+
+	session.AddUserMessage("old visible user message")
+	session.AddAssistantMessage("old visible assistant message")
+	llmSession, err := runtime.materializedSessionForLLM(ctx, "alice", session)
+	if err != nil {
+		t.Fatalf("materialize session: %v", err)
+	}
+	for _, message := range llmSession.Messages {
+		if !message.Hidden {
+			t.Fatalf("visible chat history should be omitted when disabled: %#v", llmSession.Messages)
+		}
+	}
+	if _, err := runtime.DeletePersonalizationSettings(ctx, "alice"); err != nil {
+		t.Fatalf("reset personalization: %v", err)
+	}
+	personalized, err = memory.ListMemoryItems(ctx, "alice", MemoryItemFilter{Namespace: MemoryNamespacePersonalization, Status: MemoryStatusActive})
+	if err != nil {
+		t.Fatalf("list personalization after reset: %v", err)
+	}
+	if len(personalized) != 0 {
+		t.Fatalf("expected personalization memory archived after reset, got %#v", personalized)
+	}
+}
+
 func TestFileMemoryServiceSkipsImplicitChatterAndRedactsPII(t *testing.T) {
 	memory := NewFileMemoryService(t.TempDir())
 	ctx := context.Background()
@@ -1720,6 +1863,20 @@ func TestServerMetricsAndReadyz(t *testing.T) {
 	if exportRec.Code != http.StatusOK {
 		t.Fatalf("export status = %d body=%s", exportRec.Code, exportRec.Body.String())
 	}
+	updatePersonalizationReq := httptest.NewRequest(http.MethodPatch, "/v1/personalization", bytes.NewBufferString(`{"profile":{"occupation":"designer"},"custom_instructions":"be concise","feature_flags":{"use_browser_memory":true}}`))
+	updatePersonalizationReq.Header.Set("X-User-ID", "alice")
+	updatePersonalizationRec := httptest.NewRecorder()
+	server.ServeHTTP(updatePersonalizationRec, updatePersonalizationReq)
+	if updatePersonalizationRec.Code != http.StatusOK {
+		t.Fatalf("personalization update status = %d body=%s", updatePersonalizationRec.Code, updatePersonalizationRec.Body.String())
+	}
+	browserMemoryReq := httptest.NewRequest(http.MethodPost, "/v1/personalization/browser-memory", bytes.NewBufferString(`{"url":"https://example.com","title":"Example","content":"Browser note"}`))
+	browserMemoryReq.Header.Set("X-User-ID", "alice")
+	browserMemoryRec := httptest.NewRecorder()
+	server.ServeHTTP(browserMemoryRec, browserMemoryReq)
+	if browserMemoryRec.Code != http.StatusCreated {
+		t.Fatalf("browser memory status = %d body=%s", browserMemoryRec.Code, browserMemoryRec.Body.String())
+	}
 
 	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	metricsRec := httptest.NewRecorder()
@@ -1732,6 +1889,12 @@ func TestServerMetricsAndReadyz(t *testing.T) {
 	}
 	if !strings.Contains(metricsRec.Body.String(), `agentapi_governance_events_total{event="data_export"} 1`) {
 		t.Fatalf("metrics missing governance counter: %s", metricsRec.Body.String())
+	}
+	if !strings.Contains(metricsRec.Body.String(), "agentapi_personalization_updates_total 1") ||
+		!strings.Contains(metricsRec.Body.String(), `agentapi_personalization_enabled_total{enabled="true"} 1`) ||
+		!strings.Contains(metricsRec.Body.String(), `agentapi_personalization_field_coverage_total{field="occupation",present="true"} 1`) ||
+		!strings.Contains(metricsRec.Body.String(), "agentapi_personalization_browser_memory_total 1") {
+		t.Fatalf("metrics missing personalization counters: %s", metricsRec.Body.String())
 	}
 }
 
@@ -2097,7 +2260,7 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 		AccessTTL:  time.Minute,
 		RefreshTTL: time.Hour,
 	}
-	server := NewServer(testRuntime(t), JWTAuthenticator{Secret: "secret"}, NewRateLimiter(20, time.Minute), nil)
+	server := NewServer(testRuntime(t), JWTAuthenticator{Secret: "secret"}, NewRateLimiter(40, time.Minute), nil)
 	server.SetAuthService(authService)
 
 	authSession := registerTestUser(t, server, "life@example.com")
@@ -2140,6 +2303,48 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 		t.Fatalf("re-enable memory settings status = %d body=%s", updateSettingsRec.Code, updateSettingsRec.Body.String())
 	}
 
+	personalizationReq := httptest.NewRequest(http.MethodGet, "/v1/personalization", nil)
+	personalizationReq.Header.Set("Authorization", "Bearer "+token)
+	personalizationRec := httptest.NewRecorder()
+	server.ServeHTTP(personalizationRec, personalizationReq)
+	if personalizationRec.Code != http.StatusOK {
+		t.Fatalf("get personalization status = %d body=%s", personalizationRec.Code, personalizationRec.Body.String())
+	}
+	var personalization PersonalizationSettings
+	if err := json.Unmarshal(personalizationRec.Body.Bytes(), &personalization); err != nil {
+		t.Fatalf("decode personalization: %v", err)
+	}
+	if personalization.Style.Preset != "default" || !personalization.FeatureFlags.UseSavedMemory {
+		t.Fatalf("unexpected default personalization: %#v", personalization)
+	}
+	updatePersonalizationReq := httptest.NewRequest(http.MethodPatch, "/v1/personalization", bytes.NewBufferString(`{"profile":{"occupation":"产品经理"},"style":{"preset":"professional_reliable"},"custom_instructions":"默认使用中文回复","feature_flags":{"use_saved_memory":false,"use_browser_memory":true}}`))
+	updatePersonalizationReq.Header.Set("Authorization", "Bearer "+token)
+	updatePersonalizationRec := httptest.NewRecorder()
+	server.ServeHTTP(updatePersonalizationRec, updatePersonalizationReq)
+	if updatePersonalizationRec.Code != http.StatusOK {
+		t.Fatalf("update personalization status = %d body=%s", updatePersonalizationRec.Code, updatePersonalizationRec.Body.String())
+	}
+	if err := json.Unmarshal(updatePersonalizationRec.Body.Bytes(), &personalization); err != nil {
+		t.Fatalf("decode updated personalization: %v", err)
+	}
+	if personalization.Profile.Occupation != "产品经理" || personalization.Style.Preset != "professional_reliable" || personalization.FeatureFlags.UseSavedMemory || !personalization.FeatureFlags.UseBrowserMemory {
+		t.Fatalf("unexpected updated personalization: %#v", personalization)
+	}
+	browserMemoryReq := httptest.NewRequest(http.MethodPost, "/v1/personalization/browser-memory", bytes.NewBufferString(`{"url":"https://example.com/page#section","title":"Example Page","content":"Browser context says lifecycle docs prefer concise Chinese answers.","session_id":"`+session.ID+`","tags":["browser-test"]}`))
+	browserMemoryReq.Header.Set("Authorization", "Bearer "+token)
+	browserMemoryRec := httptest.NewRecorder()
+	server.ServeHTTP(browserMemoryRec, browserMemoryReq)
+	if browserMemoryRec.Code != http.StatusCreated {
+		t.Fatalf("create browser memory status = %d body=%s", browserMemoryRec.Code, browserMemoryRec.Body.String())
+	}
+	var browserMemory MemoryItem
+	if err := json.Unmarshal(browserMemoryRec.Body.Bytes(), &browserMemory); err != nil {
+		t.Fatalf("decode browser memory: %v", err)
+	}
+	if browserMemory.Namespace != MemoryNamespaceBrowser || browserMemory.Source != MemorySourceBrowser || !strings.Contains(browserMemory.Content, "Browser context") {
+		t.Fatalf("unexpected browser memory: %#v", browserMemory)
+	}
+
 	msgReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+session.ID+"/messages", bytes.NewBufferString(`{"content":"remember that lifecycle alpha is my preferred project"}`))
 	msgReq.Header.Set("Authorization", "Bearer "+token)
 	msgRec := httptest.NewRecorder()
@@ -2162,6 +2367,9 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 	if len(exported.Sessions) != 1 || exported.Memory.Sessions[session.ID] == "" {
 		t.Fatalf("unexpected export: %#v", exported)
 	}
+	if exported.Personalization.Profile.Occupation != "产品经理" || exported.Personalization.CustomInstructions == "" {
+		t.Fatalf("export should include personalization settings, got %#v", exported.Personalization)
+	}
 
 	listMemoryReq := httptest.NewRequest(http.MethodGet, "/v1/memory?session_id="+url.QueryEscape(session.ID), nil)
 	listMemoryReq.Header.Set("Authorization", "Bearer "+token)
@@ -2176,13 +2384,20 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 	if err := json.Unmarshal(listMemoryRec.Body.Bytes(), &memoryList); err != nil {
 		t.Fatalf("decode memory list: %v", err)
 	}
-	if len(memoryList.Items) != 1 || memoryList.Items[0].SessionID != session.ID {
+	if len(memoryList.Items) < 1 {
 		t.Fatalf("unexpected memory list: %#v", memoryList)
 	}
-	if memoryList.Items[0].Category != MemoryCategoryPreference || memoryList.Items[0].Confidence < 0.6 {
-		t.Fatalf("unexpected listed memory metadata: %#v", memoryList.Items[0])
+	var listedPreference MemoryItem
+	for _, item := range memoryList.Items {
+		if item.Category == MemoryCategoryPreference && item.SessionID == session.ID {
+			listedPreference = item
+			break
+		}
 	}
-	updateItemReq := httptest.NewRequest(http.MethodPatch, "/v1/memory/"+url.PathEscape(memoryList.Items[0].ID), bytes.NewBufferString(`{"content":"lifecycle beta is my preferred project","category":"preference","tags":["project"]}`))
+	if listedPreference.ID == "" || listedPreference.Confidence < 0.6 {
+		t.Fatalf("unexpected listed memory metadata: %#v", memoryList.Items)
+	}
+	updateItemReq := httptest.NewRequest(http.MethodPatch, "/v1/memory/"+url.PathEscape(listedPreference.ID), bytes.NewBufferString(`{"content":"lifecycle beta is my preferred project","category":"preference","tags":["project"]}`))
 	updateItemReq.Header.Set("Authorization", "Bearer "+token)
 	updateItemRec := httptest.NewRecorder()
 	server.ServeHTTP(updateItemRec, updateItemReq)
@@ -2196,7 +2411,7 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 	if updated.Source != MemorySourceUserEdit || updated.Confidence != 1 || !strings.Contains(updated.Content, "lifecycle beta") {
 		t.Fatalf("unexpected updated memory: %#v", updated)
 	}
-	feedbackReq := httptest.NewRequest(http.MethodPost, "/v1/memory/"+url.PathEscape(memoryList.Items[0].ID)+"/feedback", bytes.NewBufferString(`{"type":"important"}`))
+	feedbackReq := httptest.NewRequest(http.MethodPost, "/v1/memory/"+url.PathEscape(listedPreference.ID)+"/feedback", bytes.NewBufferString(`{"type":"important"}`))
 	feedbackReq.Header.Set("Authorization", "Bearer "+token)
 	feedbackRec := httptest.NewRecorder()
 	server.ServeHTTP(feedbackRec, feedbackReq)
@@ -2252,7 +2467,7 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 	if resolved.Status != MemoryStatusArchived {
 		t.Fatalf("expected rejected memory archived, got %#v", resolved)
 	}
-	deleteItemReq := httptest.NewRequest(http.MethodDelete, "/v1/memory/"+url.PathEscape(memoryList.Items[0].ID), nil)
+	deleteItemReq := httptest.NewRequest(http.MethodDelete, "/v1/memory/"+url.PathEscape(listedPreference.ID), nil)
 	deleteItemReq.Header.Set("Authorization", "Bearer "+token)
 	deleteItemRec := httptest.NewRecorder()
 	server.ServeHTTP(deleteItemRec, deleteItemReq)
@@ -2270,8 +2485,10 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 	if err := json.Unmarshal(listMemoryRec.Body.Bytes(), &memoryList); err != nil {
 		t.Fatalf("decode memory list after delete: %v", err)
 	}
-	if len(memoryList.Items) != 0 {
-		t.Fatalf("expected memory item deleted, got %#v", memoryList)
+	for _, item := range memoryList.Items {
+		if item.ID == listedPreference.ID || item.Category == MemoryCategoryPreference {
+			t.Fatalf("expected preference memory item deleted, got %#v", memoryList)
+		}
 	}
 
 	memReq := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+session.ID+"/memory", nil)
@@ -2280,6 +2497,33 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 	server.ServeHTTP(memRec, memReq)
 	if memRec.Code != http.StatusOK {
 		t.Fatalf("delete memory status = %d body=%s", memRec.Code, memRec.Body.String())
+	}
+	deleteAllMemoryReq := httptest.NewRequest(http.MethodDelete, "/v1/memory", nil)
+	deleteAllMemoryReq.Header.Set("Authorization", "Bearer "+token)
+	deleteAllMemoryRec := httptest.NewRecorder()
+	server.ServeHTTP(deleteAllMemoryRec, deleteAllMemoryReq)
+	if deleteAllMemoryRec.Code != http.StatusOK {
+		t.Fatalf("delete all memory status = %d body=%s", deleteAllMemoryRec.Code, deleteAllMemoryRec.Body.String())
+	}
+	personalizationAfterMemoryDeleteReq := httptest.NewRequest(http.MethodGet, "/v1/personalization", nil)
+	personalizationAfterMemoryDeleteReq.Header.Set("Authorization", "Bearer "+token)
+	personalizationAfterMemoryDeleteRec := httptest.NewRecorder()
+	server.ServeHTTP(personalizationAfterMemoryDeleteRec, personalizationAfterMemoryDeleteReq)
+	if personalizationAfterMemoryDeleteRec.Code != http.StatusOK {
+		t.Fatalf("get personalization after memory delete status = %d body=%s", personalizationAfterMemoryDeleteRec.Code, personalizationAfterMemoryDeleteRec.Body.String())
+	}
+	if err := json.Unmarshal(personalizationAfterMemoryDeleteRec.Body.Bytes(), &personalization); err != nil {
+		t.Fatalf("decode personalization after memory delete: %v", err)
+	}
+	if personalization.Profile.Occupation != "产品经理" || personalization.CustomInstructions == "" {
+		t.Fatalf("delete all memory should preserve personalization settings, got %#v", personalization)
+	}
+	browserMemoryAfterDelete, err := server.runtime.ListMemoryItems(context.Background(), authSession.User.ID, MemoryItemFilter{Namespace: MemoryNamespaceBrowser, Status: MemoryStatusActive})
+	if err != nil {
+		t.Fatalf("list browser memory after memory delete: %v", err)
+	}
+	if len(browserMemoryAfterDelete) != 0 {
+		t.Fatalf("delete all memory should remove browser memory, got %#v", browserMemoryAfterDelete)
 	}
 
 	delReq := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+session.ID, nil)
@@ -2310,6 +2554,20 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 	server.ServeHTTP(meRec, meReq)
 	if meRec.Code != http.StatusNotFound {
 		t.Fatalf("me after delete status = %d body=%s", meRec.Code, meRec.Body.String())
+	}
+	personalizationAfterAccountDelete, err := server.runtime.GetPersonalizationSettings(context.Background(), authSession.User.ID)
+	if err != nil {
+		t.Fatalf("get personalization after account delete: %v", err)
+	}
+	if personalizationAfterAccountDelete.Profile.Occupation != "" || personalizationAfterAccountDelete.CustomInstructions != "" {
+		t.Fatalf("account delete should purge personalization settings, got %#v", personalizationAfterAccountDelete)
+	}
+	personalizationItemsAfterAccountDelete, err := server.runtime.ListMemoryItems(context.Background(), authSession.User.ID, MemoryItemFilter{Namespace: MemoryNamespacePersonalization, Status: MemoryStatusActive})
+	if err != nil {
+		t.Fatalf("list personalization after account delete: %v", err)
+	}
+	if len(personalizationItemsAfterAccountDelete) != 0 {
+		t.Fatalf("account delete should purge personalization memory, got %#v", personalizationItemsAfterAccountDelete)
 	}
 }
 

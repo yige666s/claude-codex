@@ -300,6 +300,34 @@ func (m *ObjectMemoryService) DeleteUser(ctx context.Context, userID string) err
 	return nil
 }
 
+func (m *ObjectMemoryService) DeleteSavedMemory(ctx context.Context, userID string) error {
+	if err := m.objects.Delete(ctx, m.userMemoryKey(userID)); err != nil {
+		return err
+	}
+	sessionKeys, err := m.objects.List(ctx, joinObjectKey(m.prefix, "users", userPathID(userID), "memory", "sessions"))
+	if err != nil {
+		return err
+	}
+	for _, key := range sessionKeys {
+		if err := m.objects.Delete(ctx, key); err != nil {
+			return err
+		}
+	}
+	items, err := m.ListMemoryItems(ctx, userID, MemoryItemFilter{Status: ""})
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if isManagedPersonalizationMemory(item) {
+			continue
+		}
+		if err := m.objects.Delete(ctx, m.memoryItemKey(userID, item.ID)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *ObjectMemoryService) GetMemorySettings(ctx context.Context, userID string) (MemorySettings, error) {
 	data, err := m.objects.Get(ctx, m.memorySettingsKey(userID))
 	if err != nil {
@@ -323,6 +351,35 @@ func (m *ObjectMemoryService) UpdateMemorySettings(ctx context.Context, userID s
 		return MemorySettings{}, err
 	}
 	return settings, nil
+}
+
+func (m *ObjectMemoryService) GetPersonalizationSettings(ctx context.Context, userID string) (PersonalizationSettings, error) {
+	data, err := m.objects.Get(ctx, m.personalizationSettingsKey(userID))
+	if err != nil {
+		return defaultPersonalizationSettings(), nil
+	}
+	var settings PersonalizationSettings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return PersonalizationSettings{}, err
+	}
+	return normalizePersonalizationSettings(settings), nil
+}
+
+func (m *ObjectMemoryService) UpdatePersonalizationSettings(ctx context.Context, userID string, settings PersonalizationSettings) (PersonalizationSettings, error) {
+	settings.UpdatedAt = time.Now().UTC()
+	settings = normalizePersonalizationSettings(settings)
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return PersonalizationSettings{}, err
+	}
+	if err := m.objects.Put(ctx, m.personalizationSettingsKey(userID), data, "application/json; charset=utf-8"); err != nil {
+		return PersonalizationSettings{}, err
+	}
+	return settings, nil
+}
+
+func (m *ObjectMemoryService) DeletePersonalizationSettings(ctx context.Context, userID string) error {
+	return m.objects.Delete(ctx, m.personalizationSettingsKey(userID))
 }
 
 func (m *ObjectMemoryService) PruneBefore(ctx context.Context, _ time.Time) (int, error) {
@@ -374,6 +431,10 @@ func (m *ObjectMemoryService) memoryItemKey(userID, itemID string) string {
 
 func (m *ObjectMemoryService) memorySettingsKey(userID string) string {
 	return joinObjectKey(m.prefix, "users", userPathID(userID), "memory", "settings.json")
+}
+
+func (m *ObjectMemoryService) personalizationSettingsKey(userID string) string {
+	return joinObjectKey(m.prefix, "users", userPathID(userID), "memory", "personalization.json")
 }
 
 func (m *ObjectMemoryService) ListMemoryItems(ctx context.Context, userID string, filter MemoryItemFilter) ([]MemoryItem, error) {

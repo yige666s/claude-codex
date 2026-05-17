@@ -266,6 +266,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminOps(rec, r, user, parts)
 	case path == "v1/admin/skills" || (len(parts) >= 4 && parts[0] == "v1" && parts[1] == "admin" && parts[2] == "skills"):
 		s.handleAdminSkills(rec, r, user, parts)
+	case r.Method == http.MethodGet && path == "v1/personalization":
+		s.handleGetPersonalization(rec, r, user)
+	case r.Method == http.MethodPatch && path == "v1/personalization":
+		s.handleUpdatePersonalization(rec, r, user)
+	case r.Method == http.MethodPost && path == "v1/personalization/reset":
+		s.handleResetPersonalization(rec, r, user)
+	case r.Method == http.MethodPost && path == "v1/personalization/browser-memory":
+		s.handleCreateBrowserMemory(rec, r, user)
 	case r.Method == http.MethodGet && path == "v1/memory/settings":
 		s.handleGetMemorySettings(rec, r, user)
 	case r.Method == http.MethodPatch && path == "v1/memory/settings":
@@ -2387,6 +2395,175 @@ func (s *Server) handleUpdateMemorySettings(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, updated)
 }
 
+func (s *Server) handleGetPersonalization(w http.ResponseWriter, r *http.Request, user User) {
+	settings, err := s.runtime.GetPersonalizationSettings(r.Context(), user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleUpdatePersonalization(w http.ResponseWriter, r *http.Request, user User) {
+	settings, err := s.runtime.GetPersonalizationSettings(r.Context(), user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	var body struct {
+		Profile            map[string]*string `json:"profile"`
+		Style              map[string]*string `json:"style"`
+		Traits             map[string]*string `json:"traits"`
+		CustomInstructions *string            `json:"custom_instructions"`
+		FeatureFlags       map[string]*bool   `json:"feature_flags"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	previous := settings
+	applyPersonalizationProfilePatch(&settings.Profile, body.Profile)
+	applyPersonalizationStylePatch(&settings.Style, body.Style)
+	applyPersonalizationTraitsPatch(&settings.Traits, body.Traits)
+	if body.CustomInstructions != nil {
+		settings.CustomInstructions = *body.CustomInstructions
+	}
+	applyPersonalizationFeatureFlagPatch(&settings.FeatureFlags, body.FeatureFlags)
+	updated, err := s.runtime.UpdatePersonalizationSettings(r.Context(), user.ID, settings)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.recordPersonalizationMetrics(updated, !personalizationSettingsEqual(previous, updated))
+	s.auditEvent(r, "personalization_update_settings", user, map[string]any{
+		"style_preset":       updated.Style.Preset,
+		"tone":               updated.Style.Tone,
+		"quick_answers":      updated.FeatureFlags.QuickAnswers,
+		"use_saved_memory":   updated.FeatureFlags.UseSavedMemory,
+		"use_chat_history":   updated.FeatureFlags.UseChatHistory,
+		"use_browser_memory": updated.FeatureFlags.UseBrowserMemory,
+	})
+	s.recordGovernanceEvent("personalization_update_settings")
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleResetPersonalization(w http.ResponseWriter, r *http.Request, user User) {
+	previous, previousErr := s.runtime.GetPersonalizationSettings(r.Context(), user.ID)
+	settings, err := s.runtime.DeletePersonalizationSettings(r.Context(), user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	changed := true
+	if previousErr == nil {
+		changed = !personalizationSettingsEqual(previous, settings)
+	}
+	s.recordPersonalizationMetrics(settings, changed)
+	s.auditEvent(r, "personalization_reset_settings", user, nil)
+	s.recordGovernanceEvent("personalization_reset_settings")
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleCreateBrowserMemory(w http.ResponseWriter, r *http.Request, user User) {
+	var body BrowserMemoryRequest
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	item, err := s.runtime.SaveBrowserMemory(r.Context(), user.ID, body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "personalization_browser_memory_create", user, map[string]any{
+		"memory_id": item.ID,
+		"url":       item.Metadata["browser_url"],
+	})
+	if s.metrics != nil {
+		s.metrics.IncPersonalizationBrowserMemory()
+	}
+	s.recordGovernanceEvent("personalization_browser_memory_create")
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func applyPersonalizationProfilePatch(profile *PersonalizationProfile, patch map[string]*string) {
+	if profile == nil || patch == nil {
+		return
+	}
+	for key, value := range patch {
+		if value == nil {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "nickname":
+			profile.Nickname = *value
+		case "occupation":
+			profile.Occupation = *value
+		case "about":
+			profile.About = *value
+		}
+	}
+}
+
+func applyPersonalizationStylePatch(style *PersonalizationStyle, patch map[string]*string) {
+	if style == nil || patch == nil {
+		return
+	}
+	for key, value := range patch {
+		if value == nil {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "preset":
+			style.Preset = *value
+		case "tone":
+			style.Tone = *value
+		}
+	}
+}
+
+func applyPersonalizationTraitsPatch(traits *PersonalizationTraits, patch map[string]*string) {
+	if traits == nil || patch == nil {
+		return
+	}
+	for key, value := range patch {
+		if value == nil {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "warmth":
+			traits.Warmth = *value
+		case "enthusiasm":
+			traits.Enthusiasm = *value
+		case "headings_and_lists":
+			traits.HeadingsAndLists = *value
+		case "emoji":
+			traits.Emoji = *value
+		}
+	}
+}
+
+func applyPersonalizationFeatureFlagPatch(flags *PersonalizationFeatureFlags, patch map[string]*bool) {
+	if flags == nil || patch == nil {
+		return
+	}
+	for key, value := range patch {
+		if value == nil {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "quick_answers":
+			flags.QuickAnswers = *value
+		case "use_saved_memory":
+			flags.UseSavedMemory = *value
+		case "use_chat_history":
+			flags.UseChatHistory = *value
+		case "use_browser_memory":
+			flags.UseBrowserMemory = *value
+		}
+	}
+}
+
 func (s *Server) handleUpdateMemoryItem(w http.ResponseWriter, r *http.Request, user User, itemID string) {
 	itemID = strings.TrimSpace(itemID)
 	if itemID == "" {
@@ -2715,6 +2892,17 @@ func (s *Server) recordGovernanceEvent(event string) {
 	event = strings.ToLower(strings.TrimSpace(event))
 	event = strings.NewReplacer(" ", "_", "-", "_", "/", "_").Replace(event)
 	s.metrics.IncGovernanceEvent(event)
+}
+
+func (s *Server) recordPersonalizationMetrics(settings PersonalizationSettings, changed bool) {
+	if s == nil || s.metrics == nil {
+		return
+	}
+	s.metrics.RecordPersonalizationUpdate(
+		personalizationMetricsEnabled(settings),
+		changed,
+		personalizationFieldCoverage(settings),
+	)
 }
 
 func (s *Server) recordPIIRedactions(items []MemoryItem) {

@@ -227,11 +227,22 @@ Delivered by phase:
 - Done C-end governance refinement: Prometheus metrics include lightweight governance counters for data export, account delete, memory mutation/delete/maintenance, asset-memory extraction, and observed PII redactions.
 - Done C-end opt-in/out controls: `MemorySettings` persist across file/object/SQL stores, `GET/PATCH /v1/memory/settings` exposes the setting, and frontend Settings lets users disable all memory, saving new memory, or using saved memory independently.
 - Done C-end opt-in/out enforcement: disabled save prevents chat-turn and asset memory capture, while disabled use prevents memory context injection without deleting existing saved memory.
+- Done C-end personalization settings: explicit profile/style/traits/custom-instruction/feature-flag settings persist across file/object/SQL stores through `/v1/personalization`.
+- Done C-end personalization injection: chat and live prompts receive explicit personalization before saved memory, and `use_saved_memory` / `use_chat_history` are enforced during context construction.
+- Done C-end personalization-memory sync: explicit profile/custom-instruction settings are mirrored into protected `personalization` namespace memory, reset archives managed personalization memory, and conflicting implicit memory is archived instead of overriding user-edited settings.
+- Done C-end personalization lifecycle: deleting saved memory now preserves personalization settings and managed personalization memory, while account deletion still purges both; managed personalization memory is hidden from default memory lists, prompt memory injection, scoring, and maintenance.
+- Done C-end browser memory bridge: `POST /v1/personalization/browser-memory` lets browser/external clients submit page context into a dedicated `browser` namespace, gated by memory capture settings and `use_browser_memory`, and enabled browser memory is injected separately from saved memory.
+- Done C-end personalization polish: quick answers now add explicit short-answer prompt policy, Settings shows grouped sections, save state, and field character counts, and Prometheus includes personalization update/change/enabled/field-coverage/browser-memory counters.
+- Done C-end personalization UI: Settings includes a Personalization tab for style/tone, traits, quick answers, custom instructions, profile fields, memory reference toggles, reset, and saved-memory management.
 - Done SQL cleanup: the legacy `agent_memories` table and fallback read/delete/prune paths were removed; SQL memory now uses `agent_memory` plus `agent_memory_settings`, with startup migration from the previous `agent_memory_items` table name.
 
 Current API surface:
 
 - `GET /v1/memory`
+- `GET /v1/personalization`
+- `PATCH /v1/personalization`
+- `POST /v1/personalization/reset`
+- `POST /v1/personalization/browser-memory`
 - `GET /v1/memory/settings`
 - `PATCH /v1/memory/settings`
 - `PATCH /v1/memory/{id}`

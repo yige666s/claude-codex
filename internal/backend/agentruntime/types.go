@@ -54,6 +54,19 @@ type MemoryService interface {
 	PruneBefore(ctx context.Context, cutoff time.Time) (int, error)
 }
 
+type SavedMemoryDeletionService interface {
+	DeleteSavedMemory(ctx context.Context, userID string) error
+}
+
+type BrowserMemoryRequest struct {
+	URL        string   `json:"url,omitempty"`
+	Title      string   `json:"title,omitempty"`
+	Content    string   `json:"content,omitempty"`
+	SessionID  string   `json:"session_id,omitempty"`
+	Visibility string   `json:"visibility,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+}
+
 type MemoryItem struct {
 	ID             string            `json:"id"`
 	UserID         string            `json:"user_id,omitempty"`
@@ -105,6 +118,41 @@ type MemorySettings struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+type PersonalizationProfile struct {
+	Nickname   string `json:"nickname,omitempty"`
+	Occupation string `json:"occupation,omitempty"`
+	About      string `json:"about,omitempty"`
+}
+
+type PersonalizationStyle struct {
+	Preset string `json:"preset"`
+	Tone   string `json:"tone"`
+}
+
+type PersonalizationTraits struct {
+	Warmth           string `json:"warmth"`
+	Enthusiasm       string `json:"enthusiasm"`
+	HeadingsAndLists string `json:"headings_and_lists"`
+	Emoji            string `json:"emoji"`
+}
+
+type PersonalizationFeatureFlags struct {
+	QuickAnswers     bool `json:"quick_answers"`
+	UseSavedMemory   bool `json:"use_saved_memory"`
+	UseChatHistory   bool `json:"use_chat_history"`
+	UseBrowserMemory bool `json:"use_browser_memory"`
+}
+
+type PersonalizationSettings struct {
+	Profile            PersonalizationProfile      `json:"profile"`
+	Style              PersonalizationStyle        `json:"style"`
+	Traits             PersonalizationTraits       `json:"traits"`
+	CustomInstructions string                      `json:"custom_instructions"`
+	FeatureFlags       PersonalizationFeatureFlags `json:"feature_flags"`
+	Version            int64                       `json:"version"`
+	UpdatedAt          time.Time                   `json:"updated_at"`
+}
+
 type MemoryItemService interface {
 	GetMemoryItem(ctx context.Context, userID, itemID string) (MemoryItem, error)
 	ListMemoryItems(ctx context.Context, userID string, filter MemoryItemFilter) ([]MemoryItem, error)
@@ -115,6 +163,12 @@ type MemoryItemService interface {
 type MemorySettingsService interface {
 	GetMemorySettings(ctx context.Context, userID string) (MemorySettings, error)
 	UpdateMemorySettings(ctx context.Context, userID string, settings MemorySettings) (MemorySettings, error)
+}
+
+type PersonalizationSettingsService interface {
+	GetPersonalizationSettings(ctx context.Context, userID string) (PersonalizationSettings, error)
+	UpdatePersonalizationSettings(ctx context.Context, userID string, settings PersonalizationSettings) (PersonalizationSettings, error)
+	DeletePersonalizationSettings(ctx context.Context, userID string) error
 }
 
 type MemoryMaintenanceAction struct {
@@ -145,31 +199,34 @@ type MemorySourceRef struct {
 }
 
 const (
-	MemoryNamespaceDefault     = "default"
-	MemoryKindSession          = "session"
-	MemoryLevelAtomic          = "atomic"
-	MemoryLevelConcept         = "concept"
-	MemoryLevelProfile         = "profile"
-	MemoryCategoryFact         = "fact"
-	MemoryCategoryPreference   = "preference"
-	MemoryCategoryEvent        = "event"
-	MemoryCategorySkill        = "skill"
-	MemorySourceConversation   = "conversation"
-	MemorySourceAttachment     = "attachment"
-	MemorySourceArtifact       = "artifact"
-	MemorySourceVision         = "vision"
-	MemorySourceUserEdit       = "user_edit"
-	MemorySourceSystem         = "system"
-	MemoryVisibilityUser       = "user"
-	MemoryVisibilityPrivate    = "private"
-	MemoryVisibilitySession    = "session_only"
-	MemoryVisibilityShared     = "shared"
-	MemoryStatusActive         = "active"
-	MemoryStatusDormant        = "dormant"
-	MemoryStatusArchived       = "archived"
-	MemoryStatusDeleted        = "deleted"
-	MemoryStatusConflicted     = "conflicted"
-	MemoryStatusPendingConfirm = "pending_confirm"
+	MemoryNamespaceDefault         = "default"
+	MemoryNamespacePersonalization = "personalization"
+	MemoryNamespaceBrowser         = "browser"
+	MemoryKindSession              = "session"
+	MemoryLevelAtomic              = "atomic"
+	MemoryLevelConcept             = "concept"
+	MemoryLevelProfile             = "profile"
+	MemoryCategoryFact             = "fact"
+	MemoryCategoryPreference       = "preference"
+	MemoryCategoryEvent            = "event"
+	MemoryCategorySkill            = "skill"
+	MemorySourceConversation       = "conversation"
+	MemorySourceAttachment         = "attachment"
+	MemorySourceArtifact           = "artifact"
+	MemorySourceVision             = "vision"
+	MemorySourceBrowser            = "browser"
+	MemorySourceUserEdit           = "user_edit"
+	MemorySourceSystem             = "system"
+	MemoryVisibilityUser           = "user"
+	MemoryVisibilityPrivate        = "private"
+	MemoryVisibilitySession        = "session_only"
+	MemoryVisibilityShared         = "shared"
+	MemoryStatusActive             = "active"
+	MemoryStatusDormant            = "dormant"
+	MemoryStatusArchived           = "archived"
+	MemoryStatusDeleted            = "deleted"
+	MemoryStatusConflicted         = "conflicted"
+	MemoryStatusPendingConfirm     = "pending_confirm"
 
 	MemoryMaintenancePending   = "pending"
 	MemoryMaintenanceApplied   = "applied"
@@ -321,15 +378,16 @@ type JobStore interface {
 }
 
 type UserDataExport struct {
-	ExportedAt  time.Time                  `json:"exported_at"`
-	User        *UserProfile               `json:"user,omitempty"`
-	Sessions    []*state.Session           `json:"sessions"`
-	Messages    map[string][]state.Message `json:"messages,omitempty"`
-	Memory      MemoryExport               `json:"memory"`
-	Attachments []*Artifact                `json:"attachments"`
-	Artifacts   []*Artifact                `json:"artifacts"`
-	Jobs        []*Job                     `json:"jobs,omitempty"`
-	JobEvents   map[string][]*JobEvent     `json:"job_events,omitempty"`
+	ExportedAt      time.Time                  `json:"exported_at"`
+	User            *UserProfile               `json:"user,omitempty"`
+	Sessions        []*state.Session           `json:"sessions"`
+	Messages        map[string][]state.Message `json:"messages,omitempty"`
+	Memory          MemoryExport               `json:"memory"`
+	Personalization PersonalizationSettings    `json:"personalization"`
+	Attachments     []*Artifact                `json:"attachments"`
+	Artifacts       []*Artifact                `json:"artifacts"`
+	Jobs            []*Job                     `json:"jobs,omitempty"`
+	JobEvents       map[string][]*JobEvent     `json:"job_events,omitempty"`
 }
 
 type MemoryExport struct {

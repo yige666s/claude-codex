@@ -857,6 +857,8 @@ func normalizeMemorySource(value string) string {
 		return MemorySourceArtifact
 	case MemorySourceVision:
 		return MemorySourceVision
+	case MemorySourceBrowser:
+		return MemorySourceBrowser
 	case MemorySourceUserEdit:
 		return MemorySourceUserEdit
 	case MemorySourceSystem:
@@ -900,7 +902,7 @@ func normalizeMemorySourceRefs(refs []MemorySourceRef) []MemorySourceRef {
 	seen := map[string]bool{}
 	out := make([]MemorySourceRef, 0, len(refs))
 	for _, ref := range refs {
-		ref.Kind = normalizeAssetKind(ref.Kind)
+		ref.Kind = normalizeMemorySourceRefKind(ref.Kind)
 		ref.ID = strings.TrimSpace(ref.ID)
 		ref.Filename = strings.TrimSpace(ref.Filename)
 		ref.ContentType = strings.TrimSpace(ref.ContentType)
@@ -927,6 +929,15 @@ func normalizeMemorySourceRefs(refs []MemorySourceRef) []MemorySourceRef {
 		return out[i].Kind < out[j].Kind
 	})
 	return out
+}
+
+func normalizeMemorySourceRefKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case MemorySourceBrowser:
+		return MemorySourceBrowser
+	default:
+		return normalizeAssetKind(kind)
+	}
 }
 
 func normalizeMemoryIDs(ids []string) []string {
@@ -979,6 +990,9 @@ func selectMemoryItemsForSessionContext(items []MemoryItem, query, sessionID str
 		if item.Status != MemoryStatusActive || strings.TrimSpace(item.Content) == "" {
 			continue
 		}
+		if isManagedPersonalizationMemory(item) {
+			continue
+		}
 		if !memoryVisibleInSession(item, sessionID) {
 			continue
 		}
@@ -1002,10 +1016,10 @@ func memoryItemHasSourceRef(item MemoryItem, sourceKind, sourceID string) bool {
 	sourceKind = strings.TrimSpace(sourceKind)
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceKind != "" {
-		sourceKind = normalizeAssetKind(sourceKind)
+		sourceKind = normalizeMemorySourceRefKind(sourceKind)
 	}
 	for _, ref := range item.SourceRefs {
-		if sourceKind != "" && normalizeAssetKind(ref.Kind) != sourceKind {
+		if sourceKind != "" && normalizeMemorySourceRefKind(ref.Kind) != sourceKind {
 			continue
 		}
 		if sourceID != "" && strings.TrimSpace(ref.ID) != sourceID {
@@ -1235,7 +1249,17 @@ func applyMemoryConflictResolution(existing []MemoryItem, candidate MemoryItem) 
 	var updates []MemoryItem
 	for _, current := range existing {
 		current = normalizeMemoryItem(current)
-		if current.ID == candidate.ID || current.Namespace != candidate.Namespace || current.Status != MemoryStatusActive || current.Level != MemoryLevelAtomic || current.Category != candidate.Category {
+		if current.ID == candidate.ID || current.Status != MemoryStatusActive {
+			continue
+		}
+		if current.Namespace == MemoryNamespacePersonalization && current.Source == MemorySourceUserEdit && candidate.Source != MemorySourceUserEdit && memoryConflictCandidate(current, candidate) {
+			candidate.Status = MemoryStatusArchived
+			candidate.SupersededByID = current.ID
+			candidate.ConflictIDs = normalizeMemoryIDs(append(candidate.ConflictIDs, current.ID))
+			candidate.Metadata["conflict_strategy"] = "explicit_personalization"
+			return candidate, updates
+		}
+		if current.Namespace != candidate.Namespace || current.Level != MemoryLevelAtomic || current.Category != candidate.Category {
 			continue
 		}
 		if !memoryConflictCandidate(current, candidate) {
@@ -1307,7 +1331,7 @@ func sourcePriority(source string) int {
 	switch normalizeMemorySource(source) {
 	case MemorySourceUserEdit:
 		return 4
-	case MemorySourceAttachment, MemorySourceArtifact, MemorySourceVision:
+	case MemorySourceAttachment, MemorySourceArtifact, MemorySourceVision, MemorySourceBrowser:
 		return 3
 	case MemorySourceConversation:
 		return 2

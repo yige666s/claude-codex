@@ -1996,6 +1996,12 @@ func (m *SQLMemoryService) Init(ctx context.Context) error {
 	payload TEXT NOT NULL,
 	updated_at ` + m.dialect.TimeType() + ` NOT NULL
 )`,
+		`CREATE TABLE IF NOT EXISTS agent_personalization_settings (
+	user_id TEXT PRIMARY KEY,
+	payload TEXT NOT NULL,
+	version BIGINT NOT NULL DEFAULT 1,
+	updated_at ` + m.dialect.TimeType() + ` NOT NULL
+)`,
 	} {
 		if _, err := m.db.ExecContext(ctx, stmt); err != nil {
 			return err
@@ -2004,7 +2010,10 @@ func (m *SQLMemoryService) Init(ctx context.Context) error {
 	if err := ensureReadableTimeColumns(ctx, m.db, m.dialect, "agent_memory", "created_at", "updated_at", "expires_at", "last_injected_at"); err != nil {
 		return err
 	}
-	return ensureReadableTimeColumns(ctx, m.db, m.dialect, "agent_memory_settings", "updated_at")
+	if err := ensureReadableTimeColumns(ctx, m.db, m.dialect, "agent_memory_settings", "updated_at"); err != nil {
+		return err
+	}
+	return ensureReadableTimeColumns(ctx, m.db, m.dialect, "agent_personalization_settings", "updated_at")
 }
 
 func (m *SQLMemoryService) renameLegacyMemoryItemsTable(ctx context.Context) error {
@@ -2139,6 +2148,25 @@ func (m *SQLMemoryService) DeleteUser(ctx context.Context, userID string) error 
 	if _, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory_settings WHERE user_id = ?`), userID); err != nil {
 		return err
 	}
+	if _, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_personalization_settings WHERE user_id = ?`), userID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *SQLMemoryService) DeleteSavedMemory(ctx context.Context, userID string) error {
+	items, err := m.ListMemoryItems(ctx, userID, MemoryItemFilter{Status: ""})
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if isManagedPersonalizationMemory(item) {
+			continue
+		}
+		if err := m.DeleteMemoryItem(ctx, userID, item.ID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2172,6 +2200,44 @@ ON CONFLICT(user_id) DO UPDATE SET
 	payload = excluded.payload,
 	updated_at = excluded.updated_at`), userID, string(payload), sqlTimeValue(settings.UpdatedAt, m.dialect))
 	return settings, err
+}
+
+func (m *SQLMemoryService) GetPersonalizationSettings(ctx context.Context, userID string) (PersonalizationSettings, error) {
+	var payload string
+	err := m.db.QueryRowContext(ctx, m.dialect.Bind(`SELECT payload FROM agent_personalization_settings WHERE user_id = ?`), userID).Scan(&payload)
+	if err == sql.ErrNoRows {
+		return defaultPersonalizationSettings(), nil
+	}
+	if err != nil {
+		return PersonalizationSettings{}, err
+	}
+	var settings PersonalizationSettings
+	if err := json.Unmarshal([]byte(payload), &settings); err != nil {
+		return PersonalizationSettings{}, err
+	}
+	return normalizePersonalizationSettings(settings), nil
+}
+
+func (m *SQLMemoryService) UpdatePersonalizationSettings(ctx context.Context, userID string, settings PersonalizationSettings) (PersonalizationSettings, error) {
+	settings.UpdatedAt = time.Now().UTC()
+	settings = normalizePersonalizationSettings(settings)
+	payload, err := json.Marshal(settings)
+	if err != nil {
+		return PersonalizationSettings{}, err
+	}
+	_, err = m.db.ExecContext(ctx, m.dialect.Bind(`
+INSERT INTO agent_personalization_settings (user_id, payload, version, updated_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(user_id) DO UPDATE SET
+	payload = excluded.payload,
+	version = excluded.version,
+	updated_at = excluded.updated_at`), userID, string(payload), settings.Version, sqlTimeValue(settings.UpdatedAt, m.dialect))
+	return settings, err
+}
+
+func (m *SQLMemoryService) DeletePersonalizationSettings(ctx context.Context, userID string) error {
+	_, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_personalization_settings WHERE user_id = ?`), userID)
+	return err
 }
 
 func (m *SQLMemoryService) PruneBefore(ctx context.Context, cutoff time.Time) (int, error) {

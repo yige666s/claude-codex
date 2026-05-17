@@ -349,6 +349,28 @@ func (m *FileMemoryService) DeleteUser(_ context.Context, userID string) error {
 	return err
 }
 
+func (m *FileMemoryService) DeleteSavedMemory(ctx context.Context, userID string) error {
+	if err := os.Remove(m.userMemoryPath(userID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(m.root, "users", userPathID(userID), "memory", "sessions")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	items, err := m.ListMemoryItems(ctx, userID, MemoryItemFilter{Status: ""})
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if isManagedPersonalizationMemory(item) {
+			continue
+		}
+		if err := os.Remove(m.memoryItemPath(userID, item.ID)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *FileMemoryService) GetMemorySettings(_ context.Context, userID string) (MemorySettings, error) {
 	data, err := os.ReadFile(m.memorySettingsPath(userID))
 	if os.IsNotExist(err) {
@@ -375,6 +397,41 @@ func (m *FileMemoryService) UpdateMemorySettings(_ context.Context, userID strin
 		return MemorySettings{}, err
 	}
 	return settings, nil
+}
+
+func (m *FileMemoryService) GetPersonalizationSettings(_ context.Context, userID string) (PersonalizationSettings, error) {
+	data, err := os.ReadFile(m.personalizationSettingsPath(userID))
+	if os.IsNotExist(err) {
+		return defaultPersonalizationSettings(), nil
+	}
+	if err != nil {
+		return PersonalizationSettings{}, err
+	}
+	var settings PersonalizationSettings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return PersonalizationSettings{}, err
+	}
+	return normalizePersonalizationSettings(settings), nil
+}
+
+func (m *FileMemoryService) UpdatePersonalizationSettings(_ context.Context, userID string, settings PersonalizationSettings) (PersonalizationSettings, error) {
+	settings.UpdatedAt = time.Now().UTC()
+	settings = normalizePersonalizationSettings(settings)
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return PersonalizationSettings{}, err
+	}
+	if err := fsutil.WriteFileAtomic(m.personalizationSettingsPath(userID), data, 0o644); err != nil {
+		return PersonalizationSettings{}, err
+	}
+	return settings, nil
+}
+
+func (m *FileMemoryService) DeletePersonalizationSettings(_ context.Context, userID string) error {
+	if err := os.Remove(m.personalizationSettingsPath(userID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (m *FileMemoryService) PruneBefore(ctx context.Context, cutoff time.Time) (int, error) {
@@ -442,6 +499,10 @@ func (m *FileMemoryService) memoryItemPath(userID, itemID string) string {
 
 func (m *FileMemoryService) memorySettingsPath(userID string) string {
 	return filepath.Join(m.root, "users", userPathID(userID), "memory", "settings.json")
+}
+
+func (m *FileMemoryService) personalizationSettingsPath(userID string) string {
+	return filepath.Join(m.root, "users", userPathID(userID), "memory", "personalization.json")
 }
 
 func (m *FileMemoryService) ListMemoryItems(_ context.Context, userID string, filter MemoryItemFilter) ([]MemoryItem, error) {

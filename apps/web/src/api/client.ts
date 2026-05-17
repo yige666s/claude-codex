@@ -1,5 +1,5 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -101,6 +101,31 @@ export class ApiClient {
     return this.fetchJSON<MemorySettings>("/v1/memory/settings", {
       method: "PATCH",
       body: JSON.stringify(patch)
+    });
+  }
+
+  async personalization(): Promise<PersonalizationSettings> {
+    return this.fetchJSON<PersonalizationSettings>("/v1/personalization");
+  }
+
+  async updatePersonalization(patch: Partial<Pick<PersonalizationSettings, "profile" | "style" | "traits" | "custom_instructions" | "feature_flags">>): Promise<PersonalizationSettings> {
+    return this.fetchJSON<PersonalizationSettings>("/v1/personalization", {
+      method: "PATCH",
+      body: JSON.stringify(patch)
+    });
+  }
+
+  async resetPersonalization(): Promise<PersonalizationSettings> {
+    return this.fetchJSON<PersonalizationSettings>("/v1/personalization/reset", {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+  }
+
+  async createBrowserMemory(request: BrowserMemoryRequest): Promise<MemoryItem> {
+    return this.fetchJSON<MemoryItem>("/v1/personalization/browser-memory", {
+      method: "POST",
+      body: JSON.stringify(request)
     });
   }
 

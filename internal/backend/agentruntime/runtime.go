@@ -506,6 +506,9 @@ func (r *Runtime) DeleteUserMemory(ctx context.Context, userID string) error {
 	if r.memory == nil {
 		return nil
 	}
+	if service, ok := r.memory.(SavedMemoryDeletionService); ok {
+		return service.DeleteSavedMemory(ctx, userID)
+	}
 	return r.memory.DeleteUser(ctx, userID)
 }
 
@@ -517,7 +520,14 @@ func (r *Runtime) ListMemoryItems(ctx context.Context, userID string, filter Mem
 	if !ok {
 		return []MemoryItem{}, nil
 	}
-	return service.ListMemoryItems(ctx, userID, filter)
+	items, err := service.ListMemoryItems(ctx, userID, filter)
+	if err != nil {
+		return nil, err
+	}
+	if filter.Namespace != MemoryNamespacePersonalization {
+		items = excludeManagedPersonalizationMemory(items)
+	}
+	return items, nil
 }
 
 func (r *Runtime) GetMemorySettings(ctx context.Context, userID string) (MemorySettings, error) {
@@ -541,6 +551,160 @@ func (r *Runtime) UpdateMemorySettings(ctx context.Context, userID string, setti
 	}
 	settings.UpdatedAt = time.Now().UTC()
 	return service.UpdateMemorySettings(ctx, userID, settings)
+}
+
+func (r *Runtime) GetPersonalizationSettings(ctx context.Context, userID string) (PersonalizationSettings, error) {
+	if r.memory == nil {
+		return defaultPersonalizationSettings(), nil
+	}
+	service, ok := r.memory.(PersonalizationSettingsService)
+	if !ok {
+		return defaultPersonalizationSettings(), nil
+	}
+	return service.GetPersonalizationSettings(ctx, userID)
+}
+
+func (r *Runtime) UpdatePersonalizationSettings(ctx context.Context, userID string, settings PersonalizationSettings) (PersonalizationSettings, error) {
+	if r.memory == nil {
+		return PersonalizationSettings{}, fmt.Errorf("memory is not configured")
+	}
+	service, ok := r.memory.(PersonalizationSettingsService)
+	if !ok {
+		return PersonalizationSettings{}, fmt.Errorf("personalization settings are not supported")
+	}
+	current, err := service.GetPersonalizationSettings(ctx, userID)
+	if err != nil {
+		return PersonalizationSettings{}, err
+	}
+	settings.UpdatedAt = time.Now().UTC()
+	settings.Version = current.Version + 1
+	if settings.Version <= 1 {
+		settings.Version = 2
+	}
+	updated, err := service.UpdatePersonalizationSettings(ctx, userID, settings)
+	if err != nil {
+		return PersonalizationSettings{}, err
+	}
+	if err := r.syncPersonalizationMemory(ctx, userID, updated); err != nil {
+		return PersonalizationSettings{}, err
+	}
+	return updated, nil
+}
+
+func (r *Runtime) DeletePersonalizationSettings(ctx context.Context, userID string) (PersonalizationSettings, error) {
+	if r.memory == nil {
+		return defaultPersonalizationSettings(), nil
+	}
+	service, ok := r.memory.(PersonalizationSettingsService)
+	if !ok {
+		return defaultPersonalizationSettings(), nil
+	}
+	if err := service.DeletePersonalizationSettings(ctx, userID); err != nil {
+		return PersonalizationSettings{}, err
+	}
+	if err := r.archivePersonalizationMemory(ctx, userID); err != nil {
+		return PersonalizationSettings{}, err
+	}
+	return defaultPersonalizationSettings(), nil
+}
+
+func (r *Runtime) syncPersonalizationMemory(ctx context.Context, userID string, settings PersonalizationSettings) error {
+	service, ok := r.memory.(MemoryItemService)
+	if !ok {
+		return nil
+	}
+	now := time.Now().UTC()
+	existing, err := service.ListMemoryItems(ctx, userID, MemoryItemFilter{})
+	if err != nil {
+		return err
+	}
+	desired := personalizationMemoryItems(userID, settings, now)
+	desiredIDs := make(map[string]bool, len(desired))
+	for _, item := range desired {
+		desiredIDs[item.ID] = true
+		if current, ok := findMemoryItemByID(existing, item.ID); ok {
+			item.CreatedAt = current.CreatedAt
+			item.AccessCount = current.AccessCount
+			item.LastInjectedAt = current.LastInjectedAt
+		}
+		if _, err := service.UpdateMemoryItem(ctx, userID, item); err != nil {
+			return err
+		}
+	}
+	for _, item := range existing {
+		if !isManagedPersonalizationMemory(item) || desiredIDs[item.ID] || item.Status != MemoryStatusActive {
+			continue
+		}
+		item.Status = MemoryStatusArchived
+		item.UpdatedAt = now
+		if item.Metadata == nil {
+			item.Metadata = map[string]any{}
+		}
+		item.Metadata["maintenance_action"] = "personalization_sync_archive"
+		if _, err := service.UpdateMemoryItem(ctx, userID, item); err != nil {
+			return err
+		}
+	}
+	for _, current := range existing {
+		if current.Status != MemoryStatusActive || isManagedPersonalizationMemory(current) || current.Source == MemorySourceUserEdit {
+			continue
+		}
+		for _, explicit := range desired {
+			if !memoryConflictCandidate(explicit, current) {
+				continue
+			}
+			current.Status = MemoryStatusArchived
+			current.SupersededByID = explicit.ID
+			current.ConflictIDs = normalizeMemoryIDs(append(current.ConflictIDs, explicit.ID))
+			current.UpdatedAt = now
+			if current.Metadata == nil {
+				current.Metadata = map[string]any{}
+			}
+			current.Metadata["conflict_strategy"] = "explicit_personalization"
+			current.Metadata["maintenance_action"] = "archive_conflicting_implicit_memory"
+			if _, err := service.UpdateMemoryItem(ctx, userID, current); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) archivePersonalizationMemory(ctx context.Context, userID string) error {
+	service, ok := r.memory.(MemoryItemService)
+	if !ok {
+		return nil
+	}
+	items, err := service.ListMemoryItems(ctx, userID, MemoryItemFilter{Namespace: MemoryNamespacePersonalization})
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, item := range items {
+		if !isManagedPersonalizationMemory(item) || item.Status != MemoryStatusActive {
+			continue
+		}
+		item.Status = MemoryStatusArchived
+		item.UpdatedAt = now
+		if item.Metadata == nil {
+			item.Metadata = map[string]any{}
+		}
+		item.Metadata["maintenance_action"] = "personalization_reset_archive"
+		if _, err := service.UpdateMemoryItem(ctx, userID, item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func findMemoryItemByID(items []MemoryItem, itemID string) (MemoryItem, bool) {
+	for _, item := range items {
+		if item.ID == itemID {
+			return item, true
+		}
+	}
+	return MemoryItem{}, false
 }
 
 func (r *Runtime) GetMemoryItem(ctx context.Context, userID, itemID string) (MemoryItem, error) {
@@ -649,6 +813,7 @@ func (r *Runtime) RebuildMemoryAbstractions(ctx context.Context, userID string) 
 	if err != nil {
 		return nil, err
 	}
+	existing = excludeManagedPersonalizationMemory(existing)
 	now := time.Now().UTC()
 	abstracts, err := r.memoryAbstract.Build(ctx, userID, existing, now)
 	if err != nil {
@@ -698,6 +863,7 @@ func (r *Runtime) ScoreMemoryQuality(ctx context.Context, userID string) ([]Memo
 	if err != nil {
 		return nil, err
 	}
+	items = excludeManagedPersonalizationMemory(items)
 	now := time.Now().UTC()
 	updated := make([]MemoryItem, 0, len(items))
 	for _, item := range items {
@@ -722,6 +888,7 @@ func (r *Runtime) PlanMemoryMaintenance(ctx context.Context, userID string) ([]M
 	if err != nil {
 		return nil, err
 	}
+	items = excludeManagedPersonalizationMemory(items)
 	now := time.Now().UTC()
 	scored := make([]MemoryItem, 0, len(items))
 	for _, item := range items {
@@ -977,6 +1144,11 @@ func (r *Runtime) ExportUserData(ctx context.Context, user *UserProfile) (*UserD
 	if r.memory == nil {
 		return out, nil
 	}
+	personalization, err := r.GetPersonalizationSettings(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	out.Personalization = personalization
 	if service, ok := r.memory.(MemoryItemService); ok {
 		items, err := service.ListMemoryItems(ctx, user.ID, MemoryItemFilter{Status: ""})
 		if err != nil {
@@ -1256,6 +1428,13 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 		return err
 	}
 	startMessageCount := len(session.Messages)
+	ensureConsumerSecurityContext(session)
+	if err := r.injectPersonalization(ctx, req.UserID, session); err != nil {
+		return err
+	}
+	if err := r.injectBrowserMemory(ctx, req.UserID, session); err != nil {
+		return err
+	}
 	if err := r.injectMemory(ctx, req.UserID, session); err != nil {
 		return err
 	}
@@ -1342,8 +1521,21 @@ func (r *Runtime) LiveSystemInstruction(ctx context.Context, userID, sessionID s
 		return consumerSecuritySystemContext
 	}
 	parts = append(parts, consumerSecuritySystemContext)
+	personalization, personalizationErr := r.GetPersonalizationSettings(ctx, userID)
+	if personalizationErr == nil {
+		if content := formatPersonalizationContext(personalization); strings.TrimSpace(content) != "" {
+			parts = append(parts, "<personalization>\n"+content+"\n</personalization>")
+		}
+		if personalization.FeatureFlags.UseBrowserMemory {
+			if browserMemory, err := r.browserMemoryContext(ctx, userID, session); err == nil && strings.TrimSpace(browserMemory) != "" {
+				parts = append(parts, browserMemory)
+			}
+		}
+	}
 	if r.memory != nil {
-		if memory, err := r.memory.LoadContext(ctx, userID, session); err == nil && strings.TrimSpace(memory) != "" {
+		if personalizationErr == nil && !personalization.FeatureFlags.UseSavedMemory {
+			// Explicit personalization disables saved-memory reference for this user.
+		} else if memory, err := r.memory.LoadContext(ctx, userID, session); err == nil && strings.TrimSpace(memory) != "" {
 			parts = append(parts, memory)
 		}
 	}
@@ -1946,6 +2138,13 @@ func (r *Runtime) injectMemory(ctx context.Context, userID string, session *stat
 	if r.memory == nil || session == nil {
 		return nil
 	}
+	personalization, err := r.GetPersonalizationSettings(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !personalization.FeatureFlags.UseSavedMemory {
+		return nil
+	}
 	settings, err := r.GetMemorySettings(ctx, userID)
 	if err != nil {
 		return err
@@ -1968,6 +2167,29 @@ func (r *Runtime) injectMemory(ctx context.Context, userID string, session *stat
 	}
 	session.AddSystemContext("<memory>\n" + content + "\n</memory>")
 	session.Metadata[memoryInjectedKey] = "true"
+	return nil
+}
+
+func (r *Runtime) injectPersonalization(ctx context.Context, userID string, session *state.Session) error {
+	if session == nil {
+		return nil
+	}
+	if session.Metadata == nil {
+		session.Metadata = map[string]string{}
+	}
+	if session.Metadata[personalizationInjectedKey] == "true" {
+		return nil
+	}
+	settings, err := r.GetPersonalizationSettings(ctx, userID)
+	if err != nil {
+		return err
+	}
+	content := formatPersonalizationContext(settings)
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	session.AddSystemContext("<personalization>\n" + content + "\n</personalization>")
+	session.Metadata[personalizationInjectedKey] = "true"
 	return nil
 }
 
@@ -2149,7 +2371,27 @@ func (r *Runtime) materializedSessionForLLM(ctx context.Context, userID string, 
 		}
 		clone.Messages[i].ContentBlocks = blocks
 	}
+	if personalization, err := r.GetPersonalizationSettings(ctx, userID); err == nil && !personalization.FeatureFlags.UseChatHistory {
+		clone.Messages = personalizationContextMessagesOnly(clone.Messages)
+	}
 	return &clone, nil
+}
+
+func personalizationContextMessagesOnly(messages []state.Message) []state.Message {
+	out := make([]state.Message, 0, len(messages))
+	for _, message := range messages {
+		if !message.Hidden {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if strings.Contains(content, "<consumer-security>") ||
+			strings.Contains(content, "<personalization>") ||
+			strings.Contains(content, "<browser-memory>") ||
+			strings.Contains(content, "<memory>") {
+			out = append(out, message)
+		}
+	}
+	return out
 }
 
 func (r *Runtime) materializeContentBlocks(ctx context.Context, userID string, blocks []publictypes.ContentBlock) ([]publictypes.ContentBlock, error) {
