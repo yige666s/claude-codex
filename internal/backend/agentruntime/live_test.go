@@ -102,6 +102,88 @@ func TestLiveTurnAccumulatorAcceptsSnakeCaseInlineAudio(t *testing.T) {
 	}
 }
 
+func TestLiveTurnAccumulatorSuppressesInterruptedOutput(t *testing.T) {
+	var turn liveTurnAccumulator
+	events, complete, err := turn.consume(map[string]any{
+		"serverContent": map[string]any{
+			"outputTranscription": map[string]any{"text": "old answer"},
+			"modelTurn": map[string]any{
+				"parts": []any{
+					map[string]any{"inlineData": map[string]any{"mimeType": "audio/pcm;rate=24000", "data": "AAAA"}},
+				},
+			},
+		},
+	}, "")
+	if err != nil {
+		t.Fatalf("consume initial output: %v", err)
+	}
+	if complete {
+		t.Fatal("initial output should not complete the turn")
+	}
+	if len(events) != 2 {
+		t.Fatalf("initial events = %d, want transcript and audio: %#v", len(events), events)
+	}
+
+	events, complete, err = turn.consume(map[string]any{
+		"serverContent": map[string]any{
+			"interrupted":         true,
+			"outputTranscription": map[string]any{"text": "stale answer"},
+			"modelTurn": map[string]any{
+				"parts": []any{
+					map[string]any{"inlineData": map[string]any{"mimeType": "audio/pcm;rate=24000", "data": "BBBB"}},
+				},
+			},
+		},
+	}, "")
+	if err != nil {
+		t.Fatalf("consume interrupted output: %v", err)
+	}
+	if complete {
+		t.Fatal("interrupted output should not complete the turn")
+	}
+	if len(events) != 1 || events[0].Type != "live_interrupted" {
+		t.Fatalf("interrupted events should only notify interruption, got %#v", events)
+	}
+
+	events, complete, err = turn.consume(map[string]any{
+		"serverContent": map[string]any{
+			"outputTranscription": map[string]any{"text": "more stale answer"},
+			"modelTurn": map[string]any{
+				"parts": []any{
+					map[string]any{"inlineData": map[string]any{"mimeType": "audio/pcm;rate=24000", "data": "CCCC"}},
+				},
+			},
+			"turnComplete": true,
+		},
+	}, "")
+	if err != nil {
+		t.Fatalf("consume suppressed output: %v", err)
+	}
+	if !complete {
+		t.Fatal("expected interrupted turn completion")
+	}
+	if len(events) != 0 {
+		t.Fatalf("suppressed turn should not emit stale output, got %#v", events)
+	}
+	userText, assistantText := turn.flush()
+	if userText != "" || assistantText != "" {
+		t.Fatalf("interrupted turn should not record stale text, got %q/%q", userText, assistantText)
+	}
+
+	events, complete, err = turn.consume(map[string]any{
+		"serverContent": map[string]any{
+			"outputTranscription": map[string]any{"text": "new answer"},
+			"turnComplete":        true,
+		},
+	}, "")
+	if err != nil {
+		t.Fatalf("consume new output: %v", err)
+	}
+	if !complete || len(events) != 1 || events[0].Content != "new answer" {
+		t.Fatalf("new turn should emit normally after interrupted turn completes, complete=%t events=%#v", complete, events)
+	}
+}
+
 func TestRuntimeRecordLiveTurnPersistsMessagesAndMemory(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileSessionStore(root)

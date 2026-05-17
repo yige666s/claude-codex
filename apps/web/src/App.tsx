@@ -215,6 +215,8 @@ export function App() {
   const liveSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const livePlaybackContextRef = useRef<AudioContext | null>(null);
   const livePlaybackTimeRef = useRef(0);
+  const livePlaybackGenerationRef = useRef(0);
+  const livePlaybackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const livePresentationRef = useRef(livePresentation);
   const liveAudioChunkCountRef = useRef(0);
   const livePlaybackQueueRef = useRef(Promise.resolve());
@@ -927,7 +929,7 @@ export function App() {
     setRuntimeError("");
     setAssistantDraft("");
     liveAudioChunkCountRef.current = 0;
-    livePlaybackQueueRef.current = Promise.resolve();
+    stopLivePlayback();
     if (livePresentation === "audio") {
       try {
         await ensureLivePlaybackContext();
@@ -1011,7 +1013,8 @@ export function App() {
     }
     if (event.type === "live_interrupted") {
       setAssistantDraft("");
-      livePlaybackTimeRef.current = 0;
+      liveAudioChunkCountRef.current = 0;
+      stopLivePlayback();
       setStatus({ tone: "idle", text: "Voice interrupted" });
       return;
     }
@@ -1070,8 +1073,21 @@ export function App() {
     liveSourceRef.current = null;
     liveMediaRef.current = null;
     liveAudioContextRef.current = null;
+    stopLivePlayback();
     void livePlaybackContextRef.current?.close();
     livePlaybackContextRef.current = null;
+  }
+
+  function stopLivePlayback() {
+    livePlaybackGenerationRef.current += 1;
+    livePlaybackSourcesRef.current.forEach((source) => {
+      try {
+        source.stop();
+      } catch {
+        // Source may already have ended.
+      }
+    });
+    livePlaybackSourcesRef.current.clear();
     livePlaybackTimeRef.current = 0;
     livePlaybackQueueRef.current = Promise.resolve();
   }
@@ -1088,24 +1104,34 @@ export function App() {
   }
 
   async function queueLiveAudio(data: unknown) {
-    const next = livePlaybackQueueRef.current.catch(() => {}).then(() => playLiveAudio(data));
+    const generation = livePlaybackGenerationRef.current;
+    const next = livePlaybackQueueRef.current.catch(() => {}).then(() => {
+      if (generation !== livePlaybackGenerationRef.current) return;
+      return playLiveAudio(data, generation);
+    });
     livePlaybackQueueRef.current = next;
     await next;
   }
 
-  async function playLiveAudio(data: unknown) {
+  async function playLiveAudio(data: unknown, generation: number) {
+    if (generation !== livePlaybackGenerationRef.current) return;
     const payload = data as { data?: string; mime_type?: string };
     if (!payload?.data) return;
     const sampleRate = sampleRateFromMime(payload.mime_type || "") || 24000;
     const samples = base64PCMToFloat32(payload.data, payload.mime_type || "");
     if (!samples.length) return;
     const context = await ensureLivePlaybackContext();
+    if (generation !== livePlaybackGenerationRef.current) return;
     const buffer = context.createBuffer(1, samples.length, sampleRate);
     const channel = buffer.getChannelData(0);
     channel.set(samples);
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.connect(context.destination);
+    livePlaybackSourcesRef.current.add(source);
+    source.onended = () => {
+      livePlaybackSourcesRef.current.delete(source);
+    };
     const startAt = Math.max(context.currentTime + 0.02, livePlaybackTimeRef.current || 0);
     source.start(startAt);
     livePlaybackTimeRef.current = startAt + buffer.duration;

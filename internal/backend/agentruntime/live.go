@@ -287,8 +287,9 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 }
 
 type liveTurnAccumulator struct {
-	input  strings.Builder
-	output strings.Builder
+	input            strings.Builder
+	output           strings.Builder
+	outputSuppressed bool
 }
 
 func (a *liveTurnAccumulator) consume(message map[string]any, outputMIME string) ([]Event, bool, error) {
@@ -304,21 +305,25 @@ func (a *liveTurnAccumulator) consume(message map[string]any, outputMIME string)
 		return nil, false, nil
 	}
 	var events []Event
+	if interrupted, _ := content["interrupted"].(bool); interrupted {
+		a.output.Reset()
+		a.outputSuppressed = true
+		events = append(events, Event{Type: "live_interrupted"})
+	}
 	if input := liveTranscriptionText(content, "inputTranscription"); input != "" {
 		a.input.WriteString(input)
 		events = append(events, Event{Type: "live_transcript", Role: state.MessageRoleUser, Content: input, Data: liveJSON(map[string]any{"source": "input"})})
 	}
-	if output := liveTranscriptionText(content, "outputTranscription"); output != "" {
-		a.output.WriteString(output)
-		events = append(events, Event{Type: "live_transcript", Role: state.MessageRoleAssistant, Content: output, Data: liveJSON(map[string]any{"source": "output"})})
-	}
-	for _, audio := range liveOutputAudioParts(content, outputMIME) {
-		events = append(events, Event{Type: "live_audio", Role: state.MessageRoleAssistant, Data: liveJSON(audio)})
+	if !a.outputSuppressed {
+		if output := liveTranscriptionText(content, "outputTranscription"); output != "" {
+			a.output.WriteString(output)
+			events = append(events, Event{Type: "live_transcript", Role: state.MessageRoleAssistant, Content: output, Data: liveJSON(map[string]any{"source": "output"})})
+		}
+		for _, audio := range liveOutputAudioParts(content, outputMIME) {
+			events = append(events, Event{Type: "live_audio", Role: state.MessageRoleAssistant, Data: liveJSON(audio)})
+		}
 	}
 	complete, _ := content["turnComplete"].(bool)
-	if interrupted, _ := content["interrupted"].(bool); interrupted {
-		events = append(events, Event{Type: "live_interrupted"})
-	}
 	return events, complete, nil
 }
 
@@ -327,6 +332,7 @@ func (a *liveTurnAccumulator) flush() (string, string) {
 	assistantText := strings.TrimSpace(a.output.String())
 	a.input.Reset()
 	a.output.Reset()
+	a.outputSuppressed = false
 	return userText, assistantText
 }
 
