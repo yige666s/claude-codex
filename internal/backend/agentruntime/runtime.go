@@ -730,6 +730,30 @@ func (r *Runtime) PlanMemoryMaintenance(ctx context.Context, userID string) ([]M
 	return r.memoryOrganizer.Plan(ctx, userID, scored, now)
 }
 
+func (r *Runtime) RunMemoryMaintenance(ctx context.Context, userID string) (MemoryMaintenanceRunReport, error) {
+	actions, err := r.PlanMemoryMaintenance(ctx, userID)
+	if err != nil {
+		return MemoryMaintenanceRunReport{}, err
+	}
+	report := MemoryMaintenanceRunReport{
+		Actions: []MemoryMaintenanceAction{},
+		Applied: []MemoryMaintenanceAction{},
+		Planned: actions,
+	}
+	for _, action := range actions {
+		if !memoryMaintenanceAutoApplyable(action) {
+			report.Actions = append(report.Actions, action)
+			continue
+		}
+		applied, err := r.applyMemoryMaintenanceAction(ctx, userID, action)
+		if err != nil {
+			return report, err
+		}
+		report.Applied = append(report.Applied, applied)
+	}
+	return report, nil
+}
+
 func (r *Runtime) ApplyMemoryMaintenance(ctx context.Context, userID, actionID string) (MemoryMaintenanceAction, error) {
 	actions, err := r.PlanMemoryMaintenance(ctx, userID)
 	if err != nil {
@@ -745,6 +769,10 @@ func (r *Runtime) ApplyMemoryMaintenance(ctx context.Context, userID, actionID s
 	if action.ID == "" {
 		return MemoryMaintenanceAction{}, fmt.Errorf("memory maintenance action not found")
 	}
+	return r.applyMemoryMaintenanceAction(ctx, userID, action)
+}
+
+func (r *Runtime) applyMemoryMaintenanceAction(ctx context.Context, userID string, action MemoryMaintenanceAction) (MemoryMaintenanceAction, error) {
 	service, err := r.memoryItemService()
 	if err != nil {
 		return MemoryMaintenanceAction{}, err
@@ -832,6 +860,24 @@ func (r *Runtime) ApplyMemoryMaintenance(ctx context.Context, userID, actionID s
 	}
 	action.Status = MemoryMaintenanceApplied
 	return action, nil
+}
+
+func memoryMaintenanceAutoApplyable(action MemoryMaintenanceAction) bool {
+	if action.Status != "" && action.Status != MemoryMaintenancePending {
+		return false
+	}
+	switch action.Type {
+	case "merge_duplicates":
+		return action.Confidence >= 0.90 && len(action.MemoryIDs) > 1
+	case "rebuild_concept", "refresh_profile":
+		return action.Confidence >= 0.80
+	case "reduce_weight":
+		return action.Confidence >= 0.85 && len(action.MemoryIDs) > 0
+	case "archive_low_quality":
+		return action.Confidence >= 0.95 && len(action.MemoryIDs) > 0
+	default:
+		return false
+	}
 }
 
 func (r *Runtime) DismissMemoryMaintenance(ctx context.Context, userID, actionID string) (MemoryMaintenanceAction, error) {

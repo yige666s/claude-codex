@@ -95,6 +95,12 @@ export type MemoryMaintenanceAction = {
   created_at: string;
 };
 
+export type MemoryMaintenanceRunReport = {
+  actions: MemoryMaintenanceAction[];
+  applied: MemoryMaintenanceAction[];
+  planned: MemoryMaintenanceAction[];
+};
+
 export type MemorySettings = {
   enabled: boolean;
   capture_enabled: boolean;

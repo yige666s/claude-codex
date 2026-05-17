@@ -128,6 +128,12 @@ type MemoryMaintenanceAction struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+type MemoryMaintenanceRunReport struct {
+	Actions []MemoryMaintenanceAction `json:"actions"`
+	Applied []MemoryMaintenanceAction `json:"applied"`
+	Planned []MemoryMaintenanceAction `json:"planned"`
+}
+
 type MemorySourceRef struct {
 	Kind        string `json:"kind"`
 	ID          string `json:"id"`

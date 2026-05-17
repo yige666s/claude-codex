@@ -1,5 +1,5 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, MessageSearchResult, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -158,12 +158,16 @@ export class ApiClient {
     return payload.actions || [];
   }
 
-  async runMemoryMaintenance(): Promise<MemoryMaintenanceAction[]> {
-    const payload = await this.fetchJSON<{ actions: MemoryMaintenanceAction[] }>("/v1/memory/maintenance/run", {
+  async runMemoryMaintenance(): Promise<MemoryMaintenanceRunReport> {
+    const payload = await this.fetchJSON<Partial<MemoryMaintenanceRunReport>>("/v1/memory/maintenance/run", {
       method: "POST",
       body: JSON.stringify({})
     });
-    return payload.actions || [];
+    return {
+      actions: payload.actions || [],
+      applied: payload.applied || [],
+      planned: payload.planned || []
+    };
   }
 
   async applyMemoryMaintenance(id: string): Promise<MemoryMaintenanceAction> {

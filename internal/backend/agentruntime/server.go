@@ -2538,14 +2538,14 @@ func (s *Server) handleRunMemoryMaintenance(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	actions, err := s.runtime.PlanMemoryMaintenance(r.Context(), user.ID)
+	report, err := s.runtime.RunMemoryMaintenance(r.Context(), user.ID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	s.auditEvent(r, "memory_run_maintenance", user, map[string]any{"count": len(actions)})
+	s.auditEvent(r, "memory_run_maintenance", user, map[string]any{"planned": len(report.Planned), "applied": len(report.Applied), "pending": len(report.Actions)})
 	s.recordGovernanceEvent("memory_run_maintenance")
-	writeJSON(w, http.StatusOK, map[string]any{"actions": actions})
+	writeJSON(w, http.StatusOK, report)
 }
 
 func (s *Server) handleApplyMemoryMaintenance(w http.ResponseWriter, r *http.Request, user User, actionID string) {

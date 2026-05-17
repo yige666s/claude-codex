@@ -1015,6 +1015,52 @@ func TestRuntimeAppliesMaintenanceArchiveLowQuality(t *testing.T) {
 	}
 }
 
+func TestMemoryMaintenanceAutoApplyPolicy(t *testing.T) {
+	tests := []struct {
+		name   string
+		action MemoryMaintenanceAction
+		want   bool
+	}{
+		{
+			name:   "high confidence duplicate merge",
+			action: MemoryMaintenanceAction{Type: "merge_duplicates", MemoryIDs: []string{"a", "b"}, Confidence: 0.95, Status: MemoryMaintenancePending},
+			want:   true,
+		},
+		{
+			name:   "low confidence duplicate merge waits",
+			action: MemoryMaintenanceAction{Type: "merge_duplicates", MemoryIDs: []string{"a", "b"}, Confidence: 0.70, Status: MemoryMaintenancePending},
+			want:   false,
+		},
+		{
+			name:   "conflict confirmation waits",
+			action: MemoryMaintenanceAction{Type: "confirm_conflict", MemoryIDs: []string{"a"}, Confidence: 0.99, Status: MemoryMaintenancePending},
+			want:   false,
+		},
+		{
+			name:   "profile refresh is safe",
+			action: MemoryMaintenanceAction{Type: "refresh_profile", Confidence: 0.80, Status: MemoryMaintenancePending},
+			want:   true,
+		},
+		{
+			name:   "archive requires very high confidence",
+			action: MemoryMaintenanceAction{Type: "archive_low_quality", MemoryIDs: []string{"a"}, Confidence: 0.75, Status: MemoryMaintenancePending},
+			want:   false,
+		},
+		{
+			name:   "dismissed action never applies",
+			action: MemoryMaintenanceAction{Type: "refresh_profile", Confidence: 0.95, Status: MemoryMaintenanceDismissed},
+			want:   false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := memoryMaintenanceAutoApplyable(test.action); got != test.want {
+				t.Fatalf("memoryMaintenanceAutoApplyable() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestRuntimeUsesConfiguredMemoryExtractor(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

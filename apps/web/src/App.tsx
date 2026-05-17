@@ -745,34 +745,15 @@ export function App() {
   async function runMemoryMaintenance() {
     try {
       setMemoryLoading(true);
-      const actions = await api.runMemoryMaintenance();
-      setMemoryActions(actions);
-      setStatus({ tone: "ok", text: `Maintenance suggestions (${actions.length})` });
-    } catch (error) {
-      showError(error);
-    } finally {
-      setMemoryLoading(false);
-    }
-  }
-
-  async function applyMemoryMaintenance(action: MemoryMaintenanceAction) {
-    try {
-      await api.applyMemoryMaintenance(action.id);
-      setStatus({ tone: "ok", text: "Maintenance applied" });
+      const report = await api.runMemoryMaintenance();
+      setMemoryActions(report.actions);
+      setStatus({ tone: "ok", text: `Memory organized (${report.applied.length} applied, ${report.actions.length} pending review)` });
       await loadMemoryItems(memoryScope);
       await loadMemoryMaintenance();
     } catch (error) {
       showError(error);
-    }
-  }
-
-  async function dismissMemoryMaintenance(action: MemoryMaintenanceAction) {
-    try {
-      const dismissed = await api.dismissMemoryMaintenance(action.id);
-      setMemoryActions((actions) => actions.map((candidate) => candidate.id === dismissed.id ? dismissed : candidate));
-      setStatus({ tone: "ok", text: "Maintenance dismissed" });
-    } catch (error) {
-      showError(error);
+    } finally {
+      setMemoryLoading(false);
     }
   }
 
@@ -1812,8 +1793,6 @@ export function App() {
           onRebuild={rebuildMemoryAbstractions}
           onScore={scoreMemoryQuality}
           onRunMaintenance={runMemoryMaintenance}
-          onApplyMaintenance={applyMemoryMaintenance}
-          onDismissMaintenance={dismissMemoryMaintenance}
           onUpdate={updateMemoryItem}
           onFeedback={sendMemoryFeedback}
           onResolve={resolveMemoryConflict}
@@ -5804,8 +5783,6 @@ function MemoryModal({
   onRebuild,
   onScore,
   onRunMaintenance,
-  onApplyMaintenance,
-  onDismissMaintenance,
   onUpdate,
   onFeedback,
   onResolve,
@@ -5827,8 +5804,6 @@ function MemoryModal({
   onRebuild: () => void;
   onScore: () => void;
   onRunMaintenance: () => void;
-  onApplyMaintenance: (action: MemoryMaintenanceAction) => void;
-  onDismissMaintenance: (action: MemoryMaintenanceAction) => void;
   onUpdate: (item: MemoryItem, patch: Partial<Pick<MemoryItem, "content" | "namespace" | "category" | "tags" | "visibility">>) => void;
   onFeedback: (item: MemoryItem, type: "important" | "incorrect" | "not_relevant") => void;
   onResolve: (item: MemoryItem, action: "accept" | "reject" | "keep_both") => void;
@@ -5872,6 +5847,10 @@ function MemoryModal({
     cancelEdit();
   }
 
+  const pendingActions = actions.filter((action) => action.status !== "dismissed");
+  const conflictReviews = pendingActions.filter((action) => action.type === "confirm_conflict").length;
+  const safeReviews = Math.max(0, pendingActions.length - conflictReviews);
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section
@@ -5892,7 +5871,7 @@ function MemoryModal({
             <button className="icon ghost" onClick={onScore} title="Score memory quality" aria-label="Score memory quality">
               <Activity size={16} />
             </button>
-            <button className="icon ghost" onClick={onRunMaintenance} title="Run memory maintenance" aria-label="Run memory maintenance">
+            <button className="icon ghost" onClick={onRunMaintenance} title="Organize memory automatically" aria-label="Organize memory automatically">
               <Briefcase size={16} />
             </button>
             <button className="icon ghost" onClick={onRebuild} title="Rebuild memory summaries" aria-label="Rebuild memory summaries">
@@ -5928,26 +5907,16 @@ function MemoryModal({
           </select>
         </div>
         <div className="memory-scroll-area">
-          <div className="memory-maintenance">
-            <div className="memory-maintenance-header">
-              <strong>Suggestions</strong>
-              <small>{actions.filter((action) => action.status !== "dismissed").length} pending</small>
+          <div className="memory-system-status" aria-live="polite">
+            <div>
+              <strong>Automatic memory care</strong>
+              <p>System-managed cleanup is active. Low-confidence changes stay visible for audit instead of being applied silently.</p>
             </div>
-            {actions.length ? actions.map((action) => (
-              <div key={action.id} className={`memory-maintenance-action ${action.status}`}>
-                <div>
-                  <strong>{action.type.split("_").join(" ")}</strong>
-                  <p>{action.reason}</p>
-                  <small>{Math.round((action.confidence || 0) * 100)}% confidence · {action.memory_ids.length} memories</small>
-                </div>
-                <div className="memory-maintenance-buttons">
-                  <button type="button" onClick={() => onApplyMaintenance(action)} disabled={action.status !== "pending"}>Apply</button>
-                  <button type="button" onClick={() => onDismissMaintenance(action)} disabled={action.status !== "pending"}>Dismiss</button>
-                </div>
-              </div>
-            )) : (
-              <div className="memory-empty compact">No maintenance suggestions</div>
-            )}
+            <div className="memory-system-badges">
+              <span>{pendingActions.length ? `${pendingActions.length} review` : "No review needed"}</span>
+              {!!conflictReviews && <span>{conflictReviews} conflict{conflictReviews === 1 ? "" : "s"}</span>}
+              {!!safeReviews && <span>{safeReviews} guarded</span>}
+            </div>
           </div>
           <div className="memory-list">
             {loading && <div className="memory-empty">Loading memory...</div>}

@@ -214,8 +214,8 @@ Delivered by phase:
 - Done Phase 3 abstraction: `POST /v1/memory/rebuild` builds concept/profile memories from active atomic memories, archives stale generated abstractions, and clears dirty flags.
 - Done Phase 3 maintenance: per-item quality/staleness/redundancy/usage/feedback scoring is stored in metadata.
 - Done Phase 3 maintenance: rule-based organizer proposes low-quality archival, duplicate merge, dirty concept/profile rebuild, profile refresh, and pending conflict confirmation.
-- Done Phase 3 maintenance: hybrid LLM/rule organizer can propose validated maintenance actions without directly mutating memory.
-- Done Phase 3 maintenance APIs/UI: `/v1/memory/maintenance`, `/run`, `/{id}/apply`, `/{id}/dismiss`; Memory manager exposes Score, Run maintenance, Apply, and Dismiss.
+- Done Phase 3 maintenance: hybrid LLM/rule organizer can propose validated maintenance actions; high-confidence low-risk actions are auto-applied by `/run`, while conflicts and guarded cleanup remain auditable.
+- Done Phase 3 maintenance APIs/UI: `/v1/memory/maintenance`, `/run`, `/{id}/apply`, `/{id}/dismiss`; Memory manager presents automatic care status instead of a routine Apply/Dismiss task queue.
 - Done Phase 4 multimodal/source tracking: memory items support `namespace` and `source_refs` across file/object/SQL stores.
 - Done Phase 4 asset extraction: `POST /v1/attachments/{id}/memory/extract` and `POST /v1/artifacts/{id}/memory/extract`.
 - Done Phase 4 text assets: text/Markdown/JSON/code-like attachments and artifacts run through the same rule/LLM memory extraction pipeline as conversation memory.
