@@ -1696,7 +1696,7 @@ label.composer-upload {
   border-right: 1px solid var(--line);
   background: var(--panel);
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 .admin-brand {
   padding: 18px;
@@ -1738,9 +1738,10 @@ label.composer-upload {
   background: var(--active-bg);
 }
 .admin-token-box {
-  align-self: end;
+  align-self: start;
   padding: 14px;
   border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   display: grid;
   gap: 10px;
 }
@@ -1767,7 +1768,7 @@ label.composer-upload {
   overflow: auto;
   padding: 22px;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 16px;
 }
 .admin-header {
@@ -1787,6 +1788,55 @@ label.composer-upload {
   margin: 6px 0 0;
   color: var(--muted);
   line-height: 1.45;
+}
+.admin-tabs {
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+}
+.admin-tabs.compact {
+  margin: 0 0 14px;
+  background: var(--panel-soft);
+}
+.admin-tabs button {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.admin-tabs button:hover:not(:disabled) {
+  background: var(--active-bg);
+  color: var(--text);
+}
+.admin-tabs button.active {
+  background: var(--accent);
+  color: white;
+}
+.admin-tabs button small {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.68);
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
 }
 .admin-banner {
   min-height: 42px;
@@ -2799,13 +2849,9 @@ label.composer-upload {
   .admin-sidebar {
     grid-row: 1;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto auto;
+    grid-template-rows: auto auto auto;
     border-right: 0;
     border-bottom: 1px solid var(--line);
-  }
-  .admin-nav {
-    grid-template-columns: repeat(5, max-content);
-    overflow-x: auto;
   }
   .admin-token-box {
     align-self: stretch;
@@ -2817,6 +2863,7 @@ label.composer-upload {
   }
   .admin-main {
     grid-row: 2;
+    grid-template-rows: auto auto auto minmax(0, 1fr);
   }
   .admin-skill-layout {
     grid-template-columns: 1fr;

@@ -84,6 +84,13 @@ type RightPanelTab = "skills" | "jobs" | "attachments" | "artifacts";
 type RightPanelSearch = Record<RightPanelTab, string>;
 type JobStreamStatus = "idle" | "connecting" | "live" | "reconnecting" | "failed";
 type AdminSection = "skills" | "users" | "jobs-assets" | "health-cost" | "audit" | "evaluation";
+type AdminTabOption<T extends string> = {
+  id: T;
+  label: string;
+  description?: string;
+  icon?: ReactNode;
+  count?: number;
+};
 
 type ConfirmDialog = {
   title: string;
@@ -2543,10 +2550,41 @@ const SkillCard = forwardRef<HTMLElement, {
             </button>
           </div>
         </>
-      )}
-    </article>
-  );
+    )}
+  </article>
+);
 });
+
+function AdminTabs<T extends string>({
+  tabs,
+  active,
+  onChange,
+  label,
+  compact = false
+}: {
+  tabs: Array<AdminTabOption<T>>;
+  active: T;
+  onChange: (tab: T) => void;
+  label: string;
+  compact?: boolean;
+}) {
+  return (
+    <nav className={`admin-tabs${compact ? " compact" : ""}`} aria-label={label}>
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          className={tab.id === active ? "active" : ""}
+          onClick={() => onChange(tab.id)}
+        >
+          {tab.icon}
+          <span>{tab.label}</span>
+          {typeof tab.count === "number" && <small>{tab.count}</small>}
+        </button>
+      ))}
+    </nav>
+  );
+}
 
 function AdminConsole({
   api,
@@ -2578,21 +2616,25 @@ function AdminConsole({
   const [executions, setExecutions] = useState<SkillExecution[]>([]);
   const [summary, setSummary] = useState<SkillExecutionSummary | null>(null);
   const [policyTarget, setPolicyTarget] = useState<AdminSkill | null>(null);
+  const [skillTab, setSkillTab] = useState<"overview" | "review" | "executions" | "versions">("overview");
   const token = adminToken.trim();
-  const adminSectionTitle = adminSection === "users" ? "User Management" : adminSection === "jobs-assets" ? "Session / Job / Artifact Troubleshooting" : adminSection === "health-cost" ? "Runtime Health & Cost" : adminSection === "audit" ? "Audit Logs & Risk Control" : adminSection === "evaluation" ? "Agent Evaluation" : "Skill Management";
-  const adminSectionDescription = adminSection === "users"
-    ? "Search users, inspect account state, and disable, ban, or reactivate access."
-    : adminSection === "jobs-assets"
-      ? "Inspect a user's sessions, queued jobs, replay events, and generated or uploaded assets."
-      : adminSection === "health-cost"
-        ? "Watch readiness checks, LLM backend health, token usage, latency, and estimated cost."
-        : adminSection === "audit"
-          ? "Review sensitive operations, high-risk actions, request IDs, user scope, and metadata for investigations."
-          : adminSection === "evaluation"
-            ? "Run lightweight evaluations over real runtime data, inspect pass/fail findings, and close review items."
-            : "Publish, review, configure policy, and inspect execution health for registry-backed skills.";
+  const adminSections: Array<AdminTabOption<AdminSection>> = [
+    { id: "skills", label: "Skills", description: "Publish, review, configure policy, and inspect execution health for registry-backed skills.", icon: <Sparkles size={18} />, count: skills.length },
+    { id: "users", label: "Users", description: "Search users, inspect account state, and disable, ban, or reactivate access.", icon: <Database size={18} /> },
+    { id: "jobs-assets", label: "Jobs & assets", description: "Inspect a user's sessions, queued jobs, replay events, and generated or uploaded assets.", icon: <Briefcase size={18} /> },
+    { id: "health-cost", label: "Health & cost", description: "Watch readiness checks, LLM backend health, token usage, latency, and estimated cost.", icon: <Activity size={18} /> },
+    { id: "audit", label: "Audit", description: "Review sensitive operations, high-risk actions, request IDs, user scope, and metadata for investigations.", icon: <FileText size={18} /> },
+    { id: "evaluation", label: "Evaluation", description: "Run lightweight evaluations over real runtime data, inspect pass/fail findings, and close review items.", icon: <ShieldCheck size={18} /> }
+  ];
+  const selectedAdminSection = adminSections.find((section) => section.id === adminSection) || adminSections[0];
   const selectedSkill = skills.find((skill) => skill.name === selectedName) || null;
   const reviewIssues = review?.issues || [];
+  const skillTabs: Array<AdminTabOption<typeof skillTab>> = [
+    { id: "overview", label: "Overview", icon: <Info size={15} /> },
+    { id: "review", label: "Review", icon: <ShieldCheck size={15} />, count: reviewIssues.length },
+    { id: "executions", label: "Executions", icon: <Activity size={15} />, count: executions.length },
+    { id: "versions", label: "Versions", icon: <Archive size={15} />, count: versions.length }
+  ];
   const filteredSkills = useMemo(() => skills.filter((skill) => {
     const statusMatches = statusFilter === "all" || skill.status === statusFilter;
     return statusMatches && fuzzyMatch(query, [
@@ -2701,14 +2743,6 @@ function AdminConsole({
             <small>{userLabel}</small>
           </div>
         </div>
-        <nav className="admin-nav" aria-label="Admin sections">
-          <button className={adminSection === "skills" ? "active" : ""} onClick={() => setAdminSection("skills")}><Sparkles size={18} /> Skill management</button>
-          <button className={adminSection === "users" ? "active" : ""} onClick={() => setAdminSection("users")}><Database size={18} /> Users</button>
-          <button className={adminSection === "jobs-assets" ? "active" : ""} onClick={() => setAdminSection("jobs-assets")}><Briefcase size={18} /> Jobs & assets</button>
-          <button className={adminSection === "health-cost" ? "active" : ""} onClick={() => setAdminSection("health-cost")}><Activity size={18} /> Health & cost</button>
-          <button className={adminSection === "audit" ? "active" : ""} onClick={() => setAdminSection("audit")}><FileText size={18} /> Audit logs</button>
-          <button className={adminSection === "evaluation" ? "active" : ""} onClick={() => setAdminSection("evaluation")}><ShieldCheck size={18} /> Evaluation</button>
-        </nav>
         <div className="admin-token-box">
           <label>
             Admin token
@@ -2732,8 +2766,8 @@ function AdminConsole({
       <section className="admin-main">
         <header className="admin-header">
           <div>
-            <h1>{adminSectionTitle}</h1>
-            <p>{adminSectionDescription}</p>
+            <h1>{selectedAdminSection.label}</h1>
+            <p>{selectedAdminSection.description}</p>
           </div>
           {adminSection === "skills" && (
             <button className="skill-action" onClick={refreshSelected} disabled={loading || !token}>
@@ -2742,6 +2776,7 @@ function AdminConsole({
             </button>
           )}
         </header>
+        <AdminTabs tabs={adminSections} active={adminSection} onChange={setAdminSection} label="Admin sections" />
         {(error || notice) && (
           <div className={`admin-banner ${error ? "error" : "ok"}`} role="status">
             {error ? <AlertCircle size={16} /> : <ShieldCheck size={16} />}
@@ -2850,69 +2885,78 @@ function AdminConsole({
                     <AdminMetric label="Avg latency" value={`${summary?.average_latency_ms ?? 0} ms`} />
                     <AdminMetric label="Versions" value={String(versions.length)} />
                   </div>
+                  <AdminTabs tabs={skillTabs} active={skillTab} onChange={setSkillTab} label="Skill detail sections" compact />
                   <div className="admin-detail-grid">
-                    <section className="admin-card">
-                      <div className="admin-card-head">
-                        <h3>Review</h3>
-                        {review && <StatusBadge value={review.passed ? "passed" : "blocked"} />}
-                      </div>
-                      {!review && <p className="muted-text">No review loaded.</p>}
-                      {review && !reviewIssues.length && <p className="muted-text">No blocking issues or warnings.</p>}
-                      {reviewIssues.map((issue) => (
-                        <div key={`${issue.code}-${issue.field}`} className={`review-issue ${issue.severity}`}>
-                          <strong>{issue.code}</strong>
-                          <span>{issue.message}</span>
-                          {issue.field && <small>{issue.field}</small>}
+                    {skillTab === "overview" && (
+                      <section className="admin-card wide">
+                        <div className="admin-card-head">
+                          <h3>Registry</h3>
                         </div>
-                      ))}
-                    </section>
-                    <section className="admin-card">
-                      <div className="admin-card-head">
-                        <h3>Registry</h3>
-                      </div>
-                      <div className="admin-facts">
-                        <SkillFact label="Category" value={selectedSkill.category || "General"} />
-                        <SkillFact label="Root" value={selectedSkill.skill_root || "Not set"} />
-                        <SkillFact label="Hash" value={selectedSkill.content_hash ? selectedSkill.content_hash.slice(0, 12) : "Not set"} />
-                        <SkillFact label="Updated" value={formatTime(selectedSkill.updated_at || selectedSkill.created_at || "")} />
-                      </div>
-                    </section>
-                    <section className="admin-card">
-                      <div className="admin-card-head">
-                        <h3>Recent executions</h3>
-                      </div>
-                      <div className="admin-table">
-                        {executions.slice(0, 8).map((execution) => (
-                          <div key={execution.id} className="admin-table-row">
-                            <StatusBadge value={execution.status} />
-                            <span>{execution.duration_ms} ms</span>
-                            {(execution.provider || execution.model) && <span>{[execution.provider, execution.model].filter(Boolean).join(" / ")}</span>}
-                            {execution.error_kind && <span>{execution.error_kind}</span>}
-                            {typeof execution.artifact_count === "number" && execution.artifact_count > 0 && <span>{execution.artifact_count} artifact{execution.artifact_count === 1 ? "" : "s"}</span>}
-                            <small>{formatTime(execution.completed_at)}</small>
-                            {execution.error && <em>{execution.error}</em>}
-                            {execution.input_summary && <em>{execution.input_summary}</em>}
+                        <div className="admin-facts">
+                          <SkillFact label="Category" value={selectedSkill.category || "General"} />
+                          <SkillFact label="Root" value={selectedSkill.skill_root || "Not set"} />
+                          <SkillFact label="Hash" value={selectedSkill.content_hash ? selectedSkill.content_hash.slice(0, 12) : "Not set"} />
+                          <SkillFact label="Updated" value={formatTime(selectedSkill.updated_at || selectedSkill.created_at || "")} />
+                        </div>
+                      </section>
+                    )}
+                    {skillTab === "review" && (
+                      <section className="admin-card wide">
+                        <div className="admin-card-head">
+                          <h3>Review</h3>
+                          {review && <StatusBadge value={review.passed ? "passed" : "blocked"} />}
+                        </div>
+                        {!review && <p className="muted-text">No review loaded.</p>}
+                        {review && !reviewIssues.length && <p className="muted-text">No blocking issues or warnings.</p>}
+                        {reviewIssues.map((issue) => (
+                          <div key={`${issue.code}-${issue.field}`} className={`review-issue ${issue.severity}`}>
+                            <strong>{issue.code}</strong>
+                            <span>{issue.message}</span>
+                            {issue.field && <small>{issue.field}</small>}
                           </div>
                         ))}
-                        {!executions.length && <p className="muted-text">No executions recorded.</p>}
-                      </div>
-                    </section>
-                    <section className="admin-card">
-                      <div className="admin-card-head">
-                        <h3>Versions</h3>
-                      </div>
-                      <div className="admin-table">
-                        {versions.slice(0, 8).map((version) => (
-                          <div key={`${version.version}-${version.content_hash}-${version.created_at}`} className="admin-table-row">
-                            <strong>{version.version || "unversioned"}</strong>
-                            <span>{version.content_hash ? version.content_hash.slice(0, 10) : "no hash"}</span>
-                            <small>{formatTime(version.published_at || version.created_at)}</small>
-                            {version.changelog && <em>{version.changelog}</em>}
-                          </div>
-                        ))}
-                        {!versions.length && <p className="muted-text">No versions recorded.</p>}
-                      </div>
-                    </section>
+                      </section>
+                    )}
+                    {skillTab === "executions" && (
+                      <section className="admin-card wide">
+                        <div className="admin-card-head">
+                          <h3>Recent executions</h3>
+                        </div>
+                        <div className="admin-table">
+                          {executions.slice(0, 12).map((execution) => (
+                            <div key={execution.id} className="admin-table-row">
+                              <StatusBadge value={execution.status} />
+                              <span>{execution.duration_ms} ms</span>
+                              {(execution.provider || execution.model) && <span>{[execution.provider, execution.model].filter(Boolean).join(" / ")}</span>}
+                              {execution.error_kind && <span>{execution.error_kind}</span>}
+                              {typeof execution.artifact_count === "number" && execution.artifact_count > 0 && <span>{execution.artifact_count} artifact{execution.artifact_count === 1 ? "" : "s"}</span>}
+                              <small>{formatTime(execution.completed_at)}</small>
+                              {execution.error && <em>{execution.error}</em>}
+                              {execution.input_summary && <em>{execution.input_summary}</em>}
+                            </div>
+                          ))}
+                          {!executions.length && <p className="muted-text">No executions recorded.</p>}
+                        </div>
+                      </section>
+                    )}
+                    {skillTab === "versions" && (
+                      <section className="admin-card wide">
+                        <div className="admin-card-head">
+                          <h3>Versions</h3>
+                        </div>
+                        <div className="admin-table">
+                          {versions.slice(0, 12).map((version) => (
+                            <div key={`${version.version}-${version.content_hash}-${version.created_at}`} className="admin-table-row">
+                              <strong>{version.version || "unversioned"}</strong>
+                              <span>{version.content_hash ? version.content_hash.slice(0, 10) : "no hash"}</span>
+                              <small>{formatTime(version.published_at || version.created_at)}</small>
+                              {version.changelog && <em>{version.changelog}</em>}
+                            </div>
+                          ))}
+                          {!versions.length && <p className="muted-text">No versions recorded.</p>}
+                        </div>
+                      </section>
+                    )}
                   </div>
                 </>
               )}
@@ -2943,8 +2987,13 @@ function AdminUsersPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
   const [actionBusy, setActionBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [userTab, setUserTab] = useState<"account" | "access">("account");
   const token = adminToken.trim();
   const selectedUser = users.find((user) => user.id === selectedID) || null;
+  const userTabs: Array<AdminTabOption<typeof userTab>> = [
+    { id: "account", label: "Account", icon: <Database size={15} /> },
+    { id: "access", label: "Access", icon: <ShieldCheck size={15} /> }
+  ];
 
   const loadUsers = async () => {
     if (!token) return;
@@ -3110,8 +3159,9 @@ function AdminUsersPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
               <AdminMetric label="Created" value={formatShortDate(selectedUser.created_at)} />
               <AdminMetric label="Last login" value={formatShortDate(selectedUser.last_login_at)} />
             </div>
+            <AdminTabs tabs={userTabs} active={userTab} onChange={setUserTab} label="User detail sections" compact />
             <div className="admin-detail-grid">
-              <section className="admin-card">
+              {userTab === "account" && <section className="admin-card wide">
                 <div className="admin-card-head">
                   <h3>Account</h3>
                 </div>
@@ -3121,13 +3171,13 @@ function AdminUsersPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
                   <SkillFact label="Display name" value={selectedUser.display_name || "Not set"} />
                   <SkillFact label="Updated" value={formatTime(selectedUser.updated_at)} />
                 </div>
-              </section>
-              <section className="admin-card">
+              </section>}
+              {userTab === "access" && <section className="admin-card wide">
                 <div className="admin-card-head">
                   <h3>Access notes</h3>
                 </div>
                 <p className="muted-text">Disabled and banned users cannot log in or refresh tokens. Changing a user to an inactive status revokes existing refresh tokens immediately; access tokens expire on their normal short TTL.</p>
-              </section>
+              </section>}
             </div>
           </>
         )}
@@ -3151,10 +3201,17 @@ function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string
   const [actionBusy, setActionBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [opsTab, setOpsTab] = useState<"session" | "jobs" | "events" | "assets">("jobs");
   const token = adminToken.trim();
   const cleanUserID = userID.trim();
   const selectedSession = sessions.find((session) => session.id === selectedSessionID) || null;
   const selectedJob = jobs.find((job) => job.id === selectedJobID) || null;
+  const opsTabs: Array<AdminTabOption<typeof opsTab>> = [
+    { id: "session", label: "Session", icon: <MessageCircle size={15} />, count: sessions.length },
+    { id: "jobs", label: "Jobs", icon: <Briefcase size={15} />, count: jobs.length },
+    { id: "events", label: "Events", icon: <Activity size={15} />, count: events.length },
+    { id: "assets", label: "Assets", icon: <FileUp size={15} />, count: assets.length }
+  ];
 
   const loadOps = async (sessionID = selectedSessionID, jobID = selectedJobID) => {
     if (!token || !cleanUserID) {
@@ -3310,8 +3367,9 @@ function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string
               <AdminMetric label="Assets" value={String(assets.length)} />
               <AdminMetric label="Events" value={String(events.length)} />
             </div>
+            <AdminTabs tabs={opsTabs} active={opsTab} onChange={setOpsTab} label="Troubleshooting sections" compact />
             <div className="admin-detail-grid">
-              <section className="admin-card">
+              {opsTab === "session" && <section className="admin-card wide">
                 <div className="admin-card-head">
                   <h3>Selected session</h3>
                 </div>
@@ -3321,8 +3379,8 @@ function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string
                   <SkillFact label="Working dir" value={selectedSession?.working_dir || "Not selected"} />
                   <SkillFact label="Updated" value={formatTime(selectedSession?.updated_at || "")} />
                 </div>
-              </section>
-              <section className="admin-card">
+              </section>}
+              {opsTab === "jobs" && <section className="admin-card wide">
                 <div className="admin-card-head">
                   <h3>Jobs</h3>
                   {selectedJob && <StatusBadge value={selectedJob.status} />}
@@ -3346,8 +3404,8 @@ function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string
                     </button>
                   </div>
                 )}
-              </section>
-              <section className="admin-card">
+              </section>}
+              {opsTab === "events" && <section className="admin-card wide">
                 <div className="admin-card-head">
                   <h3>Job events</h3>
                 </div>
@@ -3361,8 +3419,8 @@ function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string
                   ))}
                   {!events.length && <p className="muted-text">Select a job to inspect replay events.</p>}
                 </div>
-              </section>
-              <section className="admin-card">
+              </section>}
+              {opsTab === "assets" && <section className="admin-card wide">
                 <div className="admin-card-head">
                   <h3>Assets</h3>
                 </div>
@@ -3377,7 +3435,7 @@ function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string
                   ))}
                   {!assets.length && <p className="muted-text">No attachments or artifacts found.</p>}
                 </div>
-              </section>
+              </section>}
             </div>
           </>
         )}
@@ -3403,12 +3461,19 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
   const [reviewBusy, setReviewBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [auditTab, setAuditTab] = useState<"overview" | "reviews" | "audit-event" | "risk-event">("overview");
   const token = adminToken.trim();
   const records = audit?.records || [];
   const riskEvents = risk?.events || [];
   const reviewItems = reviews?.items || [];
   const selected = records.find((record) => record.id === selectedID) || records[0] || null;
   const selectedRisk = riskEvents.find((event) => event.id === selectedRiskID) || riskEvents[0] || null;
+  const auditTabs: Array<AdminTabOption<typeof auditTab>> = [
+    { id: "overview", label: "Overview", icon: <Activity size={15} />, count: audit?.total ?? 0 },
+    { id: "reviews", label: "Reviews", icon: <ShieldCheck size={15} />, count: reviews?.pending ?? 0 },
+    { id: "audit-event", label: "Audit event", icon: <FileText size={15} />, count: records.length },
+    { id: "risk-event", label: "Risk event", icon: <AlertCircle size={15} />, count: riskEvents.length }
+  ];
 
   const loadAudit = async () => {
     if (!token) return;
@@ -3592,8 +3657,9 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
           <AdminMetric label="Pending reviews" value={String(reviews?.pending ?? 0)} />
           <AdminMetric label="Risk scores" value={String(risk?.scores?.length ?? 0)} />
         </div>
+        <AdminTabs tabs={auditTabs} active={auditTab} onChange={setAuditTab} label="Audit detail sections" compact />
         <div className="admin-detail-grid">
-          <section className="admin-card wide">
+          {auditTab === "reviews" && <section className="admin-card wide">
             <div className="admin-card-head">
               <h3>Manual review queue</h3>
               <StatusBadge value={reviewStatusFilter} />
@@ -3614,8 +3680,8 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
               ))}
               {!reviewItems.length && <p className="muted-text">No manual review items in this filter.</p>}
             </div>
-          </section>
-          <section className="admin-card">
+          </section>}
+          {auditTab === "overview" && <section className="admin-card">
             <div className="admin-card-head">
               <h3>Event mix</h3>
             </div>
@@ -3629,8 +3695,8 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
               ))}
               {!audit?.by_event?.length && <p className="muted-text">No events in this window.</p>}
             </div>
-          </section>
-          <section className="admin-card">
+          </section>}
+          {auditTab === "overview" && <section className="admin-card">
             <div className="admin-card-head">
               <h3>Risk scores</h3>
             </div>
@@ -3644,8 +3710,8 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
               ))}
               {!risk?.scores?.length && <p className="muted-text">No accumulated risk scores.</p>}
             </div>
-          </section>
-          <section className="admin-card">
+          </section>}
+          {auditTab === "audit-event" && <section className="admin-card">
             <div className="admin-card-head">
               <h3>Selected audit event</h3>
               {selected && <StatusBadge value={selected.risk_level || "low"} />}
@@ -3664,14 +3730,14 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
             ) : (
               <p className="muted-text">Select an audit event to inspect details.</p>
             )}
-          </section>
-          <section className="admin-card wide">
+          </section>}
+          {auditTab === "audit-event" && <section className="admin-card wide">
             <div className="admin-card-head">
               <h3>Metadata</h3>
             </div>
             <pre className="admin-code-block">{selected ? formatAuditMetadata(selected) : "{}"}</pre>
-          </section>
-          <section className="admin-card wide">
+          </section>}
+          {auditTab === "risk-event" && <section className="admin-card wide">
             <div className="admin-card-head">
               <h3>Risk event queue</h3>
             </div>
@@ -3686,8 +3752,8 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
               ))}
               {!riskEvents.length && <p className="muted-text">No risk events in the current filter.</p>}
             </div>
-          </section>
-          <section className="admin-card wide">
+          </section>}
+          {auditTab === "risk-event" && <section className="admin-card wide">
             <div className="admin-card-head">
               <h3>Selected risk event</h3>
               {selectedRisk && <StatusBadge value={selectedRisk.risk_level || "low"} />}
@@ -3705,7 +3771,7 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
               <p className="muted-text">Select a risk event to inspect details.</p>
             )}
             <pre className="admin-code-block">{selectedRisk ? JSON.stringify({ metadata: selectedRisk.metadata || {}, request_id: selectedRisk.request_id || "" }, null, 2) : "{}"}</pre>
-          </section>
+          </section>}
         </div>
       </section>
     </div>
@@ -3743,6 +3809,7 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
   const [reviewBusy, setReviewBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [evaluationTab, setEvaluationTab] = useState<"results" | "selected" | "reviews" | "io">("results");
   const token = adminToken.trim();
   const cleanUserID = userID.trim();
   const selectedRun = runs.find((run) => run.id === selectedRunID) || runs[0] || null;
@@ -3938,6 +4005,12 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
 
   const selectedResultReviews = selectedResult ? reviewsByResultID.get(selectedResult.id) || [] : [];
   const metrics = summary?.metrics || selectedRun?.metrics || {};
+  const evaluationTabs: Array<AdminTabOption<typeof evaluationTab>> = [
+    { id: "results", label: "Results", icon: <Activity size={15} />, count: results.length },
+    { id: "selected", label: "Selected", icon: <Info size={15} /> },
+    { id: "reviews", label: "Reviews", icon: <ShieldCheck size={15} />, count: selectedResultReviews.length },
+    { id: "io", label: "I/O", icon: <FileText size={15} /> }
+  ];
 
   return (
     <div className="admin-skill-layout">
@@ -4081,8 +4154,9 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
           <AdminMetric label="Threshold failed" value={String(metricNumber(metrics, "threshold_failed_count"))} />
           <AdminMetric label="Reviews" value={String(reviews.filter((review) => review.status === "pending").length)} />
         </div>
+        <AdminTabs tabs={evaluationTabs} active={evaluationTab} onChange={setEvaluationTab} label="Evaluation detail sections" compact />
         <div className="admin-detail-grid">
-          <section className="admin-card wide">
+          {evaluationTab === "results" && <section className="admin-card wide">
             <div className="admin-card-head">
               <h3>Results</h3>
               <small>{results.length} shown</small>
@@ -4101,8 +4175,8 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
               ))}
               {!results.length && <p className="muted-text">No results in this filter.</p>}
             </div>
-          </section>
-          <section className="admin-card">
+          </section>}
+          {evaluationTab === "selected" && <section className="admin-card">
             <div className="admin-card-head">
               <h3>Selected result</h3>
               {selectedResult && <StatusBadge value={selectedResult.status} />}
@@ -4119,8 +4193,8 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
             ) : (
               <p className="muted-text">Select a result to inspect findings.</p>
             )}
-          </section>
-          <section className="admin-card">
+          </section>}
+          {evaluationTab === "selected" && <section className="admin-card">
             <div className="admin-card-head">
               <h3>Findings</h3>
             </div>
@@ -4133,8 +4207,8 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
               ))}
               {selectedResult && !selectedResult.findings?.length && <p className="muted-text">No findings for this result.</p>}
             </div>
-          </section>
-          <section className="admin-card wide">
+          </section>}
+          {evaluationTab === "reviews" && <section className="admin-card wide">
             <div className="admin-card-head">
               <h3>Review items</h3>
             </div>
@@ -4153,8 +4227,8 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
               ))}
               {!selectedResultReviews.length && <p className="muted-text">No review items for the selected result.</p>}
             </div>
-          </section>
-          <section className="admin-card wide">
+          </section>}
+          {evaluationTab === "io" && <section className="admin-card wide">
             <div className="admin-card-head">
               <h3>Input / output</h3>
             </div>
@@ -4163,7 +4237,7 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
               output: selectedResult.output || "",
               metrics: selectedResult.metrics || {}
             }, null, 2) : "{}"}</pre>
-          </section>
+          </section>}
         </div>
       </section>
     </div>
@@ -4186,11 +4260,18 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
   const [configBusy, setConfigBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [healthTab, setHealthTab] = useState<"runtime" | "governance" | "usage" | "quota">("runtime");
   const token = adminToken.trim();
   const cleanUserID = userID.trim();
   const readiness = health?.readiness;
   const llm = health?.llm;
   const healthyBackends = (llm?.backends || []).filter((backend) => backend.healthy).length;
+  const healthTabs: Array<AdminTabOption<typeof healthTab>> = [
+    { id: "runtime", label: "Runtime", icon: <Activity size={15} />, count: readiness?.checks?.length ?? 0 },
+    { id: "governance", label: "Governance", icon: <Settings size={15} /> },
+    { id: "usage", label: "Usage", icon: <Database size={15} />, count: usage?.requests ?? 0 },
+    { id: "quota", label: "Quota", icon: <ShieldCheck size={15} />, count: quota?.recent_adjustments?.length ?? 0 }
+  ];
 
   const loadHealthCost = async () => {
     if (!token) return;
@@ -4354,8 +4435,9 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
           <AdminMetric label="Cost" value={formatUSD(usage?.estimated_cost_usd ?? 0)} />
           <AdminMetric label="Avg latency" value={`${Math.round(usage?.average_latency_ms ?? 0)} ms`} />
         </div>
+        <AdminTabs tabs={healthTabs} active={healthTab} onChange={setHealthTab} label="Health and cost sections" compact />
         <div className="admin-detail-grid">
-          <section className="admin-card">
+          {healthTab === "runtime" && <section className="admin-card wide">
             <div className="admin-card-head">
               <h3>LLM backends</h3>
               <small>{healthyBackends}/{llm?.backends?.length || 0} healthy</small>
@@ -4371,8 +4453,8 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
               ))}
               {!llm?.backends?.length && <p className="muted-text">No LLM backend status loaded.</p>}
             </div>
-          </section>
-          <section className="admin-card">
+          </section>}
+          {healthTab === "governance" && <section className="admin-card wide">
             <div className="admin-card-head">
               <h3>Governance config</h3>
               <button className="skill-action" onClick={saveLLMConfig} disabled={configBusy || !token}>
@@ -4439,8 +4521,8 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
                 <input inputMode="numeric" value={configDraft.circuit_cooldown_seconds || ""} onChange={(event) => updateConfigDraft("circuit_cooldown_seconds", event.currentTarget.value)} placeholder="60" />
               </label>
             </div>
-          </section>
-          <section className="admin-card">
+          </section>}
+          {healthTab === "usage" && <section className="admin-card">
             <div className="admin-card-head">
               <h3>Cost by provider</h3>
             </div>
@@ -4455,8 +4537,8 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
               ))}
               {!usage?.by_provider?.length && <p className="muted-text">No usage records in this window.</p>}
             </div>
-          </section>
-          <section className="admin-card">
+          </section>}
+          {healthTab === "usage" && <section className="admin-card">
             <div className="admin-card-head">
               <h3>Recent usage</h3>
             </div>
@@ -4471,8 +4553,8 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
               ))}
               {!usage?.recent?.length && <p className="muted-text">No recent usage records.</p>}
             </div>
-          </section>
-          <section className="admin-card wide">
+          </section>}
+          {healthTab === "quota" && <section className="admin-card wide">
             <div className="admin-card-head">
               <h3>Quota reset & refund</h3>
               {cleanUserID ? <small>{cleanUserID}</small> : <small>User ID required</small>}
@@ -4522,7 +4604,7 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
               ))}
               {!quota?.recent_adjustments?.length && <p className="muted-text">{cleanUserID ? "No quota adjustments for this user today." : "Enter a user ID to load quota tools."}</p>}
             </div>
-          </section>
+          </section>}
         </div>
       </section>
     </div>
