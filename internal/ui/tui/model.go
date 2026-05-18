@@ -71,6 +71,8 @@ type appModel struct {
 	toolMessage        string
 	promptSuggestion   string
 	promptSuggestionCh chan string
+	coordinatorEventCh chan string
+	pendingCoordinator []string
 	activeTasks        map[string]taskSnapshot
 	taskHistory        []taskSnapshot
 	notifications      []string
@@ -104,6 +106,9 @@ type toolProgressMsg struct {
 	metadata map[string]string
 }
 type promptSuggestionMsg struct {
+	text string
+}
+type coordinatorEventMsg struct {
 	text string
 }
 
@@ -209,6 +214,7 @@ func newModel(options Options) appModel {
 		suggestionIndex:    0,
 		progressCh:         options.ProgressCh,
 		promptSuggestionCh: options.PromptSuggestionCh,
+		coordinatorEventCh: options.CoordinatorEventCh,
 		activeTasks:        map[string]taskSnapshot{},
 		taskHistory:        []taskSnapshot{},
 		notifications:      []string{},
@@ -234,6 +240,9 @@ func (m appModel) Init() tea.Cmd {
 	}
 	if m.promptSuggestionCh != nil {
 		cmds = append(cmds, waitForPromptSuggestion(m.promptSuggestionCh))
+	}
+	if m.coordinatorEventCh != nil {
+		cmds = append(cmds, waitForCoordinatorEvent(m.coordinatorEventCh))
 	}
 	return tea.Batch(cmds...)
 }
@@ -677,6 +686,9 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshViews()
 		m.output.GotoBottom()
+		if cmd := m.startNextCoordinatorEvent(); cmd != nil {
+			return m, tea.Batch(tea.ClearScreen, cmd)
+		}
 		return m, tea.ClearScreen
 	case promptSuggestionMsg:
 		m.promptSuggestion = strings.TrimSpace(msg.text)
@@ -685,6 +697,14 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshViews()
 		return m, waitForPromptSuggestion(m.promptSuggestionCh)
+	case coordinatorEventMsg:
+		text := strings.TrimSpace(msg.text)
+		if text != "" {
+			m.pendingCoordinator = append(m.pendingCoordinator, text)
+			m.pushNotification("Worker result ready")
+		}
+		m.refreshViews()
+		return m, tea.Batch(waitForCoordinatorEvent(m.coordinatorEventCh), m.startNextCoordinatorEvent())
 	case permissionMsg:
 		m.permission = &msg.envelope
 		m.lastStatus = "permission required"
@@ -1124,6 +1144,22 @@ func (m appModel) visiblePromptSuggestion() string {
 	return m.promptSuggestion
 }
 
+func (m *appModel) startNextCoordinatorEvent() tea.Cmd {
+	if m.busy || len(m.pendingCoordinator) == 0 || m.generatedRunner == nil {
+		return nil
+	}
+	notification := strings.TrimSpace(m.pendingCoordinator[0])
+	m.pendingCoordinator = m.pendingCoordinator[1:]
+	if notification == "" {
+		return m.startNextCoordinatorEvent()
+	}
+	m.busy = true
+	m.errText = ""
+	m.lastStatus = "running"
+	runCtx, requestID := m.beginRequest()
+	return runGeneratedPromptCmd(runCtx, requestID, m.generatedRunner, m.session, notification)
+}
+
 func waitForPermission(broker *PermissionBroker) tea.Cmd {
 	if broker == nil {
 		return nil
@@ -1134,6 +1170,19 @@ func waitForPermission(broker *PermissionBroker) tea.Cmd {
 			return nil
 		}
 		return permissionMsg{envelope: envelope}
+	}
+}
+
+func waitForCoordinatorEvent(ch <-chan string) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		text, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return coordinatorEventMsg{text: text}
 	}
 }
 

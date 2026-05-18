@@ -26,6 +26,7 @@ import (
 	providerbackend "claude-codex/internal/harness/provider"
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
+	coretasks "claude-codex/internal/harness/tasks"
 	"claude-codex/internal/harness/telemetry"
 	toolkit "claude-codex/internal/harness/tools"
 	agenttool "claude-codex/internal/harness/tools/agent"
@@ -149,6 +150,14 @@ func NewRootCommandWithIO(streams IO) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := coretasks.DefaultManager().LoadRuntimeSnapshot(home, cwdFlag); err != nil {
+				fmt.Fprintf(streams.Err, "warning: could not restore task snapshot: %v\n", err)
+			}
+			defer func() {
+				if err := coretasks.DefaultManager().SaveRuntimeSnapshot(home, cwdFlag); err != nil {
+					fmt.Fprintf(streams.Err, "warning: could not save task snapshot: %v\n", err)
+				}
+			}()
 			telemetryRuntime, err := newTelemetryRuntime(cfg, home, streams)
 			if err != nil {
 				return err
@@ -185,7 +194,7 @@ func NewRootCommandWithIO(streams IO) *cobra.Command {
 
 			var buildEngine func(string) (*engine.Engine, error)
 			buildEngine = func(workingDir string) (*engine.Engine, error) {
-				return newEngine(
+				eng, err := newEngine(
 					cfg,
 					mode,
 					workingDir,
@@ -193,6 +202,11 @@ func NewRootCommandWithIO(streams IO) *cobra.Command {
 					makeSubagentRunner(cfg, mode, streams, skillManager, nil, nil, telemetryRuntime.Tracer()),
 					telemetryRuntime.Tracer(),
 				)
+				if err != nil {
+					return nil, err
+				}
+				attachCoordinatorTaskNotifications(eng)
+				return eng, nil
 			}
 
 			if isMCPServerModeEnabled() {
@@ -205,11 +219,14 @@ func NewRootCommandWithIO(streams IO) *cobra.Command {
 			}
 
 			if isBridgeModeEnabled() {
-				server := bridgepkg.NewServer(cfg.BridgeSecret, bridgeRunner{
+				runner := bridgeRunner{
 					defaultWorkDir: cwdFlag,
 					home:           home,
 					buildEngine:    buildEngine,
-				})
+				}
+				stopBridgeContinuation := startBridgeContinuationForwarder(cmd.Context(), runner, coretasks.DefaultManager())
+				defer stopBridgeContinuation()
+				server := bridgepkg.NewServer(cfg.BridgeSecret, runner)
 				return server.Serve(cmd.Context(), streams.In, streams.Out)
 			}
 
@@ -276,12 +293,51 @@ func buildSubagentPrompt(request agenttool.Request) string {
 	if request.SubagentType != "" {
 		preamble = append(preamble, "Requested subagent type: "+request.SubagentType)
 	}
+	if request.DefinitionSource != "" {
+		preamble = append(preamble, "Agent definition source: "+request.DefinitionSource)
+	}
+	if request.DefinitionMemory != "" {
+		preamble = append(preamble, "Agent memory policy: "+request.DefinitionMemory)
+	}
+	if request.PermissionPolicy != "" {
+		preamble = append(preamble, "Agent permission policy: "+request.PermissionPolicy)
+	}
+	if len(request.DefinitionSkills) > 0 {
+		preamble = append(preamble, "Agent requested skills: "+strings.Join(request.DefinitionSkills, ", "))
+	}
+	if len(request.DefinitionMCPServers) > 0 {
+		preamble = append(preamble, "Agent MCP servers: "+strings.Join(request.DefinitionMCPServers, ", "))
+	}
+	if len(request.DefinitionRequiredMCPServers) > 0 {
+		preamble = append(preamble, "Agent required MCP servers: "+strings.Join(request.DefinitionRequiredMCPServers, ", ")+". If a required MCP server is unavailable in this runtime, report that limitation explicitly.")
+	}
+	if request.OmitClaudeMd {
+		preamble = append(preamble, "Project CLAUDE.md context is intentionally omitted for this agent definition.")
+	}
+	if request.ParentSessionID != "" {
+		preamble = append(preamble, "Parent session ID: "+request.ParentSessionID)
+	}
+	if request.ParentAgentID != "" {
+		preamble = append(preamble, "Parent agent ID: "+request.ParentAgentID)
+	}
+	if request.Isolation != "" {
+		preamble = append(preamble, "Agent isolation: "+request.Isolation)
+	}
 	preamble = append(preamble, request.Prompt)
 	return strings.Join(preamble, "\n\n")
 }
 
 func newEngine(cfg config.Config, mode permissions.Mode, workingDir string, streams IO, runSubagent agenttool.Runner, tracer telemetry.SessionTracer) (*engine.Engine, error) {
 	return newEngineWithOptions(cfg, mode, workingDir, streams, runSubagent, tracer, nil)
+}
+
+func attachCoordinatorTaskNotifications(eng *engine.Engine) {
+	if eng == nil || !coordinator.IsCoordinatorMode() {
+		return
+	}
+	eng.AddPendingMessageProvider(func(context.Context) []string {
+		return coordinator.DrainTaskNotifications(coretasks.DefaultManager())
+	})
 }
 
 func buildRegistry(cfg config.Config, workingDir string, runSubagent agenttool.Runner, skillManager *skills.SkillManager) (*toolkit.Registry, error) {
@@ -342,7 +398,9 @@ func buildRegistry(cfg config.Config, workingDir string, runSubagent agenttool.R
 		tools = append(tools, synthetictool.New())
 	}
 	if runSubagent != nil {
-		tools = append(tools, agenttool.NewTool(workingDir, runSubagent))
+		agentTool := agenttool.NewTool(workingDir, runSubagent)
+		agentTool.SetAvailableMCPServers(mcpServerNames(cfg.MCPServers))
+		tools = append(tools, agentTool)
 	}
 	if skillManager != nil {
 		skilltool := skilltool.NewToolWithRunner(skillManager, workingDir, runSubagent)
@@ -377,6 +435,17 @@ func toolNames(tools []toolkit.Tool) []string {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		names = append(names, tool.Name())
+	}
+	return names
+}
+
+func mcpServerNames(servers []config.MCPServerConfig) []string {
+	names := make([]string, 0, len(servers))
+	for _, server := range servers {
+		name := strings.TrimSpace(server.Name)
+		if name != "" {
+			names = append(names, name)
+		}
 	}
 	return names
 }
@@ -446,6 +515,9 @@ func runInteractive(
 	// Create progress channel for tool execution feedback
 	progressCh := make(chan toolkit.ProgressEvent, 100)
 	promptSuggestionCh := make(chan string, 8)
+	coordinatorEventCh := make(chan string, 16)
+	stopCoordinatorForwarder := coordinator.ForwardTaskNotifications(coretasks.DefaultManager(), coordinatorEventCh)
+	defer stopCoordinatorForwarder()
 	runtime := newRuntimeServices(workingDir, home, promptSuggestionCh, func(event toolkit.ProgressEvent) {
 		select {
 		case progressCh <- event:
@@ -499,6 +571,7 @@ func runInteractive(
 				if err != nil {
 					return engine.Result{}, err
 				}
+				attachCoordinatorTaskNotifications(eng)
 
 				// Set progress callback to send events to TUI
 				eng.SetProgressCallback(func(event toolkit.ProgressEvent) {
@@ -558,6 +631,7 @@ func runInteractive(
 		StreamRunner:       streamRunner,
 		ProgressCh:         progressCh,
 		PromptSuggestionCh: promptSuggestionCh,
+		CoordinatorEventCh: coordinatorEventCh,
 		Runner: func(runCtx context.Context, currentSession *state.Session, prompt string) (engine.Result, error) {
 			runner, err := newEngineWithOptions(
 				currentConfig,
@@ -589,6 +663,7 @@ func runInteractive(
 			if err != nil {
 				return engine.Result{}, err
 			}
+			attachCoordinatorTaskNotifications(runner)
 
 			// Set progress callback to send events to TUI
 			runner.SetProgressCallback(func(event toolkit.ProgressEvent) {
@@ -643,6 +718,7 @@ func runInteractive(
 			if err != nil {
 				return engine.Result{}, err
 			}
+			attachCoordinatorTaskNotifications(runner)
 			runner.SetProgressCallback(func(event toolkit.ProgressEvent) {
 				select {
 				case progressCh <- event:
@@ -743,6 +819,9 @@ func (r bridgeRunner) RunPrompt(ctx context.Context, workingDir, prompt string) 
 	if err != nil {
 		return "", err
 	}
+	if _, err := session.Save(r.home); err != nil {
+		return "", err
+	}
 	return result.Output, nil
 }
 
@@ -772,6 +851,9 @@ func (r bridgeRunner) CreateSession(_ context.Context, workingDir string) (*brid
 }
 
 func (r bridgeRunner) RunSessionPrompt(ctx context.Context, sessionID, prompt string) (*bridgepkg.SessionPromptResult, error) {
+	unlock := lockBridgeSession(sessionID)
+	defer unlock()
+
 	session, err := state.LoadSession(r.home, sessionID)
 	if err != nil {
 		return nil, err

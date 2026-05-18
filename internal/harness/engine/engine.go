@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	coreagent "claude-codex/internal/harness/agent"
 	"claude-codex/internal/harness/messages"
 	"claude-codex/internal/harness/permissions"
 	"claude-codex/internal/harness/skills"
@@ -32,6 +33,7 @@ type Engine struct {
 	progressCallback    func(toolkit.ProgressEvent)
 	telemetryTracer     telemetry.SessionTracer
 	runner              engineRuntime
+	pendingProviders    []func(context.Context) []string
 }
 
 type Result struct {
@@ -75,6 +77,43 @@ func (e *Engine) SetTelemetryTracer(tracer telemetry.SessionTracer) {
 		return
 	}
 	e.telemetryTracer = tracer
+}
+
+// SetPendingMessageProvider configures a drain function for follow-up
+// instructions queued while this engine is running as a background agent.
+func (e *Engine) SetPendingMessageProvider(provider func(context.Context) []string) {
+	if provider == nil {
+		e.pendingProviders = nil
+		return
+	}
+	e.pendingProviders = []func(context.Context) []string{wrapAgentFollowUps(provider)}
+}
+
+// AddPendingMessageProvider appends an independent source of synthetic
+// user-role messages, such as coordinator task notifications.
+func (e *Engine) AddPendingMessageProvider(provider func(context.Context) []string) {
+	if provider == nil {
+		return
+	}
+	e.pendingProviders = append(e.pendingProviders, provider)
+}
+
+func wrapAgentFollowUps(provider func(context.Context) []string) func(context.Context) []string {
+	return func(ctx context.Context) []string {
+		messages := provider(ctx)
+		if len(messages) == 0 {
+			return nil
+		}
+		out := make([]string, 0, len(messages))
+		for _, message := range messages {
+			message = strings.TrimSpace(message)
+			if message == "" {
+				continue
+			}
+			out = append(out, "<agent-follow-up>\n"+message+"\n</agent-follow-up>")
+		}
+		return out
+	}
 }
 
 // SetSkillManager sets the skill manager for the engine
@@ -156,6 +195,7 @@ func (e *Engine) runStream(ctx context.Context, session *state.Session, prompt s
 
 	var output strings.Builder
 	for turn := 0; e.maxTurns <= 0 || turn < e.maxTurns; turn++ {
+		e.injectPendingMessages(ctx, session)
 		turnSpanID := fmt.Sprintf("%s:turn:%d", interactionID, turn)
 		e.recordTrace(session.ID, "planner.turn.start", "planner", map[string]any{
 			"span_id": turnSpanID,
@@ -235,6 +275,64 @@ func formatToolExecutionError(call ToolCall, err error) string {
 	return fmt.Sprintf("%s: %v", call.Name, err)
 }
 
+func contextWithSessionAgent(ctx context.Context, session *state.Session) context.Context {
+	if session == nil {
+		return ctx
+	}
+	if current, ok := coreagent.AgentContextFrom(ctx); ok {
+		if current.ParentSessionID == "" {
+			current.ParentSessionID = session.ID
+		}
+		if current.SessionMetadata == nil {
+			current.SessionMetadata = cloneSessionMetadata(session.Metadata)
+		}
+		if len(current.RecentMessages) == 0 {
+			current.RecentMessages = recentSessionMessages(session, 12)
+		}
+		return coreagent.WithAgentContext(ctx, current)
+	}
+	return coreagent.WithAgentContext(ctx, coreagent.AgentContext{
+		AgentID:         session.AgentID,
+		ParentSessionID: session.ID,
+		InvocationKind:  coreagent.InvocationMain,
+		SessionMetadata: cloneSessionMetadata(session.Metadata),
+		RecentMessages:  recentSessionMessages(session, 12),
+	})
+}
+
+func cloneSessionMetadata(input map[string]string) map[string]string {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
+}
+
+func recentSessionMessages(session *state.Session, limit int) []string {
+	if session == nil || limit <= 0 {
+		return nil
+	}
+	start := len(session.Messages) - limit
+	if start < 0 {
+		start = 0
+	}
+	out := make([]string, 0, len(session.Messages)-start)
+	for _, message := range session.Messages[start:] {
+		if strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		role := message.Role
+		if role == "" {
+			role = "message"
+		}
+		out = append(out, role+": "+strings.TrimSpace(message.Content))
+	}
+	return out
+}
+
 func (e *Engine) executeToolCall(
 	ctx context.Context,
 	session *state.Session,
@@ -278,10 +376,11 @@ func (e *Engine) executeToolCall(
 	})
 
 	var result toolkit.Result
+	toolCtx := contextWithSessionAgent(ctx, session)
 	if progressTool, ok := tool.(toolkit.ProgressAwareTool); ok {
-		result, err = progressTool.ExecuteWithProgress(ctx, call.Input, progressReporter)
+		result, err = progressTool.ExecuteWithProgress(toolCtx, call.Input, progressReporter)
 	} else {
-		result, err = tool.Execute(ctx, call.Input)
+		result, err = tool.Execute(toolCtx, call.Input)
 	}
 
 	if err != nil {

@@ -35,6 +35,11 @@ const FORK_BOILERPLATE_TAG = "fork-boilerplate"
 // FORK_DIRECTIVE_PREFIX prefixes the directive in fork messages
 const FORK_DIRECTIVE_PREFIX = "Your directive: "
 
+// ForkToolResultPlaceholder answers inherited tool_use blocks so the forked
+// child receives a syntactically complete transcript without pretending the
+// parent's background tool has already produced a final result.
+const ForkToolResultPlaceholder = "Forked subagent started in the background. Its final result will be delivered as a task notification when complete."
+
 // ForkAgent is the synthetic agent definition for forks
 var ForkAgent = &AgentDefinition{
 	AgentType:    FORK_SUBAGENT_TYPE,
@@ -65,7 +70,7 @@ func IsInForkChild(messages []Message) bool {
 
 func containsForkBoilerplate(text string) bool {
 	return len(text) > 0 && (text[0] == '<' || len(text) > 100) &&
-		   (containsSubstring(text, "<"+FORK_BOILERPLATE_TAG+">"))
+		(containsSubstring(text, "<"+FORK_BOILERPLATE_TAG+">"))
 }
 
 func containsSubstring(s, substr string) bool {
@@ -113,14 +118,13 @@ func BuildForkedMessages(directive string, assistantMessage Message) []Message {
 		}
 	}
 
-	// Build tool_result blocks with placeholder
-	const placeholderResult = "Fork started — processing in background"
+	// Build tool_result blocks with placeholder.
 	toolResultBlocks := make([]ContentBlock, len(toolUseBlocks))
 	for i, toolUse := range toolUseBlocks {
 		toolResultBlocks[i] = ContentBlock{
 			Type:      "tool_result",
 			ToolUseID: toolUse.ToolID,
-			Result:    placeholderResult,
+			Result:    ForkToolResultPlaceholder,
 			IsError:   false,
 		}
 	}

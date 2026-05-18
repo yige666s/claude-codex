@@ -77,6 +77,20 @@ func (m *Manager) RunAgent(ctx context.Context, config AgentConfig) (*AgentResul
 	return m.executor.Execute(ctx, config)
 }
 
+// RunAgentWithOptions executes an agent through the harness-level run contract.
+func (m *Manager) RunAgentWithOptions(ctx context.Context, opts AgentRunOptions) (*AgentResult, error) {
+	if opts.Definition == nil {
+		return nil, fmt.Errorf("agent definition is required")
+	}
+	config, agentCtx, err := agentConfigFromRunOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	m.progressTracker.StartTracking(config.AgentID)
+	defer m.progressTracker.StopTracking(config.AgentID)
+	return m.executor.Execute(WithAgentContext(ctx, agentCtx), config)
+}
+
 // RunAgentByType executes an agent by type name
 func (m *Manager) RunAgentByType(ctx context.Context, agentType AgentType, prompt string, parentModel string) (*AgentResult, error) {
 	def, err := m.GetDefinition(agentType)

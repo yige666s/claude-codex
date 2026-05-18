@@ -40,23 +40,23 @@ const (
 // AllAgentDisallowedTools is the set of tools never available to any subagent.
 // Mirrors ALL_AGENT_DISALLOWED_TOOLS in TypeScript.
 var AllAgentDisallowedTools = map[string]bool{
-	ToolTaskOutput:    true,
-	ToolExitPlanMode:  true,
-	ToolEnterPlanMode: true,
-	ToolAgent:         true, // blocked to prevent runaway recursion
+	ToolTaskOutput:      true,
+	ToolExitPlanMode:    true,
+	ToolEnterPlanMode:   true,
+	ToolAgent:           true, // blocked to prevent runaway recursion
 	ToolAskUserQuestion: true,
-	ToolTaskStop:      true,
+	ToolTaskStop:        true,
 }
 
 // CustomAgentDisallowedTools are additional restrictions for user-defined (non-built-in) agents.
 // Mirrors CUSTOM_AGENT_DISALLOWED_TOOLS in TypeScript.
 var CustomAgentDisallowedTools = map[string]bool{
-	ToolTaskOutput:    true,
-	ToolExitPlanMode:  true,
-	ToolEnterPlanMode: true,
-	ToolAgent:         true,
+	ToolTaskOutput:      true,
+	ToolExitPlanMode:    true,
+	ToolEnterPlanMode:   true,
+	ToolAgent:           true,
 	ToolAskUserQuestion: true,
-	ToolTaskStop:      true,
+	ToolTaskStop:        true,
 }
 
 // AsyncAgentAllowedTools is the core set for ASYNC (background) agents.
@@ -98,6 +98,7 @@ var InProcessTeammateAllowedTools = map[string]bool{
 var CoordinatorModeAllowedTools = map[string]bool{
 	ToolAgent:           true,
 	ToolTaskStop:        true,
+	ToolTaskOutput:      true,
 	ToolSendMessage:     true,
 	ToolSyntheticOutput: true,
 }

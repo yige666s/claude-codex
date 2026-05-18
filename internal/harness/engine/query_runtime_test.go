@@ -147,3 +147,15 @@ func TestQueryRuntimeMessageRoundTripPreservesToolHistory(t *testing.T) {
 		t.Fatalf("expected hidden assistant message to round-trip, got %#v", hiddenAssistant)
 	}
 }
+
+func TestQueryRuntimeLastAssistantMessageIgnoresHiddenContext(t *testing.T) {
+	messages := []state.Message{
+		{Role: "user", Content: "do work"},
+		{Role: "assistant", Content: "Understood. I have the workspace context.", Hidden: true},
+		{Role: "assistant", Content: "visible result"},
+	}
+
+	if got := lastAssistantMessage(messages); got != "visible result" {
+		t.Fatalf("lastAssistantMessage() = %q, want visible result", got)
+	}
+}

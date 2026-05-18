@@ -54,8 +54,9 @@ func GetAskRuleForTool(ctx *ToolContext, toolName string) (Rule, bool) {
 
 // GetDenyRuleForAgent returns a deny rule matching Agent(agentType)-style syntax.
 func GetDenyRuleForAgent(ctx *ToolContext, agentToolName, agentType string) (Rule, bool) {
+	toolNames := equivalentAgentToolNames(agentToolName)
 	for _, rule := range GetDenyRules(ctx) {
-		if rule.Value.ToolName == agentToolName && rule.Value.RuleContent == agentType {
+		if toolNames[rule.Value.ToolName] && rule.Value.RuleContent == agentType {
 			return rule, true
 		}
 	}
@@ -69,9 +70,10 @@ type AgentDescriptor struct {
 
 // FilterDeniedAgents removes agents denied by Agent(agentType)-style rules.
 func FilterDeniedAgents(agents []AgentDescriptor, ctx *ToolContext, agentToolName string) []AgentDescriptor {
+	toolNames := equivalentAgentToolNames(agentToolName)
 	denied := make(map[string]bool)
 	for _, rule := range GetDenyRules(ctx) {
-		if rule.Value.ToolName == agentToolName && rule.Value.RuleContent != "" {
+		if toolNames[rule.Value.ToolName] && rule.Value.RuleContent != "" {
 			denied[rule.Value.RuleContent] = true
 		}
 	}
@@ -82,6 +84,25 @@ func FilterDeniedAgents(agents []AgentDescriptor, ctx *ToolContext, agentToolNam
 		}
 	}
 	return filtered
+}
+
+func equivalentAgentToolNames(agentToolName string) map[string]bool {
+	names := map[string]bool{
+		agentToolName:                          true,
+		NormalizeLegacyToolName(agentToolName): true,
+	}
+	switch agentToolName {
+	case "Agent":
+		names["AgentTool"] = true
+		names["Task"] = true
+	case "AgentTool":
+		names["Agent"] = true
+		names["Task"] = true
+	case "Task":
+		names["Agent"] = true
+		names["AgentTool"] = true
+	}
+	return names
 }
 
 // GetRuleByContentsForToolName maps rule content to the rule for a tool and behavior.

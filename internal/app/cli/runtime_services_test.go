@@ -154,6 +154,37 @@ func TestMakeSubagentRunnerReportsAgentSummary(t *testing.T) {
 	}
 }
 
+func TestSubagentPermissionPolicyModeResolution(t *testing.T) {
+	if got := subagentPermissionMode(permissions.ModeDefault, "allow"); got != permissions.ModeBypass {
+		t.Fatalf("allow policy mode = %q, want bypass", got)
+	}
+	if got := subagentPermissionMode(permissions.ModeBypass, "deny"); got != permissions.ModeDefault {
+		t.Fatalf("deny policy mode = %q, want default", got)
+	}
+	if got := subagentPermissionMode(permissions.ModePlan, "bubble"); got != permissions.ModePlan {
+		t.Fatalf("bubble policy mode = %q, want parent plan", got)
+	}
+	if got := subagentPermissionMode(permissions.ModeAuto, ""); got != permissions.ModeAuto {
+		t.Fatalf("default policy mode = %q, want parent auto", got)
+	}
+}
+
+func TestSubagentDenyPermissionPolicyResolver(t *testing.T) {
+	checker := permissions.NewChecker(
+		permissions.ModeDefault,
+		nil,
+		nil,
+		subagentPermissionOptions("deny")...,
+	)
+	err := checker.AuthorizeRequest(context.Background(), permissions.Request{
+		ToolName: "Bash",
+		Level:    permissions.LevelExecute,
+	})
+	if err == nil || !strings.Contains(err.Error(), "Subagent permission policy denies Bash") {
+		t.Fatalf("expected deny policy error, got %v", err)
+	}
+}
+
 func TestPrepareSubagentWorkingDirDefaults(t *testing.T) {
 	cwd := t.TempDir()
 	dir, cleanup, err := prepareSubagentWorkingDir(context.Background(), agenttool.Request{WorkingDir: cwd})

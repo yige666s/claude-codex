@@ -163,6 +163,54 @@ func resolveAgentTools(
 	}
 }
 
+// ResolveAgentTools exposes the agent tool resolution contract for callers
+// outside this package while keeping the implementation shared with tests.
+func ResolveAgentTools(def *AgentDefinition, availableTools []string, isAsync bool, isMainThread bool) ResolvedAgentTools {
+	if def == nil {
+		return ResolvedAgentTools{}
+	}
+	return resolveAgentTools(def, availableTools, isAsync, isMainThread)
+}
+
+// HasRequiredMCPServers returns true when every required MCP server pattern on
+// the agent is satisfied by at least one available server name. Matching is
+// case-insensitive and substring-based to mirror Claude Code's
+// hasRequiredMcpServers behavior.
+func HasRequiredMCPServers(def *AgentDefinition, availableServers []string) bool {
+	if def == nil || len(def.RequiredMCPServers) == 0 {
+		return true
+	}
+	for _, rawPattern := range def.RequiredMCPServers {
+		pattern := strings.ToLower(strings.TrimSpace(rawPattern))
+		if pattern == "" {
+			continue
+		}
+		matched := false
+		for _, server := range availableServers {
+			if strings.Contains(strings.ToLower(server), pattern) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+// FilterAgentsByMCPRequirements returns only agents whose required MCP server
+// patterns are available.
+func FilterAgentsByMCPRequirements(definitions []*AgentDefinition, availableServers []string) []*AgentDefinition {
+	filtered := make([]*AgentDefinition, 0, len(definitions))
+	for _, def := range definitions {
+		if HasRequiredMCPServers(def, availableServers) {
+			filtered = append(filtered, def)
+		}
+	}
+	return filtered
+}
+
 // applyDisallowed removes any tool names that appear in the disallowed list.
 func applyDisallowed(tools []string, disallowed []string) []string {
 	if len(disallowed) == 0 {

@@ -1,7 +1,12 @@
 package coordinator
 
 import (
+	"context"
+	"strings"
 	"testing"
+	"time"
+
+	coretasks "claude-codex/internal/harness/tasks"
 )
 
 func TestCoordinatorMode(t *testing.T) {
@@ -159,7 +164,112 @@ func TestGetCoordinatorSystemPrompt(t *testing.T) {
 		if !contains(prompt, "skills") && !contains(prompt, "Skill") {
 			t.Error("Expected prompt to mention skills in full mode")
 		}
+		if !contains(prompt, TaskOutputToolName) {
+			t.Error("Expected prompt to mention TaskOutput tool")
+		}
 	})
+}
+
+func TestCoordinatorTaskNotificationAndTools(t *testing.T) {
+	notification := FormatTaskNotification(TaskNotification{
+		TaskID:      "agent-1",
+		Status:      "completed",
+		Summary:     "done <ok>",
+		Result:      "changed & verified",
+		TotalTokens: 12,
+		ToolUses:    3,
+		DurationMS:  45,
+	})
+	for _, want := range []string{
+		"<task-notification>",
+		"<task-id>agent-1</task-id>",
+		"<status>completed</status>",
+		"<summary>done &lt;ok&gt;</summary>",
+		"<result>changed &amp; verified</result>",
+		"<total_tokens>12</total_tokens>",
+	} {
+		if !contains(notification, want) {
+			t.Fatalf("notification missing %q: %s", want, notification)
+		}
+	}
+
+	tools := CoordinatorToolNames()
+	for _, want := range []string{AgentToolName, SendMessageToolName, TaskStopToolName, TaskOutputToolName, TeamCreateToolName, TeamDeleteToolName} {
+		found := false
+		for _, got := range tools {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("CoordinatorToolNames missing %s: %#v", want, tools)
+		}
+	}
+}
+
+func TestDrainTaskNotificationsFormatsTerminalRuntimeTasksOnce(t *testing.T) {
+	manager := coretasks.NewTaskManager()
+	task, err := manager.StartLocalAgent(context.Background(), coretasks.StartLocalAgentOptions{
+		Prompt:         "inspect auth",
+		Description:    "Inspect auth",
+		AgentType:      "worker",
+		IsBackgrounded: true,
+		Runner: func(context.Context, coretasks.LocalAgentRunRequest) (string, error) {
+			return "done", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartLocalAgent() error = %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if current, ok := manager.GetTask(task.ID); ok && coretasks.IsTerminalTaskStatus(current.GetStatus()) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	notifications := DrainTaskNotifications(manager)
+	if len(notifications) != 1 {
+		t.Fatalf("expected one notification, got %#v", notifications)
+	}
+	if !strings.Contains(notifications[0], "<task-notification>") || !strings.Contains(notifications[0], "done") {
+		t.Fatalf("unexpected notification: %s", notifications[0])
+	}
+	if again := DrainTaskNotifications(manager); len(again) != 0 {
+		t.Fatalf("notification should only drain once, got %#v", again)
+	}
+}
+
+func TestForwardTaskNotificationsWakesOnTerminalEvent(t *testing.T) {
+	manager := coretasks.NewTaskManager()
+	out := make(chan string, 1)
+	stop := ForwardTaskNotifications(manager, out)
+	defer stop()
+
+	task, err := manager.StartLocalAgent(context.Background(), coretasks.StartLocalAgentOptions{
+		Prompt:         "work",
+		Description:    "Worker",
+		AgentType:      "worker",
+		WorkingDir:     "/tmp/work",
+		IsBackgrounded: true,
+		Runner: func(context.Context, coretasks.LocalAgentRunRequest) (string, error) {
+			return "done", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartLocalAgent() error = %v", err)
+	}
+
+	select {
+	case notification := <-out:
+		if !strings.Contains(notification, "<task-notification>") || !strings.Contains(notification, task.AgentID) {
+			t.Fatalf("unexpected notification: %s", notification)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for forwarded notification")
+	}
 }
 
 func TestManagerWorkerTracking(t *testing.T) {
@@ -250,8 +360,8 @@ func TestGetWorkerContext(t *testing.T) {
 func contains(s, substr string) bool {
 	return len(s) > 0 && len(substr) > 0 &&
 		(s == substr || len(s) >= len(substr) &&
-		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
-		findSubstring(s, substr)))
+			(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
+				findSubstring(s, substr)))
 }
 
 func findSubstring(s, substr string) bool {

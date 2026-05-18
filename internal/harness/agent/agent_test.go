@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,7 +111,54 @@ func TestFork(t *testing.T) {
 		if forkedMsgs[1].Role != "user" {
 			t.Errorf("Expected second message to be user, got %s", forkedMsgs[1].Role)
 		}
+		if len(forkedMsgs[1].Content) < 2 {
+			t.Fatalf("Expected tool result and directive, got %#v", forkedMsgs[1].Content)
+		}
+		result := forkedMsgs[1].Content[0]
+		if result.Type != "tool_result" || result.ToolUseID != "tool-1" {
+			t.Fatalf("Expected first user block to answer tool-1, got %#v", result)
+		}
+		if result.Result != ForkToolResultPlaceholder || result.IsError {
+			t.Fatalf("Unexpected fork placeholder result: %#v", result)
+		}
 	})
+}
+
+func TestAgentConfigFromRunOptionsAppliesDefinitionExecutionFields(t *testing.T) {
+	def := &AgentDefinition{
+		AgentType:     "writer",
+		Model:         ModelInherit,
+		SystemPrompt:  "Base system",
+		InitialPrompt: "Always be concise.",
+		Memory:        "local",
+		Skills:        []string{"review", "commit"},
+		OmitClaudeMd:  true,
+	}
+	config, agentCtx, err := agentConfigFromRunOptions(AgentRunOptions{
+		Definition:     def,
+		Prompt:         "Summarize changes",
+		AgentName:      "writer-1",
+		TeamName:       "alpha",
+		InvocationKind: InvocationTeammate,
+		PendingMessages: func(context.Context) []string {
+			return []string{"follow up"}
+		},
+	})
+	if err != nil {
+		t.Fatalf("agentConfigFromRunOptions() error = %v", err)
+	}
+	if !strings.Contains(config.InitialPrompt, "Always be concise.") || !strings.Contains(config.InitialPrompt, "Summarize changes") {
+		t.Fatalf("initial prompt did not combine definition and user prompt: %q", config.InitialPrompt)
+	}
+	if config.SystemPrompt == nil || !strings.Contains(*config.SystemPrompt, "Memory policy: local") || !strings.Contains(*config.SystemPrompt, "Requested skills: review, commit") {
+		t.Fatalf("system prompt missing definition execution context: %#v", config.SystemPrompt)
+	}
+	if config.PendingMessages == nil {
+		t.Fatal("expected pending message provider to be carried into AgentConfig")
+	}
+	if agentCtx.InvocationKind != InvocationTeammate || agentCtx.SubagentName != "writer-1" || agentCtx.TeamName != "alpha" {
+		t.Fatalf("unexpected agent context: %#v", agentCtx)
+	}
 }
 
 func TestManager(t *testing.T) {
@@ -270,6 +318,7 @@ func TestAgentIDHelpers(t *testing.T) {
 func TestLoadAgentDefinitionsSupportsTSFrontmatter(t *testing.T) {
 	cwd := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_HOME", filepath.Join(t.TempDir(), ".claude"))
 	ClearAgentDefinitionsCache()
 	t.Cleanup(ClearAgentDefinitionsCache)
 
@@ -287,6 +336,13 @@ maxTurns: 7
 initialPrompt: Start here
 isolation: worktree
 memory: local
+mcpServers: [notes, search]
+requiredMcpServers: [notes]
+skills: [review]
+background: true
+omitClaudeMd: true
+color: cyan
+effort: high
 ---
 You review changes.
 `
@@ -319,6 +375,139 @@ You review changes.
 	}
 	if reviewer.InitialPrompt != "Start here" || reviewer.Isolation != "worktree" || reviewer.Memory != "local" {
 		t.Fatalf("missing TS fields: %+v", reviewer)
+	}
+	if !reviewer.Background || !reviewer.OmitClaudeMd || reviewer.Color != "cyan" || reviewer.Effort != "high" {
+		t.Fatalf("missing metadata fields: %+v", reviewer)
+	}
+	if strings.Join(reviewer.MCPServers, ",") != "notes,search" {
+		t.Fatalf("unexpected MCP servers: %#v", reviewer.MCPServers)
+	}
+	if strings.Join(reviewer.RequiredMCPServers, ",") != "notes" {
+		t.Fatalf("unexpected required MCP servers: %#v", reviewer.RequiredMCPServers)
+	}
+	if strings.Join(reviewer.Skills, ",") != "review" {
+		t.Fatalf("unexpected skills: %#v", reviewer.Skills)
+	}
+}
+
+func TestAgentDefinitionOverridePriority(t *testing.T) {
+	cwd := t.TempDir()
+	homeConfig := filepath.Join(t.TempDir(), ".claude")
+	t.Setenv("CLAUDE_CONFIG_HOME", homeConfig)
+	managedSettings := filepath.Join(t.TempDir(), "managed-settings.json")
+	t.Setenv("CLAUDE_GO_MANAGED_SETTINGS_PATH", managedSettings)
+	ClearAgentDefinitionsCache()
+	ClearPluginDefinitions()
+	ClearFlagDefinitions()
+	t.Cleanup(func() {
+		ClearAgentDefinitionsCache()
+		ClearPluginDefinitions()
+		ClearFlagDefinitions()
+	})
+
+	writeAgent := func(dir, prompt string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		content := "---\nname: reviewer\ndescription: " + prompt + "\n---\n" + prompt + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "reviewer.md"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write agent: %v", err)
+		}
+	}
+
+	RegisterPluginDefinitions([]*AgentDefinition{{
+		AgentType:    "reviewer",
+		WhenToUse:    "plugin",
+		Source:       SourcePlugin,
+		SystemPrompt: "plugin",
+	}})
+	writeAgent(filepath.Join(homeConfig, "agents"), "user")
+	writeAgent(filepath.Join(cwd, ".claude", "agents"), "project")
+	RegisterFlagDefinitions([]*AgentDefinition{{
+		AgentType:    "reviewer",
+		WhenToUse:    "flag",
+		SystemPrompt: "flag",
+	}})
+	writeAgent(filepath.Join(filepath.Dir(managedSettings), ".claude", "agents"), "policy")
+
+	result, err := GetAgentDefinitionsWithOverrides(cwd, false)
+	if err != nil {
+		t.Fatalf("load agents: %v", err)
+	}
+	var reviewer *AgentDefinition
+	for _, def := range result.Agents {
+		if def.AgentType == "reviewer" {
+			reviewer = def
+			break
+		}
+	}
+	if reviewer == nil {
+		t.Fatalf("reviewer agent not loaded")
+	}
+	if reviewer.Source != SourcePolicySettings || reviewer.SystemPrompt != "policy" {
+		t.Fatalf("policy should override flag/project/user/plugin, got %+v", reviewer)
+	}
+}
+
+func TestAgentDefinitionsLoadParentProjectDirsWithNearestOverride(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "a", "b")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("mkdir child: %v", err)
+	}
+	t.Setenv("CLAUDE_CONFIG_HOME", filepath.Join(t.TempDir(), ".claude"))
+	t.Setenv("CLAUDE_GO_MANAGED_SETTINGS_PATH", filepath.Join(t.TempDir(), "managed-settings.json"))
+	ClearAgentDefinitionsCache()
+	t.Cleanup(ClearAgentDefinitionsCache)
+
+	writeAgent := func(base, prompt string) {
+		t.Helper()
+		dir := filepath.Join(base, ".claude", "agents")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir agent dir: %v", err)
+		}
+		content := "---\nname: reviewer\ndescription: " + prompt + "\n---\n" + prompt + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "reviewer.md"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write agent: %v", err)
+		}
+	}
+	writeAgent(root, "parent")
+	writeAgent(child, "child")
+
+	result, err := GetAgentDefinitionsWithOverrides(child, false)
+	if err != nil {
+		t.Fatalf("load agents: %v", err)
+	}
+	var reviewer *AgentDefinition
+	for _, def := range result.Agents {
+		if def.AgentType == "reviewer" {
+			reviewer = def
+			break
+		}
+	}
+	if reviewer == nil || reviewer.SystemPrompt != "child" {
+		t.Fatalf("nearest project agent should override parent, got %+v", reviewer)
+	}
+}
+
+func TestFilterAgentsByMCPRequirements(t *testing.T) {
+	defs := []*AgentDefinition{
+		{AgentType: "open", RequiredMCPServers: nil},
+		{AgentType: "notes", RequiredMCPServers: []string{"notes"}},
+		{AgentType: "both", RequiredMCPServers: []string{"notes", "search"}},
+		{AgentType: "missing", RequiredMCPServers: []string{"github"}},
+	}
+	filtered := FilterAgentsByMCPRequirements(defs, []string{"local-notes-server", "web-search"})
+	var names []string
+	for _, def := range filtered {
+		names = append(names, string(def.AgentType))
+	}
+	if strings.Join(names, ",") != "open,notes,both" {
+		t.Fatalf("unexpected MCP-filtered agents: %#v", names)
+	}
+	if !HasRequiredMCPServers(&AgentDefinition{RequiredMCPServers: []string{"NOTES"}}, []string{"local-notes-server"}) {
+		t.Fatal("required MCP matching should be case-insensitive")
 	}
 }
 
@@ -362,6 +551,49 @@ func TestExecutor(t *testing.T) {
 			t.Errorf("Expected 0 instances, got %d", len(instances))
 		}
 	})
+}
+
+func TestAgentRunOptionsBuildsConfigAndContext(t *testing.T) {
+	def := &AgentDefinition{
+		AgentType:  "reviewer",
+		Tools:      []string{"Read"},
+		MaxTurns:   10,
+		Model:      ModelInherit,
+		Permission: PermissionDefault,
+	}
+	systemPrompt := "custom system"
+	config, agentCtx, err := agentConfigFromRunOptions(AgentRunOptions{
+		Definition:      def,
+		Prompt:          "inspect files",
+		ParentAgentID:   "parent-1",
+		ParentSessionID: "session-1",
+		ParentModel:     "sonnet",
+		ModelOverride:   "opus",
+		WorkingDir:      "/tmp/project",
+		MaxTurns:        3,
+		TeamName:        "alpha",
+		AgentName:       "review-worker",
+		InvocationKind:  InvocationTeammate,
+		SystemPrompt:    &systemPrompt,
+	})
+	if err != nil {
+		t.Fatalf("agentConfigFromRunOptions() error = %v", err)
+	}
+	if config.Definition.Model != ModelOption("opus") || config.InitialPrompt != "inspect files" {
+		t.Fatalf("unexpected config: %+v", config)
+	}
+	if config.ParentID == nil || *config.ParentID != AgentID("parent-1") {
+		t.Fatalf("unexpected parent id: %+v", config.ParentID)
+	}
+	if config.MaxTurns == nil || *config.MaxTurns != 3 {
+		t.Fatalf("unexpected max turns: %+v", config.MaxTurns)
+	}
+	if agentCtx.ParentSessionID != "session-1" || agentCtx.TeamName != "alpha" || agentCtx.SubagentName != "review-worker" {
+		t.Fatalf("unexpected agent context: %+v", agentCtx)
+	}
+	if agentCtx.InvocationKind != InvocationTeammate || agentCtx.AgentType != "reviewer" || agentCtx.InvocationID == "" {
+		t.Fatalf("unexpected invocation context: %+v", agentCtx)
+	}
 }
 
 func TestHelperFunctions(t *testing.T) {

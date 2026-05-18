@@ -69,7 +69,7 @@ func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt i
 		Planner:                r.engine.planner,
 		ToolDescriptors:        r.engine.registry.Descriptors(),
 		ExecuteTool: func(ctx context.Context, name string, input []byte) (string, error) {
-			result, err := r.ExecuteTool(ctx, name, json.RawMessage(input))
+			result, err := r.ExecuteTool(contextWithSessionAgent(ctx, session), name, json.RawMessage(input))
 			return result.Output, err
 		},
 		MaxTurns: r.engine.maxTurns,
@@ -88,10 +88,7 @@ func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt i
 		return Result{}, err
 	}
 
-	var final queryengine.SDKMessage
-	for msg := range stream {
-		final = msg
-	}
+	final := drainQueryStream(stream)
 
 	if final.IsError && len(final.Errors) > 0 {
 		err := errors.New(strings.Join(final.Errors, "; "))
@@ -102,6 +99,36 @@ func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt i
 			"runtime": "queryengine",
 		})
 		return Result{}, err
+	}
+
+	for {
+		if len(r.engine.pendingProviders) == 0 {
+			break
+		}
+		var messages []string
+		for _, provider := range r.engine.pendingProviders {
+			if provider == nil {
+				continue
+			}
+			messages = append(messages, provider(ctx)...)
+		}
+		if len(messages) == 0 {
+			break
+		}
+		for _, message := range messages {
+			message = strings.TrimSpace(message)
+			if message == "" {
+				continue
+			}
+			stream, err = engine.SubmitMessage(ctx, message, nil)
+			if err != nil {
+				return Result{}, err
+			}
+			final = drainQueryStream(stream)
+			if final.IsError && len(final.Errors) > 0 {
+				return Result{}, errors.New(strings.Join(final.Errors, "; "))
+			}
+		}
 	}
 
 	syncSessionFromQueryMessages(session, engine.GetMessages())
@@ -122,6 +149,14 @@ func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt i
 		Output:  output,
 		Session: session,
 	}, nil
+}
+
+func drainQueryStream(stream <-chan queryengine.SDKMessage) queryengine.SDKMessage {
+	var final queryengine.SDKMessage
+	for msg := range stream {
+		final = msg
+	}
+	return final
 }
 
 func runtimeWorkingDir(engineDir, sessionDir string) string {
@@ -463,7 +498,7 @@ func recordSessionUsage(usage *state.Usage, message state.Message) {
 
 func lastAssistantMessage(messages []state.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "assistant" && strings.TrimSpace(messages[i].Content) != "" {
+		if messages[i].Role == "assistant" && !messages[i].Hidden && strings.TrimSpace(messages[i].Content) != "" {
 			return messages[i].Content
 		}
 	}

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"claude-codex/internal/harness/permissions"
+	coretasks "claude-codex/internal/harness/tasks"
 	toolkit "claude-codex/internal/harness/tools"
 )
 
@@ -122,6 +123,19 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result
 				// Channel full — fall through to mailbox.
 			}
 		}
+	}
+
+	if task, ok := coretasks.DefaultManager().GetTask(in.To); ok && task.GetType() == coretasks.TaskTypeLocalAgent {
+		if err := coretasks.DefaultManager().QueueLocalAgentMessage(in.To, in.Message); err != nil {
+			return toolkit.Result{}, err
+		}
+		return toolkit.Result{Output: fmt.Sprintf("Message queued for local agent task %s.", in.To)}, nil
+	}
+	if teammate, ok := coretasks.DefaultManager().FindInProcessTeammate(in.To); ok {
+		if err := coretasks.DefaultManager().QueueInProcessTeammateMessage(in.To, in.Message); err != nil {
+			return toolkit.Result{}, err
+		}
+		return toolkit.Result{Output: fmt.Sprintf("Message queued for teammate %s.", teammate.TeammateID)}, nil
 	}
 
 	// Write to mailbox file for the target agent.

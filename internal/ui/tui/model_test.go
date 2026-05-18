@@ -180,6 +180,79 @@ func TestModelRendersPromptSuggestionAndAcceptsTab(t *testing.T) {
 	}
 }
 
+func TestModelRunsCoordinatorEventWhenIdle(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	var gotPrompt string
+	model := newModel(Options{
+		Title:          "Claude Go",
+		WorkingDir:     session.WorkingDir,
+		Theme:          "dark",
+		Session:        session,
+		PermissionMode: "default",
+		GeneratedRunner: func(_ context.Context, current *state.Session, prompt string) (engine.Result, error) {
+			gotPrompt = prompt
+			current.AddAssistantMessage("processed worker result")
+			return engine.Result{Session: current, Output: "processed worker result"}, nil
+		},
+		Input:  strings.NewReader(""),
+		Output: new(bytes.Buffer),
+	})
+
+	updated, cmd := model.Update(coordinatorEventMsg{text: "<task-notification><status>completed</status></task-notification>"})
+	if cmd == nil {
+		t.Fatal("expected coordinator event command")
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, batched := range batch {
+			if batched == nil {
+				continue
+			}
+			if result, ok := batched().(resultMsg); ok {
+				msg = result
+				break
+			}
+		}
+	}
+	updated, _ = updated.Update(msg)
+	m := updated.(appModel)
+	if gotPrompt == "" || !strings.Contains(gotPrompt, "<task-notification>") {
+		t.Fatalf("coordinator notification was not sent to generated runner: %q", gotPrompt)
+	}
+	if m.busy {
+		t.Fatal("model should be idle after generated coordinator event")
+	}
+}
+
+func TestModelQueuesCoordinatorEventWhileBusy(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	model := newModel(Options{
+		Title:          "Claude Go",
+		WorkingDir:     session.WorkingDir,
+		Theme:          "dark",
+		Session:        session,
+		PermissionMode: "default",
+		GeneratedRunner: func(_ context.Context, current *state.Session, prompt string) (engine.Result, error) {
+			current.AddAssistantMessage(prompt)
+			return engine.Result{Session: current}, nil
+		},
+		Input:  strings.NewReader(""),
+		Output: new(bytes.Buffer),
+	})
+	model.busy = true
+
+	updated, _ := model.Update(coordinatorEventMsg{text: "<task-notification>done</task-notification>"})
+	m := updated.(appModel)
+	if len(m.pendingCoordinator) != 1 {
+		t.Fatalf("expected queued coordinator event, got %#v", m.pendingCoordinator)
+	}
+	m.busy = false
+	next := m.startNextCoordinatorEvent()
+	if next == nil {
+		t.Fatal("expected queued coordinator event to start")
+	}
+}
+
 func TestUpAndDownNavigateInputHistory(t *testing.T) {
 	session := state.NewSession(t.TempDir())
 	model := newModel(Options{

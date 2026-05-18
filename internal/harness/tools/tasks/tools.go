@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"claude-codex/internal/harness/permissions"
+	coretasks "claude-codex/internal/harness/tasks"
 	toolkit "claude-codex/internal/harness/tools"
 )
 
@@ -456,6 +457,9 @@ func (t *taskGetTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.R
 	if err := decodeStrict(raw, &in); err != nil {
 		return toolkit.Result{}, err
 	}
+	if runtimeTask, ok := coretasks.DefaultManager().GetTask(in.TaskID); ok {
+		return writeJSON(map[string]any{"task": runtimeTaskOutputPayload(runtimeTask)})
+	}
 	task, err := readTask(currentTaskListID(), in.TaskID)
 	if err != nil {
 		return toolkit.Result{}, err
@@ -513,7 +517,7 @@ func (t *taskListTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.
 		Owner     string     `json:"owner,omitempty"`
 		BlockedBy []string   `json:"blockedBy"`
 	}
-	output := make([]listedTask, 0, len(allTasks))
+	output := make([]any, 0, len(allTasks)+len(coretasks.DefaultManager().ListTasks()))
 	for _, task := range allTasks {
 		if internal, _ := task.Metadata["_internal"].(bool); internal {
 			continue
@@ -531,6 +535,9 @@ func (t *taskListTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.
 			Owner:     task.Owner,
 			BlockedBy: blockedBy,
 		})
+	}
+	for _, task := range coretasks.DefaultManager().ListTasks() {
+		output = append(output, runtimeTaskOutputPayload(task))
 	}
 	return writeJSON(map[string]any{"tasks": output})
 }
@@ -736,6 +743,20 @@ func (t *taskStopTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.
 	if id == "" {
 		return toolkit.Result{}, fmt.Errorf("missing required parameter: task_id")
 	}
+	if runtimeTask, ok := coretasks.DefaultManager().GetTask(id); ok {
+		if runtimeTask.GetStatus() != coretasks.TaskStatusRunning {
+			return toolkit.Result{}, fmt.Errorf("task %s is not running (status: %s)", id, runtimeTask.GetStatus())
+		}
+		if err := coretasks.DefaultManager().KillTask(id, func(updater func(prev interface{}) interface{}) {}); err != nil {
+			return toolkit.Result{}, err
+		}
+		return writeJSON(map[string]any{
+			"message":   fmt.Sprintf("Successfully stopped task: %s (%s)", id, runtimeTask.GetDescription()),
+			"task_id":   id,
+			"task_type": string(runtimeTask.GetType()),
+			"command":   runtimeTask.GetDescription(),
+		})
+	}
 	task, err := readTask(currentTaskListID(), id)
 	if err != nil {
 		return toolkit.Result{}, err
@@ -792,6 +813,9 @@ func (t *taskOutputTool) Execute(ctx context.Context, raw json.RawMessage) (tool
 	if in.Timeout != nil {
 		timeoutMs = *in.Timeout
 	}
+	if _, ok := coretasks.DefaultManager().GetTask(in.TaskID); ok {
+		return t.executeRuntimeTaskOutput(ctx, in.TaskID, block, timeoutMs)
+	}
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 	for {
 		task, err := readTask(currentTaskListID(), in.TaskID)
@@ -836,4 +860,79 @@ func (t *taskOutputTool) Execute(ctx context.Context, raw json.RawMessage) (tool
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+func (t *taskOutputTool) executeRuntimeTaskOutput(ctx context.Context, taskID string, block bool, timeoutMs int) (toolkit.Result, error) {
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	for {
+		task, ok := coretasks.DefaultManager().GetTask(taskID)
+		if !ok {
+			return toolkit.Result{}, fmt.Errorf("no task found with ID: %s", taskID)
+		}
+		ready := coretasks.IsTerminalTaskStatus(task.GetStatus())
+		if ready || !block {
+			return runtimeTaskOutputResult(task, ready)
+		}
+		if time.Now().After(deadline) {
+			return writeJSON(map[string]any{
+				"retrieval_status": "timeout",
+				"task":             runtimeTaskOutputPayload(task),
+			})
+		}
+		select {
+		case <-ctx.Done():
+			return toolkit.Result{}, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func runtimeTaskOutputResult(task coretasks.TaskState, ready bool) (toolkit.Result, error) {
+	status := "not_ready"
+	if ready {
+		status = "success"
+		if task.GetStatus() == coretasks.TaskStatusFailed || task.GetStatus() == coretasks.TaskStatusKilled {
+			status = "failed"
+		}
+	}
+	return writeJSON(map[string]any{
+		"retrieval_status": status,
+		"task":             runtimeTaskOutputPayload(task),
+	})
+}
+
+func runtimeTaskOutputPayload(task coretasks.TaskState) map[string]any {
+	payload := map[string]any{
+		"task_id":     task.GetID(),
+		"task_type":   string(task.GetType()),
+		"status":      string(task.GetStatus()),
+		"description": task.GetDescription(),
+		"output":      "",
+	}
+	if local, ok := task.(*coretasks.LocalAgentTaskState); ok {
+		output, _ := coretasks.ReadTaskOutput(local.OutputFile, 0, coretasks.DefaultMaxReadBytes)
+		payload["agent_id"] = local.AgentID
+		payload["agent_type"] = local.AgentType
+		payload["working_dir"] = local.WorkingDir
+		payload["worktree_path"] = local.WorktreePath
+		payload["worktree_branch"] = local.WorktreeBranch
+		payload["output"] = output
+		payload["result"] = local.Result
+		payload["pending_messages"] = len(local.PendingMessages)
+	}
+	if teammate, ok := task.(*coretasks.InProcessTeammateTaskState); ok {
+		output, _ := coretasks.ReadTaskOutput(teammate.OutputFile, 0, coretasks.DefaultMaxReadBytes)
+		payload["agent_id"] = teammate.TeammateID
+		payload["teammate_id"] = teammate.TeammateID
+		payload["name"] = teammate.Name
+		payload["team_name"] = teammate.TeamName
+		payload["agent_type"] = teammate.AgentType
+		payload["working_dir"] = teammate.WorkingDir
+		payload["worktree_path"] = teammate.WorktreePath
+		payload["worktree_branch"] = teammate.WorktreeBranch
+		payload["output"] = output
+		payload["result"] = teammate.Result
+		payload["pending_messages"] = len(teammate.PendingMessages)
+	}
+	return payload
 }

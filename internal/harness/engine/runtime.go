@@ -83,6 +83,27 @@ func sessionHasHiddenContent(session *state.Session, needle string) bool {
 	return false
 }
 
+func (e *Engine) injectPendingMessages(ctx context.Context, session *state.Session) int {
+	if e == nil || len(e.pendingProviders) == 0 || session == nil {
+		return 0
+	}
+	count := 0
+	for _, provider := range e.pendingProviders {
+		if provider == nil {
+			continue
+		}
+		for _, message := range provider(ctx) {
+			message = strings.TrimSpace(message)
+			if message == "" {
+				continue
+			}
+			session.AddUserMessage(message)
+			count++
+		}
+	}
+	return count
+}
+
 func (r *legacyRuntime) Descriptors() []toolkit.Descriptor {
 	return r.engine.registry.Descriptors()
 }
@@ -143,6 +164,7 @@ func (r *legacyRuntime) Run(ctx context.Context, session *state.Session, prompt 
 	}
 
 	for turn := 0; r.engine.maxTurns <= 0 || turn < r.engine.maxTurns; turn++ {
+		r.engine.injectPendingMessages(ctx, session)
 		turnSpanID := fmt.Sprintf("%s:turn:%d", interactionID, turn)
 		r.engine.recordTrace(session.ID, "planner.turn.start", "planner", map[string]any{
 			"span_id": turnSpanID,

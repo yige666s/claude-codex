@@ -17,6 +17,7 @@ import (
 	"claude-codex/internal/backend/services/agentsummary"
 	"claude-codex/internal/backend/services/autodream"
 	"claude-codex/internal/backend/services/magicdocs"
+	coreagent "claude-codex/internal/harness/agent"
 	"claude-codex/internal/harness/memdir"
 	"claude-codex/internal/harness/permissions"
 	"claude-codex/internal/harness/skills"
@@ -228,14 +229,15 @@ func makeSubagentRunner(
 			childCfg.MaxTurns = request.MaxTurns
 		}
 
-		options := []permissions.Option{}
+		options := subagentPermissionOptions(request.PermissionPolicy)
 		if requestHandler != nil {
 			options = append(options, permissions.WithRequestHandler(requestHandler))
 		}
+		childMode := subagentPermissionMode(mode, request.PermissionPolicy)
 
 		childEngine, err := newEngineWithOptions(
 			childCfg,
-			mode,
+			childMode,
 			targetDir,
 			streams,
 			nil,
@@ -245,6 +247,9 @@ func makeSubagentRunner(
 		)
 		if err != nil {
 			return "", err
+		}
+		if request.DrainPendingMessages != nil {
+			childEngine.SetPendingMessageProvider(request.DrainPendingMessages)
 		}
 
 		var summaryState sync.RWMutex
@@ -293,7 +298,32 @@ func makeSubagentRunner(
 		}
 
 		childSession := state.NewSession(targetDir)
-		result, err := childEngine.Run(ctx, childSession, buildSubagentPrompt(request))
+		if request.ParentSessionID != "" {
+			childSession.ParentID = request.ParentSessionID
+		}
+		if request.AgentID != "" {
+			childSession.AgentID = request.AgentID
+		}
+		if childSession.Metadata == nil {
+			childSession.Metadata = map[string]string{}
+		}
+		for key, value := range request.ParentMetadata {
+			childSession.Metadata["parent_"+key] = value
+		}
+		childSession.Metadata["agent_invocation_kind"] = request.InvocationKind
+		childSession.Metadata["agent_type"] = request.SubagentType
+		childSession.Metadata["parent_agent_id"] = request.ParentAgentID
+		childSession.Metadata["parent_session_id"] = request.ParentSessionID
+		runCtx := coreagent.WithAgentContext(ctx, coreagent.AgentContext{
+			AgentID:         request.AgentID,
+			ParentSessionID: childSession.ID,
+			AgentType:       request.SubagentType,
+			SubagentName:    request.Name,
+			TeamName:        request.TeamName,
+			InvocationKind:  coreagent.AgentInvocationKind(request.InvocationKind),
+			InvocationID:    request.InvocationKind + ":" + request.AgentID,
+		})
+		result, err := childEngine.Run(runCtx, childSession, buildSubagentPrompt(request))
 		if err != nil {
 			if progressSink != nil {
 				progressSink(toolkit.ProgressEvent{ToolName: "Agent", Status: "failed", Message: getSummary()})
@@ -315,6 +345,33 @@ func makeSubagentRunner(
 	}
 }
 
+func subagentPermissionMode(parent permissions.Mode, policy string) permissions.Mode {
+	switch coreagent.PermissionMode(strings.TrimSpace(strings.ToLower(policy))) {
+	case coreagent.PermissionAllow:
+		return permissions.ModeBypass
+	case coreagent.PermissionDeny:
+		return permissions.ModeDefault
+	default:
+		return parent
+	}
+}
+
+func subagentPermissionOptions(policy string) []permissions.Option {
+	switch coreagent.PermissionMode(strings.TrimSpace(strings.ToLower(policy))) {
+	case coreagent.PermissionDeny:
+		return []permissions.Option{
+			permissions.WithDecisionResolver(permissions.DecisionResolverFunc(func(_ context.Context, request permissions.Request) (permissions.Decision, bool, error) {
+				return permissions.Decision{
+					Behavior: permissions.BehaviorDeny,
+					Reason:   "Subagent permission policy denies " + request.ToolName + ".",
+				}, true, nil
+			})),
+		}
+	default:
+		return nil
+	}
+}
+
 func prepareSubagentWorkingDir(ctx context.Context, request agenttool.Request) (string, func(), error) {
 	targetDir := request.WorkingDir
 	if targetDir == "" {
@@ -324,7 +381,7 @@ func prepareSubagentWorkingDir(ctx context.Context, request agenttool.Request) (
 		targetDir, _ = os.Getwd()
 	}
 	cleanup := func() {}
-	if request.Isolation != "worktree" {
+	if request.Isolation != "worktree" || request.WorktreePath != "" {
 		return targetDir, cleanup, nil
 	}
 

@@ -126,6 +126,7 @@ type Options struct {
 	Registry           CommandRegistry
 	ProgressCh         chan tools.ProgressEvent
 	PromptSuggestionCh chan string
+	CoordinatorEventCh chan string
 	LoadSandboxView    func() SandboxViewData
 	LoadMCPView        func() MCPViewData
 	LoadTeamsView      func() TeamsViewData

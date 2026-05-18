@@ -562,9 +562,12 @@ func TestPermissionRuleHelpers(t *testing.T) {
 	if rule, ok := GetDenyRuleForAgent(ctx, "AgentTool", "review"); !ok || rule.Value.RuleContent != "review" {
 		t.Fatalf("expected agent deny rule, got %#v %v", rule, ok)
 	}
+	if rule, ok := GetDenyRuleForAgent(ctx, "Agent", "review"); !ok || rule.Value.RuleContent != "review" {
+		t.Fatalf("expected Agent alias deny rule, got %#v %v", rule, ok)
+	}
 
 	agents := []AgentDescriptor{{AgentType: "review"}, {AgentType: "explore"}}
-	filtered := FilterDeniedAgents(agents, ctx, "AgentTool")
+	filtered := FilterDeniedAgents(agents, ctx, "Agent")
 	if len(filtered) != 1 || filtered[0].AgentType != "explore" {
 		t.Fatalf("unexpected filtered agents: %#v", filtered)
 	}

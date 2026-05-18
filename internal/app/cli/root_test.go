@@ -481,14 +481,30 @@ func TestRootCommandMaxTurnsFlagAllowsZeroOverride(t *testing.T) {
 
 func TestBuildSubagentPromptIncludesMetadata(t *testing.T) {
 	prompt := buildSubagentPrompt(agenttool.Request{
-		Description:  "Review auth flow",
-		SubagentType: "code-reviewer",
-		Prompt:       "Inspect src/auth for session bugs.",
+		Description:                  "Review auth flow",
+		SubagentType:                 "code-reviewer",
+		DefinitionSource:             "projectSettings",
+		DefinitionMemory:             "project",
+		PermissionPolicy:             "bubble",
+		DefinitionSkills:             []string{"inspect"},
+		DefinitionMCPServers:         []string{"filesystem"},
+		DefinitionRequiredMCPServers: []string{"filesystem"},
+		OmitClaudeMd:                 true,
+		Isolation:                    "worktree",
+		Prompt:                       "Inspect src/auth for session bugs.",
 	})
 
 	wantParts := []string{
 		"Task summary: Review auth flow",
 		"Requested subagent type: code-reviewer",
+		"Agent definition source: projectSettings",
+		"Agent memory policy: project",
+		"Agent permission policy: bubble",
+		"Agent requested skills: inspect",
+		"Agent MCP servers: filesystem",
+		"Agent required MCP servers: filesystem",
+		"Project CLAUDE.md context is intentionally omitted",
+		"Agent isolation: worktree",
 		"Inspect src/auth for session bugs.",
 	}
 	for _, part := range wantParts {

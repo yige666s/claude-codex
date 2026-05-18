@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -106,9 +107,117 @@ func (e *Executor) Execute(ctx context.Context, config AgentConfig) (*AgentResul
 	return result, err
 }
 
+// RunAgent executes an agent using the harness-level run options contract.
+func (e *Executor) RunAgent(ctx context.Context, opts AgentRunOptions) (*AgentResult, error) {
+	config, agentCtx, err := agentConfigFromRunOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	if agentCtx.AgentID != "" {
+		ctx = WithAgentContext(ctx, agentCtx)
+	}
+	return e.Execute(ctx, config)
+}
+
+func agentConfigFromRunOptions(opts AgentRunOptions) (AgentConfig, AgentContext, error) {
+	if opts.Definition == nil {
+		return AgentConfig{}, AgentContext{}, fmt.Errorf("agent definition is required")
+	}
+	definition := *opts.Definition
+	if opts.ModelOverride != "" {
+		definition.Model = ModelOption(opts.ModelOverride)
+	}
+	if opts.Background {
+		definition.Background = true
+	}
+	if opts.Isolation != "" {
+		definition.Isolation = opts.Isolation
+	}
+
+	var parentID *AgentID
+	if opts.ParentAgentID != "" {
+		id := AgentID(opts.ParentAgentID)
+		parentID = &id
+	}
+	var maxTurns *int
+	if opts.MaxTurns > 0 {
+		maxTurns = &opts.MaxTurns
+	}
+	agentID := generateAgentID()
+	agentCtx := BuildAgentContext(agentID, opts)
+
+	return AgentConfig{
+		Definition:      &definition,
+		AgentID:         AgentID(agentID),
+		ParentID:        parentID,
+		ParentModel:     opts.ParentModel,
+		WorkingDir:      opts.WorkingDir,
+		InitialPrompt:   buildAgentInitialPrompt(definition, opts.Prompt),
+		MemoryPolicy:    definition.Memory,
+		Skills:          append([]string(nil), definition.Skills...),
+		IsFork:          opts.InvocationKind == InvocationFork,
+		InheritContext:  len(opts.Messages) > 0,
+		ParentMessages:  append([]Message(nil), opts.Messages...),
+		SystemPrompt:    buildAgentSystemPrompt(definition, opts.SystemPrompt),
+		MaxTurns:        maxTurns,
+		StreamCallback:  opts.StreamCallback,
+		PendingMessages: opts.PendingMessages,
+	}, agentCtx, nil
+}
+
+func buildAgentInitialPrompt(definition AgentDefinition, prompt string) string {
+	initial := strings.TrimSpace(definition.InitialPrompt)
+	prompt = strings.TrimSpace(prompt)
+	switch {
+	case initial == "":
+		return prompt
+	case prompt == "":
+		return initial
+	default:
+		return initial + "\n\n" + prompt
+	}
+}
+
+func buildAgentSystemPrompt(definition AgentDefinition, override *string) *string {
+	base := definition.SystemPrompt
+	if override != nil {
+		base = *override
+	}
+	var reminders []string
+	if strings.TrimSpace(definition.Memory) != "" {
+		reminders = append(reminders, "Memory policy: "+strings.TrimSpace(definition.Memory))
+	}
+	if len(definition.Skills) > 0 {
+		reminders = append(reminders, "Requested skills: "+strings.Join(definition.Skills, ", "))
+	}
+	if definition.OmitClaudeMd {
+		reminders = append(reminders, "Project CLAUDE.md context is intentionally omitted for this agent.")
+	}
+	if len(reminders) == 0 {
+		if override == nil {
+			return nil
+		}
+		return &base
+	}
+	section := "<agent-definition-context>\n" + strings.Join(reminders, "\n") + "\n</agent-definition-context>"
+	combined := strings.TrimSpace(base)
+	if combined != "" {
+		combined += "\n\n"
+	}
+	combined += section
+	return &combined
+}
+
+func formatPendingAgentMessage(message string) string {
+	return "<agent-follow-up>\n" + strings.TrimSpace(message) + "\n</agent-follow-up>"
+}
+
 // createInstance creates a new agent instance from config
 func (e *Executor) createInstance(config AgentConfig) *AgentInstance {
 	agentID := AgentID(generateAgentID())
+	if config.AgentID != "" {
+		agentID = config.AgentID
+	}
 
 	// Resolve model
 	model := config.ParentModel
@@ -190,6 +299,20 @@ func (e *Executor) executeLoop(ctx context.Context, instance *AgentInstance, con
 				Duration:  time.Since(startTime),
 			}, ctx.Err()
 		default:
+		}
+
+		if config.PendingMessages != nil {
+			for _, pending := range config.PendingMessages(ctx) {
+				if strings.TrimSpace(pending) == "" {
+					continue
+				}
+				messages = append(messages, Message{
+					ID:        generateMessageID(),
+					Role:      "user",
+					Content:   []ContentBlock{{Type: "text", Text: formatPendingAgentMessage(pending)}},
+					Timestamp: time.Now(),
+				})
+			}
 		}
 
 		// Convert messages to API format

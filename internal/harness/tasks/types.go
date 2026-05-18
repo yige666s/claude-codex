@@ -10,13 +10,13 @@ import (
 type TaskType string
 
 const (
-	TaskTypeLocalBash          TaskType = "local_bash"
-	TaskTypeLocalAgent         TaskType = "local_agent"
-	TaskTypeRemoteAgent        TaskType = "remote_agent"
-	TaskTypeInProcessTeammate  TaskType = "in_process_teammate"
-	TaskTypeLocalWorkflow      TaskType = "local_workflow"
-	TaskTypeMonitorMCP         TaskType = "monitor_mcp"
-	TaskTypeDream              TaskType = "dream"
+	TaskTypeLocalBash         TaskType = "local_bash"
+	TaskTypeLocalAgent        TaskType = "local_agent"
+	TaskTypeRemoteAgent       TaskType = "remote_agent"
+	TaskTypeInProcessTeammate TaskType = "in_process_teammate"
+	TaskTypeLocalWorkflow     TaskType = "local_workflow"
+	TaskTypeMonitorMCP        TaskType = "monitor_mcp"
+	TaskTypeDream             TaskType = "dream"
 )
 
 // TaskStatus represents the status of a task
@@ -37,17 +37,17 @@ func IsTerminalTaskStatus(status TaskStatus) bool {
 
 // TaskStateBase contains fields shared by all task states
 type TaskStateBase struct {
-	ID             string     `json:"id"`
-	Type           TaskType   `json:"type"`
-	Status         TaskStatus `json:"status"`
-	Description    string     `json:"description"`
-	ToolUseID      string     `json:"toolUseId,omitempty"`
-	StartTime      int64      `json:"startTime"`
-	EndTime        *int64     `json:"endTime,omitempty"`
-	TotalPausedMs  *int64     `json:"totalPausedMs,omitempty"`
-	OutputFile     string     `json:"outputFile"`
-	OutputOffset   int        `json:"outputOffset"`
-	Notified       bool       `json:"notified"`
+	ID            string     `json:"id"`
+	Type          TaskType   `json:"type"`
+	Status        TaskStatus `json:"status"`
+	Description   string     `json:"description"`
+	ToolUseID     string     `json:"toolUseId,omitempty"`
+	StartTime     int64      `json:"startTime"`
+	EndTime       *int64     `json:"endTime,omitempty"`
+	TotalPausedMs *int64     `json:"totalPausedMs,omitempty"`
+	OutputFile    string     `json:"outputFile"`
+	OutputOffset  int        `json:"outputOffset"`
+	Notified      bool       `json:"notified"`
 }
 
 // TaskHandle represents a handle to a running task
@@ -58,10 +58,10 @@ type TaskHandle struct {
 
 // TaskContext provides context for task execution
 type TaskContext struct {
-	Ctx           context.Context
-	Cancel        context.CancelFunc
-	GetAppState   func() interface{}
-	SetAppState   func(updater func(prev interface{}) interface{})
+	Ctx         context.Context
+	Cancel      context.CancelFunc
+	GetAppState func() interface{}
+	SetAppState func(updater func(prev interface{}) interface{})
 }
 
 // Task interface defines operations for all task types
@@ -97,16 +97,16 @@ const (
 // LocalShellTaskState represents the state of a local shell task
 type LocalShellTaskState struct {
 	TaskStateBase
-	Command                         string           `json:"command"`
-	Result                          *ShellResult     `json:"result,omitempty"`
-	CompletionStatusSentInAttachment bool            `json:"completionStatusSentInAttachment"`
-	ShellCommand                    interface{}      `json:"shellCommand"` // Will be *exec.Cmd
-	UnregisterCleanup               func()           `json:"-"`
-	CleanupTimeoutID                *time.Timer      `json:"-"`
-	LastReportedTotalLines          int              `json:"lastReportedTotalLines"`
-	IsBackgrounded                  bool             `json:"isBackgrounded"`
-	AgentID                         string           `json:"agentId,omitempty"`
-	Kind                            BashTaskKind     `json:"kind,omitempty"`
+	Command                          string       `json:"command"`
+	Result                           *ShellResult `json:"result,omitempty"`
+	CompletionStatusSentInAttachment bool         `json:"completionStatusSentInAttachment"`
+	ShellCommand                     interface{}  `json:"shellCommand"` // Will be *exec.Cmd
+	UnregisterCleanup                func()       `json:"-"`
+	CleanupTimeoutID                 *time.Timer  `json:"-"`
+	LastReportedTotalLines           int          `json:"lastReportedTotalLines"`
+	IsBackgrounded                   bool         `json:"isBackgrounded"`
+	AgentID                          string       `json:"agentId,omitempty"`
+	Kind                             BashTaskKind `json:"kind,omitempty"`
 }
 
 // ShellResult represents the result of a shell command
@@ -118,29 +118,43 @@ type ShellResult struct {
 // LocalAgentTaskState represents the state of a local agent task
 type LocalAgentTaskState struct {
 	TaskStateBase
-	AgentID                 string                 `json:"agentId"`
-	Prompt                  string                 `json:"prompt"`
-	SelectedAgent           interface{}            `json:"selectedAgent"` // AgentDefinition
-	AgentType               string                 `json:"agentType"`
-	AbortController         context.CancelFunc     `json:"-"`
-	UnregisterCleanup       func()                 `json:"-"`
-	Retrieved               bool                   `json:"retrieved"`
-	LastReportedToolCount   int                    `json:"lastReportedToolCount"`
-	LastReportedTokenCount  int                    `json:"lastReportedTokenCount"`
-	IsBackgrounded          bool                   `json:"isBackgrounded"`
-	PendingMessages         []interface{}          `json:"pendingMessages"`
-	Retain                  bool                   `json:"retain"`
-	DiskLoaded              bool                   `json:"diskLoaded"`
-	Progress                *AgentProgress         `json:"progress,omitempty"`
-	Messages                []interface{}          `json:"messages,omitempty"`
-	EvictAfter              *int64                 `json:"evictAfter,omitempty"`
+	AgentID                string             `json:"agentId"`
+	ParentAgentID          string             `json:"parentAgentId,omitempty"`
+	ParentSessionID        string             `json:"parentSessionId,omitempty"`
+	Prompt                 string             `json:"prompt"`
+	SelectedAgent          interface{}        `json:"selectedAgent"` // AgentDefinition
+	AgentType              string             `json:"agentType"`
+	Model                  string             `json:"model,omitempty"`
+	WorkingDir             string             `json:"workingDir,omitempty"`
+	WorktreePath           string             `json:"worktreePath,omitempty"`
+	WorktreeBranch         string             `json:"worktreeBranch,omitempty"`
+	AbortController        context.CancelFunc `json:"-"`
+	UnregisterCleanup      func()             `json:"-"`
+	Result                 *AgentTaskResult   `json:"result,omitempty"`
+	Retrieved              bool               `json:"retrieved"`
+	LastReportedToolCount  int                `json:"lastReportedToolCount"`
+	LastReportedTokenCount int                `json:"lastReportedTokenCount"`
+	IsBackgrounded         bool               `json:"isBackgrounded"`
+	PendingMessages        []interface{}      `json:"pendingMessages"`
+	Retain                 bool               `json:"retain"`
+	DiskLoaded             bool               `json:"diskLoaded"`
+	Progress               *AgentProgress     `json:"progress,omitempty"`
+	Messages               []interface{}      `json:"messages,omitempty"`
+	EvictAfter             *int64             `json:"evictAfter,omitempty"`
+}
+
+// AgentTaskResult captures the terminal result of a local agent task.
+type AgentTaskResult struct {
+	Output      string `json:"output,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Interrupted bool   `json:"interrupted"`
 }
 
 // AgentProgress represents progress information for an agent task
 type AgentProgress struct {
-	TokenCount       int             `json:"tokenCount"`
-	ToolUseCount     int             `json:"toolUseCount"`
-	RecentActivities []ToolActivity  `json:"recentActivities"`
+	TokenCount       int            `json:"tokenCount"`
+	ToolUseCount     int            `json:"toolUseCount"`
+	RecentActivities []ToolActivity `json:"recentActivities"`
 }
 
 // ToolActivity represents a tool usage activity
@@ -152,21 +166,36 @@ type ToolActivity struct {
 // RemoteAgentTaskState represents the state of a remote agent task
 type RemoteAgentTaskState struct {
 	TaskStateBase
-	AgentID           string        `json:"agentId"`
-	Prompt            string        `json:"prompt"`
-	IsBackgrounded    bool          `json:"isBackgrounded"`
-	Retrieved         bool          `json:"retrieved"`
-	Retain            bool          `json:"retain"`
-	DiskLoaded        bool          `json:"diskLoaded"`
-	Messages          []interface{} `json:"messages,omitempty"`
-	EvictAfter        *int64        `json:"evictAfter,omitempty"`
+	AgentID        string        `json:"agentId"`
+	Prompt         string        `json:"prompt"`
+	IsBackgrounded bool          `json:"isBackgrounded"`
+	Retrieved      bool          `json:"retrieved"`
+	Retain         bool          `json:"retain"`
+	DiskLoaded     bool          `json:"diskLoaded"`
+	Messages       []interface{} `json:"messages,omitempty"`
+	EvictAfter     *int64        `json:"evictAfter,omitempty"`
 }
 
 // InProcessTeammateTaskState represents the state of an in-process teammate task
 type InProcessTeammateTaskState struct {
 	TaskStateBase
-	TeammateID    string `json:"teammateId"`
-	IsBackgrounded bool  `json:"isBackgrounded"`
+	TeammateID      string             `json:"teammateId"`
+	ParentAgentID   string             `json:"parentAgentId,omitempty"`
+	ParentSessionID string             `json:"parentSessionId,omitempty"`
+	Name            string             `json:"name,omitempty"`
+	TeamName        string             `json:"teamName,omitempty"`
+	AgentType       string             `json:"agentType,omitempty"`
+	Model           string             `json:"model,omitempty"`
+	WorkingDir      string             `json:"workingDir,omitempty"`
+	WorktreePath    string             `json:"worktreePath,omitempty"`
+	WorktreeBranch  string             `json:"worktreeBranch,omitempty"`
+	Prompt          string             `json:"prompt,omitempty"`
+	AbortController context.CancelFunc `json:"-"`
+	Result          *AgentTaskResult   `json:"result,omitempty"`
+	PendingMessages []interface{}      `json:"pendingMessages"`
+	Messages        []interface{}      `json:"messages,omitempty"`
+	Progress        *AgentProgress     `json:"progress,omitempty"`
+	IsBackgrounded  bool               `json:"isBackgrounded"`
 }
 
 // LocalWorkflowTaskState represents the state of a local workflow task
@@ -200,23 +229,23 @@ type TaskState interface {
 
 // Implement TaskState interface for all task types
 
-func (t *LocalShellTaskState) GetID() string              { return t.ID }
-func (t *LocalShellTaskState) GetType() TaskType          { return t.Type }
-func (t *LocalShellTaskState) GetStatus() TaskStatus      { return t.Status }
-func (t *LocalShellTaskState) GetDescription() string     { return t.Description }
-func (t *LocalShellTaskState) GetIsBackgrounded() bool    { return t.IsBackgrounded }
+func (t *LocalShellTaskState) GetID() string           { return t.ID }
+func (t *LocalShellTaskState) GetType() TaskType       { return t.Type }
+func (t *LocalShellTaskState) GetStatus() TaskStatus   { return t.Status }
+func (t *LocalShellTaskState) GetDescription() string  { return t.Description }
+func (t *LocalShellTaskState) GetIsBackgrounded() bool { return t.IsBackgrounded }
 
-func (t *LocalAgentTaskState) GetID() string              { return t.ID }
-func (t *LocalAgentTaskState) GetType() TaskType          { return t.Type }
-func (t *LocalAgentTaskState) GetStatus() TaskStatus      { return t.Status }
-func (t *LocalAgentTaskState) GetDescription() string     { return t.Description }
-func (t *LocalAgentTaskState) GetIsBackgrounded() bool    { return t.IsBackgrounded }
+func (t *LocalAgentTaskState) GetID() string           { return t.ID }
+func (t *LocalAgentTaskState) GetType() TaskType       { return t.Type }
+func (t *LocalAgentTaskState) GetStatus() TaskStatus   { return t.Status }
+func (t *LocalAgentTaskState) GetDescription() string  { return t.Description }
+func (t *LocalAgentTaskState) GetIsBackgrounded() bool { return t.IsBackgrounded }
 
-func (t *RemoteAgentTaskState) GetID() string             { return t.ID }
-func (t *RemoteAgentTaskState) GetType() TaskType         { return t.Type }
-func (t *RemoteAgentTaskState) GetStatus() TaskStatus     { return t.Status }
-func (t *RemoteAgentTaskState) GetDescription() string    { return t.Description }
-func (t *RemoteAgentTaskState) GetIsBackgrounded() bool   { return t.IsBackgrounded }
+func (t *RemoteAgentTaskState) GetID() string           { return t.ID }
+func (t *RemoteAgentTaskState) GetType() TaskType       { return t.Type }
+func (t *RemoteAgentTaskState) GetStatus() TaskStatus   { return t.Status }
+func (t *RemoteAgentTaskState) GetDescription() string  { return t.Description }
+func (t *RemoteAgentTaskState) GetIsBackgrounded() bool { return t.IsBackgrounded }
 
 func (t *InProcessTeammateTaskState) GetID() string           { return t.ID }
 func (t *InProcessTeammateTaskState) GetType() TaskType       { return t.Type }
@@ -224,23 +253,23 @@ func (t *InProcessTeammateTaskState) GetStatus() TaskStatus   { return t.Status 
 func (t *InProcessTeammateTaskState) GetDescription() string  { return t.Description }
 func (t *InProcessTeammateTaskState) GetIsBackgrounded() bool { return t.IsBackgrounded }
 
-func (t *LocalWorkflowTaskState) GetID() string             { return t.ID }
-func (t *LocalWorkflowTaskState) GetType() TaskType         { return t.Type }
-func (t *LocalWorkflowTaskState) GetStatus() TaskStatus     { return t.Status }
-func (t *LocalWorkflowTaskState) GetDescription() string    { return t.Description }
-func (t *LocalWorkflowTaskState) GetIsBackgrounded() bool   { return t.IsBackgrounded }
+func (t *LocalWorkflowTaskState) GetID() string           { return t.ID }
+func (t *LocalWorkflowTaskState) GetType() TaskType       { return t.Type }
+func (t *LocalWorkflowTaskState) GetStatus() TaskStatus   { return t.Status }
+func (t *LocalWorkflowTaskState) GetDescription() string  { return t.Description }
+func (t *LocalWorkflowTaskState) GetIsBackgrounded() bool { return t.IsBackgrounded }
 
-func (t *MonitorMCPTaskState) GetID() string              { return t.ID }
-func (t *MonitorMCPTaskState) GetType() TaskType          { return t.Type }
-func (t *MonitorMCPTaskState) GetStatus() TaskStatus      { return t.Status }
-func (t *MonitorMCPTaskState) GetDescription() string     { return t.Description }
-func (t *MonitorMCPTaskState) GetIsBackgrounded() bool    { return t.IsBackgrounded }
+func (t *MonitorMCPTaskState) GetID() string           { return t.ID }
+func (t *MonitorMCPTaskState) GetType() TaskType       { return t.Type }
+func (t *MonitorMCPTaskState) GetStatus() TaskStatus   { return t.Status }
+func (t *MonitorMCPTaskState) GetDescription() string  { return t.Description }
+func (t *MonitorMCPTaskState) GetIsBackgrounded() bool { return t.IsBackgrounded }
 
-func (t *DreamTaskState) GetID() string               { return t.ID }
-func (t *DreamTaskState) GetType() TaskType           { return t.Type }
-func (t *DreamTaskState) GetStatus() TaskStatus       { return t.Status }
-func (t *DreamTaskState) GetDescription() string      { return t.Description }
-func (t *DreamTaskState) GetIsBackgrounded() bool     { return t.IsBackgrounded }
+func (t *DreamTaskState) GetID() string           { return t.ID }
+func (t *DreamTaskState) GetType() TaskType       { return t.Type }
+func (t *DreamTaskState) GetStatus() TaskStatus   { return t.Status }
+func (t *DreamTaskState) GetDescription() string  { return t.Description }
+func (t *DreamTaskState) GetIsBackgrounded() bool { return t.IsBackgrounded }
 
 // IsBackgroundTask checks if a task should be shown in the background tasks indicator
 func IsBackgroundTask(task TaskState) bool {

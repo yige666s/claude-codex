@@ -75,16 +75,61 @@ func CreateTaskStateBase(id string, taskType TaskType, description string, toolU
 
 // TaskManager manages task lifecycle and state
 type TaskManager struct {
-	registry *TaskRegistry
-	tasks    map[string]TaskState
-	mu       sync.RWMutex
+	registry      *TaskRegistry
+	tasks         map[string]TaskState
+	mu            sync.RWMutex
+	subscribers   map[int]chan string
+	nextSubscribe int
 }
 
 // NewTaskManager creates a new task manager
 func NewTaskManager() *TaskManager {
-	return &TaskManager{
-		registry: NewTaskRegistry(),
-		tasks:    make(map[string]TaskState),
+	manager := &TaskManager{
+		registry:    NewTaskRegistry(),
+		tasks:       make(map[string]TaskState),
+		subscribers: make(map[int]chan string),
+	}
+	manager.Register(&LocalAgentTask{manager: manager})
+	manager.Register(&InProcessTeammateTask{manager: manager})
+	return manager
+}
+
+// SubscribeTerminalEvents returns a best-effort stream of task IDs that reached
+// a terminal status. Call the returned function to unsubscribe.
+func (m *TaskManager) SubscribeTerminalEvents(buffer int) (<-chan string, func()) {
+	if buffer < 1 {
+		buffer = 1
+	}
+	ch := make(chan string, buffer)
+	m.mu.Lock()
+	id := m.nextSubscribe
+	m.nextSubscribe++
+	m.subscribers[id] = ch
+	m.mu.Unlock()
+	return ch, func() {
+		m.mu.Lock()
+		if _, ok := m.subscribers[id]; ok {
+			delete(m.subscribers, id)
+		}
+		m.mu.Unlock()
+	}
+}
+
+func (m *TaskManager) emitTerminalEvent(taskID string) {
+	if taskID == "" {
+		return
+	}
+	m.mu.RLock()
+	subscribers := make([]chan string, 0, len(m.subscribers))
+	for _, ch := range m.subscribers {
+		subscribers = append(subscribers, ch)
+	}
+	m.mu.RUnlock()
+	for _, ch := range subscribers {
+		select {
+		case ch <- taskID:
+		default:
+		}
 	}
 }
 
@@ -106,6 +151,129 @@ func (m *TaskManager) AddTask(task TaskState) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.tasks[task.GetID()] = task
+}
+
+// UpdateTask updates a task atomically and stores the returned state.
+func (m *TaskManager) UpdateTask(taskID string, updater func(TaskState) (TaskState, error)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[taskID]
+	if !ok {
+		return fmt.Errorf("task not found: %s", taskID)
+	}
+	next, err := updater(task)
+	if err != nil {
+		return err
+	}
+	if next == nil {
+		delete(m.tasks, taskID)
+		return nil
+	}
+	m.tasks[taskID] = next
+	return nil
+}
+
+// ListTasks returns a snapshot of all tracked runtime tasks.
+func (m *TaskManager) ListTasks() []TaskState {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tasks := make([]TaskState, 0, len(m.tasks))
+	for _, task := range m.tasks {
+		tasks = append(tasks, task)
+	}
+	return tasks
+}
+
+// DrainTerminalNotifications returns terminal runtime tasks that have not yet
+// emitted a coordinator notification and marks them as notified.
+func (m *TaskManager) DrainTerminalNotifications() []TaskState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var drained []TaskState
+	for _, task := range m.tasks {
+		if !IsTerminalTaskStatus(task.GetStatus()) || taskNotified(task) {
+			continue
+		}
+		setTaskNotified(task, true)
+		drained = append(drained, task)
+	}
+	return drained
+}
+
+// DrainTerminalNotification returns one terminal runtime task by ID if it has
+// not yet emitted a coordinator notification, then marks it as notified.
+func (m *TaskManager) DrainTerminalNotification(taskID string) (TaskState, bool) {
+	if taskID == "" {
+		return nil, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[taskID]
+	if !ok || !IsTerminalTaskStatus(task.GetStatus()) || taskNotified(task) {
+		return nil, false
+	}
+	setTaskNotified(task, true)
+	return task, true
+}
+
+func taskNotified(task TaskState) bool {
+	switch typed := task.(type) {
+	case *LocalAgentTaskState:
+		return typed.Notified
+	case *InProcessTeammateTaskState:
+		return typed.Notified
+	case *RemoteAgentTaskState:
+		return typed.Notified
+	case *LocalShellTaskState:
+		return typed.Notified
+	case *LocalWorkflowTaskState:
+		return typed.Notified
+	case *MonitorMCPTaskState:
+		return typed.Notified
+	case *DreamTaskState:
+		return typed.Notified
+	default:
+		return false
+	}
+}
+
+func setTaskNotified(task TaskState, value bool) {
+	switch typed := task.(type) {
+	case *LocalAgentTaskState:
+		typed.Notified = value
+	case *InProcessTeammateTaskState:
+		typed.Notified = value
+	case *RemoteAgentTaskState:
+		typed.Notified = value
+	case *LocalShellTaskState:
+		typed.Notified = value
+	case *LocalWorkflowTaskState:
+		typed.Notified = value
+	case *MonitorMCPTaskState:
+		typed.Notified = value
+	case *DreamTaskState:
+		typed.Notified = value
+	}
+}
+
+// FindInProcessTeammate returns a running teammate task by task ID, teammate
+// ID, name, or name@team identifier.
+func (m *TaskManager) FindInProcessTeammate(nameOrID string) (*InProcessTeammateTaskState, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, task := range m.tasks {
+		teammate, ok := task.(*InProcessTeammateTaskState)
+		if !ok {
+			continue
+		}
+		if teammate.ID == nameOrID || teammate.TeammateID == nameOrID || teammate.Name == nameOrID {
+			return teammate, true
+		}
+		if teammate.TeamName != "" && teammate.Name+"@"+teammate.TeamName == nameOrID {
+			return teammate, true
+		}
+	}
+	return nil, false
 }
 
 // RemoveTask removes a task from the manager
@@ -179,4 +347,12 @@ func (m *TaskManager) EvictTerminalTasks() {
 
 		delete(m.tasks, id)
 	}
+}
+
+var defaultManager = NewTaskManager()
+
+// DefaultManager returns the process-local runtime task manager used by
+// harness tools for background agent tasks.
+func DefaultManager() *TaskManager {
+	return defaultManager
 }

@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
+
+	coretasks "claude-codex/internal/harness/tasks"
 )
 
 // Tool name constants
@@ -11,6 +14,7 @@ const (
 	AgentToolName           = "Agent"
 	SendMessageToolName     = "SendMessage"
 	TaskStopToolName        = "TaskStop"
+	TaskOutputToolName      = "TaskOutput"
 	TeamCreateToolName      = "TeamCreate"
 	TeamDeleteToolName      = "TeamDelete"
 	SyntheticOutputToolName = "SyntheticOutput"
@@ -88,6 +92,7 @@ func GetCoordinatorSystemPrompt() string {
 	agent := AgentToolName
 	send := SendMessageToolName
 	stop := TaskStopToolName
+	output := TaskOutputToolName
 
 	return fmt.Sprintf(`You are Claude Code, an AI assistant that orchestrates software engineering tasks across multiple workers.
 
@@ -106,6 +111,7 @@ Every message you send is to the user. Worker results and system notifications a
 - **%[1]s** - Spawn a new worker
 - **%[2]s** - Continue an existing worker (send a follow-up to its `+"`"+`to`+"`"+` agent ID)
 - **%[3]s** - Stop a running worker
+- **%[5]s** - Retrieve a worker's current or final output by task ID
 - **subscribe_pr_activity / unsubscribe_pr_activity** (if available) - Subscribe to GitHub PR events (review comments, CI results). Events arrive as user messages. Merge conflict transitions do NOT arrive — GitHub doesn't webhook `+"`"+`mergeable_state`+"`"+` changes, so poll `+"`"+`gh pr view N --json mergeable`+"`"+` if tracking conflict status. Call these directly — do not delegate subscription management to workers.
 
 When calling %[1]s:
@@ -342,6 +348,209 @@ User:
 
 You:
   Fix for the new test is in progress. Still waiting to hear back about the test suite.`,
-		agent, send, stop, workerCapabilities,
+		agent, send, stop, workerCapabilities, output,
 	)
+}
+
+type TaskNotification struct {
+	TaskID      string
+	Status      string
+	Summary     string
+	Result      string
+	TotalTokens int
+	ToolUses    int
+	DurationMS  int64
+}
+
+// FormatTaskNotification builds the internal notification message consumed by
+// coordinator mode after a worker reaches a terminal state.
+func FormatTaskNotification(notification TaskNotification) string {
+	var b strings.Builder
+	b.WriteString("<task-notification>\n")
+	b.WriteString("<task-id>" + escapeNotificationText(notification.TaskID) + "</task-id>\n")
+	b.WriteString("<status>" + escapeNotificationText(notification.Status) + "</status>\n")
+	b.WriteString("<summary>" + escapeNotificationText(notification.Summary) + "</summary>\n")
+	if strings.TrimSpace(notification.Result) != "" {
+		b.WriteString("<result>" + escapeNotificationText(notification.Result) + "</result>\n")
+	}
+	if notification.TotalTokens > 0 || notification.ToolUses > 0 || notification.DurationMS > 0 {
+		b.WriteString("<usage>\n")
+		if notification.TotalTokens > 0 {
+			b.WriteString(fmt.Sprintf("  <total_tokens>%d</total_tokens>\n", notification.TotalTokens))
+		}
+		if notification.ToolUses > 0 {
+			b.WriteString(fmt.Sprintf("  <tool_uses>%d</tool_uses>\n", notification.ToolUses))
+		}
+		if notification.DurationMS > 0 {
+			b.WriteString(fmt.Sprintf("  <duration_ms>%d</duration_ms>\n", notification.DurationMS))
+		}
+		b.WriteString("</usage>\n")
+	}
+	b.WriteString("</task-notification>")
+	return b.String()
+}
+
+func escapeNotificationText(value string) string {
+	value = strings.ReplaceAll(value, "&", "&amp;")
+	value = strings.ReplaceAll(value, "<", "&lt;")
+	value = strings.ReplaceAll(value, ">", "&gt;")
+	return value
+}
+
+func CoordinatorToolNames() []string {
+	return []string{
+		AgentToolName,
+		SendMessageToolName,
+		TaskStopToolName,
+		TaskOutputToolName,
+		TeamCreateToolName,
+		TeamDeleteToolName,
+	}
+}
+
+// DrainTaskNotifications consumes terminal runtime task notifications and
+// returns coordinator-ready XML user messages.
+func DrainTaskNotifications(manager *coretasks.TaskManager) []string {
+	if manager == nil {
+		return nil
+	}
+	tasks := manager.DrainTerminalNotifications()
+	notifications := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		notifications = append(notifications, FormatTaskNotification(TaskNotificationFromRuntimeTask(task)))
+	}
+	return notifications
+}
+
+// DrainTaskNotification consumes one terminal runtime task notification and
+// returns the coordinator-ready XML plus the drained task.
+func DrainTaskNotification(manager *coretasks.TaskManager, taskID string) (string, coretasks.TaskState, bool) {
+	if manager == nil {
+		return "", nil, false
+	}
+	task, ok := manager.DrainTerminalNotification(taskID)
+	if !ok {
+		return "", nil, false
+	}
+	return FormatTaskNotification(TaskNotificationFromRuntimeTask(task)), task, true
+}
+
+// ForwardTaskNotifications drains terminal task notifications as soon as the
+// task manager emits a terminal event. The returned function stops forwarding.
+func ForwardTaskNotifications(manager *coretasks.TaskManager, out chan<- string) func() {
+	if manager == nil || out == nil {
+		return func() {}
+	}
+	events, unsubscribe := manager.SubscribeTerminalEvents(16)
+	done := make(chan struct{})
+	var stopOnce sync.Once
+	go func() {
+		defer unsubscribe()
+		for {
+			select {
+			case <-done:
+				return
+			case taskID, ok := <-events:
+				if !ok {
+					return
+				}
+				notification, _, ok := DrainTaskNotification(manager, taskID)
+				if !ok {
+					continue
+				}
+				select {
+				case out <- notification:
+				case <-done:
+					return
+				default:
+				}
+			}
+		}
+	}()
+	return func() {
+		stopOnce.Do(func() {
+			close(done)
+		})
+	}
+}
+
+func TaskParentSessionID(task coretasks.TaskState) string {
+	switch typed := task.(type) {
+	case *coretasks.LocalAgentTaskState:
+		return typed.ParentSessionID
+	case *coretasks.InProcessTeammateTaskState:
+		return typed.ParentSessionID
+	default:
+		return ""
+	}
+}
+
+func TaskWorkingDir(task coretasks.TaskState) string {
+	switch typed := task.(type) {
+	case *coretasks.LocalAgentTaskState:
+		return typed.WorkingDir
+	case *coretasks.InProcessTeammateTaskState:
+		return typed.WorkingDir
+	default:
+		return ""
+	}
+}
+
+func TaskNotificationFromRuntimeTask(task coretasks.TaskState) TaskNotification {
+	if task == nil {
+		return TaskNotification{Status: "failed", Summary: "missing task"}
+	}
+	notification := TaskNotification{
+		TaskID:  task.GetID(),
+		Status:  string(task.GetStatus()),
+		Summary: fmt.Sprintf("Task %q %s", task.GetDescription(), task.GetStatus()),
+	}
+	switch typed := task.(type) {
+	case *coretasks.LocalAgentTaskState:
+		notification.TaskID = typed.AgentID
+		notification.Result = resultText(typed.Result, typed.OutputFile)
+		notification.ToolUses = progressToolUses(typed.Progress)
+	case *coretasks.InProcessTeammateTaskState:
+		notification.TaskID = typed.TeammateID
+		notification.Result = resultText(typed.Result, typed.OutputFile)
+		notification.ToolUses = progressToolUses(typed.Progress)
+	}
+	if base := taskTiming(task); base > 0 {
+		notification.DurationMS = base
+	}
+	return notification
+}
+
+func resultText(result *coretasks.AgentTaskResult, outputFile string) string {
+	if result != nil {
+		if strings.TrimSpace(result.Output) != "" {
+			return result.Output
+		}
+		if strings.TrimSpace(result.Error) != "" {
+			return result.Error
+		}
+	}
+	output, _ := coretasks.ReadTaskOutput(outputFile, 0, coretasks.DefaultMaxReadBytes)
+	return output
+}
+
+func progressToolUses(progress *coretasks.AgentProgress) int {
+	if progress == nil {
+		return 0
+	}
+	return progress.ToolUseCount
+}
+
+func taskTiming(task coretasks.TaskState) int64 {
+	switch typed := task.(type) {
+	case *coretasks.LocalAgentTaskState:
+		if typed.EndTime != nil {
+			return *typed.EndTime - typed.StartTime
+		}
+	case *coretasks.InProcessTeammateTaskState:
+		if typed.EndTime != nil {
+			return *typed.EndTime - typed.StartTime
+		}
+	}
+	return 0
 }

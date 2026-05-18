@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +20,11 @@ var agentDefinitionsCache struct {
 }
 
 var pluginDefinitions struct {
+	mu          sync.RWMutex
+	definitions []*AgentDefinition
+}
+
+var flagDefinitions struct {
 	mu          sync.RWMutex
 	definitions []*AgentDefinition
 }
@@ -53,6 +60,44 @@ func GetPluginDefinitions() []*AgentDefinition {
 	defer pluginDefinitions.mu.RUnlock()
 	out := make([]*AgentDefinition, len(pluginDefinitions.definitions))
 	copy(out, pluginDefinitions.definitions)
+	return out
+}
+
+// RegisterFlagDefinitions registers process-level agent definitions supplied by
+// CLI flags or an embedding runtime. Flag definitions override project/user
+// definitions, but are still lower priority than managed policy definitions.
+func RegisterFlagDefinitions(definitions []*AgentDefinition) {
+	flagDefinitions.mu.Lock()
+	defer flagDefinitions.mu.Unlock()
+	flagDefinitions.definitions = cloneDefinitionsWithSource(definitions, SourceFlagSettings)
+	ClearAgentDefinitionsCache()
+}
+
+func ClearFlagDefinitions() {
+	flagDefinitions.mu.Lock()
+	flagDefinitions.definitions = nil
+	flagDefinitions.mu.Unlock()
+	ClearAgentDefinitionsCache()
+}
+
+func GetFlagDefinitions() []*AgentDefinition {
+	flagDefinitions.mu.RLock()
+	defer flagDefinitions.mu.RUnlock()
+	out := make([]*AgentDefinition, len(flagDefinitions.definitions))
+	copy(out, flagDefinitions.definitions)
+	return out
+}
+
+func cloneDefinitionsWithSource(definitions []*AgentDefinition, source AgentSource) []*AgentDefinition {
+	out := make([]*AgentDefinition, 0, len(definitions))
+	for _, def := range definitions {
+		if def == nil {
+			continue
+		}
+		clone := *def
+		clone.Source = source
+		out = append(out, &clone)
+	}
 	return out
 }
 
@@ -106,8 +151,7 @@ func loadAgentDefinitions(cwd string, isCoordinatorMode bool) (*AgentDefinitions
 	builtins = append(builtins, ForkAgent)
 
 	// Merge in user-level agents.
-	home, _ := os.UserHomeDir()
-	userAgentsDir := filepath.Join(home, ".claude", "agents")
+	userAgentsDir := filepath.Join(claudeConfigHomeDir(), "agents")
 	userAgents, warn, err := loadFromDir(userAgentsDir, SourceUserSettings)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("user agents dir: %v", err))
@@ -115,17 +159,28 @@ func loadAgentDefinitions(cwd string, isCoordinatorMode bool) (*AgentDefinitions
 	warnings = append(warnings, warn...)
 
 	// Merge in project-level agents.
-	projectAgentsDir := filepath.Join(cwd, ".claude", "agents")
-	projectAgents, warn, err := loadFromDir(projectAgentsDir, SourceProjectSettings)
+	var projectAgents []*AgentDefinition
+	for _, projectAgentsDir := range projectAgentDirs(cwd) {
+		defs, warn, err := loadFromDir(projectAgentsDir, SourceProjectSettings)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("project agents dir %s: %v", projectAgentsDir, err))
+		}
+		warnings = append(warnings, warn...)
+		projectAgents = append(projectAgents, defs...)
+	}
+
+	managedAgentsDir := filepath.Join(managedSettingsRoot(), ".claude", "agents")
+	managedAgents, warn, err := loadFromDir(managedAgentsDir, SourcePolicySettings)
 	if err != nil {
-		warnings = append(warnings, fmt.Sprintf("project agents dir: %v", err))
+		warnings = append(warnings, fmt.Sprintf("managed agents dir: %v", err))
 	}
 	warnings = append(warnings, warn...)
 
 	pluginAgents := GetPluginDefinitions()
+	flagAgents := GetFlagDefinitions()
 
 	// Merge: higher-priority sources win on AgentType collision.
-	merged := mergeAgentDefinitions(builtins, pluginAgents, userAgents, projectAgents)
+	merged := mergeAgentDefinitions(builtins, pluginAgents, userAgents, projectAgents, flagAgents, managedAgents)
 
 	return &AgentDefinitionsResult{Agents: merged, Warnings: warnings}, nil
 }
@@ -144,7 +199,67 @@ func mergeAgentDefinitions(lists ...[]*AgentDefinition) []*AgentDefinition {
 	for _, def := range seen {
 		result = append(result, def)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].AgentType < result[j].AgentType
+	})
 	return result
+}
+
+func claudeConfigHomeDir() string {
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_HOME")); value != "" {
+		return value
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", ".claude")
+	}
+	return filepath.Join(home, ".claude")
+}
+
+func managedSettingsRoot() string {
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_GO_MANAGED_SETTINGS_PATH")); value != "" {
+		return filepath.Dir(value)
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return "/Library/Application Support/ClaudeCode"
+	case "windows":
+		return `C:\Program Files\ClaudeCode`
+	default:
+		return "/etc/claude-code"
+	}
+}
+
+func projectAgentDirs(cwd string) []string {
+	if strings.TrimSpace(cwd) == "" {
+		if wd, err := os.Getwd(); err == nil {
+			cwd = wd
+		}
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		abs = cwd
+	}
+
+	var dirs []string
+	current := filepath.Clean(abs)
+	for {
+		dir := filepath.Join(current, ".claude", "agents")
+		if _, err := os.Stat(dir); err == nil {
+			dirs = append(dirs, dir)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+
+	// Lower-priority parent project definitions first, closest cwd last.
+	for i, j := 0, len(dirs)-1; i < j; i, j = i+1, j-1 {
+		dirs[i], dirs[j] = dirs[j], dirs[i]
+	}
+	return dirs
 }
 
 // loadFromDir scans a directory for agent definition files (.md and .json).
@@ -229,6 +344,7 @@ type agentFrontmatter struct {
 	Color                string   `json:"color"`
 	MCPServers           []string `json:"mcp_servers"`
 	MCPServersCamel      []string `json:"mcpServers"`
+	RequiredMCPSnake     []string `json:"required_mcp_servers"`
 	RequiredMCPServers   []string `json:"requiredMcpServers"`
 	Skills               []string `json:"skills"`
 	InitialPrompt        string   `json:"initialPrompt"`
@@ -342,6 +458,7 @@ type agentJSONDef struct {
 	Color                string   `json:"color"`
 	MCPServers           []string `json:"mcp_servers"`
 	MCPServersCamel      []string `json:"mcpServers"`
+	RequiredMCPSnake     []string `json:"required_mcp_servers"`
 	RequiredMCPServers   []string `json:"requiredMcpServers"`
 	Skills               []string `json:"skills"`
 	InitialPrompt        string   `json:"initialPrompt"`
@@ -430,6 +547,9 @@ func normalizeFrontmatter(fm *agentFrontmatter) {
 	if len(fm.MCPServers) == 0 {
 		fm.MCPServers = fm.MCPServersCamel
 	}
+	if len(fm.RequiredMCPServers) == 0 {
+		fm.RequiredMCPServers = fm.RequiredMCPSnake
+	}
 }
 
 func normalizeJSONAgent(raw *agentJSONDef) {
@@ -453,6 +573,9 @@ func normalizeJSONAgent(raw *agentJSONDef) {
 	}
 	if len(raw.MCPServers) == 0 {
 		raw.MCPServers = raw.MCPServersCamel
+	}
+	if len(raw.RequiredMCPServers) == 0 {
+		raw.RequiredMCPServers = raw.RequiredMCPSnake
 	}
 }
 

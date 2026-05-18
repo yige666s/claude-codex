@@ -45,6 +45,16 @@ const (
 	ModelHaiku   ModelOption = "haiku"
 )
 
+// AgentInvocationKind identifies how an agent was started.
+type AgentInvocationKind string
+
+const (
+	InvocationSubagent AgentInvocationKind = "subagent"
+	InvocationFork     AgentInvocationKind = "fork"
+	InvocationTeammate AgentInvocationKind = "teammate"
+	InvocationMain     AgentInvocationKind = "main"
+)
+
 // AgentDefinition defines an agent template
 type AgentDefinition struct {
 	AgentType       AgentType
@@ -152,10 +162,13 @@ type AgentResult struct {
 // AgentConfig contains configuration for running an agent
 type AgentConfig struct {
 	Definition    *AgentDefinition
+	AgentID       AgentID
 	ParentID      *AgentID
 	ParentModel   string
 	WorkingDir    string
 	InitialPrompt string
+	MemoryPolicy  string
+	Skills        []string
 
 	// Fork-specific
 	IsFork         bool
@@ -168,6 +181,36 @@ type AgentConfig struct {
 
 	// Streaming
 	StreamCallback StreamCallback
+	// PendingMessages drains follow-up instructions queued while an agent is
+	// already running. Drained strings are appended as user messages before the
+	// next model turn.
+	PendingMessages func(context.Context) []string
+}
+
+// AgentRunOptions is the harness-level execution contract for subagents. It is
+// intentionally broader than AgentConfig so tools/tasks/coordinator code can
+// pass orchestration metadata without depending on the executor's legacy config
+// shape.
+type AgentRunOptions struct {
+	Definition      *AgentDefinition
+	Prompt          string
+	Description     string
+	ParentAgentID   string
+	ParentSessionID string
+	ParentModel     string
+	ModelOverride   string
+	WorkingDir      string
+	MaxTurns        int
+	Background      bool
+	Isolation       string
+	TeamName        string
+	AgentName       string
+	InvocationKind  AgentInvocationKind
+	Messages        []Message
+
+	SystemPrompt    *string
+	StreamCallback  StreamCallback
+	PendingMessages func(context.Context) []string
 }
 
 // StreamCallback is called for each streaming event

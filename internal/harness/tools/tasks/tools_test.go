@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	coretasks "claude-codex/internal/harness/tasks"
 	toolkit "claude-codex/internal/harness/tools"
 )
 
@@ -115,4 +117,78 @@ func TestTaskToolsSanitizeTaskListID(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".claude", "tasks", "team-alpha", "1.json")); err != nil {
 		t.Fatalf("expected sanitized task path to exist: %v", err)
 	}
+}
+
+func TestTaskOutputReadsRuntimeLocalAgentTask(t *testing.T) {
+	task, err := coretasks.DefaultManager().StartLocalAgent(context.Background(), coretasks.StartLocalAgentOptions{
+		Prompt:         "inspect runtime",
+		Description:    "runtime agent",
+		OutputFile:     filepath.Join(t.TempDir(), "agent.output"),
+		IsBackgrounded: true,
+		Runner: func(_ context.Context, req coretasks.LocalAgentRunRequest) (string, error) {
+			return "runtime done", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartLocalAgent() error = %v", err)
+	}
+
+	output := execTool(t, NewTaskOutputTool(), `{"task_id":"`+task.ID+`","block":true,"timeout":2000}`)
+	if !strings.Contains(output, `"retrieval_status":"success"`) || !strings.Contains(output, `"output":"runtime done"`) {
+		t.Fatalf("expected runtime local agent output, got %s", output)
+	}
+}
+
+func TestTaskGetAndListIncludeRuntimeLocalAgentTask(t *testing.T) {
+	task, err := coretasks.DefaultManager().StartLocalAgent(context.Background(), coretasks.StartLocalAgentOptions{
+		Prompt:      "list runtime",
+		Description: "listed runtime agent",
+		AgentType:   "explore",
+		OutputFile:  filepath.Join(t.TempDir(), "agent.output"),
+		Runner: func(_ context.Context, req coretasks.LocalAgentRunRequest) (string, error) {
+			return "listed", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartLocalAgent() error = %v", err)
+	}
+
+	got := execTool(t, NewTaskGetTool(), `{"taskId":"`+task.ID+`"}`)
+	if !strings.Contains(got, `"task_id":"`+task.ID+`"`) || !strings.Contains(got, `"agent_type":"explore"`) {
+		t.Fatalf("expected runtime task from TaskGet, got %s", got)
+	}
+
+	listed := execTool(t, NewTaskListTool(), `{}`)
+	if !strings.Contains(listed, `"task_id":"`+task.ID+`"`) {
+		t.Fatalf("expected runtime task from TaskList, got %s", listed)
+	}
+}
+
+func TestTaskStopStopsRuntimeLocalAgentTask(t *testing.T) {
+	task, err := coretasks.DefaultManager().StartLocalAgent(context.Background(), coretasks.StartLocalAgentOptions{
+		Prompt:     "wait",
+		OutputFile: filepath.Join(t.TempDir(), "agent.output"),
+		Runner: func(ctx context.Context, req coretasks.LocalAgentRunRequest) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartLocalAgent() error = %v", err)
+	}
+
+	stopped := execTool(t, NewTaskStopTool(), `{"task_id":"`+task.ID+`"}`)
+	if !strings.Contains(stopped, `"task_type":"local_agent"`) {
+		t.Fatalf("expected runtime task stop result, got %s", stopped)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		current, ok := coretasks.DefaultManager().GetTask(task.ID)
+		if ok && current.GetStatus() == coretasks.TaskStatusKilled {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	current, _ := coretasks.DefaultManager().GetTask(task.ID)
+	t.Fatalf("task did not stop: %#v", current)
 }
