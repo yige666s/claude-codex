@@ -38,6 +38,11 @@ type LiveTurnRecorder interface {
 	RecordLiveTurn(ctx context.Context, userID, sessionID, userText, assistantText, model string) error
 }
 
+type LiveSkillHandler interface {
+	DetectLiveSkillCommand(ctx context.Context, userID, sessionID, text string) bool
+	ExecuteLiveSkillCommand(ctx context.Context, userID, sessionID, text string, sink EventSink) (bool, error)
+}
+
 func NewVertexLiveService(config LiveConfig, recorder LiveTurnRecorder, logger *log.Logger) *VertexLiveService {
 	config = normalizeLiveConfig(config)
 	return &VertexLiveService{
@@ -254,6 +259,9 @@ func liveClientEventToVertexPayload(event LiveClientEvent, defaultMIME string) (
 
 func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, conn *websocket.Conn, sink EventSink) error {
 	var turn liveTurnAccumulator
+	skillHandler, _ := s.recorder.(LiveSkillHandler)
+	skillTurn := false
+	var pendingAssistantEvents []Event
 	for {
 		var message map[string]any
 		if err := conn.ReadJSON(&message); err != nil {
@@ -263,6 +271,18 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 		if err != nil {
 			return err
 		}
+		if skillHandler != nil && !skillTurn && skillHandler.DetectLiveSkillCommand(ctx, req.UserID, req.SessionID, turn.inputText()) {
+			skillTurn = true
+			turn.suppressOutput()
+			pendingAssistantEvents = nil
+		}
+		if skillTurn {
+			events = liveSkillVisibleEvents(events)
+		} else if skillHandler != nil && turn.inputText() != "" {
+			var visible []Event
+			visible, pendingAssistantEvents = splitLiveSkillPendingEvents(events, pendingAssistantEvents)
+			events = visible
+		}
 		for _, event := range events {
 			event.SessionID = req.SessionID
 			if err := sink.Send(ctx, event); err != nil {
@@ -271,6 +291,36 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 		}
 		if complete {
 			userText, assistantText := turn.flush()
+			if skillTurn {
+				skillTurn = false
+				if strings.TrimSpace(userText) != "" && skillHandler != nil {
+					handled, err := skillHandler.ExecuteLiveSkillCommand(ctx, req.UserID, req.SessionID, userText, sink)
+					if err != nil {
+						return err
+					}
+					if handled {
+						pendingAssistantEvents = nil
+						continue
+					}
+				}
+			}
+			if !skillTurn && strings.TrimSpace(userText) != "" && skillHandler != nil {
+				handled, err := skillHandler.ExecuteLiveSkillCommand(ctx, req.UserID, req.SessionID, userText, sink)
+				if err != nil {
+					return err
+				}
+				if handled {
+					pendingAssistantEvents = nil
+					continue
+				}
+			}
+			for _, event := range pendingAssistantEvents {
+				event.SessionID = req.SessionID
+				if err := sink.Send(ctx, event); err != nil {
+					return err
+				}
+			}
+			pendingAssistantEvents = nil
 			if strings.TrimSpace(userText) != "" || strings.TrimSpace(assistantText) != "" {
 				if err := s.recorder.RecordLiveTurn(ctx, req.UserID, req.SessionID, userText, assistantText, s.config.Model); err != nil {
 					return err
@@ -284,6 +334,32 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 			}
 		}
 	}
+}
+
+func splitLiveSkillPendingEvents(events []Event, pending []Event) ([]Event, []Event) {
+	visible := make([]Event, 0, len(events))
+	for _, event := range events {
+		if event.Type == "live_audio" || (event.Type == "live_transcript" && event.Role == state.MessageRoleAssistant) {
+			pending = append(pending, event)
+			continue
+		}
+		visible = append(visible, event)
+	}
+	return visible, pending
+}
+
+func liveSkillVisibleEvents(events []Event) []Event {
+	out := make([]Event, 0, len(events))
+	for _, event := range events {
+		if event.Type == "live_audio" {
+			continue
+		}
+		if event.Type == "live_transcript" && event.Role == state.MessageRoleAssistant {
+			continue
+		}
+		out = append(out, event)
+	}
+	return out
 }
 
 type liveTurnAccumulator struct {
@@ -334,6 +410,21 @@ func (a *liveTurnAccumulator) flush() (string, string) {
 	a.output.Reset()
 	a.outputSuppressed = false
 	return userText, assistantText
+}
+
+func (a *liveTurnAccumulator) inputText() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.input.String())
+}
+
+func (a *liveTurnAccumulator) suppressOutput() {
+	if a == nil {
+		return
+	}
+	a.output.Reset()
+	a.outputSuppressed = true
 }
 
 func liveTranscriptionText(content map[string]any, key string) string {

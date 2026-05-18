@@ -3,9 +3,12 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
+	"claude-codex/internal/harness/engine"
+	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 )
 
@@ -212,5 +215,172 @@ func TestRuntimeRecordLiveTurnPersistsMessagesAndMemory(t *testing.T) {
 	}
 	if len(items) == 0 {
 		t.Fatal("expected live turn to trigger memory extraction")
+	}
+}
+
+func TestRuntimeLiveSystemInstructionIncludesPublishedSkills(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{
+		{Name: "diagram", Description: "Create a diagram from a brief.", UserInvocable: true},
+		{Name: "internal", Description: "Hidden operator workflow.", UserInvocable: false},
+	}}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, catalog, func(Scope) Runner { return echoRunner{} })
+	session, err := runtime.CreateSession(context.Background(), "alice", root)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	instruction := runtime.LiveSystemInstruction(context.Background(), "alice", session.ID)
+	for _, want := range []string{
+		"<skills>",
+		"# Available Skills",
+		"`/diagram`: Create a diagram from a brief.",
+		"guide the user to run one with its slash command in text chat",
+	} {
+		if !strings.Contains(instruction, want) {
+			t.Fatalf("LiveSystemInstruction missing %q:\n%s", want, instruction)
+		}
+	}
+	if strings.Contains(instruction, "`/internal`") || strings.Contains(instruction, "Hidden operator workflow") {
+		t.Fatalf("LiveSystemInstruction should not include non-user-invocable skills:\n%s", instruction)
+	}
+}
+
+func TestRuntimeLiveSkillCommandParsesExplicitSpeech(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{
+		{Name: "diagram", DisplayName: "架构图", UserInvocable: true},
+	}}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, catalog, func(Scope) Runner { return echoRunner{} })
+	if _, err := runtime.CreateSession(context.Background(), "alice", root); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	command, ok := runtime.liveExplicitSkillCommand("请使用 架构图 技能帮我画一个服务拓扑")
+	if !ok {
+		t.Fatal("expected live speech to be recognized as skill command")
+	}
+	if command != "/diagram 画一个服务拓扑" {
+		t.Fatalf("command = %q", command)
+	}
+}
+
+func TestRuntimeLiveSkillCommandUsesModelSelection(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{
+		{
+			Name:          "diagram",
+			DisplayName:   "架构图",
+			Description:   "Create diagrams from natural language process or architecture requests.",
+			UserInvocable: true,
+			GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+				return []skills.ContentBlock{{Type: "text", Text: "diagram prompt: " + args}}, nil
+			},
+		},
+	}}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, catalog, func(scope Scope) Runner {
+		if scope.SkillScoped {
+			return echoRunner{}
+		}
+		return liveSkillSelectorRunner{output: `{"action":"skill_call","skill":"diagram","args":"登录流程图","confidence":0.91,"reason":"user asked to create a diagram"}`}
+	})
+	session, err := runtime.CreateSession(context.Background(), "alice", root)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	sink := &collectSink{}
+
+	handled, err := runtime.ExecuteLiveSkillCommand(context.Background(), "alice", session.ID, "帮我画一个登录流程图", sink)
+	if err != nil {
+		t.Fatalf("ExecuteLiveSkillCommand: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected model-selected live skill command to be handled")
+	}
+	var sawAssistant bool
+	for _, event := range sink.events {
+		if event.Type == "message" && event.Role == state.MessageRoleAssistant && strings.Contains(event.Content, "diagram prompt: 登录流程图") {
+			sawAssistant = true
+			break
+		}
+	}
+	if !sawAssistant {
+		t.Fatalf("expected model-selected skill result message, events=%#v", sink.events)
+	}
+}
+
+type liveSkillSelectorRunner struct {
+	output string
+}
+
+func (r liveSkillSelectorRunner) Run(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return r.RunGeneratedPrompt(context.Background(), session, prompt)
+}
+
+func (r liveSkillSelectorRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	session.AddSystemContext(prompt)
+	session.AddAssistantMessage(r.output)
+	return engine.Result{Output: r.output, Session: session}, nil
+}
+
+func TestRuntimeExecuteLiveSkillCommandRunsSkill(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{
+		{
+			Name:          "diagram",
+			DisplayName:   "架构图",
+			UserInvocable: true,
+			GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+				return []skills.ContentBlock{{Type: "text", Text: "diagram prompt: " + args}}, nil
+			},
+		},
+	}}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, catalog, func(Scope) Runner { return echoRunner{} })
+	session, err := runtime.CreateSession(context.Background(), "alice", root)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	sink := &collectSink{}
+
+	handled, err := runtime.ExecuteLiveSkillCommand(context.Background(), "alice", session.ID, "使用 架构图 技能画一个登录流程", sink)
+	if err != nil {
+		t.Fatalf("ExecuteLiveSkillCommand: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected live skill command to be handled")
+	}
+	var sawStart, sawResult, sawAssistant bool
+	for _, event := range sink.events {
+		switch event.Type {
+		case "live_skill_start":
+			sawStart = true
+		case "live_skill_result":
+			sawResult = true
+		case "message":
+			if event.Role == state.MessageRoleAssistant && strings.Contains(event.Content, "diagram prompt: 画一个登录流程") {
+				sawAssistant = true
+			}
+		}
+	}
+	if !sawStart || !sawResult || !sawAssistant {
+		t.Fatalf("missing live skill events start=%t result=%t assistant=%t events=%#v", sawStart, sawResult, sawAssistant, sink.events)
+	}
+	saved, err := store.Get(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	foundOriginalUtterance := false
+	for _, message := range saved.Messages {
+		if !message.Hidden && message.Role == state.MessageRoleUser && strings.Contains(message.Content, "架构图") {
+			foundOriginalUtterance = true
+			break
+		}
+	}
+	if !foundOriginalUtterance {
+		t.Fatalf("expected original live utterance to be persisted, got %#v", saved.Messages)
 	}
 }

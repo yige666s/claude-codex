@@ -1018,6 +1018,22 @@ export function App() {
       setStatus({ tone: "idle", text: "Voice interrupted" });
       return;
     }
+    if (event.type === "live_skill_start") {
+      stopLivePlayback();
+      setAssistantDraft("");
+      liveAudioChunkCountRef.current = 0;
+      setStatus({ tone: "busy", text: "Running skill" });
+      return;
+    }
+    if (event.type === "live_skill_result") {
+      setStatus({ tone: "ok", text: "Skill completed" });
+      return;
+    }
+    if (event.type === "message" && event.role === "assistant" && isLiveSkillEvent(event)) {
+      handleRuntimeEvent(event);
+      void refreshSessionData(sessionId, { revealNewArtifacts: true });
+      return;
+    }
     if (event.type === "message" && event.role === "assistant" && presentation === "audio") {
       setAssistantDraft("");
       setStatus(liveAudioChunkCountRef.current > 0
@@ -2022,6 +2038,11 @@ function appendRuntimeMessage(messages: Message[], message: Message): Message[] 
     return messages;
   }
   return [...messages, message];
+}
+
+function isLiveSkillEvent(event: RuntimeEvent): boolean {
+  const data = event.data as { source?: unknown } | undefined;
+  return data?.source === "live_skill";
 }
 
 function isConvertedSkillCommandMessage(messages: Message[], message: Message): boolean {

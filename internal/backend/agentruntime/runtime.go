@@ -29,6 +29,7 @@ const (
 	memoryInjectedKey           = "agentruntime.memory_context_injected"
 	consumerSecurityInjectedKey = "agentruntime.consumer_security_context_injected"
 	workspaceContextAckContent  = "Understood. I have the workspace context."
+	liveSkillSelectionTimeout   = 8 * time.Second
 )
 
 type hiddenUserMessageContextKey struct{}
@@ -1521,6 +1522,9 @@ func (r *Runtime) LiveSystemInstruction(ctx context.Context, userID, sessionID s
 		return consumerSecuritySystemContext
 	}
 	parts = append(parts, consumerSecuritySystemContext)
+	if skillContext := r.liveSkillContext(); strings.TrimSpace(skillContext) != "" {
+		parts = append(parts, "<skills>\n"+skillContext+"\n</skills>")
+	}
 	personalization, personalizationErr := r.GetPersonalizationSettings(ctx, userID)
 	if personalizationErr == nil {
 		if content := formatPersonalizationContext(personalization); strings.TrimSpace(content) != "" {
@@ -1568,6 +1572,342 @@ func (r *Runtime) LiveSystemInstruction(ctx context.Context, userID, sessionID s
 		}
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func (r *Runtime) liveSkillContext() string {
+	if r == nil {
+		return ""
+	}
+	items := r.ListSkills()
+	if len(items) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	out.WriteString(formatSkillList(items))
+	out.WriteString("\n\nLive mode can explain these published product skills and guide the user to run one with its slash command in text chat. Do not claim that a skill has run unless explicit skill results are present in the conversation.")
+	return out.String()
+}
+
+func (r *Runtime) DetectLiveSkillCommand(ctx context.Context, userID, sessionID, text string) bool {
+	_, ok := r.liveExplicitSkillCommand(text)
+	return ok
+}
+
+func (r *Runtime) ExecuteLiveSkillCommand(ctx context.Context, userID, sessionID, text string, sink EventSink) (bool, error) {
+	command, ok := r.liveExplicitSkillCommand(text)
+	if !ok {
+		command, ok = r.selectLiveSkillCommand(ctx, userID, sessionID, text)
+	}
+	if !ok {
+		return false, nil
+	}
+	if sink == nil {
+		return true, fmt.Errorf("event sink is required")
+	}
+	session, err := r.GetSession(ctx, userID, sessionID)
+	if err != nil {
+		return true, err
+	}
+	ensureConsumerSecurityContext(session)
+	if err := r.injectPersonalization(ctx, userID, session); err != nil {
+		return true, err
+	}
+	if err := r.injectBrowserMemory(ctx, userID, session); err != nil {
+		return true, err
+	}
+	if err := r.injectMemory(ctx, userID, session); err != nil {
+		return true, err
+	}
+	startMessageCount := len(session.Messages)
+	displayText := strings.TrimSpace(text)
+	if displayText == "" {
+		displayText = command
+	}
+	session.AddUserMessage(displayText)
+	if err := sink.Send(ctx, Event{Type: "message", SessionID: session.ID, Role: state.MessageRoleUser, Content: displayText}); err != nil {
+		return true, err
+	}
+	if err := sink.Send(ctx, Event{Type: "live_skill_start", SessionID: session.ID, Role: state.MessageRoleTool, Content: command, Data: liveJSON(map[string]any{"command": command})}); err != nil {
+		return true, err
+	}
+
+	req := ChatRequest{UserID: userID, SessionID: session.ID, Content: command}
+	if decision := r.RouteChat(req); decision.RunAsJob {
+		if err := r.persistChatSession(ctx, userID, session, startMessageCount); err != nil {
+			return true, err
+		}
+		job, err := r.CreateJob(ctx, req, firstNonEmptyString(decision.JobType, "skill"))
+		if err != nil {
+			return true, err
+		}
+		r.markJobUserMessageHidden(job.ID)
+		if err := r.StartJob(ctx, job); err != nil {
+			return true, err
+		}
+		if err := sink.Send(ctx, Event{Type: "job", SessionID: session.ID, JobID: job.ID, Job: job, JobReason: decision.Reason}); err != nil {
+			return true, err
+		}
+		return true, sink.Send(ctx, Event{Type: "live_skill_result", SessionID: session.ID, Role: state.MessageRoleTool, Content: "Skill job started.", Data: liveJSON(map[string]any{"command": command, "job_id": job.ID})})
+	}
+
+	turnCtx, cancel := context.WithTimeout(ctx, r.config.TurnTimeout)
+	turnKey := sessionKey(userID, session.ID)
+	if err := r.start(turnKey, cancel); err != nil {
+		cancel()
+		return true, err
+	}
+	turnFinished := false
+	finishTurn := func() {
+		if turnFinished {
+			return
+		}
+		r.finish(turnKey)
+		turnFinished = true
+	}
+	defer finishTurn()
+	result, err := r.runSkillCommand(withHiddenUserMessage(turnCtx), req, userID, session, command, func(token string) {
+		_ = sink.Send(ctx, Event{Type: "delta", SessionID: session.ID, Role: state.MessageRoleAssistant, Content: token})
+	})
+	if err != nil {
+		r.appendFailedTurn(session, displayText, err)
+		if saveErr := r.persistChatSession(ctx, userID, session, startMessageCount); saveErr != nil {
+			_ = sink.Send(ctx, Event{Type: "error", SessionID: session.ID, Error: err.Error()})
+			return true, errors.Join(err, saveErr)
+		}
+		_ = sink.Send(ctx, Event{Type: "error", SessionID: session.ID, Error: err.Error()})
+		return true, err
+	}
+	if result.Session == nil {
+		return true, fmt.Errorf("skill runner returned no session")
+	}
+	session = result.Session
+	r.sanitizeSessionAttachmentBlocks(session)
+	if err := r.persistChatSession(ctx, userID, session, startMessageCount); err != nil {
+		return true, err
+	}
+	if r.memory != nil {
+		if err := r.afterTurnMemory(ctx, userID, session); err != nil {
+			return true, err
+		}
+	}
+	if err := sink.Send(ctx, Event{Type: "live_skill_result", SessionID: session.ID, Role: state.MessageRoleTool, Content: result.Output, Data: liveJSON(map[string]any{"command": command})}); err != nil {
+		return true, err
+	}
+	if err := sink.Send(ctx, Event{Type: "message", SessionID: session.ID, Role: state.MessageRoleAssistant, Content: result.Output, Data: liveJSON(map[string]any{"source": "live_skill", "command": command})}); err != nil {
+		return true, err
+	}
+	return true, sink.Send(ctx, Event{Type: "done", SessionID: session.ID})
+}
+
+func (r *Runtime) liveExplicitSkillCommand(text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" || r == nil {
+		return "", false
+	}
+	if strings.HasPrefix(text, "/") {
+		parts := strings.SplitN(text, " ", 2)
+		name := strings.TrimPrefix(strings.TrimSpace(parts[0]), "/")
+		if name == "skills" {
+			return "/skills", true
+		}
+		if _, ok := r.skillForPrompt(text); ok {
+			return text, true
+		}
+		return "", false
+	}
+	for _, skill := range r.ListSkills() {
+		if skill == nil || !skill.UserInvocable || skill.IsHidden {
+			continue
+		}
+		labels := liveSkillLabels(skill)
+		for _, label := range labels {
+			args, ok := liveSkillArgsForLabel(text, label)
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(args) == "" {
+				args = text
+			}
+			command := "/" + skill.Name
+			if strings.TrimSpace(args) != "" {
+				command += " " + strings.TrimSpace(args)
+			}
+			return command, true
+		}
+	}
+	return "", false
+}
+
+type liveSkillSelection struct {
+	Action     string  `json:"action"`
+	Skill      string  `json:"skill"`
+	Args       string  `json:"args"`
+	Confidence float64 `json:"confidence"`
+	Reason     string  `json:"reason"`
+}
+
+func (r *Runtime) selectLiveSkillCommand(ctx context.Context, userID, sessionID, text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	if r == nil || text == "" || r.engineFactory == nil {
+		return "", false
+	}
+	items := r.ListSkills()
+	if len(items) == 0 {
+		return "", false
+	}
+	session, err := r.GetSession(ctx, userID, sessionID)
+	if err != nil || session == nil {
+		return "", false
+	}
+	callCtx, cancel := context.WithTimeout(ctx, liveSkillSelectionTimeout)
+	defer cancel()
+	callCtx = WithLLMScope(callCtx, LLMScope{
+		UserID:    userID,
+		SessionID: sessionID,
+		RequestID: requestIDFromContext(ctx),
+	})
+	runner := r.runnerForScope(Scope{UserID: userID, SessionID: sessionID, WorkingDir: session.WorkingDir})
+	result, err := runner.RunGeneratedPrompt(callCtx, state.NewSession(""), liveSkillSelectionPrompt(text, items))
+	if err != nil {
+		return "", false
+	}
+	selection, ok := parseLiveSkillSelection(result.Output)
+	if !ok || !strings.EqualFold(strings.TrimSpace(selection.Action), "skill_call") {
+		return "", false
+	}
+	if selection.Confidence > 0 && selection.Confidence < 0.55 {
+		return "", false
+	}
+	skill, ok := r.skills.GetSkill(strings.TrimSpace(selection.Skill))
+	if !ok || skill == nil || !skill.UserInvocable || skill.IsHidden {
+		return "", false
+	}
+	args := strings.TrimSpace(selection.Args)
+	if args == "" {
+		args = text
+	}
+	return "/" + skill.Name + " " + args, true
+}
+
+func liveSkillSelectionPrompt(userText string, items []*skills.SkillDefinition) string {
+	var catalog strings.Builder
+	for _, skill := range items {
+		if skill == nil || !skill.UserInvocable || skill.IsHidden {
+			continue
+		}
+		catalog.WriteString("- name: ")
+		catalog.WriteString(skill.Name)
+		if strings.TrimSpace(skill.DisplayName) != "" {
+			catalog.WriteString("\n  display_name: ")
+			catalog.WriteString(skill.DisplayName)
+		}
+		if len(skill.Aliases) > 0 {
+			catalog.WriteString("\n  aliases: ")
+			catalog.WriteString(strings.Join(skill.Aliases, ", "))
+		}
+		if strings.TrimSpace(skill.Description) != "" {
+			catalog.WriteString("\n  description: ")
+			catalog.WriteString(skill.Description)
+		}
+		if strings.TrimSpace(skill.WhenToUse) != "" {
+			catalog.WriteString("\n  when_to_use: ")
+			catalog.WriteString(skill.WhenToUse)
+		}
+		if strings.TrimSpace(skill.ArgumentHint) != "" {
+			catalog.WriteString("\n  args_hint: ")
+			catalog.WriteString(skill.ArgumentHint)
+		}
+		if skill.RunAsJob || skill.ExecutionContext == skills.ContextFork {
+			catalog.WriteString("\n  run_mode: job")
+		}
+		catalog.WriteString("\n")
+	}
+	return fmt.Sprintf(`You are a strict router for a live voice Agent product.
+
+Decide whether the user's latest utterance should be executed by exactly one published skill.
+
+Return ONLY one JSON object, no markdown:
+{"action":"skill_call","skill":"<skill_name>","args":"<natural language arguments>","confidence":0.0,"reason":"short reason"}
+
+If no skill should run, return:
+{"action":"none","skill":"","args":"","confidence":0.0,"reason":"short reason"}
+
+Rules:
+- Select a skill only when the user is asking the system to create, transform, analyze, fetch, generate, or process something that clearly matches a skill.
+- Do not select a skill for greetings, small talk, status questions, explanations about available skills, or ambiguous requests.
+- Use only skill names from the catalog.
+- Preserve the user's concrete request in args, without adding unsupported requirements.
+
+Available skills:
+%s
+
+User utterance:
+%q
+`, catalog.String(), userText)
+}
+
+func parseLiveSkillSelection(output string) (liveSkillSelection, bool) {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return liveSkillSelection{}, false
+	}
+	if extracted := extractFirstJSONValue(output); extracted != "" {
+		output = extracted
+	}
+	var selection liveSkillSelection
+	if err := json.Unmarshal([]byte(output), &selection); err != nil {
+		return liveSkillSelection{}, false
+	}
+	return selection, true
+}
+
+func liveSkillLabels(skill *skills.SkillDefinition) []string {
+	seen := map[string]bool{}
+	var labels []string
+	for _, label := range append([]string{skill.Name, skill.DisplayName}, skill.Aliases...) {
+		label = strings.TrimSpace(label)
+		key := strings.ToLower(label)
+		if label == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		labels = append(labels, label)
+	}
+	return labels
+}
+
+func liveSkillArgsForLabel(text, label string) (string, bool) {
+	lowerText := strings.ToLower(text)
+	lowerLabel := strings.ToLower(strings.TrimSpace(label))
+	if lowerLabel == "" {
+		return "", false
+	}
+	patterns := []string{
+		"使用 " + lowerLabel + " 技能",
+		"使用" + lowerLabel + "技能",
+		"调用 " + lowerLabel + " 技能",
+		"调用" + lowerLabel + "技能",
+		"用 " + lowerLabel + " 技能",
+		"用" + lowerLabel + "技能",
+		"use " + lowerLabel + " skill",
+		"call " + lowerLabel + " skill",
+	}
+	for _, pattern := range patterns {
+		idx := strings.Index(lowerText, pattern)
+		if idx < 0 {
+			continue
+		}
+		return trimLiveSkillArgs(text[idx+len(pattern):]), true
+	}
+	return "", false
+}
+
+func trimLiveSkillArgs(text string) string {
+	text = strings.TrimSpace(strings.Trim(text, " \t\r\n:：,，.。;；"))
+	for _, prefix := range []string{"帮我", "帮忙", "来", "请", "please"} {
+		text = strings.TrimSpace(strings.TrimPrefix(text, prefix))
+	}
+	return strings.TrimSpace(strings.Trim(text, " \t\r\n:：,，.。;；"))
 }
 
 func (r *Runtime) RecordLiveTurn(ctx context.Context, userID, sessionID, userText, assistantText, model string) error {
