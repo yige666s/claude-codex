@@ -32,6 +32,7 @@ import {
   Trash2,
   UserX,
   Volume2,
+  VolumeX,
   X
 } from "lucide-react";
 import { ApiClient, ApiError } from "./api/client";
@@ -177,7 +178,8 @@ export function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [busyChat, setBusyChat] = useState(false);
   const [liveStatus, setLiveStatus] = useState<"idle" | "connecting" | "listening" | "error">("idle");
-  const [livePresentation, setLivePresentation] = useState<"audio" | "text">("audio");
+  const [liveMuted, setLiveMuted] = useState(false);
+  const [liveUserDraft, setLiveUserDraft] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState("");
@@ -217,7 +219,7 @@ export function App() {
   const livePlaybackTimeRef = useRef(0);
   const livePlaybackGenerationRef = useRef(0);
   const livePlaybackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const livePresentationRef = useRef(livePresentation);
+  const liveMutedRef = useRef(liveMuted);
   const liveAudioChunkCountRef = useRef(0);
   const livePlaybackQueueRef = useRef(Promise.resolve());
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
@@ -353,8 +355,11 @@ export function App() {
   }, [draft]);
 
   useEffect(() => {
-    livePresentationRef.current = livePresentation;
-  }, [livePresentation]);
+    liveMutedRef.current = liveMuted;
+    if (liveMuted) {
+      stopLivePlayback();
+    }
+  }, [liveMuted]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -394,7 +399,7 @@ export function App() {
     const node = messagesRef.current;
     if (!node) return;
     node.scrollTop = node.scrollHeight;
-  }, [messages, assistantDraft, sessionId]);
+  }, [messages, assistantDraft, liveUserDraft, sessionId]);
 
   useEffect(() => {
     if (!globalSearchOpen) return;
@@ -928,16 +933,16 @@ export function App() {
     stopLiveMode(false);
     setRuntimeError("");
     setAssistantDraft("");
+    setLiveUserDraft("");
+    setLiveMuted(false);
     liveAudioChunkCountRef.current = 0;
     stopLivePlayback();
-    if (livePresentation === "audio") {
-      try {
-        await ensureLivePlaybackContext();
-      } catch {
-        setRuntimeError("Audio playback is unavailable in this browser.");
-        setLiveStatus("error");
-        return;
-      }
+    try {
+      await ensureLivePlaybackContext();
+    } catch {
+      setRuntimeError("Audio playback is unavailable in this browser.");
+      setLiveStatus("error");
+      return;
     }
     setLiveStatus("connecting");
     setStatus({ tone: "busy", text: "Connecting live voice" });
@@ -976,6 +981,13 @@ export function App() {
       socket.close();
     }
     setLiveStatus("idle");
+    setLiveUserDraft("");
+    setAssistantDraft("");
+  }
+
+  function toggleLiveMute() {
+    if (liveStatus === "idle") return;
+    setLiveMuted((current) => !current);
   }
 
   async function handleLiveRuntimeEvent(event: RuntimeEvent, socket: WebSocket) {
@@ -997,15 +1009,19 @@ export function App() {
       }
       return;
     }
-    const presentation = livePresentationRef.current;
+    if (event.type === "live_transcript" && event.role === "user") {
+      setLiveUserDraft((current) => current + (event.content || ""));
+      return;
+    }
     if (event.type === "live_transcript" && event.role === "assistant") {
-      if (presentation === "audio") return;
       setAssistantDraft((current) => current + (event.content || ""));
       return;
     }
     if (event.type === "live_audio") {
-      if (presentation === "audio") {
-        liveAudioChunkCountRef.current += 1;
+      liveAudioChunkCountRef.current += 1;
+      if (liveMutedRef.current) {
+        setStatus({ tone: "busy", text: "Voice muted" });
+      } else {
         setStatus({ tone: "busy", text: "Playing voice" });
         await queueLiveAudio(event.data);
       }
@@ -1013,6 +1029,7 @@ export function App() {
     }
     if (event.type === "live_interrupted") {
       setAssistantDraft("");
+      setLiveUserDraft("");
       liveAudioChunkCountRef.current = 0;
       stopLivePlayback();
       setStatus({ tone: "idle", text: "Voice interrupted" });
@@ -1021,6 +1038,7 @@ export function App() {
     if (event.type === "live_skill_start") {
       stopLivePlayback();
       setAssistantDraft("");
+      setLiveUserDraft("");
       liveAudioChunkCountRef.current = 0;
       setStatus({ tone: "busy", text: "Running skill" });
       return;
@@ -1034,19 +1052,16 @@ export function App() {
       void refreshSessionData(sessionId, { revealNewArtifacts: true });
       return;
     }
-    if (event.type === "message" && event.role === "assistant" && presentation === "audio") {
-      setAssistantDraft("");
-      setStatus(liveAudioChunkCountRef.current > 0
-        ? { tone: "ok", text: "Voice response played" }
-        : { tone: "error", text: "No voice audio received" });
-      if (liveAudioChunkCountRef.current === 0) {
-        setRuntimeError("The model returned a transcript but no playable audio frames.");
-      }
-      return;
-    }
     handleRuntimeEvent(event);
+    if (event.type === "message" && event.role === "user") {
+      setLiveUserDraft("");
+    }
     if (event.type === "message" && event.role === "assistant") {
-      void refreshSessionData(sessionId, { revealNewArtifacts: true });
+      setStatus(liveMutedRef.current
+        ? { tone: "ok", text: "Voice response muted" }
+        : liveAudioChunkCountRef.current > 0
+          ? { tone: "ok", text: "Voice response played" }
+          : { tone: "ok", text: "Voice transcript received" });
     }
   }
 
@@ -1279,6 +1294,7 @@ export function App() {
 
   function handleRuntimeEvent(event: RuntimeEvent) {
     if (event.type === "message" && event.role === "user") {
+      setLiveUserDraft("");
       setMessages((current) => appendRuntimeMessage(current, { role: "user", content: event.content || "" }));
     }
     if (event.type === "delta") {
@@ -1632,7 +1648,7 @@ export function App() {
           </div>
         )}
         <div className="messages" ref={messagesRef}>
-          {!messages.length && !assistantDraft && <div className="empty-state">Start with a message or choose a skill from the right panel.</div>}
+          {!messages.length && !liveUserDraft && !assistantDraft && <div className="empty-state">Start with a message or choose a skill from the right panel.</div>}
           {messages.map((message, index) => (
             <MessageBubble
               key={`${message.created_at || index}-${index}`}
@@ -1640,6 +1656,7 @@ export function App() {
               highlighted={message.message_index !== undefined && message.message_index === highlightedMessageIndex}
             />
           ))}
+          {liveUserDraft && <MessageBubble message={{ role: "user", content: liveUserDraft }} streaming />}
           {assistantDraft && <MessageBubble message={{ role: "assistant", content: assistantDraft }} streaming />}
         </div>
         <footer className="composer">
@@ -1711,28 +1728,17 @@ export function App() {
               rows={1}
             />
             <div className="composer-actions">
-              <div className="live-output-mode" role="group" aria-label="Live output mode">
-                <button
-                  type="button"
-                  className={livePresentation === "text" ? "active" : ""}
-                  onClick={() => setLivePresentation("text")}
-                  disabled={liveStatus !== "idle"}
-                  title="Text output"
-                  aria-label="Text output"
-                >
-                  <MessageCircle size={16} />
-                </button>
-                <button
-                  type="button"
-                  className={livePresentation === "audio" ? "active" : ""}
-                  onClick={() => setLivePresentation("audio")}
-                  disabled={liveStatus !== "idle"}
-                  title="Audio output"
-                  aria-label="Audio output"
-                >
-                  <Volume2 size={16} />
-                </button>
-              </div>
+              <button
+                type="button"
+                className={`voice-output-toggle ${liveMuted ? "muted" : ""}`}
+                onClick={toggleLiveMute}
+                disabled={liveStatus === "idle" || !sessionId}
+                title={liveStatus === "idle" ? "Voice output is available during voice input" : liveMuted ? "Unmute voice output" : "Mute voice output"}
+                aria-label={liveStatus === "idle" ? "Voice output unavailable" : liveMuted ? "Unmute voice output" : "Mute voice output"}
+                aria-pressed={liveStatus !== "idle" && !liveMuted}
+              >
+                {liveMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+              </button>
               <button
                 type="button"
                 className={`live-control ${liveStatus !== "idle" ? "active" : ""}`}

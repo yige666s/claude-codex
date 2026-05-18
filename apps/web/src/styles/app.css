@@ -1191,46 +1191,16 @@ label.composer-upload {
   align-items: center;
   gap: 8px;
 }
-.live-output-mode {
-  height: var(--composer-control-size);
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel-muted);
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-.live-output-mode button {
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--muted);
-  display: inline-grid;
-  place-items: center;
-  cursor: pointer;
-}
-.live-output-mode button:hover:not(:disabled),
-.live-output-mode button.active {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--active-bg);
-}
-.live-output-mode button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
 .composer .send,
 .composer .stop-generation,
+.composer .voice-output-toggle,
 .composer .live-control {
   width: var(--composer-control-size);
   height: var(--composer-control-size);
   min-width: var(--composer-control-size);
   min-height: var(--composer-control-size);
 }
+.composer .voice-output-toggle,
 .composer .live-control {
   padding: 0;
   border: 1px solid var(--line);
@@ -1241,16 +1211,28 @@ label.composer-upload {
   place-items: center;
   cursor: pointer;
 }
+.composer .voice-output-toggle:hover:not(:disabled),
 .composer .live-control:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--active-bg);
+}
+.composer .voice-output-toggle:not(:disabled):not(.muted) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--active-bg);
+}
+.composer .voice-output-toggle.muted {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 .composer .live-control.active {
   border-color: var(--danger);
   color: var(--danger);
   background: var(--danger-soft);
 }
+.composer .voice-output-toggle:disabled,
 .composer .live-control:disabled {
   cursor: not-allowed;
   opacity: 0.55;
