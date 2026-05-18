@@ -177,7 +177,8 @@ export function App() {
   const [highlightedMessageIndex, setHighlightedMessageIndex] = useState<number | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
   const [busyChat, setBusyChat] = useState(false);
-  const [liveStatus, setLiveStatus] = useState<"idle" | "connecting" | "listening" | "error">("idle");
+  const [inputMode, setInputMode] = useState<"text" | "live">("text");
+  const [liveStatus, setLiveStatus] = useState<"idle" | "connecting" | "listening" | "paused" | "error">("idle");
   const [liveMuted, setLiveMuted] = useState(false);
   const [liveUserDraft, setLiveUserDraft] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -931,6 +932,7 @@ export function App() {
       return;
     }
     stopLiveMode(false);
+    setInputMode("live");
     setRuntimeError("");
     setAssistantDraft("");
     setLiveUserDraft("");
@@ -985,9 +987,47 @@ export function App() {
     setAssistantDraft("");
   }
 
+  function switchToTextMode() {
+    if (inputMode === "text" && liveStatus === "idle") return;
+    setInputMode("text");
+    stopLiveMode();
+    setStatus({ tone: "idle", text: "Text input ready" });
+  }
+
+  function switchToLiveMode() {
+    setInputMode("live");
+    if (liveStatus === "idle") {
+      void startLiveMode();
+    }
+  }
+
   function toggleLiveMute() {
-    if (liveStatus === "idle") return;
+    if (inputMode !== "live" || liveStatus === "idle") return;
     setLiveMuted((current) => !current);
+  }
+
+  async function toggleLiveCapture() {
+    if (inputMode !== "live" || liveStatus === "connecting") return;
+    const socket = liveSocketRef.current;
+    if (liveStatus === "listening") {
+      stopLiveCapture();
+      setLiveStatus("paused");
+      setStatus({ tone: "idle", text: "Microphone paused" });
+      return;
+    }
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      if (liveStatus === "idle") {
+        await startLiveMode();
+      }
+      return;
+    }
+    try {
+      await startLiveCapture(socket);
+    } catch (error) {
+      setRuntimeError(errorMessage(error));
+      setLiveStatus("error");
+      setStatus({ tone: "error", text: "Microphone unavailable" });
+    }
   }
 
   async function handleLiveRuntimeEvent(event: RuntimeEvent, socket: WebSocket) {
@@ -1066,6 +1106,7 @@ export function App() {
   }
 
   async function startLiveCapture(socket: WebSocket) {
+    if (socket.readyState !== WebSocket.OPEN) throw new Error("Live voice connection is not ready.");
     if (liveMediaRef.current) return;
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
@@ -1095,7 +1136,7 @@ export function App() {
     setStatus({ tone: "busy", text: "Listening" });
   }
 
-  function cleanupLiveAudio() {
+  function stopLiveCapture() {
     liveProcessorRef.current?.disconnect();
     liveSourceRef.current?.disconnect();
     liveMediaRef.current?.getTracks().forEach((track) => track.stop());
@@ -1104,6 +1145,10 @@ export function App() {
     liveSourceRef.current = null;
     liveMediaRef.current = null;
     liveAudioContextRef.current = null;
+  }
+
+  function cleanupLiveAudio() {
+    stopLiveCapture();
     stopLivePlayback();
     void livePlaybackContextRef.current?.close();
     livePlaybackContextRef.current = null;
@@ -1698,7 +1743,7 @@ export function App() {
               title="Upload attachment"
               aria-label="Upload attachment"
               onClick={() => attachmentInputRef.current?.click()}
-              disabled={uploading || liveStatus !== "idle"}
+              disabled={uploading || inputMode !== "text" || liveStatus !== "idle"}
             >
               <FileUp size={18} />
             </button>
@@ -1710,13 +1755,13 @@ export function App() {
               aria-hidden="true"
               accept=".png,.jpg,.jpeg,.jfif,.webp,.gif,.avif,.bmp,.tif,.tiff,.heic,.heif,.pdf,.txt,.md,.csv,.json,.docx,.xlsx,.pptx,image/png,image/jpeg,image/pjpeg,image/webp,image/gif,image/avif,image/bmp,image/tiff,image/heic,image/heif,application/pdf,text/plain,text/markdown,text/csv,application/json"
               onChange={(event) => uploadAttachment(event.currentTarget.files)}
-              disabled={uploading || liveStatus !== "idle"}
+              disabled={uploading || inputMode !== "text" || liveStatus !== "idle"}
             />
             <textarea
               ref={composerInputRef}
               value={draft}
               aria-label="Message"
-              placeholder={liveStatus === "listening" ? "Live voice is listening" : "输入消息，或用 /skills 调用工作流"}
+              placeholder={inputMode === "live" ? "Live mode is active" : "输入消息，或用 /skills 调用工作流"}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -1724,37 +1769,66 @@ export function App() {
                   sendMessage();
                 }
               }}
-              disabled={liveStatus !== "idle"}
+              disabled={inputMode !== "text" || liveStatus !== "idle"}
               rows={1}
             />
             <div className="composer-actions">
-              <button
-                type="button"
-                className={`voice-output-toggle ${liveMuted ? "muted" : ""}`}
-                onClick={toggleLiveMute}
-                disabled={liveStatus === "idle" || !sessionId}
-                title={liveStatus === "idle" ? "Voice output is available during voice input" : liveMuted ? "Unmute voice output" : "Mute voice output"}
-                aria-label={liveStatus === "idle" ? "Voice output unavailable" : liveMuted ? "Unmute voice output" : "Mute voice output"}
-                aria-pressed={liveStatus !== "idle" && !liveMuted}
-              >
-                {liveMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
-              </button>
-              <button
-                type="button"
-                className={`live-control ${liveStatus !== "idle" ? "active" : ""}`}
-                onClick={() => liveStatus === "idle" ? void startLiveMode() : stopLiveMode()}
-                disabled={!sessionId || busyChat}
-                title={liveStatus === "idle" ? "Start live voice" : "Stop live voice"}
-                aria-label={liveStatus === "idle" ? "Start live voice" : "Stop live voice"}
-              >
-                {liveStatus === "idle" ? <Mic size={18} /> : <MicOff size={18} />}
-              </button>
+              <div className="input-mode-toggle" role="group" aria-label="Input mode">
+                <button
+                  type="button"
+                  className={inputMode === "text" ? "active" : ""}
+                  onClick={switchToTextMode}
+                  disabled={busyChat}
+                  title="Text mode"
+                  aria-label="Text mode"
+                >
+                  <MessageCircle size={16} />
+                  <span>Text</span>
+                </button>
+                <button
+                  type="button"
+                  className={inputMode === "live" ? "active" : ""}
+                  onClick={switchToLiveMode}
+                  disabled={!sessionId || busyChat}
+                  title="Live mode"
+                  aria-label="Live mode"
+                >
+                  <Mic size={16} />
+                  <span>Live</span>
+                </button>
+              </div>
+              {inputMode === "live" && (
+                <>
+                  <button
+                    type="button"
+                    className={`voice-output-toggle ${liveMuted ? "muted" : ""}`}
+                    onClick={toggleLiveMute}
+                    disabled={liveStatus === "idle" || liveStatus === "connecting" || !sessionId}
+                    title={liveMuted ? "Unmute voice output" : "Mute voice output"}
+                    aria-label={liveMuted ? "Unmute voice output" : "Mute voice output"}
+                    aria-pressed={liveStatus !== "idle" && !liveMuted}
+                  >
+                    {liveMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                  </button>
+                  <button
+                    type="button"
+                    className={`live-control ${liveStatus === "listening" ? "active" : ""}`}
+                    onClick={() => void toggleLiveCapture()}
+                    disabled={!sessionId || busyChat || liveStatus === "connecting" || liveStatus === "error"}
+                    title={liveStatus === "listening" ? "Pause microphone" : "Resume microphone"}
+                    aria-label={liveStatus === "listening" ? "Pause microphone" : "Resume microphone"}
+                    aria-pressed={liveStatus === "listening"}
+                  >
+                    {liveStatus === "listening" ? <Mic size={18} /> : <MicOff size={18} />}
+                  </button>
+                </>
+              )}
               {busyChat ? (
                 <button className="stop-generation" onClick={cancelChat} title="Stop generation" aria-label="Stop generation">
                   <span><Square size={16} fill="currentColor" /></span>
                 </button>
               ) : (
-                <button className="primary send" onClick={sendMessage} disabled={liveStatus !== "idle" || (!draft.trim() && pendingAttachments.length === 0) || !sessionId} title="Send" aria-label="Send">
+                <button className="primary send" onClick={sendMessage} disabled={inputMode !== "text" || liveStatus !== "idle" || (!draft.trim() && pendingAttachments.length === 0) || !sessionId} title="Send" aria-label="Send">
                   <Send size={21} />
                 </button>
               )}

@@ -1191,6 +1191,38 @@ label.composer-upload {
   align-items: center;
   gap: 8px;
 }
+.input-mode-toggle {
+  height: var(--composer-control-size);
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.input-mode-toggle button {
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.input-mode-toggle button:hover:not(:disabled),
+.input-mode-toggle button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--active-bg);
+}
+.input-mode-toggle button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 .composer .send,
 .composer .stop-generation,
 .composer .voice-output-toggle,
