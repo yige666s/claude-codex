@@ -1584,7 +1584,7 @@ func (r *Runtime) liveSkillContext() string {
 	}
 	var out strings.Builder
 	out.WriteString(formatSkillList(items))
-	out.WriteString("\n\nLive mode can explain these published product skills and guide the user to run one with its slash command in text chat. Do not claim that a skill has run unless explicit skill results are present in the conversation.")
+	out.WriteString("\n\nLive mode can explain these published product skills and guide the user to run one with its slash command in text chat. Artifact-producing work, including image generation, must be performed by backend skill/job events. Do not say you are generating an artifact, ask the user to wait for generation, or claim that a skill has run unless explicit skill/job results are present in the conversation.")
 	return out.String()
 }
 
@@ -1767,7 +1767,7 @@ func (r *Runtime) selectLiveSkillCommand(ctx context.Context, userID, sessionID,
 		RequestID: requestIDFromContext(ctx),
 	})
 	runner := r.runnerForScope(Scope{UserID: userID, SessionID: sessionID, WorkingDir: session.WorkingDir})
-	result, err := runner.RunGeneratedPrompt(callCtx, state.NewSession(""), liveSkillSelectionPrompt(text, items))
+	result, err := runner.RunGeneratedPrompt(callCtx, state.NewSession(""), liveSkillSelectionPrompt(text, liveSkillSelectionRecentContext(session, 8), items))
 	if err != nil {
 		return "", false
 	}
@@ -1789,7 +1789,7 @@ func (r *Runtime) selectLiveSkillCommand(ctx context.Context, userID, sessionID,
 	return "/" + skill.Name + " " + args, true
 }
 
-func liveSkillSelectionPrompt(userText string, items []*skills.SkillDefinition) string {
+func liveSkillSelectionPrompt(userText, recentContext string, items []*skills.SkillDefinition) string {
 	var catalog strings.Builder
 	for _, skill := range items {
 		if skill == nil || !skill.UserInvocable || skill.IsHidden {
@@ -1820,11 +1820,17 @@ func liveSkillSelectionPrompt(userText string, items []*skills.SkillDefinition) 
 		if skill.RunAsJob || skill.ExecutionContext == skills.ContextFork {
 			catalog.WriteString("\n  run_mode: job")
 		}
+		if skillProducesArtifacts(skill) {
+			catalog.WriteString("\n  produces_artifacts: true")
+		}
 		catalog.WriteString("\n")
+	}
+	if strings.TrimSpace(recentContext) == "" {
+		recentContext = "(none)"
 	}
 	return fmt.Sprintf(`You are a strict router for a live voice Agent product.
 
-Decide whether the user's latest utterance should be executed by exactly one published skill.
+Decide whether the user's latest utterance should be executed by exactly one published skill. Use the recent conversation only to resolve short follow-ups like "continue", "you decide", "that one", or "yes"; the latest utterance remains the trigger.
 
 Return ONLY one JSON object, no markdown:
 {"action":"skill_call","skill":"<skill_name>","args":"<natural language arguments>","confidence":0.0,"reason":"short reason"}
@@ -1834,6 +1840,8 @@ If no skill should run, return:
 
 Rules:
 - Select a skill only when the user is asking the system to create, transform, analyze, fetch, generate, or process something that clearly matches a skill.
+- If the user asks to create or generate an image, picture, drawing, visual, file, or other artifact, select the best matching artifact/image skill when one is available.
+- If the latest utterance is a confirmation or continuation of a recent artifact/image request, select the matching skill and preserve the concrete request from context in args.
 - Do not select a skill for greetings, small talk, status questions, explanations about available skills, or ambiguous requests.
 - Use only skill names from the catalog.
 - Preserve the user's concrete request in args, without adding unsupported requirements.
@@ -1841,9 +1849,47 @@ Rules:
 Available skills:
 %s
 
+Recent conversation:
+%s
+
 User utterance:
 %q
-`, catalog.String(), userText)
+`, catalog.String(), recentContext, userText)
+}
+
+func liveSkillSelectionRecentContext(session *state.Session, maxMessages int) string {
+	if session == nil || maxMessages <= 0 {
+		return ""
+	}
+	type line struct {
+		role    string
+		content string
+	}
+	lines := make([]line, 0, maxMessages)
+	for i := len(session.Messages) - 1; i >= 0 && len(lines) < maxMessages; i-- {
+		message := session.Messages[i]
+		if message.Hidden || (message.Role != state.MessageRoleUser && message.Role != state.MessageRoleAssistant) {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		lines = append(lines, line{role: message.Role, content: content})
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	for i := len(lines) - 1; i >= 0; i-- {
+		if out.Len() > 0 {
+			out.WriteString("\n")
+		}
+		out.WriteString(lines[i].role)
+		out.WriteString(": ")
+		out.WriteString(lines[i].content)
+	}
+	return out.String()
 }
 
 func parseLiveSkillSelection(output string) (liveSkillSelection, bool) {
@@ -3650,6 +3696,18 @@ func formatSkillList(items []*skills.SkillDefinition) string {
 		if strings.TrimSpace(skill.Description) != "" {
 			out.WriteString(": ")
 			out.WriteString(skill.Description)
+		}
+		var hints []string
+		if skill.RunAsJob || skill.ExecutionContext == skills.ContextFork {
+			hints = append(hints, "run mode: job")
+		}
+		if skillProducesArtifacts(skill) {
+			hints = append(hints, "produces artifacts")
+		}
+		if len(hints) > 0 {
+			out.WriteString(" (")
+			out.WriteString(strings.Join(hints, "; "))
+			out.WriteString(")")
 		}
 		out.WriteString("\n")
 	}

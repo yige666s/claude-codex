@@ -312,6 +312,72 @@ func TestRuntimeLiveSkillCommandUsesModelSelection(t *testing.T) {
 	}
 }
 
+func TestRuntimeLiveSkillCommandUsesRecentContextForArtifactFollowup(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	jobs := NewMemoryJobStore()
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{
+		{
+			Name:          "vertex-image-artifact",
+			DisplayName:   "图片生成",
+			Description:   "Generate images from natural language prompts.",
+			UserInvocable: true,
+			RunAsJob:      true,
+			Metadata: map[string]any{
+				"agentapi": map[string]any{"produces_artifacts": true},
+			},
+			GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+				return []skills.ContentBlock{{Type: "text", Text: "image prompt: " + args}}, nil
+			},
+		},
+	}}
+	var selectorPrompt string
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, catalog, func(scope Scope) Runner {
+		if scope.SkillScoped {
+			return echoRunner{}
+		}
+		return contextAwareLiveSkillSelectorRunner{prompt: &selectorPrompt}
+	})
+	runtime.SetJobStore(jobs)
+	session, err := runtime.CreateSession(context.Background(), "alice", root)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	session.AddUserMessage("帮我生成一张狗的图片")
+	session.AddAssistantMessage("想画什么样的狗？")
+	if err := store.Save(context.Background(), "alice", session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	sink := &collectSink{}
+
+	handled, err := runtime.ExecuteLiveSkillCommand(context.Background(), "alice", session.ID, "你自己决定", sink)
+	if err != nil {
+		t.Fatalf("ExecuteLiveSkillCommand: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected follow-up image request to be routed to a live skill")
+	}
+	if !strings.Contains(selectorPrompt, "Recent conversation:") || !strings.Contains(selectorPrompt, "帮我生成一张狗的图片") {
+		t.Fatalf("selector prompt did not include recent context:\n%s", selectorPrompt)
+	}
+	var routedJob *Job
+	var sawStart bool
+	for _, event := range sink.events {
+		if event.Type == "live_skill_start" {
+			sawStart = true
+		}
+		if event.Type == "job" {
+			routedJob = event.Job
+		}
+	}
+	if !sawStart || routedJob == nil {
+		t.Fatalf("expected live skill job events, events=%#v", sink.events)
+	}
+	if routedJob.Type != "skill" || routedJob.Content != "/vertex-image-artifact 一张狗的图片，风格由系统决定" {
+		t.Fatalf("unexpected routed job: %#v", routedJob)
+	}
+}
+
 type liveSkillSelectorRunner struct {
 	output string
 }
@@ -324,6 +390,27 @@ func (r liveSkillSelectorRunner) RunGeneratedPrompt(_ context.Context, session *
 	session.AddSystemContext(prompt)
 	session.AddAssistantMessage(r.output)
 	return engine.Result{Output: r.output, Session: session}, nil
+}
+
+type contextAwareLiveSkillSelectorRunner struct {
+	prompt *string
+}
+
+func (r contextAwareLiveSkillSelectorRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return r.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (r contextAwareLiveSkillSelectorRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	if r.prompt != nil {
+		*r.prompt = prompt
+	}
+	output := `{"action":"none","skill":"","args":"","confidence":0.0,"reason":"missing context"}`
+	if strings.Contains(prompt, "帮我生成一张狗的图片") && strings.Contains(prompt, "你自己决定") {
+		output = `{"action":"skill_call","skill":"vertex-image-artifact","args":"一张狗的图片，风格由系统决定","confidence":0.9,"reason":"latest utterance continues the image request"}`
+	}
+	session.AddSystemContext(prompt)
+	session.AddAssistantMessage(output)
+	return engine.Result{Output: output, Session: session}, nil
 }
 
 func TestRuntimeExecuteLiveSkillCommandRunsSkill(t *testing.T) {
