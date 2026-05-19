@@ -2060,14 +2060,15 @@ async function bootstrap(
     sessionList = [session];
   }
   const storedJob = loadActiveJob();
-  const current = sessionList.find((session) => session.id === storedJob?.sessionId) || sessionList[0];
-  const [skills, jobs, attachments, artifacts] = await Promise.all([
+  const currentSummary = sessionList.find((session) => session.id === storedJob?.sessionId) || sessionList[0];
+  const [current, skills, jobs, attachments, artifacts] = await Promise.all([
+    api.getSession(currentSummary.id),
     api.skills(),
-    api.jobs(current.id),
-    api.attachments(current.id),
-    api.artifacts(current.id)
+    api.jobs(currentSummary.id),
+    api.attachments(currentSummary.id),
+    api.artifacts(currentSummary.id)
   ]);
-  setSessions(sessionList);
+  setSessions(upsertSession(sessionList, current));
   setSessionId(current.id);
   setMessages(visibleMessages(current.messages || []));
   setSkills(skills);

@@ -35,7 +35,7 @@ describe("ApiClient auth refresh", () => {
         await Promise.resolve();
         return jsonResponse(authSession("new-access", "new-refresh", Date.now() + 900_000));
       }
-      if (url === "/v1/sessions") return jsonResponse([]);
+      if (url === "/v1/sessions?limit=50&summary=1") return jsonResponse([]);
       return jsonResponse({ error: "not found" }, 404);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -52,11 +52,11 @@ describe("ApiClient auth refresh", () => {
     localStorage.setItem("agentapi.web.auth", JSON.stringify(authSession("expired-access", "refresh", Date.now() + 900_000)));
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/v1/sessions" && fetchMock.mock.calls.filter(([callInput]) => String(callInput) === "/v1/sessions").length === 1) {
+      if (url === "/v1/sessions?limit=50&summary=1" && fetchMock.mock.calls.filter(([callInput]) => String(callInput) === "/v1/sessions?limit=50&summary=1").length === 1) {
         return jsonResponse({ error: "token expired" }, 401);
       }
       if (url === "/v1/auth/refresh") return jsonResponse(authSession("fresh-access", "fresh-refresh", Date.now() + 900_000));
-      if (url === "/v1/sessions") {
+      if (url === "/v1/sessions?limit=50&summary=1") {
         expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer fresh-access");
         return jsonResponse([]);
       }

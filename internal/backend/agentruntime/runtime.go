@@ -2341,6 +2341,7 @@ func (r *Runtime) runJob(ctx context.Context, job *Job) {
 		return
 	}
 	sink := &jobEventSink{store: r.jobs, broker: r.jobEvents, job: job}
+	ctx = withJobEventEmitter(ctx, sink.Send)
 	err := r.Chat(ctx, ChatRequest{UserID: job.UserID, SessionID: job.SessionID, Content: job.Content, AttachmentIDs: job.AttachmentIDs, AttachmentURLs: job.AttachmentURLs}, sink)
 	finishedAt := time.Now().UTC()
 	switch {

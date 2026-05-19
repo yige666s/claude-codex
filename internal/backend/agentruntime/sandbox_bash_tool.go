@@ -77,7 +77,10 @@ func (t *SandboxBashTool) Execute(ctx context.Context, raw json.RawMessage) (too
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	started := time.Now()
 	output, err := t.runtime.ExecuteCommand(ctx, command)
+	duration := time.Since(started)
+	t.emitMetric(ctx, payload, command, duration, len(output), err)
 	if err != nil {
 		return toolkit.Result{}, err
 	}
@@ -85,4 +88,50 @@ func (t *SandboxBashTool) Execute(ctx context.Context, raw json.RawMessage) (too
 		output = output[:payload.MaxOutputBytes] + "\n...[truncated]"
 	}
 	return toolkit.Result{Output: output}, nil
+}
+
+func (t *SandboxBashTool) emitMetric(ctx context.Context, payload sandboxBashInput, command string, duration time.Duration, outputBytes int, runErr error) {
+	description := strings.TrimSpace(payload.Description)
+	if description == "" {
+		description = truncateSandboxCommand(command, 96)
+	}
+	data := map[string]any{
+		"description":  description,
+		"duration_ms":  duration.Milliseconds(),
+		"output_bytes": outputBytes,
+		"timeout_ms":   int64(sandboxBashDefaultTimeout / time.Millisecond),
+		"success":      runErr == nil,
+	}
+	if payload.TimeoutSeconds > 0 {
+		data["timeout_ms"] = int64((time.Duration(payload.TimeoutSeconds) * time.Second) / time.Millisecond)
+	} else if payload.TimeoutMs > 0 {
+		data["timeout_ms"] = payload.TimeoutMs
+	}
+	if runtime, ok := t.runtime.(*DockerSkillShellRuntime); ok && runtime != nil {
+		data["runner"] = "docker"
+		data["image"] = runtime.config.Image
+		data["network"] = runtime.config.Network
+	} else {
+		data["runner"] = "sandbox"
+	}
+	if runErr != nil {
+		data["error"] = runErr.Error()
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	content := fmt.Sprintf("Sandbox command completed in %d ms", duration.Milliseconds())
+	if runErr != nil {
+		content = fmt.Sprintf("Sandbox command failed after %d ms", duration.Milliseconds())
+	}
+	emitJobEventFromContext(ctx, Event{Type: "sandbox_metric", Role: "tool", Content: content, Data: raw})
+}
+
+func truncateSandboxCommand(command string, limit int) string {
+	command = strings.Join(strings.Fields(command), " ")
+	if limit <= 0 || len(command) <= limit {
+		return command
+	}
+	return command[:limit-3] + "..."
 }

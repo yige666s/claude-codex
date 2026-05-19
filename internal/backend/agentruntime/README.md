@@ -524,6 +524,7 @@ analysis requests, are routed to jobs by default.
 - Skill frontmatter shell commands must match the skill's `allowed-tools` shell patterns when configured, and are capped by `-skill-shell-timeout` (default 90s).
 - Skill frontmatter shell commands can run in one-shot Docker sandboxes with `-skill-shell-runner docker`. Each command runs in a fresh container with the user workspace mounted at `/workspace`, the skill directory mounted read-only at `/skill`, `--read-only`, `--cap-drop ALL`, `no-new-privileges`, CPU/memory/pid limits, and a tmpfs `/tmp`; the container is removed after execution.
 - Docker sandbox network defaults to `none`. Use `-skill-sandbox-network bridge` only for published skills that require outbound calls, and pass secrets through the skill's explicit `metadata.openclaw.requires.env` list.
+- Docker sandbox images can be warmed at API startup with `-skill-sandbox-prepull-images`. Job event replay records `sandbox_metric` events for sandboxed command duration, image, network mode, output size, and success/failure.
 - WebFetch/WebSearch allow all domains when `-network-allowlist` is empty. Set an explicit comma-separated domain list for production deployments that need restricted egress.
 - Cross-origin browser access is denied unless `-cors-allowed-origins` includes the request origin.
 
@@ -536,7 +537,8 @@ go run ./cmd/agentapi \
   -skill-sandbox-image python:3.12-slim \
   -skill-sandbox-network none \
   -skill-sandbox-memory 512m \
-  -skill-sandbox-cpus 1
+  -skill-sandbox-cpus 1 \
+  -skill-sandbox-prepull-images python:3.12-slim,node:22-alpine
 ```
 
 ## LLM Providers

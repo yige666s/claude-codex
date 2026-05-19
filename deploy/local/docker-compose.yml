@@ -395,6 +395,20 @@ services:
       - "${AGENT_API_SKILL_DIRS:-/workspace/.claude/skills}"
       - -skill-shell-runner
       - "${AGENT_API_SKILL_SHELL_RUNNER:-local}"
+      - -skill-sandbox-image
+      - "${AGENT_API_SKILL_SANDBOX_IMAGE:-python:3.12-slim}"
+      - -skill-sandbox-network
+      - "${AGENT_API_SKILL_SANDBOX_NETWORK:-none}"
+      - -skill-sandbox-memory
+      - "${AGENT_API_SKILL_SANDBOX_MEMORY:-512m}"
+      - -skill-sandbox-cpus
+      - "${AGENT_API_SKILL_SANDBOX_CPUS:-1}"
+      - -skill-sandbox-pids-limit
+      - "${AGENT_API_SKILL_SANDBOX_PIDS_LIMIT:-128}"
+      - -skill-sandbox-tmpfs-size
+      - "${AGENT_API_SKILL_SANDBOX_TMPFS_SIZE:-64m}"
+      - -skill-sandbox-prepull-images
+      - "${AGENT_API_SKILL_SANDBOX_PREPULL_IMAGES:-python:3.12-slim,node:22-alpine}"
       - -llm-provider
       - "${AGENT_API_LLM_PROVIDER:-vertex}"
       - -model

@@ -69,8 +69,13 @@ export class ApiClient {
     return { status: response.ok ? "ok" : "error", checks: [] };
   }
 
-  async sessions(): Promise<Session[]> {
-    return this.fetchJSON<Session[]>("/v1/sessions");
+  async sessions(limit = 50, offset = 0): Promise<Session[]> {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      summary: "1"
+    });
+    if (offset > 0) params.set("offset", String(offset));
+    return this.fetchJSON<Session[]>(`/v1/sessions?${params.toString()}`);
   }
 
   async createSession(): Promise<Session> {

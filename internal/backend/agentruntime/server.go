@@ -326,6 +326,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleCreateSession(rec, r, user)
 	case r.Method == http.MethodGet && path == "v1/sessions":
 		s.handleListSessions(rec, r, user)
+	case r.Method == http.MethodGet && path == "v1/sessions/summary":
+		s.handleListSessionSummaries(rec, r, user)
 	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "v1" && parts[1] == "sessions":
 		s.handleGetSession(rec, r, user, parts[2])
 	case r.Method == http.MethodDelete && len(parts) == 3 && parts[0] == "v1" && parts[1] == "sessions":
@@ -2251,14 +2253,29 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request, use
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request, user User) {
-	limit := parseBoundedInt(r.URL.Query().Get("limit"), 0, 0, 500)
+	limit := parseBoundedInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, 1000000)
 	sessions, err := s.runtime.ListSessionsPage(r.Context(), user.ID, limit, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	if truthyQuery(r.URL.Query().Get("summary")) {
+		writeJSON(w, http.StatusOK, publicSessionSummaryViews(sessions))
+		return
+	}
 	writeJSON(w, http.StatusOK, publicSessionViews(sessions))
+}
+
+func (s *Server) handleListSessionSummaries(w http.ResponseWriter, r *http.Request, user User) {
+	limit := parseBoundedInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, 1000000)
+	sessions, err := s.runtime.ListSessionsPage(r.Context(), user.ID, limit, offset)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, publicSessionSummaryViews(sessions))
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, user User, sessionID string) {
@@ -2278,6 +2295,27 @@ func publicSessionViews(sessions []*state.Session) []*state.Session {
 		}
 	}
 	return out
+}
+
+func publicSessionSummaryViews(sessions []*state.Session) []*state.Session {
+	out := make([]*state.Session, 0, len(sessions))
+	for _, session := range sessions {
+		if public := publicSessionSummaryView(session); public != nil {
+			out = append(out, public)
+		}
+	}
+	return out
+}
+
+func publicSessionSummaryView(session *state.Session) *state.Session {
+	if session == nil {
+		return nil
+	}
+	clone := *session
+	clone.WorkingDir = ""
+	clone.Metadata = nil
+	clone.Messages = []state.Message{}
+	return &clone
 }
 
 func publicSessionView(session *state.Session) *state.Session {
@@ -3084,6 +3122,15 @@ func parseBoundedInt(value string, fallback, minValue, maxValue int) int {
 		return maxValue
 	}
 	return parsed
+}
+
+func truthyQuery(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func strconvQuote(value string) string {

@@ -451,22 +451,11 @@ func (s *SQLSessionStore) ListPage(ctx context.Context, userID string, limit, of
 			return sessions, nil
 		}
 	}
-	sessions, err := s.List(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	if offset >= len(sessions) {
-		return []*state.Session{}, nil
-	}
-	end := offset + limit
-	if end > len(sessions) {
-		end = len(sessions)
-	}
-	return sessions[offset:end], nil
+	return s.listSessionsFromSQL(ctx, userID, limit, offset)
 }
 
 func (s *SQLSessionStore) listSessionsFromSQL(ctx context.Context, userID string, limit, offset int) ([]*state.Session, error) {
-	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
+	query := `
 SELECT s.user_id, s.session_id, s.agent_id,
 	COALESCE(NULLIF(s.title, ''), (
 		SELECT m.content
@@ -485,7 +474,17 @@ SELECT s.user_id, s.session_id, s.agent_id,
 	s.created_at, s.updated_at, s.last_message_at
 FROM agent_sessions s
 WHERE s.user_id = ? AND s.status <> ?
-ORDER BY s.updated_at DESC`), userID, state.SessionStatusDeleted)
+ORDER BY s.updated_at DESC`
+	args := []any{userID, state.SessionStatusDeleted}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+		if offset > 0 {
+			query += ` OFFSET ?`
+			args = append(args, offset)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(query), args...)
 	if err != nil {
 		return nil, err
 	}

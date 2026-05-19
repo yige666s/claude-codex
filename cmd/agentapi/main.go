@@ -210,6 +210,7 @@ func main() {
 	skillSandboxCPUs := flag.String("skill-sandbox-cpus", firstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_CPUS"), agentruntime.DefaultSkillSandboxCPUs), "Docker CPU quota for skill shell runner=docker")
 	skillSandboxPidsLimit := flag.Int("skill-sandbox-pids-limit", envInt("AGENT_API_SKILL_SANDBOX_PIDS_LIMIT", agentruntime.DefaultSkillSandboxPidsLimit), "Docker pids limit for skill shell runner=docker")
 	skillSandboxTmpfsSize := flag.String("skill-sandbox-tmpfs-size", firstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_TMPFS_SIZE"), agentruntime.DefaultSkillSandboxTmpfsSize), "Docker /tmp tmpfs size for skill shell runner=docker")
+	skillSandboxPrepullImages := flag.String("skill-sandbox-prepull-images", firstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_PREPULL_IMAGES"), "python:3.12-slim,node:22-alpine"), "comma-separated Docker images to pre-pull for skill shell runner=docker")
 	flag.Parse()
 
 	llmCfg, err := buildLLMConfig(*llmProvider, *model, *apiKey, *apiToken, *apiBaseURL, 600)
@@ -278,6 +279,10 @@ func main() {
 		CPUs:      *skillSandboxCPUs,
 		PidsLimit: *skillSandboxPidsLimit,
 		TmpfsSize: *skillSandboxTmpfsSize,
+	}
+	if skillShellSandboxConfig.DockerEnabled() {
+		images := append([]string{skillShellSandboxConfig.Image}, splitCSV(*skillSandboxPrepullImages)...)
+		go warmSkillSandboxImages(context.Background(), images)
 	}
 	engineFactory := func(scope agentruntime.Scope) agentruntime.Runner {
 		root := scope.WorkingDir
@@ -1958,6 +1963,21 @@ func buildSandboxBashRuntime(config agentruntime.SkillShellSandboxConfig, root s
 		scope.AllowedTools,
 	)
 	return agentruntime.NewSandboxBashTool(runtime)
+}
+
+func warmSkillSandboxImages(ctx context.Context, images []string) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	for _, result := range agentruntime.WarmDockerSkillSandboxImages(ctx, images) {
+		switch {
+		case result.Error != nil:
+			log.Printf("skill sandbox image warm failed: image=%s pulled=%t duration=%s error=%v", result.Image, result.Pulled, result.Duration.Round(time.Millisecond), result.Error)
+		case result.Pulled:
+			log.Printf("skill sandbox image pre-pulled: image=%s duration=%s", result.Image, result.Duration.Round(time.Millisecond))
+		default:
+			log.Printf("skill sandbox image already local: image=%s check_duration=%s", result.Image, result.Duration.Round(time.Millisecond))
+		}
+	}
 }
 
 func allowsTool(values []string, toolName string) bool {

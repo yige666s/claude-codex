@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"claude-codex/internal/harness/skills"
 )
@@ -35,6 +36,13 @@ type SkillShellSandboxConfig struct {
 	PidsLimit      int
 	TmpfsSize      string
 	MaxOutputBytes int
+}
+
+type SkillSandboxWarmResult struct {
+	Image    string
+	Pulled   bool
+	Duration time.Duration
+	Error    error
 }
 
 func (c SkillShellSandboxConfig) normalized() SkillShellSandboxConfig {
@@ -71,6 +79,39 @@ func (c SkillShellSandboxConfig) dockerEnabled() bool {
 
 func (c SkillShellSandboxConfig) DockerEnabled() bool {
 	return c.dockerEnabled()
+}
+
+func WarmDockerSkillSandboxImages(ctx context.Context, images []string) []SkillSandboxWarmResult {
+	images = uniqueNonEmptyStrings(images)
+	results := make([]SkillSandboxWarmResult, 0, len(images))
+	if len(images) == 0 {
+		return results
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		for _, image := range images {
+			results = append(results, SkillSandboxWarmResult{Image: image, Error: fmt.Errorf("docker is not available: %w", err)})
+		}
+		return results
+	}
+	for _, image := range images {
+		started := time.Now()
+		result := SkillSandboxWarmResult{Image: image}
+		if err := exec.CommandContext(ctx, "docker", "image", "inspect", image).Run(); err == nil {
+			result.Duration = time.Since(started)
+			results = append(results, result)
+			continue
+		}
+		result.Pulled = true
+		if err := exec.CommandContext(ctx, "docker", "pull", image).Run(); err != nil {
+			result.Error = err
+		}
+		result.Duration = time.Since(started)
+		results = append(results, result)
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return results
 }
 
 type DockerSkillShellRuntime struct {
@@ -256,6 +297,20 @@ func sortedMapKeys(in map[string]string) []string {
 		}
 	}
 	return keys
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		cleaned := strings.TrimSpace(value)
+		if cleaned == "" || seen[cleaned] {
+			continue
+		}
+		seen[cleaned] = true
+		out = append(out, cleaned)
+	}
+	return out
 }
 
 type sandboxLimitBuffer struct {

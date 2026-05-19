@@ -13,6 +13,8 @@ import (
 )
 
 type jobContextKey struct{}
+type jobEventEmitterContextKey struct{}
+type jobEventEmitter func(context.Context, Event) error
 
 func WithJobID(ctx context.Context, jobID string) context.Context {
 	if strings.TrimSpace(jobID) == "" {
@@ -24,6 +26,21 @@ func WithJobID(ctx context.Context, jobID string) context.Context {
 func jobIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(jobContextKey{}).(string)
 	return id
+}
+
+func withJobEventEmitter(ctx context.Context, emit jobEventEmitter) context.Context {
+	if emit == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, jobEventEmitterContextKey{}, emit)
+}
+
+func emitJobEventFromContext(ctx context.Context, event Event) {
+	emit, _ := ctx.Value(jobEventEmitterContextKey{}).(jobEventEmitter)
+	if emit == nil {
+		return
+	}
+	_ = emit(context.Background(), event)
 }
 
 func NewJobID() string {
