@@ -90,7 +90,16 @@ func (t *FetchTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.R
 	}
 
 	if t.cloudflareCrawl != nil && shouldUseCloudflareCrawl(requestURL) {
-		return t.cloudflareCrawl.fetch(ctx, input, requestURL, t.allowedDomains)
+		result, err := t.cloudflareCrawl.fetch(ctx, input, requestURL, t.allowedDomains)
+		if err == nil {
+			return result, nil
+		}
+		direct, directErr := t.fetchDirect(ctx, input, requestURL)
+		if directErr != nil {
+			return toolkit.Result{}, fmt.Errorf("cloudflare crawl failed: %w; direct fetch failed: %v", err, directErr)
+		}
+		direct.Output = fmt.Sprintf("cloudflare_crawl_error: %s\nfallback: direct_http\n%s", err.Error(), direct.Output)
+		return direct, nil
 	}
 	return t.fetchDirect(ctx, input, requestURL)
 }

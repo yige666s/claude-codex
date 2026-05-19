@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,6 +74,45 @@ func TestFetchToolUsesCloudflareCrawlWhenConfigured(t *testing.T) {
 	if !strings.Contains(result.Output, "source: cloudflare_browser_rendering_crawl") || !strings.Contains(result.Output, "Useful content") {
 		t.Fatalf("unexpected fetch output: %q", result.Output)
 	}
+}
+
+func TestFetchToolFallsBackWhenCloudflareCrawlFails(t *testing.T) {
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_ACCOUNT_ID", "acct-1")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_API_TOKEN", "bad-token")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_BASE_URL", "https://cloudflare.test/client/v4")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_POLL_INTERVAL", "1ms")
+
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		status := http.StatusOK
+		body := "direct fallback content"
+		if strings.Contains(r.URL.Path, "/browser-rendering/crawl") {
+			status = http.StatusUnauthorized
+			body = `{"success":false,"errors":[{"message":"Authentication error"}]}`
+		}
+		return &http.Response{
+			StatusCode: status,
+			Status:     http.StatusText(status),
+			Header:     http.Header{"content-type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})}
+
+	tool := NewFetchTool(client)
+	input, _ := json.Marshal(map[string]any{"url": "https://example.com/page", "prompt": "extract content"})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("fetch execute: %v", err)
+	}
+	if !strings.Contains(result.Output, "cloudflare_crawl_error:") || !strings.Contains(result.Output, "direct fallback content") {
+		t.Fatalf("unexpected fallback output: %q", result.Output)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 func TestFetchToolRejectsDomainsOutsideAllowlist(t *testing.T) {
