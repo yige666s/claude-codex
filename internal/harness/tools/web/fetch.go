@@ -478,12 +478,26 @@ func (c *cloudflareCDPClient) readPage(ctx context.Context, webSocketURL string)
 	_ = client.call(ctx, "Runtime.enable", nil, nil)
 
 	expression := cdpPageSnapshotExpression()
+	var cookieRetryUntil time.Time
 	for {
 		page, err := client.evaluatePage(ctx, expression)
 		if err == nil && strings.TrimSpace(page.Content) != "" && (page.ReadyState == "interactive" || page.ReadyState == "complete") {
 			if clicked, _ := client.evaluateBool(ctx, cdpCookieDismissExpression()); clicked {
 				if waited, waitErr := client.waitForRenderedText(ctx, expression, c.pollInterval, len(strings.TrimSpace(page.Content))); waitErr == nil {
 					return waited, nil
+				}
+			}
+			if looksLikeCookieBanner(page.Content) {
+				if cookieRetryUntil.IsZero() {
+					cookieRetryUntil = time.Now().Add(5 * time.Second)
+				}
+				if time.Now().Before(cookieRetryUntil) {
+					select {
+					case <-ctx.Done():
+						return page, nil
+					case <-time.After(c.pollInterval):
+					}
+					continue
 				}
 			}
 			return page, nil
@@ -527,7 +541,12 @@ func cdpCookieDismissExpression() string {
   ];
   const candidates = [...document.querySelectorAll('button,[role="button"],a,input[type="button"],input[type="submit"]')]
     .map((el) => ({ el, text: ((el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '') + '').trim() }))
-    .filter((item) => item.text && item.el.offsetParent !== null);
+    .filter((item) => {
+      if (!item.text) return false;
+      const style = window.getComputedStyle(item.el);
+      const rect = item.el.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    });
   const choose = (patterns) => candidates.find(({ text }) => patterns.some((pattern) => pattern.test(text)));
   const chosen = choose(rejectPatterns) || choose(acceptPatterns);
   if (!chosen) return false;
@@ -635,14 +654,15 @@ func (c *cdpSocket) waitForRenderedText(ctx context.Context, expression string, 
 	if interval <= 0 {
 		interval = 500 * time.Millisecond
 	}
-	var latest cloudflareCDPPage
+	deadline := time.Now().Add(10 * time.Second)
+	var best cloudflareCDPPage
 	for {
 		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			if strings.TrimSpace(latest.Content) != "" {
-				return latest, nil
+			if strings.TrimSpace(best.Content) != "" {
+				return best, nil
 			}
 			return cloudflareCDPPage{}, ctx.Err()
 		case <-timer.C:
@@ -651,10 +671,15 @@ func (c *cdpSocket) waitForRenderedText(ctx context.Context, expression string, 
 		if err != nil {
 			return cloudflareCDPPage{}, err
 		}
-		latest = page
 		contentLen := len(strings.TrimSpace(page.Content))
-		if contentLen > previousLen+200 || !looksLikeCookieBanner(page.Content) {
+		if contentLen > len(strings.TrimSpace(best.Content)) {
+			best = page
+		}
+		if contentLen > previousLen+1000 {
 			return page, nil
+		}
+		if time.Now().After(deadline) && strings.TrimSpace(best.Content) != "" {
+			return best, nil
 		}
 	}
 }

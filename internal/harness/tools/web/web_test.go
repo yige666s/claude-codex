@@ -81,7 +81,7 @@ func TestFetchToolUsesCloudflareCrawlWhenConfigured(t *testing.T) {
 func TestFetchToolFallsBackToCloudflareCDPWhenCrawlFails(t *testing.T) {
 	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_ACCOUNT_ID", "acct-1")
 	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_API_TOKEN", "token-1")
-	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_CDP_TIMEOUT", "2s")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_CDP_TIMEOUT", "8s")
 	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_CDP_POLL_INTERVAL", "1ms")
 
 	var closedSession bool
@@ -125,7 +125,7 @@ func TestFetchToolFallsBackToCloudflareCDPWhenCrawlFails(t *testing.T) {
 					params, _ := request["params"].(map[string]any)
 					expression, _ := params["expression"].(string)
 					value := `{"readyState":"complete","title":"Rendered","url":"https://example.com/page","content":"Rendered CDP content"}`
-					if strings.Contains(expression, "acceptPatterns") {
+					if !strings.Contains(expression, "readyState") {
 						acceptedCookies = true
 						result = map[string]any{
 							"result": map[string]any{
