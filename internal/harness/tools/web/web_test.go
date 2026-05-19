@@ -127,20 +127,52 @@ func TestFetchToolRejectsDomainsOutsideAllowlist(t *testing.T) {
 	}
 }
 
-func TestSearchToolParsesAnchorResults(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("content-type", "text/html")
-		_, _ = w.Write([]byte(`<html><body><a href="https://example.com">Example Result</a></body></html>`))
+func TestSearchToolUsesTavilyAPI(t *testing.T) {
+	t.Setenv("AGENT_API_TAVILY_API_KEY", "tvly-test")
+
+	var sawRequest bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawRequest = true
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if r.Header.Get("authorization") != "Bearer tvly-test" {
+			t.Fatalf("missing authorization header: %q", r.Header.Get("authorization"))
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode search body: %v", err)
+		}
+		if body["query"] != "example" || body["search_depth"] != "basic" || body["max_results"] != float64(2) || body["include_answer"] != true {
+			t.Fatalf("unexpected search body: %#v", body)
+		}
+		includeDomains, _ := body["include_domains"].([]any)
+		excludeDomains, _ := body["exclude_domains"].([]any)
+		if len(includeDomains) != 1 || includeDomains[0] != "example.com" || len(excludeDomains) != 1 || excludeDomains[0] != "blocked.example.com" {
+			t.Fatalf("unexpected domain filters: %#v", body)
+		}
+
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"answer":"brief answer","results":[{"title":"Example Result","url":"https://example.com","content":"Useful snippet","score":0.9}]}`))
 	}))
 	defer server.Close()
 
 	tool := NewSearchTool(server.Client())
-	input, _ := json.Marshal(map[string]any{"query": "example", "endpoint": server.URL})
+	input, _ := json.Marshal(map[string]any{
+		"query":           "example",
+		"endpoint":        server.URL,
+		"max_results":     2,
+		"allowed_domains": []string{"www.example.com"},
+		"blocked_domains": []string{"blocked.example.com"},
+	})
 	result, err := tool.Execute(context.Background(), input)
 	if err != nil {
 		t.Fatalf("search execute: %v", err)
 	}
-	if !strings.Contains(result.Output, "Example Result - https://example.com") {
+	if !sawRequest {
+		t.Fatal("expected tavily request")
+	}
+	if !strings.Contains(result.Output, "answer: brief answer") || !strings.Contains(result.Output, "Example Result - https://example.com") || !strings.Contains(result.Output, "Useful snippet") {
 		t.Fatalf("unexpected search output: %q", result.Output)
 	}
 }
@@ -158,12 +190,14 @@ func TestSearchToolRejectsEndpointOutsideAllowlist(t *testing.T) {
 }
 
 func TestSearchToolFiltersDomains(t *testing.T) {
+	t.Setenv("AGENT_API_TAVILY_API_KEY", "tvly-test")
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("content-type", "text/html")
-		_, _ = w.Write([]byte(`<html><body>
-			<a href="https://allowed.example.com/one">Allowed</a>
-			<a href="https://blocked.example.com/two">Blocked</a>
-		</body></html>`))
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[
+			{"title":"Allowed","url":"https://allowed.example.com/one","content":"Allowed content","score":0.9},
+			{"title":"Blocked","url":"https://blocked.example.com/two","content":"Blocked content","score":0.8}
+		]}`))
 	}))
 	defer server.Close()
 

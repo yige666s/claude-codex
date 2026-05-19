@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 type SearchTool struct {
 	client          *http.Client
 	defaultEndpoint string
+	apiKey          string
 	allowedDomains  []string
 }
 
@@ -39,7 +41,8 @@ func NewSearchToolWithAllowlist(client *http.Client, allowedDomains []string) *S
 	}
 	return &SearchTool{
 		client:          client,
-		defaultEndpoint: "https://duckduckgo.com/html/",
+		defaultEndpoint: firstNonEmpty(firstEnvValue("AGENT_API_TAVILY_SEARCH_ENDPOINT"), "https://api.tavily.com/search"),
+		apiKey:          firstEnvValue("AGENT_API_TAVILY_API_KEY", "TAVILY_API_KEY"),
 		allowedDomains:  append([]string(nil), allowedDomains...),
 	}
 }
@@ -86,14 +89,36 @@ func (t *SearchTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.
 		return toolkit.Result{}, err
 	}
 
-	values := requestURL.Query()
-	values.Set("q", input.Query)
-	requestURL.RawQuery = values.Encode()
+	apiKey := strings.TrimSpace(t.apiKey)
+	if apiKey == "" {
+		return toolkit.Result{}, fmt.Errorf("Tavily API key is required; set AGENT_API_TAVILY_API_KEY")
+	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	maxResults := input.MaxResults
+	if maxResults <= 0 {
+		maxResults = 5
+	}
+
+	payload := tavilySearchRequest{
+		Query:          strings.TrimSpace(input.Query),
+		SearchDepth:    "basic",
+		MaxResults:     maxResults,
+		IncludeAnswer:  true,
+		IncludeDomains: cleanDomainList(input.AllowedDomains),
+		ExcludeDomains: cleanDomainList(input.BlockedDomains),
+	}
+	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return toolkit.Result{}, err
 	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(encoded))
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	request.Header.Set("authorization", "Bearer "+apiKey)
+	request.Header.Set("content-type", "application/json")
+	request.Header.Set("accept", "application/json")
 	request.Header.Set("user-agent", "claude-codex-phase2/1.0")
 
 	response, err := t.client.Do(request)
@@ -106,30 +131,50 @@ func (t *SearchTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.
 	if err != nil {
 		return toolkit.Result{}, err
 	}
-
-	maxResults := input.MaxResults
-	if maxResults <= 0 {
-		maxResults = 5
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return toolkit.Result{}, fmt.Errorf("tavily search failed: status %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	results := filterDomainResults(parseSearchResults(string(body), maxResults*3), input.AllowedDomains, input.BlockedDomains)
+	var searchResponse tavilySearchResponse
+	if err := json.Unmarshal(body, &searchResponse); err != nil {
+		return toolkit.Result{}, fmt.Errorf("decode tavily search response: %w", err)
+	}
+	results := filterTavilyResults(searchResponse.Results, input.AllowedDomains, input.BlockedDomains)
 	if len(results) > maxResults {
 		results = results[:maxResults]
 	}
-	if len(results) == 0 {
-		results = []string{strings.TrimSpace(stripHTML(string(body)))}
-	}
 
-	return toolkit.Result{Output: strings.Join(results, "\n")}, nil
+	return toolkit.Result{Output: formatTavilySearchOutput(searchResponse.Answer, results)}, nil
 }
 
-func filterDomainResults(results []string, allowed, blocked []string) []string {
+type tavilySearchRequest struct {
+	Query          string   `json:"query"`
+	SearchDepth    string   `json:"search_depth,omitempty"`
+	MaxResults     int      `json:"max_results,omitempty"`
+	IncludeAnswer  bool     `json:"include_answer,omitempty"`
+	IncludeDomains []string `json:"include_domains,omitempty"`
+	ExcludeDomains []string `json:"exclude_domains,omitempty"`
+}
+
+type tavilySearchResponse struct {
+	Answer  string         `json:"answer"`
+	Results []tavilyResult `json:"results"`
+}
+
+type tavilyResult struct {
+	Title   string  `json:"title"`
+	URL     string  `json:"url"`
+	Content string  `json:"content"`
+	Score   float64 `json:"score"`
+}
+
+func filterTavilyResults(results []tavilyResult, allowed, blocked []string) []tavilyResult {
 	if len(allowed) == 0 && len(blocked) == 0 {
 		return results
 	}
-	filtered := make([]string, 0, len(results))
+	filtered := make([]tavilyResult, 0, len(results))
 	for _, result := range results {
-		host := resultHost(result)
+		host := resultHost(result.URL)
 		if host == "" {
 			continue
 		}
@@ -144,12 +189,8 @@ func filterDomainResults(results []string, allowed, blocked []string) []string {
 	return filtered
 }
 
-func resultHost(result string) string {
-	idx := strings.LastIndex(result, " - ")
-	if idx < 0 {
-		return ""
-	}
-	parsed, err := url.Parse(strings.TrimSpace(result[idx+3:]))
+func resultHost(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
 		return ""
 	}
@@ -170,23 +211,47 @@ func domainListed(host string, domains []string) bool {
 	return false
 }
 
-var resultAnchorPattern = regexp.MustCompile(`(?is)<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>`)
-
-func parseSearchResults(html string, maxResults int) []string {
-	matches := resultAnchorPattern.FindAllStringSubmatch(html, -1)
-	results := make([]string, 0, maxResults)
-	for _, match := range matches {
-		if len(results) >= maxResults {
-			break
-		}
-		link := strings.TrimSpace(match[1])
-		label := strings.TrimSpace(stripHTML(match[2]))
-		if label == "" || link == "" {
+func cleanDomainList(domains []string) []string {
+	cleaned := make([]string, 0, len(domains))
+	for _, domain := range domains {
+		domain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), "www.")
+		if domain == "" {
 			continue
 		}
-		results = append(results, fmt.Sprintf("%s - %s", label, link))
+		cleaned = append(cleaned, domain)
 	}
-	return results
+	return cleaned
+}
+
+func formatTavilySearchOutput(answer string, results []tavilyResult) string {
+	var builder strings.Builder
+	answer = strings.TrimSpace(answer)
+	if answer != "" {
+		fmt.Fprintf(&builder, "answer: %s", answer)
+	}
+	for _, result := range results {
+		title := strings.TrimSpace(result.Title)
+		rawURL := strings.TrimSpace(result.URL)
+		content := strings.TrimSpace(result.Content)
+		if title == "" && rawURL == "" && content == "" {
+			continue
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n")
+		}
+		if title != "" && rawURL != "" {
+			fmt.Fprintf(&builder, "%s - %s", title, rawURL)
+		} else {
+			builder.WriteString(firstNonEmpty(title, rawURL))
+		}
+		if content != "" {
+			fmt.Fprintf(&builder, "\n%s", content)
+		}
+	}
+	if builder.Len() == 0 {
+		return "No search results."
+	}
+	return builder.String()
 }
 
 var tagPattern = regexp.MustCompile(`(?s)<[^>]+>`)
