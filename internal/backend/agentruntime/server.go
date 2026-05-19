@@ -340,6 +340,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleDeleteAttachment(rec, r, user, parts[2])
 	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "v1" && parts[1] == "artifacts":
 		s.handleDownloadArtifact(rec, r, user, parts[2])
+	case r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "v1" && parts[1] == "artifacts" && parts[3] == "preview":
+		s.handlePreviewArtifact(rec, r, user, parts[2])
 	case r.Method == http.MethodPost && len(parts) == 5 && parts[0] == "v1" && parts[1] == "artifacts" && parts[3] == "memory" && parts[4] == "extract":
 		s.handleExtractAssetMemory(rec, r, user, AssetKindArtifact, parts[2])
 	case r.Method == http.MethodDelete && len(parts) == 3 && parts[0] == "v1" && parts[1] == "artifacts":
@@ -1820,6 +1822,27 @@ func (s *Server) handleDownloadArtifact(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	writeAssetDownload(w, artifact, data)
+}
+
+func (s *Server) handlePreviewArtifact(w http.ResponseWriter, r *http.Request, user User, artifactID string) {
+	artifact, data, err := s.runtime.GetArtifact(r.Context(), user.ID, artifactID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "artifact not found"})
+		return
+	}
+	if !isDOCXAsset(artifact) {
+		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "preview is not available for this artifact type"})
+		return
+	}
+	preview, err := renderDOCXPreviewHTML(artifact, data)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Disposition", "inline; filename="+strconvQuote(strings.TrimSuffix(artifact.Filename, filepath.Ext(artifact.Filename))+".html"))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(preview)
 }
 
 func (s *Server) handleDeleteAttachment(w http.ResponseWriter, r *http.Request, user User, attachmentID string) {

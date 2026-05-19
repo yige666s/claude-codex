@@ -707,6 +707,10 @@ export class ApiClient {
     return this.authURL(`/v1/artifacts/${encodeURIComponent(id)}`);
   }
 
+  artifactPreviewURL(id: string): string {
+    return this.authURL(`/v1/artifacts/${encodeURIComponent(id)}/preview`);
+  }
+
   jobStreamURL(jobId: string, afterId?: string): string {
     const params = new URLSearchParams({ stream: "1" });
     if (this.auth?.access_token) params.set("token", this.auth.access_token);

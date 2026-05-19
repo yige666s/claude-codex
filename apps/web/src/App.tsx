@@ -185,7 +185,7 @@ export function App() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<Asset[]>([]);
-  const [previewAsset, setPreviewAsset] = useState<{ asset: Asset; url: string } | null>(null);
+  const [previewAsset, setPreviewAsset] = useState<{ asset: Asset; url: string; previewUrl?: string } | null>(null);
   const [assetMemoryBusy, setAssetMemoryBusy] = useState<Record<string, boolean>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
@@ -1966,7 +1966,7 @@ export function App() {
               assets={filteredArtifacts}
               icon="image"
               emptyLabel={rightPanelSearch.artifacts ? "No results" : "No items"}
-              preview={(asset) => setPreviewAsset({ asset, url: api.artifactURL(asset.id) })}
+              preview={(asset) => setPreviewAsset({ asset, url: api.artifactURL(asset.id), previewUrl: api.artifactPreviewURL(asset.id) })}
               download={(id) => window.open(api.artifactURL(id), "_blank")}
               remove={(id) => deleteAsset("artifact", id)}
               extractMemory={extractAssetMemory}
@@ -2036,7 +2036,7 @@ export function App() {
           onClose={() => setSettingsModalOpen(false)}
         />
       )}
-      {previewAsset && <PreviewModal asset={previewAsset.asset} url={previewAsset.url} onClose={() => setPreviewAsset(null)} />}
+      {previewAsset && <PreviewModal asset={previewAsset.asset} url={previewAsset.url} previewUrl={previewAsset.previewUrl} onClose={() => setPreviewAsset(null)} />}
       {confirmDialog && (
         <ConfirmModal
           dialog={confirmDialog}
@@ -6122,11 +6122,12 @@ function SwitchButton({ checked, label, onChange }: { checked: boolean; label: s
   );
 }
 
-function PreviewModal({ asset, url, onClose }: { asset: Asset; url: string; onClose: () => void }) {
+function PreviewModal({ asset, url, previewUrl, onClose }: { asset: Asset; url: string; previewUrl?: string; onClose: () => void }) {
   const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
   const isImage = isImageAsset(asset);
   const isPDF = isPDFAsset(asset);
   const isText = isTextAsset(asset);
+  const isDocx = isDOCXAsset(asset);
   const isOffice = ["ppt", "pptx", "doc", "docx", "xls", "xlsx"].includes(ext);
   const modalRef = useFocusTrap<HTMLElement>(true, onClose);
   const [textPreview, setTextPreview] = useState<{ status: "idle" | "loading" | "loaded" | "error"; content: string; error?: string }>({
@@ -6181,6 +6182,7 @@ function PreviewModal({ asset, url, onClose }: { asset: Asset; url: string; onCl
         <div className="preview-body">
           {isImage && <img src={url} alt={asset.filename} />}
           {isPDF && <iframe src={url} title={asset.filename} />}
+          {isDocx && previewUrl && <iframe src={previewUrl} title={`${asset.filename} preview`} />}
           {isText && (
             <div className="text-preview" role="document" aria-label={asset.filename}>
               {textPreview.status === "loading" && <div className="preview-fallback">Loading preview...</div>}
@@ -6188,14 +6190,14 @@ function PreviewModal({ asset, url, onClose }: { asset: Asset; url: string; onCl
               {textPreview.status === "loaded" && <pre>{textPreview.content}</pre>}
             </div>
           )}
-          {isOffice && (
+          {isOffice && (!isDocx || !previewUrl) && (
             <div className="preview-fallback">
               <FileUp size={32} />
               <strong>{asset.filename}</strong>
               <p>Office previews depend on the browser or deployment viewer. Use download/open for this file.</p>
             </div>
           )}
-          {!isImage && !isPDF && !isText && !isOffice && (
+          {!isImage && !isPDF && !isText && !isDocx && !isOffice && (
             <div className="preview-fallback">
               <FileUp size={32} />
               <strong>{asset.filename}</strong>
@@ -6214,6 +6216,11 @@ function isImageAsset(asset: Asset): boolean {
 function isPDFAsset(asset: Asset): boolean {
   const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
   return asset.content_type === "application/pdf" || ext === "pdf";
+}
+
+function isDOCXAsset(asset: Asset): boolean {
+  const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
+  return asset.content_type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || ext === "docx";
 }
 
 function isTextAsset(asset: Asset): boolean {
