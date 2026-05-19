@@ -25,6 +25,10 @@ metadata:
       - "github.com"
     artifact_content_types:
       - "image/svg+xml"
+    sandbox:
+      runner: docker
+      image: python:3.12-slim
+      network: none
     marketplace_summary: "Generate technical diagrams such as architecture, flowchart, sequence, UML, ER, timeline, and concept maps."
     input_schema:
       type: object

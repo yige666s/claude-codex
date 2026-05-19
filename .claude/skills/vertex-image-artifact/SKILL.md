@@ -13,6 +13,32 @@ metadata:
   agentapi:
     run_as_job: true
     produces_artifacts: true
+    policy:
+      allowed_env:
+        - VERTEX_PROJECT_ID
+        - GOOGLE_CLOUD_PROJECT
+        - GCP_PROJECT
+        - VERTEX_LOCATION
+        - GOOGLE_CLOUD_LOCATION
+        - VERTEX_ACCESS_TOKEN
+        - GOOGLE_OAUTH_ACCESS_TOKEN
+        - GOOGLE_ACCESS_TOKEN
+        - GOOGLE_APPLICATION_CREDENTIALS
+        - GOOGLE_APPLICATION_CREDENTIALS_JSON
+        - VERTEX_SERVICE_ACCOUNT_FILE
+        - VERTEX_SERVICE_ACCOUNT_JSON
+        - VERTEX_IMAGE_MODEL
+        - VERTEX_IMAGE_ASPECT_RATIO
+      network_allowlist:
+        - aiplatform.googleapis.com
+        - oauth2.googleapis.com
+        - googleapis.com
+      artifact_content_types:
+        - image/png
+      sandbox:
+        runner: docker
+        image: python:3.12-slim
+        network: bridge
   openclaw:
     requires:
       env:
