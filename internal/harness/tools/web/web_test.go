@@ -48,7 +48,7 @@ func TestFetchToolUsesCloudflareCrawlWhenConfigured(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode start body: %v", err)
 			}
-			if body["url"] != "https://example.com/page" || body["render"] != true {
+			if body["url"] != "https://example.com/page" || body["render"] != true || body["depth"] != float64(1) {
 				t.Fatalf("unexpected crawl body: %#v", body)
 			}
 			_, _ = w.Write([]byte(`{"success":true,"result":"job-1"}`))

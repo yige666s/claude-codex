@@ -227,7 +227,7 @@ func (c *cloudflareCrawlClient) start(ctx context.Context, requestURL string) (s
 	payload := map[string]any{
 		"url":           requestURL,
 		"limit":         1,
-		"depth":         0,
+		"depth":         1,
 		"formats":       []string{"markdown"},
 		"render":        true,
 		"crawlPurposes": []string{"search", "ai-input"},
