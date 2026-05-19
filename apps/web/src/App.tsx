@@ -230,6 +230,7 @@ export function App() {
   const jobStreamClosedRef = useRef(false);
   const activeJobStreamIdRef = useRef("");
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const selectedSessionIdRef = useRef("");
   const accountRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const lastJobEventRef = useRef("");
@@ -343,6 +344,7 @@ export function App() {
 
   useEffect(() => {
     if (!sessionId) return;
+    selectedSessionIdRef.current = sessionId;
     refreshSessionData(sessionId).catch((error) => showError(error));
     stopLiveMode(false);
   }, [sessionId]);
@@ -476,7 +478,9 @@ export function App() {
   }
 
   async function refreshSessionData(id: string, options: { revealNewArtifacts?: boolean } = {}) {
-    setStatus({ tone: "busy", text: "Refreshing" });
+    if (selectedSessionIdRef.current === id) {
+      setStatus({ tone: "busy", text: "Refreshing" });
+    }
     const previousArtifactIds = new Set(artifactsRef.current.map((asset) => asset.id));
     const [session, jobList, attachmentList, artifactList] = await Promise.all([
       api.getSession(id),
@@ -484,8 +488,11 @@ export function App() {
       api.attachments(id),
       api.artifacts(id)
     ]);
-    setMessages(visibleMessages(session.messages || []));
     setSessions((current) => upsertSession(current, session));
+    if (selectedSessionIdRef.current !== id) {
+      return;
+    }
+    setMessages(visibleMessages(session.messages || []));
     setJobs(jobList);
     setAttachments(attachmentList);
     artifactsRef.current = artifactList;
@@ -494,6 +501,18 @@ export function App() {
       revealRightPanel("artifacts");
     }
     setStatus({ tone: "ok", text: "Ready" });
+  }
+
+  function selectSession(id: string) {
+    selectedSessionIdRef.current = id;
+    setSessionId(id);
+    setMobileNav(false);
+    setAssistantDraft("");
+    setLiveUserDraft("");
+    setRuntimeError("");
+    if (id === sessionId) {
+      refreshSessionData(id).catch((error) => showError(error));
+    }
   }
 
   function revealRightPanel(tab: RightPanelTab) {
@@ -551,6 +570,7 @@ export function App() {
     try {
       const session = await api.createSession();
       setSessions((current) => [session, ...current]);
+      selectedSessionIdRef.current = session.id;
       setSessionId(session.id);
       setMessages([]);
     } catch (error) {
@@ -575,7 +595,9 @@ export function App() {
       const next = sessions.filter((item) => item.id !== targetSessionId);
       setSessions(next);
       if (targetSessionId === sessionId) {
-        setSessionId(next[0]?.id || "");
+        const nextSessionId = next[0]?.id || "";
+        selectedSessionIdRef.current = nextSessionId;
+        setSessionId(nextSessionId);
         setMessages(visibleMessages(next[0]?.messages || []));
       }
       setSettingsOpen(false);
@@ -1605,7 +1627,7 @@ export function App() {
         <div className="list sessions">
           {sessions.map((session) => (
             <div key={session.id} className={`list-item session-item ${session.id === sessionId ? "active" : ""}`}>
-              <button className="session-select" onClick={() => { setSessionId(session.id); setMobileNav(false); }}>
+              <button className="session-select" onClick={() => selectSession(session.id)}>
                 <span>{sessionTitle(session)}</span>
               </button>
               <button className="session-delete" onClick={() => removeSession(session.id)} title="Delete session" aria-label="Delete session">
