@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestFetchToolReturnsTextContent(t *testing.T) {
@@ -76,6 +78,83 @@ func TestFetchToolUsesCloudflareCrawlWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestFetchToolFallsBackToCloudflareCDPWhenCrawlFails(t *testing.T) {
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_ACCOUNT_ID", "acct-1")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_API_TOKEN", "token-1")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_CDP_TIMEOUT", "2s")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_CDP_POLL_INTERVAL", "1ms")
+
+	var closedSession bool
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cdp/page" && r.Header.Get("authorization") != "Bearer token-1" {
+			t.Fatalf("missing authorization header: %q", r.Header.Get("authorization"))
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/client/v4/accounts/acct-1/browser-rendering/crawl":
+			http.Error(w, `{"success":false,"errors":[{"message":"crawl failed"}]}`, http.StatusBadGateway)
+		case r.Method == http.MethodPost && r.URL.Path == "/client/v4/accounts/acct-1/browser-rendering/devtools/browser":
+			w.Header().Set("content-type", "application/json")
+			_, _ = w.Write([]byte(`{"sessionId":"session-1","webSocketDebuggerUrl":"` + wsURL(serverURL(r), "/cdp/browser") + `"}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/client/v4/accounts/acct-1/browser-rendering/devtools/browser/session-1/json/new":
+			if r.URL.Query().Get("url") != "https://example.com/page" {
+				t.Fatalf("unexpected tab url: %s", r.URL.RawQuery)
+			}
+			w.Header().Set("content-type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"target-1","type":"page","url":"https://example.com/page","title":"Example","webSocketDebuggerUrl":"` + wsURL(serverURL(r), "/cdp/page") + `"}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/client/v4/accounts/acct-1/browser-rendering/devtools/browser/session-1":
+			closedSession = true
+			w.Header().Set("content-type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"closing"}`))
+		case r.URL.Path == "/cdp/page":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Fatalf("upgrade cdp websocket: %v", err)
+			}
+			defer conn.Close()
+			for {
+				var request map[string]any
+				if err := conn.ReadJSON(&request); err != nil {
+					return
+				}
+				id := int(request["id"].(float64))
+				method, _ := request["method"].(string)
+				result := map[string]any{}
+				if method == "Runtime.evaluate" {
+					result = map[string]any{
+						"result": map[string]any{
+							"type":  "string",
+							"value": `{"readyState":"complete","title":"Rendered","url":"https://example.com/page","content":"Rendered CDP content"}`,
+						},
+					}
+				}
+				if err := conn.WriteJSON(map[string]any{"id": id, "result": result}); err != nil {
+					return
+				}
+			}
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_BASE_URL", server.URL+"/client/v4")
+
+	tool := NewFetchTool(server.Client())
+	input, _ := json.Marshal(map[string]any{"url": "https://example.com/page", "prompt": "extract content"})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("fetch execute: %v", err)
+	}
+	if !closedSession {
+		t.Fatal("expected cdp session cleanup")
+	}
+	if !strings.Contains(result.Output, "fallback: cloudflare_cdp") ||
+		!strings.Contains(result.Output, "source: cloudflare_browser_run_cdp") ||
+		!strings.Contains(result.Output, "Rendered CDP content") {
+		t.Fatalf("unexpected cdp fallback output: %q", result.Output)
+	}
+}
+
 func TestFetchToolFallsBackWhenCloudflareCrawlFails(t *testing.T) {
 	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_ACCOUNT_ID", "acct-1")
 	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_API_TOKEN", "bad-token")
@@ -104,9 +183,21 @@ func TestFetchToolFallsBackWhenCloudflareCrawlFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch execute: %v", err)
 	}
-	if !strings.Contains(result.Output, "cloudflare_crawl_error:") || !strings.Contains(result.Output, "direct fallback content") {
+	if !strings.Contains(result.Output, "cloudflare_crawl_error:") || !strings.Contains(result.Output, "cloudflare_cdp_error:") || !strings.Contains(result.Output, "direct fallback content") {
 		t.Fatalf("unexpected fallback output: %q", result.Output)
 	}
+}
+
+func serverURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
+
+func wsURL(baseURL, path string) string {
+	return "ws" + strings.TrimPrefix(baseURL, "http") + path
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
