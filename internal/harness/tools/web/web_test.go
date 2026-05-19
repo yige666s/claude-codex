@@ -85,6 +85,7 @@ func TestFetchToolFallsBackToCloudflareCDPWhenCrawlFails(t *testing.T) {
 	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_CDP_POLL_INTERVAL", "1ms")
 
 	var closedSession bool
+	var acceptedCookies bool
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/cdp/page" && r.Header.Get("authorization") != "Bearer token-1" {
@@ -121,10 +122,29 @@ func TestFetchToolFallsBackToCloudflareCDPWhenCrawlFails(t *testing.T) {
 				method, _ := request["method"].(string)
 				result := map[string]any{}
 				if method == "Runtime.evaluate" {
+					params, _ := request["params"].(map[string]any)
+					expression, _ := params["expression"].(string)
+					value := `{"readyState":"complete","title":"Rendered","url":"https://example.com/page","content":"Rendered CDP content"}`
+					if strings.Contains(expression, "acceptPatterns") {
+						acceptedCookies = true
+						result = map[string]any{
+							"result": map[string]any{
+								"type":  "boolean",
+								"value": true,
+							},
+						}
+						if err := conn.WriteJSON(map[string]any{"id": id, "result": result}); err != nil {
+							return
+						}
+						continue
+					}
+					if !acceptedCookies {
+						value = `{"readyState":"complete","title":"Rendered","url":"https://example.com/page","content":"This website uses cookies. Accept All"}`
+					}
 					result = map[string]any{
 						"result": map[string]any{
 							"type":  "string",
-							"value": `{"readyState":"complete","title":"Rendered","url":"https://example.com/page","content":"Rendered CDP content"}`,
+							"value": value,
 						},
 					}
 				}
@@ -147,6 +167,9 @@ func TestFetchToolFallsBackToCloudflareCDPWhenCrawlFails(t *testing.T) {
 	}
 	if !closedSession {
 		t.Fatal("expected cdp session cleanup")
+	}
+	if !acceptedCookies {
+		t.Fatal("expected cookie banner dismissal")
 	}
 	if !strings.Contains(result.Output, "fallback: cloudflare_cdp") ||
 		!strings.Contains(result.Output, "source: cloudflare_browser_run_cdp") ||

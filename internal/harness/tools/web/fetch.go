@@ -477,10 +477,15 @@ func (c *cloudflareCDPClient) readPage(ctx context.Context, webSocketURL string)
 	_ = client.call(ctx, "Page.enable", nil, nil)
 	_ = client.call(ctx, "Runtime.enable", nil, nil)
 
-	expression := `(() => JSON.stringify({readyState: document.readyState, title: document.title, url: location.href, content: (document.body && document.body.innerText) || document.documentElement.innerText || ""}))()`
+	expression := cdpPageSnapshotExpression()
 	for {
 		page, err := client.evaluatePage(ctx, expression)
 		if err == nil && strings.TrimSpace(page.Content) != "" && (page.ReadyState == "interactive" || page.ReadyState == "complete") {
+			if clicked, _ := client.evaluateBool(ctx, cdpCookieDismissExpression()); clicked {
+				if waited, waitErr := client.waitForRenderedText(ctx, expression, c.pollInterval, len(strings.TrimSpace(page.Content))); waitErr == nil {
+					return waited, nil
+				}
+			}
 			return page, nil
 		}
 		select {
@@ -492,6 +497,43 @@ func (c *cloudflareCDPClient) readPage(ctx context.Context, webSocketURL string)
 		case <-time.After(c.pollInterval):
 		}
 	}
+}
+
+func cdpPageSnapshotExpression() string {
+	return `(() => JSON.stringify({readyState: document.readyState, title: document.title, url: location.href, content: (document.body && document.body.innerText) || document.documentElement.innerText || ""}))()`
+}
+
+func cdpCookieDismissExpression() string {
+	return `(() => {
+  const rejectPatterns = [
+    /reject( all)?/i,
+    /reject non[- ]?essential/i,
+    /necessary only/i,
+    /essential only/i,
+    /only necessary/i,
+    /仅必要/,
+    /拒绝/,
+    /全部拒绝/
+  ];
+  const acceptPatterns = [
+    /accept all/i,
+    /allow all/i,
+    /agree/i,
+    /got it/i,
+    /ok/i,
+    /同意/,
+    /接受/,
+    /全部接受/
+  ];
+  const candidates = [...document.querySelectorAll('button,[role="button"],a,input[type="button"],input[type="submit"]')]
+    .map((el) => ({ el, text: ((el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '') + '').trim() }))
+    .filter((item) => item.text && item.el.offsetParent !== null);
+  const choose = (patterns) => candidates.find(({ text }) => patterns.some((pattern) => pattern.test(text)));
+  const chosen = choose(rejectPatterns) || choose(acceptPatterns);
+  if (!chosen) return false;
+  chosen.el.click();
+  return true;
+})()`
 }
 
 func (c *cloudflareCDPClient) doJSON(ctx context.Context, method, endpoint string, payload any, out any) error {
@@ -549,6 +591,7 @@ func (c *cdpSocket) evaluatePage(ctx context.Context, expression string) (cloudf
 	params := map[string]any{
 		"expression":    expression,
 		"returnByValue": true,
+		"awaitPromise":  true,
 	}
 	var evaluated cdpEvaluateResult
 	if err := c.call(ctx, "Runtime.evaluate", params, &evaluated); err != nil {
@@ -566,6 +609,78 @@ func (c *cdpSocket) evaluatePage(ctx context.Context, expression string) (cloudf
 		return cloudflareCDPPage{}, fmt.Errorf("decode cdp page snapshot: %w", err)
 	}
 	return page, nil
+}
+
+func (c *cdpSocket) evaluateBool(ctx context.Context, expression string) (bool, error) {
+	params := map[string]any{
+		"expression":    expression,
+		"returnByValue": true,
+		"awaitPromise":  true,
+	}
+	var evaluated cdpEvaluateResult
+	if err := c.call(ctx, "Runtime.evaluate", params, &evaluated); err != nil {
+		return false, err
+	}
+	if evaluated.ExceptionDetails != nil {
+		return false, fmt.Errorf("runtime evaluation raised an exception")
+	}
+	value, ok := evaluated.Result.Value.(bool)
+	if !ok {
+		return false, fmt.Errorf("runtime evaluation returned %T, expected bool", evaluated.Result.Value)
+	}
+	return value, nil
+}
+
+func (c *cdpSocket) waitForRenderedText(ctx context.Context, expression string, interval time.Duration, previousLen int) (cloudflareCDPPage, error) {
+	if interval <= 0 {
+		interval = 500 * time.Millisecond
+	}
+	var latest cloudflareCDPPage
+	for {
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if strings.TrimSpace(latest.Content) != "" {
+				return latest, nil
+			}
+			return cloudflareCDPPage{}, ctx.Err()
+		case <-timer.C:
+		}
+		page, err := c.evaluatePage(ctx, expression)
+		if err != nil {
+			return cloudflareCDPPage{}, err
+		}
+		latest = page
+		contentLen := len(strings.TrimSpace(page.Content))
+		if contentLen > previousLen+200 || !looksLikeCookieBanner(page.Content) {
+			return page, nil
+		}
+	}
+}
+
+func looksLikeCookieBanner(content string) bool {
+	lower := strings.ToLower(content)
+	signals := []string{
+		"cookie",
+		"cookies",
+		"privacy policy",
+		"storage preferences",
+		"targeted advertising",
+		"personalization",
+		"analytics",
+		"reject non-essential",
+		"accept all",
+		"隐私政策",
+		"接受",
+		"同意",
+	}
+	for _, signal := range signals {
+		if strings.Contains(lower, strings.ToLower(signal)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *cdpSocket) call(ctx context.Context, method string, params any, out any) error {
