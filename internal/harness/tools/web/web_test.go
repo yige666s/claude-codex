@@ -10,6 +10,8 @@ import (
 )
 
 func TestFetchToolReturnsTextContent(t *testing.T) {
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_ACCOUNT_ID", "")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_API_TOKEN", "")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("content-type", "text/plain")
 		_, _ = w.Write([]byte("hello from web fetch"))
@@ -23,6 +25,52 @@ func TestFetchToolReturnsTextContent(t *testing.T) {
 		t.Fatalf("fetch execute: %v", err)
 	}
 	if !strings.Contains(result.Output, "hello from web fetch") {
+		t.Fatalf("unexpected fetch output: %q", result.Output)
+	}
+}
+
+func TestFetchToolUsesCloudflareCrawlWhenConfigured(t *testing.T) {
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_ACCOUNT_ID", "acct-1")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_API_TOKEN", "token-1")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_POLL_INTERVAL", "1ms")
+
+	var sawStart bool
+	var sawPoll bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("authorization") != "Bearer token-1" {
+			t.Fatalf("missing authorization header: %q", r.Header.Get("authorization"))
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/client/v4/accounts/acct-1/browser-rendering/crawl":
+			sawStart = true
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode start body: %v", err)
+			}
+			if body["url"] != "https://example.com/page" || body["render"] != true {
+				t.Fatalf("unexpected crawl body: %#v", body)
+			}
+			_, _ = w.Write([]byte(`{"success":true,"result":"job-1"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/client/v4/accounts/acct-1/browser-rendering/crawl/job-1":
+			sawPoll = true
+			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"job-1","status":"completed","records":[{"url":"https://example.com/page","status":"completed","markdown":"# Rendered page\nUseful content","metadata":{"status":200,"title":"Rendered","url":"https://example.com/page"}}]}}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_BASE_URL", server.URL+"/client/v4")
+
+	tool := NewFetchTool(server.Client())
+	input, _ := json.Marshal(map[string]any{"url": "https://example.com/page", "prompt": "extract content"})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("fetch execute: %v", err)
+	}
+	if !sawStart || !sawPoll {
+		t.Fatal("expected cloudflare crawl start and poll requests")
+	}
+	if !strings.Contains(result.Output, "source: cloudflare_browser_rendering_crawl") || !strings.Contains(result.Output, "Useful content") {
 		t.Fatalf("unexpected fetch output: %q", result.Output)
 	}
 }
