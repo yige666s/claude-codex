@@ -2059,10 +2059,10 @@ label.composer-upload {
   gap: 10px;
 }
 .evaluation-list-panel .admin-list-tools {
-  max-height: min(62vh, 560px);
   min-height: 0;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
+  overflow: visible;
+  gap: 8px;
+  padding: 10px;
 }
 .admin-filter-row {
   display: grid;
@@ -2097,6 +2097,32 @@ label.composer-upload {
   height: 36px;
   padding: 0 10px;
 }
+.evaluation-list-panel .admin-field {
+  gap: 3px;
+  font-size: 11px;
+}
+.evaluation-list-panel .admin-field input,
+.evaluation-list-panel .admin-filter-row > input,
+.evaluation-list-panel .admin-filter-row > select {
+  min-width: 0;
+  height: 34px;
+  min-height: 34px;
+  padding: 0 8px;
+}
+.evaluation-list-panel .admin-filter-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.evaluation-list-panel .evaluation-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 8px 0 0;
+}
+.evaluation-list-panel .evaluation-actions .skill-action {
+  width: 100%;
+  justify-content: center;
+}
 .admin-skill-list {
   min-height: 0;
   overflow: auto;
@@ -2104,6 +2130,14 @@ label.composer-upload {
   display: grid;
   align-content: start;
   gap: 6px;
+}
+.evaluation-list-panel .admin-skill-list {
+  padding: 8px 10px 10px;
+}
+.evaluation-list-panel .admin-skill-row {
+  min-height: 50px;
+  padding: 7px 8px;
+  gap: 8px;
 }
 .admin-skill-row {
   min-height: 58px;

@@ -4227,14 +4227,16 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
               <option value="passed">Passed</option>
             </select>
           </div>
-          <label className="admin-field">
-            <span>Session ID</span>
-            <input value={sessionID} onChange={(event) => setSessionID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation session ID" />
-          </label>
-          <label className="admin-field">
-            <span>Job ID</span>
-            <input value={jobID} onChange={(event) => setJobID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation job ID" />
-          </label>
+          <div className="admin-filter-row">
+            <label className="admin-field">
+              <span>Session ID</span>
+              <input value={sessionID} onChange={(event) => setSessionID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation session ID" />
+            </label>
+            <label className="admin-field">
+              <span>Job ID</span>
+              <input value={jobID} onChange={(event) => setJobID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation job ID" />
+            </label>
+          </div>
           <label className="admin-field">
             <span>Skill / model</span>
             <input value={skillName} onChange={(event) => setSkillName(event.currentTarget.value)} placeholder="skill name" aria-label="Evaluation skill name" />
@@ -4243,7 +4245,7 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
             <input value={provider} onChange={(event) => setProvider(event.currentTarget.value)} placeholder="provider" aria-label="Evaluation provider" />
             <input value={model} onChange={(event) => setModel(event.currentTarget.value)} placeholder="model" aria-label="Evaluation model" />
           </div>
-          <div className="admin-action-row compact">
+          <div className="admin-action-row compact evaluation-actions">
             <button className="primary skill-action" onClick={createRun} disabled={running || !token || !cleanUserID}>
               <PlayCircle size={16} />
               <span>{running ? "Running" : "Run eval"}</span>
