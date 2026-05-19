@@ -2162,6 +2162,9 @@ label.composer-upload {
   gap: 10px;
   margin: 0 0 16px;
 }
+.admin-metrics.evaluation-metrics {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
 .admin-metrics.compact {
   margin-top: 12px;
 }

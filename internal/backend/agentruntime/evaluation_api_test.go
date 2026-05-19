@@ -109,7 +109,7 @@ func TestAdminOpsEvaluationRoutes(t *testing.T) {
 	server.SetRiskStore(risk)
 	server.SetEvaluationStore(evaluations)
 
-	body := `{"name":"real-data-eval","trigger":"manual","scope":{"subject_type":"job","user_id":"alice","session_id":"` + session.ID + `"},"thresholds":{"min_success_rate":0.8,"max_high_risk_count":0}}`
+	body := `{"name":"real-data-eval","trigger":"manual","scope":{"subject_type":"job","user_id":"alice","session_id":"` + session.ID + `"}}`
 	createReq := httptest.NewRequest(http.MethodPost, "/v1/admin/ops/eval/runs", bytes.NewBufferString(body))
 	createReq.Header.Set("X-User-ID", "admin")
 	createReq.Header.Set("X-Admin-Token", "secret")
@@ -130,8 +130,8 @@ func TestAdminOpsEvaluationRoutes(t *testing.T) {
 	if created.Run.Total != 2 || created.Run.Failed != 1 || created.Run.Passed != 1 {
 		t.Fatalf("unexpected eval counters: %+v", created.Run)
 	}
-	if created.Run.ThresholdStatus != "failed" {
-		t.Fatalf("threshold status = %q, want failed", created.Run.ThresholdStatus)
+	if created.Run.ThresholdStatus != "" {
+		t.Fatalf("threshold status = %q, want empty", created.Run.ThresholdStatus)
 	}
 	if len(created.Reviews) != 1 {
 		t.Fatalf("review count = %d, want 1", len(created.Reviews))

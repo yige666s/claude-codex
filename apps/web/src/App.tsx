@@ -36,7 +36,7 @@ import {
   X
 } from "lucide-react";
 import { ApiClient, ApiError } from "./api/client";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogRecord, AuditLogSummary, AuthSession, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, EvaluationThresholds, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RiskEvent, RiskReviewSummary, RiskSummary, RuntimeEvent, Session, Skill, SkillExecution, SkillExecutionSummary, SkillPolicyConfig, SkillReviewResult, SkillVersion } from "./types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogRecord, AuditLogSummary, AuthSession, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RiskEvent, RiskReviewSummary, RiskSummary, RuntimeEvent, Session, Skill, SkillExecution, SkillExecutionSummary, SkillPolicyConfig, SkillReviewResult, SkillVersion } from "./types";
 import { readSSEStream } from "./lib/sse";
 import { sessionTitle } from "./lib/sessionTitle";
 
@@ -3976,16 +3976,8 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
   const [model, setModel] = useState("");
   const [subjectType, setSubjectType] = useState("job");
   const [runStatusFilter, setRunStatusFilter] = useState("all");
-  const [resultStatusFilter, setResultStatusFilter] = useState("failed");
+  const [resultStatusFilter, setResultStatusFilter] = useState("all");
   const [days, setDays] = useState(7);
-  const [thresholdDraft, setThresholdDraft] = useState({
-    min_success_rate: "0.85",
-    max_tool_error_rate: "0.05",
-    max_llm_error_rate: "0.05",
-    max_high_risk_count: "0",
-    max_p95_latency_ms: "10000",
-    max_cost_usd: ""
-  });
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [exportBusy, setExportBusy] = useState("");
@@ -4006,10 +3998,6 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
     });
     return map;
   }, [reviews]);
-
-  const updateThresholdDraft = (key: keyof typeof thresholdDraft, value: string) => {
-    setThresholdDraft((current) => ({ ...current, [key]: value }));
-  };
 
   const loadEvaluation = async (runID = selectedRunID) => {
     if (!token) return;
@@ -4077,8 +4065,7 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
           skill_name: skillName.trim(),
           provider: provider.trim(),
           model: model.trim()
-        },
-        thresholds: buildEvaluationThresholds(thresholdDraft)
+        }
       });
       setRuns((current) => [report.run, ...current.filter((run) => run.id !== report.run.id)]);
       setSummary(report.summary);
@@ -4187,7 +4174,17 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
   }, [token]);
 
   const selectedResultReviews = selectedResult ? reviewsByResultID.get(selectedResult.id) || [] : [];
-  const metrics = summary?.metrics || selectedRun?.metrics || {};
+  const metrics = selectedRun?.metrics || summary?.metrics || {};
+  const passRate = selectedRun ? selectedRunPassRate(selectedRun) : summary?.pass_rate ?? 0;
+  const totalResults = selectedRun?.total ?? summary?.total ?? 0;
+  const failedResults = selectedRun?.failed ?? summary?.failed ?? 0;
+  const warningResults = selectedRun?.warning ?? summary?.warning ?? 0;
+  const p95LatencyMS = metricNumber(metrics, "p95_latency_ms");
+  const averageLatencyMS = metricNumber(metrics, "average_latency_ms");
+  const totalTokens = metricNumber(metrics, "total_tokens");
+  const estimatedCostUSD = metricNumber(metrics, "estimated_cost_usd");
+  const toolErrorRate = metricNumber(metrics, "tool_error_rate");
+  const llmErrorRate = metricNumber(metrics, "llm_error_rate");
   const evaluationTabs: Array<AdminTabOption<typeof evaluationTab>> = [
     { id: "results", label: "Results", icon: <Activity size={15} />, count: results.length },
     { id: "selected", label: "Selected", icon: <Info size={15} /> },
@@ -4246,36 +4243,6 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
             <input value={provider} onChange={(event) => setProvider(event.currentTarget.value)} placeholder="provider" aria-label="Evaluation provider" />
             <input value={model} onChange={(event) => setModel(event.currentTarget.value)} placeholder="model" aria-label="Evaluation model" />
           </div>
-          <div className="admin-filter-row">
-            <label className="admin-field">
-              <span>Min success</span>
-              <input inputMode="decimal" value={thresholdDraft.min_success_rate} onChange={(event) => updateThresholdDraft("min_success_rate", event.currentTarget.value)} aria-label="Minimum success rate threshold" />
-            </label>
-            <label className="admin-field">
-              <span>Max tool error</span>
-              <input inputMode="decimal" value={thresholdDraft.max_tool_error_rate} onChange={(event) => updateThresholdDraft("max_tool_error_rate", event.currentTarget.value)} aria-label="Maximum tool error rate threshold" />
-            </label>
-          </div>
-          <div className="admin-filter-row">
-            <label className="admin-field">
-              <span>Max LLM error</span>
-              <input inputMode="decimal" value={thresholdDraft.max_llm_error_rate} onChange={(event) => updateThresholdDraft("max_llm_error_rate", event.currentTarget.value)} aria-label="Maximum LLM error rate threshold" />
-            </label>
-            <label className="admin-field">
-              <span>Max high risk</span>
-              <input inputMode="numeric" value={thresholdDraft.max_high_risk_count} onChange={(event) => updateThresholdDraft("max_high_risk_count", event.currentTarget.value)} aria-label="Maximum high risk count threshold" />
-            </label>
-          </div>
-          <div className="admin-filter-row">
-            <label className="admin-field">
-              <span>Max P95 ms</span>
-              <input inputMode="numeric" value={thresholdDraft.max_p95_latency_ms} onChange={(event) => updateThresholdDraft("max_p95_latency_ms", event.currentTarget.value)} aria-label="Maximum P95 latency threshold" />
-            </label>
-            <label className="admin-field">
-              <span>Max cost USD</span>
-              <input inputMode="decimal" value={thresholdDraft.max_cost_usd} onChange={(event) => updateThresholdDraft("max_cost_usd", event.currentTarget.value)} placeholder="optional" aria-label="Maximum cost threshold" />
-            </label>
-          </div>
           <div className="admin-action-row compact">
             <button className="primary skill-action" onClick={createRun} disabled={running || !token || !cleanUserID}>
               <PlayCircle size={16} />
@@ -4303,7 +4270,7 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
                 <strong>{run.name}</strong>
                 <small>{run.id} · {formatTime(run.completed_at || run.started_at)}</small>
               </span>
-              <StatusBadge value={run.threshold_status || run.status} />
+              <StatusBadge value={run.status} />
             </button>
           ))}
           {!runs.length && <div className="empty-small">{loading ? "Loading..." : "No eval runs"}</div>}
@@ -4324,18 +4291,19 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
             <h2>{selectedRun?.name || "Evaluation overview"}</h2>
             <small>{selectedRun ? `${selectedRun.id} · ${selectedRun.scope?.user_id || "user scope"}` : "No run selected"}</small>
           </div>
-          {selectedRun && <StatusBadge value={selectedRun.threshold_status || selectedRun.status} />}
+          {selectedRun && <StatusBadge value={selectedRun.status} />}
         </div>
-        <div className="admin-metrics">
-          <AdminMetric label="Pass rate" value={formatPercent(summary?.pass_rate ?? selectedRunPassRate(selectedRun))} />
-          <AdminMetric label="Failed" value={String(summary?.failed ?? selectedRun?.failed ?? 0)} />
-          <AdminMetric label="Warning" value={String(summary?.warning ?? selectedRun?.warning ?? 0)} />
-          <AdminMetric label="P95 latency" value={`${metricNumber(metrics, "p95_latency_ms")} ms`} />
-          <AdminMetric label="Tokens" value={formatNumber(metricNumber(metrics, "total_tokens"))} />
-          <AdminMetric label="Cost" value={formatUSD(metricNumber(metrics, "estimated_cost_usd"))} />
-          <AdminMetric label="High risk" value={String(metricNumber(metrics, "high_risk_count"))} />
-          <AdminMetric label="Threshold failed" value={String(metricNumber(metrics, "threshold_failed_count"))} />
-          <AdminMetric label="Reviews" value={String(reviews.filter((review) => review.status === "pending").length)} />
+        <div className="admin-metrics evaluation-metrics">
+          <AdminMetric label="Task success" value={formatPercent(passRate)} />
+          <AdminMetric label="Results" value={String(totalResults)} />
+          <AdminMetric label="Failed / warning" value={`${failedResults} / ${warningResults}`} />
+          <AdminMetric label="P95 latency" value={`${formatNumber(Math.round(p95LatencyMS))} ms`} />
+          <AdminMetric label="Avg latency" value={`${formatNumber(Math.round(averageLatencyMS))} ms`} />
+          <AdminMetric label="Token cost" value={formatUSD(estimatedCostUSD)} />
+          <AdminMetric label="Tokens" value={formatNumber(totalTokens)} />
+          <AdminMetric label="Tool fail rate" value={formatPercent(toolErrorRate)} />
+          <AdminMetric label="LLM fail rate" value={formatPercent(llmErrorRate)} />
+          <AdminMetric label="Pending reviews" value={String(reviews.filter((review) => review.status === "pending").length)} />
         </div>
         <AdminTabs tabs={evaluationTabs} active={evaluationTab} onChange={setEvaluationTab} label="Evaluation detail sections" compact />
         <div className="admin-detail-grid">
@@ -5440,25 +5408,6 @@ function metricNumber(metrics: Record<string, unknown> | undefined, key: string)
 function selectedRunPassRate(run: EvaluationRun | null): number {
   if (!run || !run.total) return 0;
   return run.passed / run.total;
-}
-
-function buildEvaluationThresholds(draft: Record<string, string>): EvaluationThresholds {
-  const thresholds: EvaluationThresholds = {};
-  setOptionalNumber(thresholds, "min_success_rate", draft.min_success_rate);
-  setOptionalNumber(thresholds, "max_tool_error_rate", draft.max_tool_error_rate);
-  setOptionalNumber(thresholds, "max_llm_error_rate", draft.max_llm_error_rate);
-  setOptionalNumber(thresholds, "max_high_risk_count", draft.max_high_risk_count, true);
-  setOptionalNumber(thresholds, "max_p95_latency_ms", draft.max_p95_latency_ms, true);
-  setOptionalNumber(thresholds, "max_cost_usd", draft.max_cost_usd);
-  return thresholds;
-}
-
-function setOptionalNumber(target: EvaluationThresholds, key: keyof EvaluationThresholds, raw: string | undefined, integer = false): void {
-  const clean = String(raw || "").trim();
-  if (!clean) return;
-  const parsed = Number(clean);
-  if (!Number.isFinite(parsed)) return;
-  target[key] = integer ? Math.max(0, Math.round(parsed)) : Math.max(0, parsed);
 }
 
 function downloadTextFile(filename: string, content: string, type: string): void {

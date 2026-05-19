@@ -120,46 +120,6 @@ func evaluationScoreFromStatus(status string) float64 {
 	}
 }
 
-func evaluateThresholdStatus(metrics EvaluationAggregateMetrics, thresholds EvaluationThresholds) string {
-	if thresholds == (EvaluationThresholds{}) {
-		return ""
-	}
-	var failed bool
-	var warning bool
-	if thresholds.MinSuccessRate > 0 && metrics.SuccessRate < thresholds.MinSuccessRate {
-		failed = true
-	}
-	if thresholds.MaxToolErrorRate > 0 && metrics.ToolErrorRate > thresholds.MaxToolErrorRate {
-		failed = true
-	}
-	if thresholds.MaxLLMErrorRate > 0 && metrics.LLMErrorRate > thresholds.MaxLLMErrorRate {
-		warning = true
-	}
-	if thresholds.MaxHighRiskCount >= 0 && metrics.HighRiskCount > thresholds.MaxHighRiskCount {
-		failed = true
-	}
-	if thresholds.MaxP95LatencyMS > 0 && metrics.P95LatencyMS > thresholds.MaxP95LatencyMS {
-		warning = true
-	}
-	if thresholds.MaxCostUSD > 0 && metrics.EstimatedCostUSD > thresholds.MaxCostUSD {
-		warning = true
-	}
-	if thresholds.MaxEmptyOutputRate > 0 && metrics.Total > 0 {
-		emptyRate := float64(metrics.EmptyOutputCount) / float64(metrics.Total)
-		if emptyRate > thresholds.MaxEmptyOutputRate {
-			warning = true
-		}
-	}
-	switch {
-	case failed:
-		return "failed"
-	case warning:
-		return "warning"
-	default:
-		return "passed"
-	}
-}
-
 func looksLikeAssistantError(output string) bool {
 	text := strings.ToLower(strings.TrimSpace(output))
 	if text == "" {

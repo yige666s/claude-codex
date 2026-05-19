@@ -68,14 +68,13 @@ func (s *Server) handleAdminOpsCreateEvaluationRun(w http.ResponseWriter, r *htt
 		return
 	}
 	s.auditEvent(r, "admin_eval_run_create", actor, map[string]any{
-		"eval_run_id":      persisted.Run.ID,
-		"target_user_id":   persisted.Run.Scope.UserID,
-		"subject_type":     persisted.Run.Scope.SubjectType,
-		"total":            persisted.Run.Total,
-		"passed":           persisted.Run.Passed,
-		"failed":           persisted.Run.Failed,
-		"warning":          persisted.Run.Warning,
-		"threshold_status": persisted.Run.ThresholdStatus,
+		"eval_run_id":    persisted.Run.ID,
+		"target_user_id": persisted.Run.Scope.UserID,
+		"subject_type":   persisted.Run.Scope.SubjectType,
+		"total":          persisted.Run.Total,
+		"passed":         persisted.Run.Passed,
+		"failed":         persisted.Run.Failed,
+		"warning":        persisted.Run.Warning,
 	})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"run":     persisted.Run,
@@ -363,15 +362,9 @@ func evaluationSummaryMetricsForRuns(runs []EvaluationRun) map[string]any {
 	out := map[string]any{
 		"run_count": len(runs),
 	}
+	var averageLatencyTotal float64
+	var averageLatencyWeight float64
 	for _, run := range runs {
-		switch run.ThresholdStatus {
-		case "passed":
-			out["threshold_passed_count"] = mapFloat(out, "threshold_passed_count") + 1
-		case "warning":
-			out["threshold_warning_count"] = mapFloat(out, "threshold_warning_count") + 1
-		case "failed":
-			out["threshold_failed_count"] = mapFloat(out, "threshold_failed_count") + 1
-		}
 		for key, value := range run.Metrics {
 			switch key {
 			case "tool_call_count", "tool_error_count", "skill_count", "skill_failure_count", "llm_requests", "llm_failures", "input_tokens", "output_tokens", "total_tokens", "high_risk_count", "medium_risk_count", "low_risk_count", "artifact_count", "empty_output_count":
@@ -382,8 +375,17 @@ func evaluationSummaryMetricsForRuns(runs []EvaluationRun) map[string]any {
 				}
 			case "estimated_cost_usd":
 				out[key] = roundEvaluationCost(mapFloat(out, key) + mapFloat(map[string]any{key: value}, key))
+			case "average_latency_ms":
+				latency := mapFloat(map[string]any{key: value}, key)
+				if latency > 0 && run.Total > 0 {
+					averageLatencyTotal += latency * float64(run.Total)
+					averageLatencyWeight += float64(run.Total)
+				}
 			}
 		}
+	}
+	if averageLatencyWeight > 0 {
+		out["average_latency_ms"] = averageLatencyTotal / averageLatencyWeight
 	}
 	if total := mapFloat(out, "tool_call_count"); total > 0 {
 		out["tool_error_rate"] = mapFloat(out, "tool_error_count") / total
@@ -446,13 +448,15 @@ func writeEvaluationSummaryMarkdown(w http.ResponseWriter, summary EvaluationRun
 	evaluationMarkdownRow(&b, "Failure rate", fmt.Sprintf("%.2f%%", summary.FailureRate*100))
 	evaluationMarkdownRow(&b, "Warning rate", fmt.Sprintf("%.2f%%", summary.WarningRate*100))
 	evaluationMarkdownRow(&b, "Tool errors", fmt.Sprintf("%.0f", mapFloat(summary.Metrics, "tool_error_count")))
+	evaluationMarkdownRow(&b, "Tool failure rate", fmt.Sprintf("%.2f%%", mapFloat(summary.Metrics, "tool_error_rate")*100))
 	evaluationMarkdownRow(&b, "LLM failures", fmt.Sprintf("%.0f", mapFloat(summary.Metrics, "llm_failures")))
-	evaluationMarkdownRow(&b, "High risk events", fmt.Sprintf("%.0f", mapFloat(summary.Metrics, "high_risk_count")))
+	evaluationMarkdownRow(&b, "LLM failure rate", fmt.Sprintf("%.2f%%", mapFloat(summary.Metrics, "llm_error_rate")*100))
+	evaluationMarkdownRow(&b, "Average latency ms", fmt.Sprintf("%.0f", mapFloat(summary.Metrics, "average_latency_ms")))
 	evaluationMarkdownRow(&b, "P95 latency ms", fmt.Sprintf("%.0f", mapFloat(summary.Metrics, "p95_latency_ms")))
+	evaluationMarkdownRow(&b, "Total tokens", fmt.Sprintf("%.0f", mapFloat(summary.Metrics, "total_tokens")))
 	evaluationMarkdownRow(&b, "Estimated cost USD", fmt.Sprintf("%.6f", mapFloat(summary.Metrics, "estimated_cost_usd")))
-	evaluationMarkdownRow(&b, "Threshold failed runs", fmt.Sprintf("%.0f", mapFloat(summary.Metrics, "threshold_failed_count")))
 	b.WriteString("\n## Runs\n\n")
-	b.WriteString("| Run | Status | Threshold | Pass Rate | Failed | Warning | Completed |\n| --- | --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("| Run | Status | Pass Rate | Failed | Warning | Completed |\n| --- | --- | --- | --- | --- | --- |\n")
 	for _, run := range runs {
 		passRate := 0.0
 		if run.Total > 0 {
@@ -465,7 +469,6 @@ func writeEvaluationSummaryMarkdown(w http.ResponseWriter, summary EvaluationRun
 		evaluationMarkdownRow(&b,
 			run.ID,
 			run.Status,
-			firstNonEmptyString(run.ThresholdStatus, "none"),
 			fmt.Sprintf("%.2f%%", passRate*100),
 			fmt.Sprintf("%d", run.Failed),
 			fmt.Sprintf("%d", run.Warning),

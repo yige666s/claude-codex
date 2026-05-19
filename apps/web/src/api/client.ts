@@ -1,5 +1,5 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -544,7 +544,7 @@ export class ApiClient {
     return response.review;
   }
 
-  async createEvaluationRun(adminToken: string, payload: { name?: string; trigger?: string; scope: EvaluationScope; thresholds?: EvaluationThresholds }): Promise<EvaluationRunReport> {
+  async createEvaluationRun(adminToken: string, payload: { name?: string; trigger?: string; scope: EvaluationScope }): Promise<EvaluationRunReport> {
     const response = await this.fetchJSON<EvaluationRunReport>("/v1/admin/ops/eval/runs", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
@@ -914,8 +914,7 @@ function normalizeEvaluationSummary(summary: EvaluationRunSummary | undefined): 
     pass_rate: summary?.pass_rate || 0,
     failure_rate: summary?.failure_rate || 0,
     warning_rate: summary?.warning_rate || 0,
-    metrics: summary?.metrics || {},
-    threshold_status: summary?.threshold_status || ""
+    metrics: summary?.metrics || {}
   };
 }
 

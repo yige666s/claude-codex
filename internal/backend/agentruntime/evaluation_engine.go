@@ -66,7 +66,6 @@ func (e *EvaluationEngine) Evaluate(ctx context.Context, req EvaluationRunReques
 	run.Failed = aggregate.Failed
 	run.Warning = aggregate.Warning
 	run.Metrics = evaluationAggregateMetricsMap(aggregate)
-	run.ThresholdStatus = evaluateThresholdStatus(aggregate, req.Thresholds)
 	run.Summary = evaluationSummaryText(aggregate)
 
 	summary := summarizeEvaluationResults(run, results)

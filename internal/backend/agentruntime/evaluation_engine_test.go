@@ -76,7 +76,6 @@ func TestEvaluationEngineEvaluatesRealTraceMetrics(t *testing.T) {
 			UserID:      "user-1",
 			SessionID:   "session-1",
 		},
-		Thresholds: EvaluationThresholds{MinSuccessRate: 1},
 	})
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
@@ -87,8 +86,8 @@ func TestEvaluationEngineEvaluatesRealTraceMetrics(t *testing.T) {
 	if report.Run.Total != 1 || report.Run.Passed != 1 || report.Run.Failed != 0 || report.Run.Warning != 0 {
 		t.Fatalf("unexpected run counters: total=%d passed=%d failed=%d warning=%d", report.Run.Total, report.Run.Passed, report.Run.Failed, report.Run.Warning)
 	}
-	if report.Run.ThresholdStatus != "passed" {
-		t.Fatalf("threshold status = %q, want passed", report.Run.ThresholdStatus)
+	if report.Run.ThresholdStatus != "" {
+		t.Fatalf("threshold status = %q, want empty", report.Run.ThresholdStatus)
 	}
 	if len(report.Results) != 1 {
 		t.Fatalf("result count = %d, want 1", len(report.Results))
@@ -176,11 +175,6 @@ func TestEvaluationEngineFlagsFailuresAndAggregates(t *testing.T) {
 
 	report, err := engine.Evaluate(context.Background(), EvaluationRunRequest{
 		Scope: EvaluationScope{SubjectType: EvaluationSubjectJob, UserID: "user-1"},
-		Thresholds: EvaluationThresholds{
-			MinSuccessRate:   0.8,
-			MaxToolErrorRate: 0.1,
-			MaxHighRiskCount: 0,
-		},
 	})
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
@@ -188,8 +182,8 @@ func TestEvaluationEngineFlagsFailuresAndAggregates(t *testing.T) {
 	if report.Run.Total != 2 || report.Run.Failed != 1 || report.Run.Warning != 1 || report.Run.Passed != 0 {
 		t.Fatalf("unexpected run counters: total=%d passed=%d failed=%d warning=%d", report.Run.Total, report.Run.Passed, report.Run.Failed, report.Run.Warning)
 	}
-	if report.Run.ThresholdStatus != "failed" {
-		t.Fatalf("threshold status = %q, want failed", report.Run.ThresholdStatus)
+	if report.Run.ThresholdStatus != "" {
+		t.Fatalf("threshold status = %q, want empty", report.Run.ThresholdStatus)
 	}
 	if len(report.Results) != 2 {
 		t.Fatalf("result count = %d, want 2", len(report.Results))
