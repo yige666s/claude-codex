@@ -1841,6 +1841,7 @@ func (s *Server) handlePreviewArtifact(w http.ResponseWriter, r *http.Request, u
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Disposition", "inline; filename="+strconvQuote(strings.TrimSuffix(artifact.Filename, filepath.Ext(artifact.Filename))+".html"))
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(preview)
 }
@@ -1894,6 +1895,8 @@ func (s *Server) handleExtractAssetMemory(w http.ResponseWriter, r *http.Request
 func writeAssetDownload(w http.ResponseWriter, asset *Artifact, data []byte) {
 	w.Header().Set("Content-Type", asset.ContentType)
 	w.Header().Set("Content-Disposition", "attachment; filename="+strconvQuote(asset.Filename))
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", fmt.Sprint(len(data)))
 	_, _ = w.Write(data)
 }
