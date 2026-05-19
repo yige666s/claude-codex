@@ -14,6 +14,13 @@ metadata:
     run_as_job: true
     long_running: true
     produces_artifacts: true
+    policy:
+      artifact_content_types:
+        - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+      sandbox:
+        runner: docker
+        image: python:3.12-slim
+        network: none
 ---
 
 # DOCX creation, editing, and analysis

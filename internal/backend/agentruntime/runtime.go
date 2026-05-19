@@ -3102,17 +3102,21 @@ func (r *Runtime) runSkill(ctx context.Context, userID string, session *state.Se
 		}
 	}
 	generated := skills.WrapGeneratedSkillPrompt(skill.Name, args, prompt.String())
+	sandbox := applySkillSandboxPolicy(r.config.SkillShellSandbox, policy.Sandbox)
 	runner := r.runnerForScope(Scope{
-		UserID:           userID,
-		SessionID:        session.ID,
-		WorkingDir:       workspace,
-		SkillName:        skill.Name,
-		SkillRoot:        skillDir,
-		SkillScoped:      true,
-		AllowedTools:     policy.AllowedTools,
-		AllowedEnv:       policy.AllowedEnv,
-		NetworkAllowlist: policy.NetworkAllowlist,
-		ArtifactTypes:    policy.ArtifactTypes,
+		UserID:            userID,
+		SessionID:         session.ID,
+		WorkingDir:        workspace,
+		SkillName:         skill.Name,
+		SkillRoot:         skillDir,
+		SkillScoped:       true,
+		SkillShell:        skill.Shell,
+		SkillShellEnv:     r.skillShellEnvironment(workspace, policy.AllowedEnv),
+		SkillShellSandbox: sandbox,
+		AllowedTools:      policy.AllowedTools,
+		AllowedEnv:        policy.AllowedEnv,
+		NetworkAllowlist:  policy.NetworkAllowlist,
+		ArtifactTypes:     policy.ArtifactTypes,
 	})
 	result, err := runWithTokenStream(ctx, runner, session, generated, true, onToken)
 	if err != nil {
@@ -3477,10 +3481,13 @@ func declaresVertexAccessToken(allowed map[string]struct{}) bool {
 }
 
 func (r *Runtime) skillShellRuntime(workspace, skillRoot string, skill *skills.SkillDefinition, policy SkillRuntimePolicy) skills.PromptShellRuntime {
-	if r == nil || !r.config.SkillShellSandbox.dockerEnabled() || skill == nil {
+	if r == nil || skill == nil {
 		return nil
 	}
 	sandbox := applySkillSandboxPolicy(r.config.SkillShellSandbox, policy.Sandbox)
+	if !sandbox.dockerEnabled() {
+		return nil
+	}
 	return NewDockerSkillShellRuntime(sandbox, skill.Shell, workspace, skillRoot, r.skillShellEnvironment(workspace, policy.AllowedEnv), policy.AllowedTools)
 }
 

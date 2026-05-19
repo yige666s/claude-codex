@@ -252,18 +252,21 @@ type StreamingRunner interface {
 type EngineFactory func(scope Scope) Runner
 
 type Scope struct {
-	UserID           string
-	SessionID        string
-	WorkingDir       string
-	SkillName        string
-	SkillRoot        string
-	SkillScoped      bool
-	AllowedTools     []string
-	AllowedEnv       []string
-	NetworkAllowlist []string
-	ArtifactTypes    []string
-	Artifacts        ArtifactWriter
-	ArtifactMaxBytes int64
+	UserID            string
+	SessionID         string
+	WorkingDir        string
+	SkillName         string
+	SkillRoot         string
+	SkillScoped       bool
+	SkillShell        skills.FrontmatterShell
+	SkillShellEnv     map[string]string
+	SkillShellSandbox SkillShellSandboxConfig
+	AllowedTools      []string
+	AllowedEnv        []string
+	NetworkAllowlist  []string
+	ArtifactTypes     []string
+	Artifacts         ArtifactWriter
+	ArtifactMaxBytes  int64
 }
 
 type ArtifactWriter interface {

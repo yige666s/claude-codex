@@ -69,6 +69,10 @@ func (c SkillShellSandboxConfig) dockerEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(c.Runner), "docker")
 }
 
+func (c SkillShellSandboxConfig) DockerEnabled() bool {
+	return c.dockerEnabled()
+}
+
 type DockerSkillShellRuntime struct {
 	config     SkillShellSandboxConfig
 	shell      skills.FrontmatterShell
@@ -118,6 +122,9 @@ func (r *DockerSkillShellRuntime) ExecuteCommand(ctx context.Context, command st
 		return "", fmt.Errorf("resolve skill root: %w", err)
 	}
 	rewritten := rewriteHostPaths(command, workspace, skillRoot)
+	if r.useContainerVolumes() {
+		rewritten = command
+	}
 	args := r.dockerArgs(workspace, skillRoot, rewritten)
 
 	cmd := exec.CommandContext(ctx, r.commandBin, args...)
@@ -152,12 +159,23 @@ func (r *DockerSkillShellRuntime) dockerArgs(workspace, skillRoot, command strin
 		"--security-opt", "no-new-privileges",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,size=" + r.config.TmpfsSize,
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		"-v", workspace + ":" + containerWorkspaceDir + ":rw",
-		"-v", skillRoot + ":" + containerSkillDir + ":ro",
-		"-w", containerSkillDir,
-		"-e", "AGENT_WORKSPACE_DIR=" + containerWorkspaceDir,
-		"-e", "CLAUDE_SKILL_DIR=" + containerSkillDir,
 		"-e", "PYTHONDONTWRITEBYTECODE=1",
+	}
+	if r.useContainerVolumes() {
+		args = append(args,
+			"--volumes-from", containerHostname(),
+			"-w", skillRoot,
+			"-e", "AGENT_WORKSPACE_DIR="+workspace,
+			"-e", "CLAUDE_SKILL_DIR="+skillRoot,
+		)
+	} else {
+		args = append(args,
+			"-v", workspace+":"+containerWorkspaceDir+":rw",
+			"-v", skillRoot+":"+containerSkillDir+":ro",
+			"-w", containerSkillDir,
+			"-e", "AGENT_WORKSPACE_DIR="+containerWorkspaceDir,
+			"-e", "CLAUDE_SKILL_DIR="+containerSkillDir,
+		)
 	}
 	for _, key := range sortedMapKeys(r.env) {
 		if key == "AGENT_WORKSPACE_DIR" || key == "CLAUDE_SKILL_DIR" {
@@ -172,6 +190,25 @@ func (r *DockerSkillShellRuntime) dockerArgs(workspace, skillRoot, command strin
 		args = append(args, "sh", "-lc", command)
 	}
 	return args
+}
+
+func (r *DockerSkillShellRuntime) useContainerVolumes() bool {
+	return runningInContainer() && containerHostname() != ""
+}
+
+func runningInContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	return false
+}
+
+func containerHostname() string {
+	name, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(name)
 }
 
 func rewriteHostPaths(command, workspace, skillRoot string) string {

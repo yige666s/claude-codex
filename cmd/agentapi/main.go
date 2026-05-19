@@ -270,6 +270,15 @@ func main() {
 	skillCatalog := skillRegistrySetup.catalog
 	globalAllowed := allowedToolNames(*allowDangerousTools)
 	globalNetworkAllowlist := splitCSV(*networkAllowlist)
+	skillShellSandboxConfig := agentruntime.SkillShellSandboxConfig{
+		Runner:    *skillShellRunner,
+		Image:     *skillSandboxImage,
+		Network:   *skillSandboxNetwork,
+		Memory:    *skillSandboxMemory,
+		CPUs:      *skillSandboxCPUs,
+		PidsLimit: *skillSandboxPidsLimit,
+		TmpfsSize: *skillSandboxTmpfsSize,
+	}
 	engineFactory := func(scope agentruntime.Scope) agentruntime.Runner {
 		root := scope.WorkingDir
 		if root == "" {
@@ -277,11 +286,16 @@ func main() {
 		}
 		publishedSkillManager := filteredSkillManager(skillCatalog)
 		effectiveAllowed := effectiveAllowedToolNames(globalAllowed, scope)
-		registry := buildRegistry(root, publishedSkillManager, *allowDangerousTools, scope.Artifacts, scope.ArtifactMaxBytes, scopedNetworkAllowlist(globalNetworkAllowlist, scope.NetworkAllowlist), effectiveAllowed)
+		sandboxBash := buildSandboxBashRuntime(skillShellSandboxConfig, root, scope)
+		registry := buildRegistry(root, publishedSkillManager, *allowDangerousTools, scope.Artifacts, scope.ArtifactMaxBytes, scopedNetworkAllowlist(globalNetworkAllowlist, scope.NetworkAllowlist), effectiveAllowed, sandboxBash)
+		safeWriteTools := []string{agentruntime.ArtifactToolName}
+		if sandboxBash != nil {
+			safeWriteTools = append(safeWriteTools, "Bash")
+		}
 		checker := agentruntime.NewProductPermissionCheckerWithReporter(agentruntime.ToolPolicy{
 			AllowWriteExecute: *allowDangerousTools,
 			AllowedTools:      effectiveAllowed,
-			SafeWriteTools:    []string{agentruntime.ArtifactToolName},
+			SafeWriteTools:    safeWriteTools,
 		}, func(ctx context.Context, denial agentruntime.ToolDenialRecord) {
 			metadata := map[string]any{
 				"tool_name":  denial.ToolName,
@@ -423,15 +437,7 @@ func main() {
 			OutputTranscriptionEnabled: *liveOutputTranscription,
 			SessionTimeout:             *liveSessionTimeout,
 		},
-		SkillShellSandbox: agentruntime.SkillShellSandboxConfig{
-			Runner:    *skillShellRunner,
-			Image:     *skillSandboxImage,
-			Network:   *skillSandboxNetwork,
-			Memory:    *skillSandboxMemory,
-			CPUs:      *skillSandboxCPUs,
-			PidsLimit: *skillSandboxPidsLimit,
-			TmpfsSize: *skillSandboxTmpfsSize,
-		},
+		SkillShellSandbox: skillShellSandboxConfig,
 	}
 	runtime := agentruntime.NewRuntime(
 		runtimeConfig,
@@ -844,7 +850,7 @@ var httpListenAndServe = func(addr string, handler *agentruntime.Server, shutdow
 	return nil
 }
 
-func buildRegistry(root string, skillManager *skills.SkillManager, allowDangerous bool, artifactWriter agentruntime.ArtifactWriter, artifactMaxBytes int64, networkAllowlist []string, allowedTools []string) *tools.Registry {
+func buildRegistry(root string, skillManager *skills.SkillManager, allowDangerous bool, artifactWriter agentruntime.ArtifactWriter, artifactMaxBytes int64, networkAllowlist []string, allowedTools []string, sandboxBash *agentruntime.SandboxBashTool) *tools.Registry {
 	allowed := toolNameSet(allowedTools)
 	enabled := func(name string) bool {
 		return len(allowed) == 0 || allowed[name]
@@ -874,7 +880,9 @@ func buildRegistry(root string, skillManager *skills.SkillManager, allowDangerou
 	if artifactWriter != nil && enabled(agentruntime.ArtifactToolName) {
 		toolList = append(toolList, agentruntime.NewArtifactToolWithLimit(artifactWriter, root, artifactMaxBytes))
 	}
-	if allowDangerous {
+	if sandboxBash != nil && enabled("Bash") {
+		toolList = append(toolList, sandboxBash)
+	} else if allowDangerous {
 		if enabled("Write") {
 			toolList = append(toolList, filetool.NewWriteTool(root))
 		}
@@ -1869,9 +1877,9 @@ func openSQLDB(cfg storeConfig) *sql.DB {
 }
 
 func allowedToolNames(allowDangerous bool) []string {
-	names := []string{"Read", "Glob", "Grep", "WebSearch", "WebFetch", "Skill", agentruntime.ArtifactToolName}
+	names := []string{"Read", "Glob", "Grep", "WebSearch", "WebFetch", "Skill", agentruntime.ArtifactToolName, "Bash"}
 	if allowDangerous {
-		names = append(names, "Write", "Edit", "Bash")
+		names = append(names, "Write", "Edit")
 	}
 	return names
 }
@@ -1911,14 +1919,54 @@ func scopedAllowedTools(global, scoped []string) []string {
 	}
 	out := make([]string, 0, len(scoped))
 	for _, name := range scoped {
-		if globalSet[name] {
-			out = append(out, name)
+		toolName := scopedToolName(name)
+		if globalSet[toolName] {
+			out = append(out, toolName)
 		}
 	}
 	if len(out) == 0 {
 		return []string{"__no_tools_allowed__"}
 	}
 	return out
+}
+
+func scopedToolName(value string) string {
+	value = strings.TrimSpace(value)
+	if idx := strings.Index(value, "("); idx > 0 && strings.HasSuffix(value, ")") {
+		return strings.TrimSpace(value[:idx])
+	}
+	return value
+}
+
+func buildSandboxBashRuntime(config agentruntime.SkillShellSandboxConfig, root string, scope agentruntime.Scope) *agentruntime.SandboxBashTool {
+	if scope.SkillShellSandbox.Runner != "" {
+		config = scope.SkillShellSandbox
+	}
+	if !scope.SkillScoped || !config.DockerEnabled() || !allowsTool(scope.AllowedTools, "Bash") {
+		return nil
+	}
+	shell := scope.SkillShell
+	if shell == "" {
+		shell = skills.ShellBash
+	}
+	runtime := agentruntime.NewDockerSkillShellRuntime(
+		config,
+		shell,
+		root,
+		firstNonEmpty(scope.SkillRoot, root),
+		scope.SkillShellEnv,
+		scope.AllowedTools,
+	)
+	return agentruntime.NewSandboxBashTool(runtime)
+}
+
+func allowsTool(values []string, toolName string) bool {
+	for _, value := range values {
+		if strings.EqualFold(scopedToolName(value), toolName) {
+			return true
+		}
+	}
+	return false
 }
 
 func scopedNetworkAllowlist(global, scoped []string) []string {

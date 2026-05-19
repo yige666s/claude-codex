@@ -117,7 +117,7 @@ func TestLoadSkillsUsesExplicitSkillDirs(t *testing.T) {
 }
 
 func TestConsumerChatRegistryHidesFilesystemTools(t *testing.T) {
-	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, consumerChatToolNames())
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, consumerChatToolNames(), nil)
 	names := descriptorNameSet(registry)
 
 	for _, hidden := range []string{"Read", "Glob", "Grep", "Write", "Edit", "Bash"} {
@@ -136,7 +136,7 @@ func TestSkillScopedRegistryUsesSkillPolicy(t *testing.T) {
 	global := allowedToolNames(true)
 	scope := agentruntime.Scope{SkillScoped: true, AllowedTools: []string{"Read", "Grep", "Bash"}}
 	allowed := effectiveAllowedToolNames(global, scope)
-	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, allowed)
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, allowed, nil)
 	names := descriptorNameSet(registry)
 
 	for _, visible := range []string{"Read", "Grep", "Bash"} {
@@ -151,9 +151,36 @@ func TestSkillScopedRegistryUsesSkillPolicy(t *testing.T) {
 	}
 }
 
+func TestSkillScopedRegistryCanExposeSandboxBashWithoutDangerousTools(t *testing.T) {
+	root := t.TempDir()
+	scope := agentruntime.Scope{
+		SkillScoped:       true,
+		SkillRoot:         root,
+		SkillShell:        skills.ShellBash,
+		AllowedTools:      []string{"Artifact", "Bash(python3 *)"},
+		SkillShellSandbox: agentruntime.SkillShellSandboxConfig{Runner: "docker"},
+	}
+	allowed := effectiveAllowedToolNames(allowedToolNames(false), scope)
+	sandboxBash := buildSandboxBashRuntime(agentruntime.SkillShellSandboxConfig{}, root, scope)
+	if sandboxBash == nil {
+		t.Fatal("expected sandbox Bash runtime")
+	}
+	registry := buildRegistry(root, skills.NewSkillManager(), false, nil, 0, nil, allowed, sandboxBash)
+	names := descriptorNameSet(registry)
+
+	if !names["Bash"] {
+		t.Fatalf("skill-scoped registry should expose sandbox Bash: %#v", names)
+	}
+	for _, hidden := range []string{"Write", "Edit"} {
+		if names[hidden] {
+			t.Fatalf("skill-scoped sandbox registry exposed dangerous tool %s: %#v", hidden, names)
+		}
+	}
+}
+
 func TestSkillScopedRegistryDefaultsToNoToolsWithoutPolicy(t *testing.T) {
 	allowed := effectiveAllowedToolNames(allowedToolNames(true), agentruntime.Scope{SkillScoped: true})
-	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, allowed)
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, allowed, nil)
 	if names := descriptorNameSet(registry); len(names) != 0 {
 		t.Fatalf("skill-scoped registry without an explicit policy should expose no tools: %#v", names)
 	}
