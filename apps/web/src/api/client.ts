@@ -20,9 +20,12 @@ export class ApiError extends Error {
 export class ApiClient {
   private auth: AuthSession | null = loadAuth();
   private onAuthChange: (session: AuthSession | null) => void;
+  private refreshPromise: Promise<boolean> | null = null;
+  private refreshTimer: number | null = null;
 
   constructor(onAuthChange: (session: AuthSession | null) => void) {
     this.onAuthChange = onAuthChange;
+    this.scheduleAccessRefresh();
   }
 
   session(): AuthSession | null {
@@ -719,7 +722,7 @@ export class ApiClient {
     return url.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
   }
 
-  async chatResponse(sessionId: string, content: string, attachmentIds: string[] = [], signal?: AbortSignal): Promise<Response> {
+  async chatResponse(sessionId: string, content: string, attachmentIds: string[] = [], signal?: AbortSignal, retry = true): Promise<Response> {
     await this.ensureFreshAccess();
     const response = await fetch(this.apiURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {
       method: "POST",
@@ -728,6 +731,9 @@ export class ApiClient {
       signal,
       body: JSON.stringify({ content, attachment_ids: attachmentIds })
     });
+    if (response.status === 401 && retry && await this.refresh({ clearOnFailure: true })) {
+      return this.chatResponse(sessionId, content, attachmentIds, signal, false);
+    }
     if (!response.ok) throw await toApiError(response);
     return response;
   }
@@ -753,8 +759,7 @@ export class ApiClient {
       headers: this.headers(options.headers)
     });
     if (response.status === 401 && retry && this.auth?.refresh_token) {
-      await this.refresh();
-      return this.fetchJSON<T>(path, options, false);
+      if (await this.refresh({ clearOnFailure: true })) return this.fetchJSON<T>(path, options, false);
     }
     if (!response.ok) throw await toApiError(response);
     if (response.status === 204) return undefined as T;
@@ -769,8 +774,7 @@ export class ApiClient {
       headers: this.headers(options.headers)
     });
     if (response.status === 401 && retry && this.auth?.refresh_token) {
-      await this.refresh();
-      return this.fetchText(path, options, false);
+      if (await this.refresh({ clearOnFailure: true })) return this.fetchText(path, options, false);
     }
     if (!response.ok) throw await toApiError(response);
     return response.text();
@@ -780,25 +784,52 @@ export class ApiClient {
     if (!this.auth?.refresh_token) return;
     const expiresAt = new Date(this.auth.expires_at).getTime();
     if (Number.isFinite(expiresAt) && expiresAt - Date.now() > 60_000) return;
-    await this.refresh();
+    await this.refresh({ clearOnFailure: false });
   }
 
-  private async refresh(): Promise<void> {
+  private async refresh({ clearOnFailure = false }: { clearOnFailure?: boolean } = {}): Promise<boolean> {
     if (!this.auth?.refresh_token) {
-      this.setAuth(null);
-      return;
+      if (clearOnFailure) this.setAuth(null);
+      return false;
     }
-    const response = await fetch(this.apiURL("/v1/auth/refresh"), {
-      method: "POST",
-      credentials: "include",
-      headers: this.headers({ "Content-Type": "application/json" }, false),
-      body: JSON.stringify({ refresh_token: this.auth.refresh_token })
+    if (this.refreshPromise) return this.refreshPromise;
+    const refreshToken = this.auth.refresh_token;
+    this.refreshPromise = (async () => {
+      const response = await fetch(this.apiURL("/v1/auth/refresh"), {
+        method: "POST",
+        credentials: "include",
+        headers: this.headers({ "Content-Type": "application/json" }, false),
+        body: JSON.stringify({ refresh_token: refreshToken })
+      });
+      if (response.ok) {
+        this.setAuth((await response.json()) as AuthSession);
+        return true;
+      }
+      if (this.auth?.refresh_token && this.auth.refresh_token !== refreshToken) return true;
+      const stored = loadAuth();
+      if (stored?.refresh_token && stored.refresh_token !== refreshToken) {
+        this.setAuth(stored);
+        return true;
+      }
+      if (clearOnFailure) this.setAuth(null);
+      return false;
+    })().finally(() => {
+      this.refreshPromise = null;
     });
-    if (!response.ok) {
-      this.setAuth(null);
-      throw await toApiError(response);
-    }
-    this.setAuth((await response.json()) as AuthSession);
+    return this.refreshPromise;
+  }
+
+  private scheduleAccessRefresh(): void {
+    if (typeof window === "undefined") return;
+    if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
+    if (!this.auth?.refresh_token) return;
+    const expiresAt = new Date(this.auth.expires_at).getTime();
+    if (!Number.isFinite(expiresAt)) return;
+    const delay = Math.max(5_000, expiresAt - Date.now() - 60_000);
+    this.refreshTimer = window.setTimeout(() => {
+      this.refresh({ clearOnFailure: false }).catch(() => {});
+    }, delay);
   }
 
   private async uploadAttachmentXHR(form: FormData, onProgress: (percent: number) => void): Promise<Asset> {
@@ -852,6 +883,7 @@ export class ApiClient {
     this.auth = session;
     if (session) saveAuth(session);
     else clearAuth();
+    this.scheduleAccessRefresh();
     this.onAuthChange(session);
   }
 }
