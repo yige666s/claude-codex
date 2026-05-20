@@ -46,6 +46,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByLabel("Email").fill("e2e@example.com");
   await page.getByLabel("Name").fill("E2E User");
   await page.getByLabel("Password").fill("password123");
+  await page.getByLabel("Repeat secret").fill("password123");
   await page.getByRole("button", { name: "Create Account" }).click();
 
   await expect(page.getByRole("heading", { name: "New conversation" })).toBeVisible();
@@ -78,7 +79,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByRole("button", { name: /vertex-image-artifact/i }).click();
   await page.getByRole("textbox", { name: "Message" }).fill("/vertex-image-artifact draw a blue square");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Preview result.txt" })).toBeVisible();
 
   await page.getByRole("tab", { name: "Artifacts" }).click();
   await page.getByRole("button", { name: "Preview result.txt" }).click();
@@ -107,6 +108,30 @@ test("keeps sent chat text visible when the stream fails", async ({ page }) => {
 
   await expect(page.getByText("this should stay visible")).toBeVisible();
   await expect(page.getByText(/Message delivery failed/).first()).toBeVisible();
+});
+
+test("covers admin console smoke after the panel split", async ({ page }) => {
+  await mockAgentAPI(page);
+
+  await page.goto("/");
+  await page.getByLabel("Email").fill("admin@example.com");
+  await page.getByLabel("Password").fill("password123");
+  await page.getByRole("button", { name: "Login" }).last().click();
+  await expect(page.getByRole("heading", { name: "New conversation" })).toBeVisible();
+
+  await page.goto("/admin");
+  await expect(page.getByRole("heading", { name: "Skills" })).toBeVisible();
+  await page.getByLabel("Admin token").fill("test-admin-token");
+  await page.getByRole("button", { name: "Load skill data" }).click();
+  await expect(page.getByRole("button", { name: /DOCX Builder/i })).toBeVisible();
+  await expect(page.getByText("Runs")).toBeVisible();
+
+  await page.getByRole("tab", { name: /Users/i }).click();
+  await expect(page.getByRole("button", { name: /Admin User/i })).toBeVisible();
+
+  await page.getByRole("tab", { name: /Health & cost/i }).click();
+  await expect(page.getByRole("heading", { name: "Runtime snapshot" })).toBeVisible();
+  await expect(page.getByText("gemini")).toBeVisible();
 });
 
 async function mockAgentAPI(page: Page, options: { failChat?: boolean } = {}) {
@@ -142,6 +167,10 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean } = {}) {
       { name: "vertex-image-artifact", description: "Generate an artifact", run_as_job: true }
     ]
   }));
+
+  await page.route("**/v1/sessions?**", async (route) => {
+    return json(route, state.sessions);
+  });
 
   await page.route("**/v1/sessions", async (route) => {
     if (route.request().method() === "POST") {
@@ -250,7 +279,74 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean } = {}) {
     }))).filter((item) => item.content?.toLowerCase().includes("playwright"))
   }));
 
+  await mockAdminAPI(page);
+
   return state;
+}
+
+async function mockAdminAPI(page: Page) {
+  const adminSkill = {
+    name: "docx",
+    display_name: "DOCX Builder",
+    description: "Create Word documents",
+    category: "documents",
+    status: "published",
+    source: "registry",
+    skill_root: ".claude/skills/docx",
+    version: "1.0.0",
+    run_as_job: true,
+    produces_artifacts: true,
+    content_hash: "abcdef1234567890",
+    created_at: now,
+    updated_at: now,
+    metadata: { policy: { allowed_tools: ["Bash"], sandbox: { runner: "docker" } } }
+  };
+  const adminUser = {
+    id: "admin-user-1",
+    email: "admin@example.com",
+    display_name: "Admin User",
+    status: "active",
+    email_verified: true,
+    created_at: now,
+    updated_at: now,
+    refresh_token_count: 2,
+    active_refresh_token_count: 1,
+    last_login_at: now
+  };
+
+  await page.route("**/v1/admin/skills", (route) => json(route, { skills: [adminSkill] }));
+  await page.route("**/v1/admin/skills/docx/review", (route) => json(route, {
+    review: { passed: true, issues: [], checked_at: now }
+  }));
+  await page.route("**/v1/admin/skills/docx/versions", (route) => json(route, {
+    versions: [{ skill_name: "docx", version: "1.0.0", content_hash: "abcdef1234567890", created_at: now, published_at: now }]
+  }));
+  await page.route("**/v1/admin/skills/docx/analytics", (route) => json(route, {
+    summary: { total: 4, succeeded: 4, failed: 0, failure_rate: 0, average_latency_ms: 1234 }
+  }));
+  await page.route("**/v1/admin/skills/docx/executions?**", (route) => json(route, {
+    executions: [{ id: "exec-1", skill_name: "docx", status: "completed", result: "ok", started_at: now, completed_at: now, latency_ms: 1234 }]
+  }));
+  await page.route("**/v1/admin/users?**", (route) => json(route, { users: [adminUser] }));
+  await page.route("**/v1/admin/ops/health", (route) => json(route, {
+    readiness: { status: "ok", checks: [{ name: "sql", status: "ok" }] },
+    llm: {
+      status: "ok",
+      backends: [{ provider: "google", model: "gemini", healthy: true, latency_ms: 250 }],
+      config: { chat_model: "gemini-2.5-flash", live_model: "live-unchanged" }
+    }
+  }));
+  await page.route("**/v1/admin/ops/llm-usage?**", (route) => json(route, {
+    usage: {
+      since: now,
+      requests: 3,
+      total_tokens: 1200,
+      estimated_cost_usd: 0.012,
+      average_latency_ms: 900,
+      by_provider: [{ provider: "google", model: "gemini", requests: 3, total_tokens: 1200, estimated_cost_usd: 0.012, status: "ok" }],
+      recent: []
+    }
+  }));
 }
 
 function authSession(email: string) {
