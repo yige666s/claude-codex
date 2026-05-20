@@ -960,7 +960,14 @@ label.composer-upload {
   border-color: #c9d9d6;
   background: var(--user-message-bg);
 }
-.message.assistant { align-self: flex-start; }
+.message.assistant {
+  align-self: flex-start;
+  max-width: min(860px, 88%);
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
 .message.highlighted {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--focus);
