@@ -285,14 +285,7 @@ func main() {
 	if skillShellSandboxConfig.DockerEnabled() {
 		images := append([]string{skillShellSandboxConfig.Image}, splitCSV(*skillSandboxPrepullImages)...)
 		go warmSkillSandboxImages(context.Background(), images)
-		pool, err := agentruntime.StartDockerSkillWarmPool(context.Background(), skillShellSandboxConfig, splitCSV(*skillSandboxPrepullImages), *skillSandboxWarmPoolSize)
-		if err != nil {
-			log.Printf("skill sandbox warm pool disabled: %v", err)
-		} else if pool != nil {
-			agentruntime.SetDefaultDockerSkillWarmPool(pool)
-			defer pool.Close(context.Background())
-			log.Printf("skill sandbox warm pool started: size=%d images=%s", *skillSandboxWarmPoolSize, strings.Join(append([]string{skillShellSandboxConfig.Image}, splitCSV(*skillSandboxPrepullImages)...), ","))
-		}
+		go startSkillSandboxWarmPool(context.Background(), skillShellSandboxConfig, splitCSV(*skillSandboxPrepullImages), *skillSandboxWarmPoolSize)
 	}
 	engineFactory := func(scope agentruntime.Scope) agentruntime.Runner {
 		root := scope.WorkingDir
@@ -2017,6 +2010,25 @@ func warmSkillSandboxImages(ctx context.Context, images []string) {
 			log.Printf("skill sandbox image already local: image=%s check_duration=%s", result.Image, result.Duration.Round(time.Millisecond))
 		}
 	}
+}
+
+func startSkillSandboxWarmPool(ctx context.Context, config agentruntime.SkillShellSandboxConfig, images []string, size int) {
+	if size <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	pool, err := agentruntime.StartDockerSkillWarmPool(ctx, config, images, size)
+	if err != nil {
+		log.Printf("skill sandbox warm pool disabled: %v", err)
+		return
+	}
+	if pool == nil {
+		log.Printf("skill sandbox warm pool skipped: runner=%s size=%d", config.Runner, size)
+		return
+	}
+	agentruntime.SetDefaultDockerSkillWarmPool(pool)
+	log.Printf("skill sandbox warm pool started: size=%d images=%s", size, strings.Join(append([]string{config.Image}, images...), ","))
 }
 
 func allowsTool(values []string, toolName string) bool {

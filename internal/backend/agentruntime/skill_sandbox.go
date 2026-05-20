@@ -26,6 +26,8 @@ const (
 	containerWorkspaceDir          = "/workspace"
 	containerSkillDir              = "/skill"
 	defaultSkillSandboxOutputLimit = 1 << 20
+	warmPoolLabelKey               = "agentapi.skill_warm_pool"
+	warmPoolLabelValue             = "true"
 )
 
 type SkillShellSandboxConfig struct {
@@ -90,6 +92,9 @@ func StartDockerSkillWarmPool(ctx context.Context, config SkillShellSandboxConfi
 		containers: make(map[string][]string),
 		leased:     make(map[string]bool),
 	}
+	if err := pool.removeStaleContainers(ctx); err != nil {
+		return nil, err
+	}
 	for _, image := range uniqueNonEmptyStrings(append([]string{config.Image}, images...)) {
 		for i := 0; i < size; i++ {
 			name, err := pool.createContainer(ctx, image)
@@ -127,6 +132,7 @@ func (p *DockerSkillWarmPool) createContainer(ctx context.Context, image string)
 	args := []string{
 		"create",
 		"--name", name,
+		"--label", warmPoolLabelKey + "=" + warmPoolLabelValue,
 		"--network", p.config.Network,
 		"--memory", p.config.Memory,
 		"--cpus", p.config.CPUs,
@@ -149,6 +155,22 @@ func (p *DockerSkillWarmPool) createContainer(ctx context.Context, image string)
 		return "", fmt.Errorf("start warm sandbox container for %s: %w: %s", image, err, strings.TrimSpace(string(out)))
 	}
 	return name, nil
+}
+
+func (p *DockerSkillWarmPool) removeStaleContainers(ctx context.Context) error {
+	out, err := exec.CommandContext(ctx, p.commandBin, "ps", "-aq", "--filter", "label="+warmPoolLabelKey+"="+warmPoolLabelValue).Output()
+	if err != nil {
+		return fmt.Errorf("list stale warm sandbox containers: %w", err)
+	}
+	for _, name := range strings.Fields(string(out)) {
+		if name == "" {
+			continue
+		}
+		if out, err := exec.CommandContext(ctx, p.commandBin, "rm", "-f", name).CombinedOutput(); err != nil {
+			return fmt.Errorf("remove stale warm sandbox container %s: %w: %s", name, err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
 }
 
 func (p *DockerSkillWarmPool) acquire(config SkillShellSandboxConfig) (string, bool) {
