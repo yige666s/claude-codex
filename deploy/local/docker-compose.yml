@@ -409,10 +409,14 @@ services:
       - "${AGENT_API_SKILL_SANDBOX_TMPFS_SIZE:-64m}"
       - -skill-sandbox-prepull-images
       - "${AGENT_API_SKILL_SANDBOX_PREPULL_IMAGES:-python:3.12-slim,node:22-alpine}"
+      - -skill-sandbox-warm-pool-size
+      - "${AGENT_API_SKILL_SANDBOX_WARM_POOL_SIZE:-1}"
       - -llm-provider
       - "${AGENT_API_LLM_PROVIDER:-vertex}"
       - -model
       - "${AGENT_API_MODEL:-gemini-2.5-pro}"
+      - -llm-model-routes
+      - "${AGENT_API_LLM_MODEL_ROUTES:-default=gemini-2.5-pro,chat=gemini-2.5-flash,chat:normal=gemini-2.5-flash,chat:search=gemini-2.5-flash,chat:complex=gemini-2.5-pro,skill=gemini-2.5-pro}"
       - -llm-max-attempts
       - "${AGENT_API_LLM_MAX_ATTEMPTS:-2}"
       - -llm-chat-timeout

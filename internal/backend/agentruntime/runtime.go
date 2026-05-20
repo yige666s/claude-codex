@@ -2612,6 +2612,7 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 		UserID:     userID,
 		SessionID:  session.ID,
 		WorkingDir: session.WorkingDir,
+		Prompt:     content,
 	})
 	startedAt := time.Now().UTC()
 	startMessageCount := len(llmSession.Messages)

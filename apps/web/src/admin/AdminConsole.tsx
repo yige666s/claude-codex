@@ -1515,6 +1515,12 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
   const warningResults = selectedRun?.warning ?? summary?.warning ?? 0;
   const p95LatencyMS = metricNumber(metrics, "p95_latency_ms");
   const averageLatencyMS = metricNumber(metrics, "average_latency_ms");
+  const chatLLMP95MS = metricNumber(metrics, "chat_llm_full_p95_ms");
+  const firstTokenP95MS = metricNumber(metrics, "first_token_p95_ms");
+  const jobEndToEndP95MS = metricNumber(metrics, "job_end_to_end_p95_ms");
+  const skillExecutionP95MS = metricNumber(metrics, "skill_execution_p95_ms");
+  const sandboxStartupP95MS = metricNumber(metrics, "sandbox_startup_p95_ms");
+  const artifactGenerationP95MS = metricNumber(metrics, "artifact_generation_p95_ms");
   const totalTokens = metricNumber(metrics, "total_tokens");
   const estimatedCostUSD = metricNumber(metrics, "estimated_cost_usd");
   const toolErrorRate = metricNumber(metrics, "tool_error_rate");
@@ -1635,6 +1641,12 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
           <AdminMetric label="Failed / warning" value={`${failedResults} / ${warningResults}`} />
           <AdminMetric label="P95 latency" value={`${formatNumber(Math.round(p95LatencyMS))} ms`} />
           <AdminMetric label="Avg latency" value={`${formatNumber(Math.round(averageLatencyMS))} ms`} />
+          <AdminMetric label="TTFT P95" value={`${formatLatencyMetric(firstTokenP95MS)}`} />
+          <AdminMetric label="Chat LLM P95" value={`${formatLatencyMetric(chatLLMP95MS)}`} />
+          <AdminMetric label="Job P95" value={`${formatLatencyMetric(jobEndToEndP95MS)}`} />
+          <AdminMetric label="Skill P95" value={`${formatLatencyMetric(skillExecutionP95MS)}`} />
+          <AdminMetric label="Sandbox start P95" value={`${formatLatencyMetric(sandboxStartupP95MS)}`} />
+          <AdminMetric label="Artifact P95" value={`${formatLatencyMetric(artifactGenerationP95MS)}`} />
           <AdminMetric label="Token cost" value={formatUSD(estimatedCostUSD)} />
           <AdminMetric label="Tokens" value={formatNumber(totalTokens)} />
           <AdminMetric label="Tool fail rate" value={formatPercent(toolErrorRate)} />
@@ -2034,7 +2046,7 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
                 <div key={record.id} className="admin-table-row">
                   <StatusBadge value={record.status} />
                   <span>{record.provider} / {record.model}</span>
-                  <small>{formatNumber(record.total_tokens)} tokens · {record.latency_ms} ms</small>
+                  <small>{formatNumber(record.total_tokens)} tokens · {record.latency_ms} ms{record.ttft_ms ? ` · TTFT ${record.ttft_ms} ms` : ""}</small>
                   {record.error && <em>{record.error}</em>}
                 </div>
               ))}
@@ -2560,6 +2572,10 @@ function formatUSD(value: number): string {
   return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: value < 1 ? 4 : 2 }).format(value);
 }
 
+function formatLatencyMetric(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  return `${formatNumber(Math.round(value))} ms`;
+}
 
 function metricNumber(metrics: Record<string, unknown> | undefined, key: string): number {
   const value = metrics?.[key];

@@ -320,6 +320,7 @@ export type LLMUsageRecord = {
   status: string;
   error?: string;
   latency_ms: number;
+  ttft_ms?: number;
   created_at: string;
 };
 

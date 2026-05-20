@@ -115,6 +115,7 @@ type LLMUsageRecord struct {
 	Status           string    `json:"status"`
 	Error            string    `json:"error,omitempty"`
 	LatencyMs        int64     `json:"latency_ms"`
+	TTFTMs           int64     `json:"ttft_ms,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
@@ -301,15 +302,15 @@ func (p *GovernedPlanner) execute(ctx context.Context, session *state.Session, t
 				continue
 			}
 			backend := p.backends[idx]
-			plan, latency, err := p.callBackend(ctx, backend, session, tools, onChunk)
+			plan, latency, ttft, err := p.callBackend(ctx, backend, session, tools, onChunk)
 			if err == nil {
 				outputTokens := estimatePlanTokens(plan)
-				_ = p.record(ctx, scope, backend.LLMBackend, attempt, "success", "", inputTokens, outputTokens, latency)
+				_ = p.record(ctx, scope, backend.LLMBackend, attempt, "success", "", inputTokens, outputTokens, latency, ttft)
 				p.markSuccess(idx)
 				return plan, nil
 			}
 			lastErr = err
-			_ = p.record(ctx, scope, backend.LLMBackend, attempt, "error", err.Error(), inputTokens, 0, latency)
+			_ = p.record(ctx, scope, backend.LLMBackend, attempt, "error", err.Error(), inputTokens, 0, latency, ttft)
 			if !isRetryableLLMError(err) {
 				p.markRequestError(idx, err)
 				return plannerapi.Plan{}, err
@@ -328,7 +329,7 @@ func (p *GovernedPlanner) execute(ctx context.Context, session *state.Session, t
 	return plannerapi.Plan{}, lastErr
 }
 
-func (p *GovernedPlanner) callBackend(ctx context.Context, backend governedBackend, session *state.Session, tools []toolkit.Descriptor, onChunk func(string)) (plannerapi.Plan, int64, error) {
+func (p *GovernedPlanner) callBackend(ctx context.Context, backend governedBackend, session *state.Session, tools []toolkit.Descriptor, onChunk func(string)) (plannerapi.Plan, int64, int64, error) {
 	timeout := p.config.ChatTimeout
 	if strings.TrimSpace(llmScopeFromContext(ctx).SkillName) != "" {
 		timeout = p.config.SkillTimeout
@@ -340,23 +341,37 @@ func (p *GovernedPlanner) callBackend(ctx context.Context, backend governedBacke
 		plan plannerapi.Plan
 		err  error
 	)
+	var firstTokenAt time.Time
+	wrappedChunk := onChunk
+	if onChunk != nil {
+		wrappedChunk = func(token string) {
+			if firstTokenAt.IsZero() && token != "" {
+				firstTokenAt = time.Now()
+			}
+			onChunk(token)
+		}
+	}
 	if onChunk != nil {
 		if streaming, ok := backend.Planner.(engine.StreamingPlanner); ok {
-			plan, err = streaming.StreamNext(callCtx, session, tools, onChunk)
+			plan, err = streaming.StreamNext(callCtx, session, tools, wrappedChunk)
 		} else {
 			plan, err = backend.Planner.Next(callCtx, session, tools)
 			if err == nil && plan.AssistantText != "" {
-				onChunk(plan.AssistantText)
+				wrappedChunk(plan.AssistantText)
 			}
 		}
 	} else {
 		plan, err = backend.Planner.Next(callCtx, session, tools)
 	}
 	latency := time.Since(started).Milliseconds()
+	ttft := latency
+	if !firstTokenAt.IsZero() {
+		ttft = firstTokenAt.Sub(started).Milliseconds()
+	}
 	if err != nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 		err = fmt.Errorf("llm call timed out after %s: %w", timeout, err)
 	}
-	return plan, latency, err
+	return plan, latency, ttft, err
 }
 
 func (p *GovernedPlanner) backendAvailable(index int) bool {
@@ -429,7 +444,7 @@ func (p *GovernedPlanner) checkQuota(ctx context.Context, scope LLMScope) error 
 	return nil
 }
 
-func (p *GovernedPlanner) record(ctx context.Context, scope LLMScope, backend LLMBackend, attempt int, status, errorText string, inputTokens, outputTokens int, latencyMs int64) error {
+func (p *GovernedPlanner) record(ctx context.Context, scope LLMScope, backend LLMBackend, attempt int, status, errorText string, inputTokens, outputTokens int, latencyMs, ttftMs int64) error {
 	if p.store == nil || strings.TrimSpace(scope.UserID) == "" {
 		return nil
 	}
@@ -450,6 +465,7 @@ func (p *GovernedPlanner) record(ctx context.Context, scope LLMScope, backend LL
 		Status:           status,
 		Error:            truncateString(errorText, 2000),
 		LatencyMs:        latencyMs,
+		TTFTMs:           ttftMs,
 		CreatedAt:        time.Now().UTC(),
 	})
 }
@@ -709,6 +725,7 @@ func (s *SQLLLMUsageStore) Init(ctx context.Context) error {
 	status TEXT NOT NULL,
 	error TEXT,
 	latency_ms BIGINT NOT NULL,
+	ttft_ms BIGINT NOT NULL DEFAULT 0,
 	created_at ` + timeType + ` NOT NULL
 )`,
 		`CREATE TABLE IF NOT EXISTS agent_llm_quota_adjustments (
@@ -731,10 +748,25 @@ func (s *SQLLLMUsageStore) Init(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := s.ensureUsageColumns(ctx); err != nil {
+		return err
+	}
 	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_llm_usage", "created_at"); err != nil {
 		return err
 	}
 	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_llm_quota_adjustments", "created_at")
+}
+
+func (s *SQLLLMUsageStore) ensureUsageColumns(ctx context.Context) error {
+	stmt := `ALTER TABLE agent_llm_usage ADD COLUMN `
+	if s.dialect == SQLDialectPostgres {
+		stmt += `IF NOT EXISTS `
+	}
+	stmt += `ttft_ms BIGINT NOT NULL DEFAULT 0`
+	if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
+		return err
+	}
+	return nil
 }
 
 func (s *SQLLLMUsageStore) RecordLLMUsage(ctx context.Context, record LLMUsageRecord) error {
@@ -748,11 +780,11 @@ func (s *SQLLLMUsageStore) RecordLLMUsage(ctx context.Context, record LLMUsageRe
 INSERT INTO agent_llm_usage (
 	id, user_id, session_id, request_id, skill_name, provider, model,
 	input_tokens, output_tokens, total_tokens, estimated_cost_usd,
-	attempt, status, error, latency_ms, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+	attempt, status, error, latency_ms, ttft_ms, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		record.ID, record.UserID, record.SessionID, record.RequestID, record.SkillName,
 		record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.TotalTokens,
-		record.EstimatedCostUSD, record.Attempt, record.Status, record.Error, record.LatencyMs,
+		record.EstimatedCostUSD, record.Attempt, record.Status, record.Error, record.LatencyMs, record.TTFTMs,
 		sqlTimeValue(record.CreatedAt, s.dialect))
 	return err
 }
@@ -857,7 +889,7 @@ ORDER BY COALESCE(SUM(estimated_cost_usd), 0) DESC, COUNT(*) DESC`), args...)
 
 	recentArgs := append([]any{}, args...)
 	recentArgs = append(recentArgs, filter.Limit)
-	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`SELECT id, user_id, session_id, request_id, skill_name, provider, model, input_tokens, output_tokens, total_tokens, estimated_cost_usd, attempt, status, error, latency_ms, created_at FROM agent_llm_usage`+where+` ORDER BY created_at DESC LIMIT ?`), recentArgs...)
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`SELECT id, user_id, session_id, request_id, skill_name, provider, model, input_tokens, output_tokens, total_tokens, estimated_cost_usd, attempt, status, error, latency_ms, ttft_ms, created_at FROM agent_llm_usage`+where+` ORDER BY created_at DESC LIMIT ?`), recentArgs...)
 	if err != nil {
 		return LLMUsageAdminSummary{}, err
 	}
@@ -964,6 +996,7 @@ func scanLLMUsageRecord(row llmUsageScanner) (LLMUsageRecord, error) {
 		&record.Status,
 		&record.Error,
 		&record.LatencyMs,
+		&record.TTFTMs,
 		&createdAt,
 	); err != nil {
 		return LLMUsageRecord{}, err

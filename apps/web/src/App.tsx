@@ -146,6 +146,7 @@ export function App() {
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [draft, setDraft] = useState("");
   const [assistantDraft, setAssistantDraft] = useState("");
+  const [responseTiming, setResponseTiming] = useState<{ ttftMs?: number; totalMs?: number } | null>(null);
   const [runtimeError, setRuntimeError] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skillDetail, setSkillDetail] = useState<Skill | null>(null);
@@ -886,9 +887,12 @@ export function App() {
     const abort = new AbortController();
     let routedToJob = false;
     let sawRuntimeError = false;
+    let firstTokenSeen = false;
+    const startedAt = performance.now();
     abortRef.current = abort;
     setDraft("");
     setAssistantDraft("");
+    setResponseTiming(null);
     setRuntimeError("");
     const displayContent = content || "Please analyze the attached file(s).";
     setMessages((current) => appendRuntimeMessage(current, { role: "user", content: messageWithAttachmentNames(displayContent, pendingAttachments), created_at: new Date().toISOString() }));
@@ -899,8 +903,15 @@ export function App() {
       await readSSEStream(response, ({ data }) => {
         if (data.type === "job") routedToJob = true;
         if (data.type === "error") sawRuntimeError = true;
+        if (!firstTokenSeen && data.type === "delta" && data.content) {
+          firstTokenSeen = true;
+          const ttftMs = Math.max(0, Math.round(performance.now() - startedAt));
+          setResponseTiming({ ttftMs });
+          setStatus({ tone: "busy", text: `First response ${formatNumber(ttftMs)} ms` });
+        }
         handleRuntimeEvent(data);
       });
+      setResponseTiming((current) => current ? { ...current, totalMs: Math.max(0, Math.round(performance.now() - startedAt)) } : current);
       setPendingAttachments([]);
       if (!routedToJob) await refreshSessionData(sessionId, { revealNewArtifacts: true });
       if (sawRuntimeError) {
@@ -1731,6 +1742,12 @@ export function App() {
             <div className="composer-error upload-error" role="alert">
               <span>{uploadError}</span>
               <button className="icon ghost" onClick={() => setUploadError("")} title="Dismiss upload error" aria-label="Dismiss upload error"><X size={14} /></button>
+            </div>
+          )}
+          {responseTiming && (
+            <div className="response-metrics" aria-live="polite">
+              <span>TTFT {formatNumber(responseTiming.ttftMs || 0)} ms</span>
+              {responseTiming.totalMs !== undefined && <span>Total {formatNumber(responseTiming.totalMs)} ms</span>}
             </div>
           )}
           {pendingAttachments.length > 0 && (
@@ -4037,4 +4054,9 @@ function formatBytes(bytes: number): string {
 function formatTime(value?: string): string {
   if (!value) return "";
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+function formatNumber(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  return new Intl.NumberFormat().format(value);
 }

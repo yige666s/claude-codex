@@ -98,6 +98,17 @@ func TestParseLLMFallbacksAndModelRoutes(t *testing.T) {
 	if routes["default"] != "gemini-2.5-pro" || routes["skill:vertex-image-artifact"] != "gemini-2.5-pro" {
 		t.Fatalf("unexpected routes %#v", routes)
 	}
+
+	routeSpec := "default=gemini-2.5-pro,chat=gemini-2.5-flash,chat:complex=gemini-2.5-pro,chat:search=gemini-2.5-flash,skill=gemini-2.5-pro"
+	if got := routedModel("gemini-2.5-pro", routeSpec, agentruntime.Scope{Prompt: "查询一下北京天气"}); got != "gemini-2.5-flash" {
+		t.Fatalf("search chat route = %q", got)
+	}
+	if got := routedModel("gemini-2.5-flash", routeSpec, agentruntime.Scope{Prompt: "写一份完整架构分析报告"}); got != "gemini-2.5-pro" {
+		t.Fatalf("complex chat route = %q", got)
+	}
+	if got := routedModel("gemini-2.5-pro", routeSpec, agentruntime.Scope{SkillScoped: true, SkillName: "docx"}); got != "gemini-2.5-pro" {
+		t.Fatalf("skill route = %q", got)
+	}
 }
 
 func TestLoadSkillsUsesExplicitSkillDirs(t *testing.T) {

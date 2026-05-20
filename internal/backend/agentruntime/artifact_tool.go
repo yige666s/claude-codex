@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"claude-codex/internal/harness/permissions"
 	toolkit "claude-codex/internal/harness/tools"
@@ -136,10 +137,14 @@ func (t *ArtifactTool) Execute(ctx context.Context, raw json.RawMessage) (toolki
 	if contentType == "" {
 		contentType = mime.TypeByExtension(filepath.Ext(filename))
 	}
+	started := time.Now()
 	artifact, err := t.writer.Write(ctx, filename, contentType, data)
+	duration := time.Since(started)
 	if err != nil {
+		emitArtifactMetric(ctx, filename, contentType, len(data), duration, "", err)
 		return toolkit.Result{}, err
 	}
+	emitArtifactMetric(ctx, filename, contentType, len(data), duration, artifact.ID, nil)
 	output, err := json.Marshal(artifactToolOutput{
 		ID:                   artifact.ID,
 		Kind:                 artifact.Kind,
@@ -153,6 +158,31 @@ func (t *ArtifactTool) Execute(ctx context.Context, raw json.RawMessage) (toolki
 		return toolkit.Result{}, err
 	}
 	return toolkit.Result{Output: string(output)}, nil
+}
+
+func emitArtifactMetric(ctx context.Context, filename, contentType string, sizeBytes int, duration time.Duration, artifactID string, runErr error) {
+	data := map[string]any{
+		"filename":     filename,
+		"content_type": contentType,
+		"size_bytes":   sizeBytes,
+		"duration_ms":  duration.Milliseconds(),
+		"success":      runErr == nil,
+	}
+	if artifactID != "" {
+		data["artifact_id"] = artifactID
+	}
+	if runErr != nil {
+		data["error"] = runErr.Error()
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	content := fmt.Sprintf("Artifact %s completed in %d ms", filename, duration.Milliseconds())
+	if runErr != nil {
+		content = fmt.Sprintf("Artifact %s failed after %d ms", filename, duration.Milliseconds())
+	}
+	emitJobEventFromContext(ctx, Event{Type: "artifact_metric", Role: "tool", Content: content, Data: raw})
 }
 
 func (t *ArtifactTool) artifactBytes(input artifactToolInput) ([]byte, error) {

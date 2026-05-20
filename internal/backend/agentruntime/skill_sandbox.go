@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"claude-codex/internal/harness/skills"
@@ -36,6 +37,7 @@ type SkillShellSandboxConfig struct {
 	PidsLimit      int
 	TmpfsSize      string
 	MaxOutputBytes int
+	WarmPoolSize   int
 }
 
 type SkillSandboxWarmResult struct {
@@ -43,6 +45,143 @@ type SkillSandboxWarmResult struct {
 	Pulled   bool
 	Duration time.Duration
 	Error    error
+}
+
+type SandboxExecutionStats struct {
+	Runner    string
+	Image     string
+	Network   string
+	Duration  time.Duration
+	Startup   time.Duration
+	FromPool  bool
+	OutputLen int
+}
+
+type sandboxStatsProvider interface {
+	LastSandboxStats() SandboxExecutionStats
+}
+
+type DockerSkillWarmPool struct {
+	commandBin string
+	config     SkillShellSandboxConfig
+	mu         sync.Mutex
+	containers map[string][]string
+	leased     map[string]bool
+	closed     bool
+}
+
+var defaultDockerSkillWarmPool *DockerSkillWarmPool
+
+func SetDefaultDockerSkillWarmPool(pool *DockerSkillWarmPool) {
+	defaultDockerSkillWarmPool = pool
+}
+
+func StartDockerSkillWarmPool(ctx context.Context, config SkillShellSandboxConfig, images []string, size int) (*DockerSkillWarmPool, error) {
+	config = config.normalized()
+	if !config.DockerEnabled() || size <= 0 || !runningInContainer() || containerHostname() == "" {
+		return nil, nil
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		return nil, err
+	}
+	pool := &DockerSkillWarmPool{
+		commandBin: "docker",
+		config:     config,
+		containers: make(map[string][]string),
+		leased:     make(map[string]bool),
+	}
+	for _, image := range uniqueNonEmptyStrings(append([]string{config.Image}, images...)) {
+		for i := 0; i < size; i++ {
+			name, err := pool.createContainer(ctx, image)
+			if err != nil {
+				pool.Close(context.Background())
+				return nil, err
+			}
+			key := poolKeyForConfig(config, image)
+			pool.containers[key] = append(pool.containers[key], name)
+		}
+	}
+	return pool, nil
+}
+
+func (p *DockerSkillWarmPool) Close(ctx context.Context) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.closed = true
+	var names []string
+	for _, items := range p.containers {
+		names = append(names, items...)
+	}
+	p.containers = nil
+	p.leased = nil
+	p.mu.Unlock()
+	for _, name := range names {
+		_ = exec.CommandContext(ctx, p.commandBin, "rm", "-f", name).Run()
+	}
+}
+
+func (p *DockerSkillWarmPool) createContainer(ctx context.Context, image string) (string, error) {
+	name := "agentapi-skill-warm-" + strings.ReplaceAll(newSortableID(), ".", "-")
+	args := []string{
+		"create",
+		"--name", name,
+		"--network", p.config.Network,
+		"--memory", p.config.Memory,
+		"--cpus", p.config.CPUs,
+		"--pids-limit", strconv.Itoa(p.config.PidsLimit),
+		"--read-only",
+		"--cap-drop", "ALL",
+		"--security-opt", "no-new-privileges",
+		"--tmpfs", "/tmp:rw,nosuid,nodev,size=" + p.config.TmpfsSize,
+		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		"--volumes-from", containerHostname(),
+		"-e", "PYTHONDONTWRITEBYTECODE=1",
+		image,
+		"sh", "-c", "while :; do sleep 3600; done",
+	}
+	if out, err := exec.CommandContext(ctx, p.commandBin, args...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("create warm sandbox container for %s: %w: %s", image, err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.CommandContext(ctx, p.commandBin, "start", name).CombinedOutput(); err != nil {
+		_ = exec.CommandContext(context.Background(), p.commandBin, "rm", "-f", name).Run()
+		return "", fmt.Errorf("start warm sandbox container for %s: %w: %s", image, err, strings.TrimSpace(string(out)))
+	}
+	return name, nil
+}
+
+func (p *DockerSkillWarmPool) acquire(config SkillShellSandboxConfig) (string, bool) {
+	if p == nil {
+		return "", false
+	}
+	key := poolKeyForConfig(config, config.Image)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return "", false
+	}
+	for _, name := range p.containers[key] {
+		if !p.leased[name] {
+			p.leased[name] = true
+			return name, true
+		}
+	}
+	return "", false
+}
+
+func (p *DockerSkillWarmPool) release(name string) {
+	if p == nil || name == "" {
+		return
+	}
+	p.mu.Lock()
+	delete(p.leased, name)
+	p.mu.Unlock()
+}
+
+func poolKeyForConfig(config SkillShellSandboxConfig, image string) string {
+	config = config.normalized()
+	return strings.Join([]string{image, config.Network, config.Memory, config.CPUs, strconv.Itoa(config.PidsLimit), config.TmpfsSize}, "\x00")
 }
 
 func (c SkillShellSandboxConfig) normalized() SkillShellSandboxConfig {
@@ -122,6 +261,7 @@ type DockerSkillShellRuntime struct {
 	env        map[string]string
 	allowed    []string
 	commandBin string
+	lastStats  SandboxExecutionStats
 }
 
 func NewDockerSkillShellRuntime(config SkillShellSandboxConfig, shell skills.FrontmatterShell, workspace, skillRoot string, env map[string]string, allowedTools []string) *DockerSkillShellRuntime {
@@ -166,15 +306,38 @@ func (r *DockerSkillShellRuntime) ExecuteCommand(ctx context.Context, command st
 	if r.useContainerVolumes() {
 		rewritten = command
 	}
-	args := r.dockerArgs(workspace, skillRoot, rewritten)
+	commandWithMarker := sandboxReadyMarkerCommand(rewritten)
+	if outputText, stats, ok, err := r.executeWarm(ctx, workspace, skillRoot, commandWithMarker); ok {
+		r.lastStats = stats
+		outputText = strings.TrimSpace(rewriteContainerPaths(outputText, workspace, skillRoot))
+		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return "", fmt.Errorf("docker skill shell command timed out: %q", command)
+			}
+			return "", fmt.Errorf("docker warm skill shell command failed for %q: %s", command, outputText)
+		}
+		return outputText, nil
+	}
+	args := r.dockerArgs(workspace, skillRoot, commandWithMarker)
 
 	cmd := exec.CommandContext(ctx, r.commandBin, args...)
 	var output sandboxLimitBuffer
 	output.limit = r.config.MaxOutputBytes
 	cmd.Stdout = &output
 	cmd.Stderr = &output
+	started := time.Now()
 	err = cmd.Run()
-	outputText := strings.TrimSpace(rewriteContainerPaths(output.String(), workspace, skillRoot))
+	duration := time.Since(started)
+	outputText, startup := splitSandboxReadyMarker(output.String(), started)
+	r.lastStats = SandboxExecutionStats{
+		Runner:    "docker",
+		Image:     r.config.Image,
+		Network:   r.config.Network,
+		Duration:  duration,
+		Startup:   startup,
+		OutputLen: len(outputText),
+	}
+	outputText = strings.TrimSpace(rewriteContainerPaths(outputText, workspace, skillRoot))
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("docker skill shell command timed out: %q", command)
@@ -185,6 +348,59 @@ func (r *DockerSkillShellRuntime) ExecuteCommand(ctx context.Context, command st
 		return "", fmt.Errorf("docker skill shell output exceeds max size of %d bytes", output.limit)
 	}
 	return outputText, nil
+}
+
+func (r *DockerSkillShellRuntime) LastSandboxStats() SandboxExecutionStats {
+	if r == nil {
+		return SandboxExecutionStats{}
+	}
+	return r.lastStats
+}
+
+func (r *DockerSkillShellRuntime) executeWarm(ctx context.Context, workspace, skillRoot, command string) (string, SandboxExecutionStats, bool, error) {
+	if r == nil || !r.useContainerVolumes() || defaultDockerSkillWarmPool == nil {
+		return "", SandboxExecutionStats{}, false, nil
+	}
+	name, ok := defaultDockerSkillWarmPool.acquire(r.config)
+	if !ok {
+		return "", SandboxExecutionStats{}, false, nil
+	}
+	defer defaultDockerSkillWarmPool.release(name)
+	args := []string{"exec", "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "-w", skillRoot, "-e", "AGENT_WORKSPACE_DIR=" + workspace, "-e", "CLAUDE_SKILL_DIR=" + skillRoot}
+	for _, key := range sortedMapKeys(r.env) {
+		if key == "AGENT_WORKSPACE_DIR" || key == "CLAUDE_SKILL_DIR" {
+			continue
+		}
+		args = append(args, "-e", key+"="+r.env[key])
+	}
+	args = append(args, name)
+	if r.shell == skills.ShellBash {
+		args = append(args, "bash", "-lc", command)
+	} else {
+		args = append(args, "sh", "-lc", command)
+	}
+	cmd := exec.CommandContext(ctx, r.commandBin, args...)
+	var output sandboxLimitBuffer
+	output.limit = r.config.MaxOutputBytes
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	started := time.Now()
+	err := cmd.Run()
+	duration := time.Since(started)
+	outputText, startup := splitSandboxReadyMarker(output.String(), started)
+	stats := SandboxExecutionStats{
+		Runner:    "docker",
+		Image:     r.config.Image,
+		Network:   r.config.Network,
+		Duration:  duration,
+		Startup:   startup,
+		FromPool:  true,
+		OutputLen: len(outputText),
+	}
+	if output.exceeded {
+		return outputText, stats, true, fmt.Errorf("docker skill shell output exceeds max size of %d bytes", output.limit)
+	}
+	return outputText, stats, true, err
 }
 
 func (r *DockerSkillShellRuntime) dockerArgs(workspace, skillRoot, command string) []string {
@@ -231,6 +447,34 @@ func (r *DockerSkillShellRuntime) dockerArgs(workspace, skillRoot, command strin
 		args = append(args, "sh", "-lc", command)
 	}
 	return args
+}
+
+const sandboxReadyMarker = "__AGENT_SANDBOX_READY_MS__="
+
+func sandboxReadyMarkerCommand(command string) string {
+	return fmt.Sprintf("printf '%s%%s\\n' \"$(date +%%s%%3N 2>/dev/null || date +%%s000)\"; %s", sandboxReadyMarker, command)
+}
+
+func splitSandboxReadyMarker(output string, started time.Time) (string, time.Duration) {
+	lines := strings.Split(output, "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, sandboxReadyMarker) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, sandboxReadyMarker))
+		ms, err := strconv.ParseInt(value, 10, 64)
+		startup := time.Duration(0)
+		if err == nil {
+			startup = time.UnixMilli(ms).Sub(started)
+			if startup < 0 {
+				startup = 0
+			}
+		}
+		out := append([]string{}, lines[:i]...)
+		out = append(out, lines[i+1:]...)
+		return strings.Join(out, "\n"), startup
+	}
+	return output, 0
 }
 
 func (r *DockerSkillShellRuntime) useContainerVolumes() bool {

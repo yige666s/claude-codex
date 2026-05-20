@@ -255,6 +255,7 @@ type Scope struct {
 	UserID            string
 	SessionID         string
 	WorkingDir        string
+	Prompt            string
 	SkillName         string
 	SkillRoot         string
 	SkillScoped       bool

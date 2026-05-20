@@ -80,7 +80,11 @@ func (t *SandboxBashTool) Execute(ctx context.Context, raw json.RawMessage) (too
 	started := time.Now()
 	output, err := t.runtime.ExecuteCommand(ctx, command)
 	duration := time.Since(started)
-	t.emitMetric(ctx, payload, command, duration, len(output), err)
+	stats := SandboxExecutionStats{Duration: duration, OutputLen: len(output)}
+	if provider, ok := t.runtime.(sandboxStatsProvider); ok {
+		stats = provider.LastSandboxStats()
+	}
+	t.emitMetric(ctx, payload, command, duration, len(output), stats, err)
 	if err != nil {
 		return toolkit.Result{}, err
 	}
@@ -90,7 +94,7 @@ func (t *SandboxBashTool) Execute(ctx context.Context, raw json.RawMessage) (too
 	return toolkit.Result{Output: output}, nil
 }
 
-func (t *SandboxBashTool) emitMetric(ctx context.Context, payload sandboxBashInput, command string, duration time.Duration, outputBytes int, runErr error) {
+func (t *SandboxBashTool) emitMetric(ctx context.Context, payload sandboxBashInput, command string, duration time.Duration, outputBytes int, stats SandboxExecutionStats, runErr error) {
 	description := strings.TrimSpace(payload.Description)
 	if description == "" {
 		description = truncateSandboxCommand(command, 96)
@@ -98,6 +102,7 @@ func (t *SandboxBashTool) emitMetric(ctx context.Context, payload sandboxBashInp
 	data := map[string]any{
 		"description":  description,
 		"duration_ms":  duration.Milliseconds(),
+		"startup_ms":   stats.Startup.Milliseconds(),
 		"output_bytes": outputBytes,
 		"timeout_ms":   int64(sandboxBashDefaultTimeout / time.Millisecond),
 		"success":      runErr == nil,
@@ -111,6 +116,7 @@ func (t *SandboxBashTool) emitMetric(ctx context.Context, payload sandboxBashInp
 		data["runner"] = "docker"
 		data["image"] = runtime.config.Image
 		data["network"] = runtime.config.Network
+		data["from_pool"] = stats.FromPool
 	} else {
 		data["runner"] = "sandbox"
 	}

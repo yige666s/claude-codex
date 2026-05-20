@@ -1,6 +1,7 @@
 package agentruntime
 
 import (
+	"encoding/json"
 	"math"
 	"sort"
 	"strings"
@@ -9,6 +10,12 @@ import (
 
 type EvaluationTraceMetrics struct {
 	DurationMS        int64   `json:"duration_ms,omitempty"`
+	ChatLLMFullMS     int64   `json:"chat_llm_full_latency_ms,omitempty"`
+	FirstTokenMS      int64   `json:"first_token_latency_ms,omitempty"`
+	JobEndToEndMS     int64   `json:"job_end_to_end_latency_ms,omitempty"`
+	SkillExecutionMS  int64   `json:"skill_execution_latency_ms,omitempty"`
+	SandboxStartupMS  int64   `json:"sandbox_startup_latency_ms,omitempty"`
+	ArtifactLatencyMS int64   `json:"artifact_generation_latency_ms,omitempty"`
 	ToolCallCount     int     `json:"tool_call_count"`
 	ToolErrorCount    int     `json:"tool_error_count"`
 	SkillCount        int     `json:"skill_count"`
@@ -38,6 +45,12 @@ type EvaluationAggregateMetrics struct {
 	P50LatencyMS      int64   `json:"p50_latency_ms"`
 	P95LatencyMS      int64   `json:"p95_latency_ms"`
 	P99LatencyMS      int64   `json:"p99_latency_ms"`
+	ChatLLMP95MS      int64   `json:"chat_llm_full_p95_ms"`
+	FirstTokenP95MS   int64   `json:"first_token_p95_ms"`
+	JobEndToEndP95MS  int64   `json:"job_end_to_end_p95_ms"`
+	SkillP95MS        int64   `json:"skill_execution_p95_ms"`
+	SandboxP95MS      int64   `json:"sandbox_startup_p95_ms"`
+	ArtifactP95MS     int64   `json:"artifact_generation_p95_ms"`
 	ToolCallCount     int     `json:"tool_call_count"`
 	ToolErrorCount    int     `json:"tool_error_count"`
 	ToolErrorRate     float64 `json:"tool_error_rate"`
@@ -66,6 +79,9 @@ func calculateTraceMetrics(trace EvaluationTrace) EvaluationTraceMetrics {
 	if duration := traceDuration(trace); duration > 0 {
 		metrics.DurationMS = duration.Milliseconds()
 	}
+	if trace.SubjectType == EvaluationSubjectJob && metrics.DurationMS > 0 {
+		metrics.JobEndToEndMS = metrics.DurationMS
+	}
 	for _, message := range trace.Messages {
 		metrics.ToolCallCount += len(message.ToolCalls)
 		if message.Role == "tool" {
@@ -81,17 +97,29 @@ func calculateTraceMetrics(trace EvaluationTrace) EvaluationTraceMetrics {
 		if event.Type == "error" || event.Event.Type == "error" || strings.TrimSpace(event.Event.Error) != "" {
 			metrics.ToolErrorCount++
 		}
+		data := eventDataMap(event)
+		switch event.Type {
+		case "sandbox_metric":
+			metrics.SandboxStartupMS = maxInt64(metrics.SandboxStartupMS, eventDataInt64(data, "startup_ms"))
+		case "artifact_metric":
+			metrics.ArtifactLatencyMS = maxInt64(metrics.ArtifactLatencyMS, eventDataInt64(data, "duration_ms"))
+		}
 	}
 	for _, record := range trace.SkillExecutions {
 		metrics.SkillCount++
 		if record.Status == SkillExecutionStatusFailed {
 			metrics.SkillFailureCount++
 		}
+		metrics.SkillExecutionMS = maxInt64(metrics.SkillExecutionMS, record.DurationMS)
 	}
 	for _, record := range trace.LLMUsage {
 		metrics.LLMRequests++
 		if record.Status != "success" {
 			metrics.LLMFailures++
+		}
+		if strings.TrimSpace(record.SkillName) == "" {
+			metrics.ChatLLMFullMS = maxInt64(metrics.ChatLLMFullMS, record.LatencyMs)
+			metrics.FirstTokenMS = maxInt64(metrics.FirstTokenMS, record.TTFTMs)
 		}
 		metrics.InputTokens += record.InputTokens
 		metrics.OutputTokens += record.OutputTokens
@@ -115,6 +143,12 @@ func calculateTraceMetrics(trace EvaluationTrace) EvaluationTraceMetrics {
 func aggregateEvaluationMetrics(results []EvaluationResult) EvaluationAggregateMetrics {
 	aggregate := EvaluationAggregateMetrics{Total: len(results)}
 	var latencies []int64
+	var chatLLMLatencies []int64
+	var firstTokenLatencies []int64
+	var jobEndToEndLatencies []int64
+	var skillLatencies []int64
+	var sandboxLatencies []int64
+	var artifactLatencies []int64
 	var latencyTotal int64
 	for _, result := range results {
 		switch result.Status {
@@ -130,6 +164,17 @@ func aggregateEvaluationMetrics(results []EvaluationResult) EvaluationAggregateM
 			latencies = append(latencies, metrics.DurationMS)
 			latencyTotal += metrics.DurationMS
 		}
+		appendPositive := func(values *[]int64, value int64) {
+			if value > 0 {
+				*values = append(*values, value)
+			}
+		}
+		appendPositive(&chatLLMLatencies, metrics.ChatLLMFullMS)
+		appendPositive(&firstTokenLatencies, metrics.FirstTokenMS)
+		appendPositive(&jobEndToEndLatencies, metrics.JobEndToEndMS)
+		appendPositive(&skillLatencies, metrics.SkillExecutionMS)
+		appendPositive(&sandboxLatencies, metrics.SandboxStartupMS)
+		appendPositive(&artifactLatencies, metrics.ArtifactLatencyMS)
 		aggregate.ToolCallCount += metrics.ToolCallCount
 		aggregate.ToolErrorCount += metrics.ToolErrorCount
 		aggregate.SkillCount += metrics.SkillCount
@@ -161,6 +206,12 @@ func aggregateEvaluationMetrics(results []EvaluationResult) EvaluationAggregateM
 		aggregate.P95LatencyMS = percentileLatency(latencies, 0.95)
 		aggregate.P99LatencyMS = percentileLatency(latencies, 0.99)
 	}
+	aggregate.ChatLLMP95MS = percentileLatencySorted(chatLLMLatencies, 0.95)
+	aggregate.FirstTokenP95MS = percentileLatencySorted(firstTokenLatencies, 0.95)
+	aggregate.JobEndToEndP95MS = percentileLatencySorted(jobEndToEndLatencies, 0.95)
+	aggregate.SkillP95MS = percentileLatencySorted(skillLatencies, 0.95)
+	aggregate.SandboxP95MS = percentileLatencySorted(sandboxLatencies, 0.95)
+	aggregate.ArtifactP95MS = percentileLatencySorted(artifactLatencies, 0.95)
 	if aggregate.ToolCallCount > 0 {
 		aggregate.ToolErrorRate = float64(aggregate.ToolErrorCount) / float64(aggregate.ToolCallCount)
 	}
@@ -187,6 +238,12 @@ func traceDuration(trace EvaluationTrace) time.Duration {
 func evaluationTraceMetricsFromMap(values map[string]any) EvaluationTraceMetrics {
 	var metrics EvaluationTraceMetrics
 	metrics.DurationMS = mapInt64(values, "duration_ms")
+	metrics.ChatLLMFullMS = mapInt64(values, "chat_llm_full_latency_ms")
+	metrics.FirstTokenMS = mapInt64(values, "first_token_latency_ms")
+	metrics.JobEndToEndMS = mapInt64(values, "job_end_to_end_latency_ms")
+	metrics.SkillExecutionMS = mapInt64(values, "skill_execution_latency_ms")
+	metrics.SandboxStartupMS = mapInt64(values, "sandbox_startup_latency_ms")
+	metrics.ArtifactLatencyMS = mapInt64(values, "artifact_generation_latency_ms")
 	metrics.ToolCallCount = mapInt(values, "tool_call_count")
 	metrics.ToolErrorCount = mapInt(values, "tool_error_count")
 	metrics.SkillCount = mapInt(values, "skill_count")
@@ -207,56 +264,68 @@ func evaluationTraceMetricsFromMap(values map[string]any) EvaluationTraceMetrics
 
 func evaluationTraceMetricsMap(metrics EvaluationTraceMetrics) map[string]any {
 	return map[string]any{
-		"duration_ms":         metrics.DurationMS,
-		"tool_call_count":     metrics.ToolCallCount,
-		"tool_error_count":    metrics.ToolErrorCount,
-		"skill_count":         metrics.SkillCount,
-		"skill_failure_count": metrics.SkillFailureCount,
-		"llm_requests":        metrics.LLMRequests,
-		"llm_failures":        metrics.LLMFailures,
-		"input_tokens":        metrics.InputTokens,
-		"output_tokens":       metrics.OutputTokens,
-		"total_tokens":        metrics.TotalTokens,
-		"estimated_cost_usd":  metrics.EstimatedCostUSD,
-		"risk_high_count":     metrics.RiskHighCount,
-		"risk_medium_count":   metrics.RiskMediumCount,
-		"risk_low_count":      metrics.RiskLowCount,
-		"artifact_count":      metrics.ArtifactCount,
-		"empty_output":        metrics.EmptyOutput,
+		"duration_ms":                    metrics.DurationMS,
+		"chat_llm_full_latency_ms":       metrics.ChatLLMFullMS,
+		"first_token_latency_ms":         metrics.FirstTokenMS,
+		"job_end_to_end_latency_ms":      metrics.JobEndToEndMS,
+		"skill_execution_latency_ms":     metrics.SkillExecutionMS,
+		"sandbox_startup_latency_ms":     metrics.SandboxStartupMS,
+		"artifact_generation_latency_ms": metrics.ArtifactLatencyMS,
+		"tool_call_count":                metrics.ToolCallCount,
+		"tool_error_count":               metrics.ToolErrorCount,
+		"skill_count":                    metrics.SkillCount,
+		"skill_failure_count":            metrics.SkillFailureCount,
+		"llm_requests":                   metrics.LLMRequests,
+		"llm_failures":                   metrics.LLMFailures,
+		"input_tokens":                   metrics.InputTokens,
+		"output_tokens":                  metrics.OutputTokens,
+		"total_tokens":                   metrics.TotalTokens,
+		"estimated_cost_usd":             metrics.EstimatedCostUSD,
+		"risk_high_count":                metrics.RiskHighCount,
+		"risk_medium_count":              metrics.RiskMediumCount,
+		"risk_low_count":                 metrics.RiskLowCount,
+		"artifact_count":                 metrics.ArtifactCount,
+		"empty_output":                   metrics.EmptyOutput,
 	}
 }
 
 func evaluationAggregateMetricsMap(metrics EvaluationAggregateMetrics) map[string]any {
 	return map[string]any{
-		"total":               metrics.Total,
-		"passed":              metrics.Passed,
-		"failed":              metrics.Failed,
-		"warning":             metrics.Warning,
-		"success_rate":        metrics.SuccessRate,
-		"failure_rate":        metrics.FailureRate,
-		"warning_rate":        metrics.WarningRate,
-		"average_latency_ms":  metrics.AverageLatencyMS,
-		"p50_latency_ms":      metrics.P50LatencyMS,
-		"p95_latency_ms":      metrics.P95LatencyMS,
-		"p99_latency_ms":      metrics.P99LatencyMS,
-		"tool_call_count":     metrics.ToolCallCount,
-		"tool_error_count":    metrics.ToolErrorCount,
-		"tool_error_rate":     metrics.ToolErrorRate,
-		"skill_count":         metrics.SkillCount,
-		"skill_failure_count": metrics.SkillFailureCount,
-		"skill_failure_rate":  metrics.SkillFailureRate,
-		"llm_requests":        metrics.LLMRequests,
-		"llm_failures":        metrics.LLMFailures,
-		"llm_error_rate":      metrics.LLMErrorRate,
-		"input_tokens":        metrics.InputTokens,
-		"output_tokens":       metrics.OutputTokens,
-		"total_tokens":        metrics.TotalTokens,
-		"estimated_cost_usd":  metrics.EstimatedCostUSD,
-		"high_risk_count":     metrics.HighRiskCount,
-		"medium_risk_count":   metrics.MediumRiskCount,
-		"low_risk_count":      metrics.LowRiskCount,
-		"artifact_count":      metrics.ArtifactCount,
-		"empty_output_count":  metrics.EmptyOutputCount,
+		"total":                      metrics.Total,
+		"passed":                     metrics.Passed,
+		"failed":                     metrics.Failed,
+		"warning":                    metrics.Warning,
+		"success_rate":               metrics.SuccessRate,
+		"failure_rate":               metrics.FailureRate,
+		"warning_rate":               metrics.WarningRate,
+		"average_latency_ms":         metrics.AverageLatencyMS,
+		"p50_latency_ms":             metrics.P50LatencyMS,
+		"p95_latency_ms":             metrics.P95LatencyMS,
+		"p99_latency_ms":             metrics.P99LatencyMS,
+		"chat_llm_full_p95_ms":       metrics.ChatLLMP95MS,
+		"first_token_p95_ms":         metrics.FirstTokenP95MS,
+		"job_end_to_end_p95_ms":      metrics.JobEndToEndP95MS,
+		"skill_execution_p95_ms":     metrics.SkillP95MS,
+		"sandbox_startup_p95_ms":     metrics.SandboxP95MS,
+		"artifact_generation_p95_ms": metrics.ArtifactP95MS,
+		"tool_call_count":            metrics.ToolCallCount,
+		"tool_error_count":           metrics.ToolErrorCount,
+		"tool_error_rate":            metrics.ToolErrorRate,
+		"skill_count":                metrics.SkillCount,
+		"skill_failure_count":        metrics.SkillFailureCount,
+		"skill_failure_rate":         metrics.SkillFailureRate,
+		"llm_requests":               metrics.LLMRequests,
+		"llm_failures":               metrics.LLMFailures,
+		"llm_error_rate":             metrics.LLMErrorRate,
+		"input_tokens":               metrics.InputTokens,
+		"output_tokens":              metrics.OutputTokens,
+		"total_tokens":               metrics.TotalTokens,
+		"estimated_cost_usd":         metrics.EstimatedCostUSD,
+		"high_risk_count":            metrics.HighRiskCount,
+		"medium_risk_count":          metrics.MediumRiskCount,
+		"low_risk_count":             metrics.LowRiskCount,
+		"artifact_count":             metrics.ArtifactCount,
+		"empty_output_count":         metrics.EmptyOutputCount,
 	}
 }
 
@@ -275,6 +344,39 @@ func percentileLatency(values []int64, percentile float64) int64 {
 		index = len(values) - 1
 	}
 	return values[index]
+}
+
+func percentileLatencySorted(values []int64, percentile float64) int64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	return percentileLatency(values, percentile)
+}
+
+func maxInt64(a, b int64) int64 {
+	if b > a {
+		return b
+	}
+	return a
+}
+
+func eventDataMap(event *JobEvent) map[string]any {
+	if event == nil || len(event.Event.Data) == 0 {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(event.Event.Data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func eventDataInt64(values map[string]any, key string) int64 {
+	if len(values) == 0 {
+		return 0
+	}
+	return mapInt64(values, key)
 }
 
 func mapInt(values map[string]any, key string) int {

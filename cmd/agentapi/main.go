@@ -211,6 +211,7 @@ func main() {
 	skillSandboxPidsLimit := flag.Int("skill-sandbox-pids-limit", envInt("AGENT_API_SKILL_SANDBOX_PIDS_LIMIT", agentruntime.DefaultSkillSandboxPidsLimit), "Docker pids limit for skill shell runner=docker")
 	skillSandboxTmpfsSize := flag.String("skill-sandbox-tmpfs-size", firstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_TMPFS_SIZE"), agentruntime.DefaultSkillSandboxTmpfsSize), "Docker /tmp tmpfs size for skill shell runner=docker")
 	skillSandboxPrepullImages := flag.String("skill-sandbox-prepull-images", firstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_PREPULL_IMAGES"), "python:3.12-slim,node:22-alpine"), "comma-separated Docker images to pre-pull for skill shell runner=docker")
+	skillSandboxWarmPoolSize := flag.Int("skill-sandbox-warm-pool-size", envInt("AGENT_API_SKILL_SANDBOX_WARM_POOL_SIZE", 1), "warm Docker containers per sandbox image for runner=docker when agentapi runs in Docker")
 	flag.Parse()
 
 	llmCfg, err := buildLLMConfig(*llmProvider, *model, *apiKey, *apiToken, *apiBaseURL, 600)
@@ -272,17 +273,26 @@ func main() {
 	globalAllowed := allowedToolNames(*allowDangerousTools)
 	globalNetworkAllowlist := splitCSV(*networkAllowlist)
 	skillShellSandboxConfig := agentruntime.SkillShellSandboxConfig{
-		Runner:    *skillShellRunner,
-		Image:     *skillSandboxImage,
-		Network:   *skillSandboxNetwork,
-		Memory:    *skillSandboxMemory,
-		CPUs:      *skillSandboxCPUs,
-		PidsLimit: *skillSandboxPidsLimit,
-		TmpfsSize: *skillSandboxTmpfsSize,
+		Runner:       *skillShellRunner,
+		Image:        *skillSandboxImage,
+		Network:      *skillSandboxNetwork,
+		Memory:       *skillSandboxMemory,
+		CPUs:         *skillSandboxCPUs,
+		PidsLimit:    *skillSandboxPidsLimit,
+		TmpfsSize:    *skillSandboxTmpfsSize,
+		WarmPoolSize: *skillSandboxWarmPoolSize,
 	}
 	if skillShellSandboxConfig.DockerEnabled() {
 		images := append([]string{skillShellSandboxConfig.Image}, splitCSV(*skillSandboxPrepullImages)...)
 		go warmSkillSandboxImages(context.Background(), images)
+		pool, err := agentruntime.StartDockerSkillWarmPool(context.Background(), skillShellSandboxConfig, splitCSV(*skillSandboxPrepullImages), *skillSandboxWarmPoolSize)
+		if err != nil {
+			log.Printf("skill sandbox warm pool disabled: %v", err)
+		} else if pool != nil {
+			agentruntime.SetDefaultDockerSkillWarmPool(pool)
+			defer pool.Close(context.Background())
+			log.Printf("skill sandbox warm pool started: size=%d images=%s", *skillSandboxWarmPoolSize, strings.Join(append([]string{skillShellSandboxConfig.Image}, splitCSV(*skillSandboxPrepullImages)...), ","))
+		}
 	}
 	engineFactory := func(scope agentruntime.Scope) agentruntime.Runner {
 		root := scope.WorkingDir
@@ -1058,6 +1068,12 @@ func routedModel(currentModel, routes string, scope agentruntime.Scope) string {
 			return model
 		}
 	}
+	if !scope.SkillScoped {
+		class := chatRouteClass(scope.Prompt)
+		if model := routeMap["chat:"+class]; model != "" {
+			return model
+		}
+	}
 	if model := routeMap["chat"]; model != "" && !scope.SkillScoped {
 		return model
 	}
@@ -1065,6 +1081,29 @@ func routedModel(currentModel, routes string, scope agentruntime.Scope) string {
 		return model
 	}
 	return currentModel
+}
+
+func chatRouteClass(prompt string) string {
+	text := strings.ToLower(strings.TrimSpace(prompt))
+	if text == "" {
+		return "normal"
+	}
+	searchMarkers := []string{"搜索", "查询", "查一下", "搜一下", "search", "websearch", "天气", "weather", "新闻", "latest", "最新"}
+	for _, marker := range searchMarkers {
+		if strings.Contains(text, marker) {
+			return "search"
+		}
+	}
+	complexMarkers := []string{"复杂", "深入", "详细", "完整", "分析", "报告", "方案", "架构", "设计", "文档", "docx", "ppt", "高质量", "推理", "评估", "规划", "review", "analyze", "architecture", "document", "report", "proposal"}
+	for _, marker := range complexMarkers {
+		if strings.Contains(text, marker) {
+			return "complex"
+		}
+	}
+	if len([]rune(text)) > 700 {
+		return "complex"
+	}
+	return "normal"
 }
 
 func parseModelRoutes(value string) map[string]string {
