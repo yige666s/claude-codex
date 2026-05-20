@@ -9,6 +9,7 @@ compose_file="${AGENTAPI_COMPOSE_FILE:-deploy/local/docker-compose.yml}"
 health_url="${AGENTAPI_HEALTH_URL:-http://127.0.0.1:${AGENT_API_PORT:-8081}/readyz}"
 skip_healthcheck="${AGENTAPI_SKIP_HEALTHCHECK:-0}"
 prune_images="${AGENTAPI_PRUNE_IMAGES:-0}"
+deploy_mode="${AGENTAPI_DEPLOY_MODE:-build}"
 
 require() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -58,7 +59,19 @@ else
   echo "warning: env file not found: $env_file; using process environment only" >&2
 fi
 
-run_with_heartbeat docker compose "${compose_args[@]}" up -d --build
+case "$deploy_mode" in
+  build)
+    run_with_heartbeat docker compose "${compose_args[@]}" up -d --build
+    ;;
+  pull)
+    run_with_heartbeat docker compose "${compose_args[@]}" pull agentapi agentweb
+    run_with_heartbeat docker compose "${compose_args[@]}" up -d --no-build
+    ;;
+  *)
+    echo "unsupported AGENTAPI_DEPLOY_MODE: $deploy_mode; expected build or pull" >&2
+    exit 2
+    ;;
+esac
 
 if [ "$prune_images" = "1" ]; then
   docker image prune -f

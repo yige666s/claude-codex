@@ -10,11 +10,64 @@ concurrency:
   group: deploy-main
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ghcr.io/${{ github.repository }}
+  IMAGE_TAG: ${{ github.sha }}
+
 jobs:
+  build-images:
+    name: Build and push images
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push agentapi
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.agentapi
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAMESPACE }}/agentapi:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAMESPACE }}/agentapi:main
+          cache-from: type=gha,scope=agentapi
+          cache-to: type=gha,scope=agentapi,mode=max
+
+      - name: Build and push agentweb
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.agentweb
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAMESPACE }}/agentweb:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAMESPACE }}/agentweb:main
+          cache-from: type=gha,scope=agentweb
+          cache-to: type=gha,scope=agentweb,mode=max
+
   deploy:
     name: Deploy to test server
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    needs: build-images
+    timeout-minutes: 20
 
     steps:
       - name: Configure SSH
@@ -34,9 +87,13 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+          AGENT_API_IMAGE: ${{ env.IMAGE_NAMESPACE }}/agentapi:${{ env.IMAGE_TAG }}
+          AGENT_WEB_IMAGE: ${{ env.IMAGE_NAMESPACE }}/agentweb:${{ env.IMAGE_TAG }}
         run: |
           set -euo pipefail
-          ssh \
+          printf '%s\n' "$GHCR_TOKEN" | ssh \
             -i ~/.ssh/deploy_key \
             -p "$DEPLOY_PORT" \
             -o IdentitiesOnly=yes \
@@ -45,4 +102,22 @@ jobs:
             -o ServerAliveCountMax=20 \
             -o TCPKeepAlive=yes \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "AGENTAPI_REPO_URL='https://github.com/yige666s/claude-codex.git' AGENTAPI_BRANCH='main' /opt/agentapi/deploy.sh"
+            "set -euo pipefail
+             read -r ghcr_token
+             printf '%s' \"\$ghcr_token\" | docker login ghcr.io -u '$GHCR_USER' --password-stdin >/dev/null
+             unset ghcr_token
+             if [ ! -d /opt/agentapi/repo/.git ]; then
+               rm -rf /opt/agentapi/repo
+               git clone --branch main https://github.com/yige666s/claude-codex.git /opt/agentapi/repo
+             fi
+             cd /opt/agentapi/repo
+             git remote set-url origin https://github.com/yige666s/claude-codex.git
+             git fetch --prune origin main
+             git reset --hard origin/main
+             install -m 755 deploy/production/deploy-main.sh /opt/agentapi/deploy.sh
+             AGENTAPI_REPO_URL='https://github.com/yige666s/claude-codex.git' \
+             AGENTAPI_BRANCH='main' \
+             AGENTAPI_DEPLOY_MODE='pull' \
+             AGENT_API_IMAGE='$AGENT_API_IMAGE' \
+             AGENT_WEB_IMAGE='$AGENT_WEB_IMAGE' \
+             /opt/agentapi/deploy.sh"

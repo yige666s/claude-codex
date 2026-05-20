@@ -120,7 +120,7 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile.agentapi
-    image: claude-codex-agentapi:local
+    image: ${AGENT_API_IMAGE:-claude-codex-agentapi:local}
     depends_on:
       postgres:
         condition: service_healthy
@@ -459,7 +459,7 @@ services:
       dockerfile: Dockerfile.agentweb
       args:
         VITE_AGENT_API_BASE_URL: ${VITE_AGENT_API_BASE_URL:-}
-    image: claude-codex-agentweb:local
+    image: ${AGENT_WEB_IMAGE:-claude-codex-agentweb:local}
     depends_on:
       agentapi:
         condition: service_healthy
