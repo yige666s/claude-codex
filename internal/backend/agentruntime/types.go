@@ -243,6 +243,11 @@ type ContentRunner interface {
 	RunContent(ctx context.Context, session *state.Session, prompt []publictypes.ContentBlock) (engine.Result, error)
 }
 
+type StreamingContentRunner interface {
+	ContentRunner
+	RunContentStream(ctx context.Context, session *state.Session, prompt []publictypes.ContentBlock, onToken func(string)) (engine.Result, error)
+}
+
 type StreamingRunner interface {
 	Runner
 	RunStream(ctx context.Context, session *state.Session, prompt string, onToken func(string)) (engine.Result, error)

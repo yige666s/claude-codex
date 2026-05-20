@@ -149,6 +149,15 @@ func (s *Session) AddUserMessage(content string) {
 	s.Usage.RecordInput(content)
 }
 
+func (s *Session) AddUserContentMessage(content string, blocks []publictypes.ContentBlock) {
+	message := newTextMessage(MessageRoleUser, content, false)
+	message.ContentType = MessageContentTypeMultipart
+	message.ContentParts = append([]publictypes.ContentBlock(nil), blocks...)
+	message.ContentBlocks = append([]publictypes.ContentBlock(nil), blocks...)
+	s.append(message)
+	s.Usage.RecordInput(content)
+}
+
 func (s *Session) AddHiddenUserMessage(content string) {
 	s.append(newTextMessage(MessageRoleUser, content, true))
 	s.Usage.RecordInput(content)

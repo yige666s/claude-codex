@@ -156,6 +156,90 @@ func (e *Engine) RunStream(ctx context.Context, session *state.Session, prompt s
 	return e.runStream(ctx, session, prompt, true, onToken)
 }
 
+func (e *Engine) RunContentStream(ctx context.Context, session *state.Session, prompt []publictypes.ContentBlock, onToken func(string)) (Result, error) {
+	streamingPlanner, ok := e.planner.(StreamingPlanner)
+	if !ok {
+		return e.RunContent(ctx, session, prompt)
+	}
+	if session == nil {
+		return Result{}, fmt.Errorf("session is required")
+	}
+	promptText := promptToText(prompt)
+	interactionID := fmt.Sprintf("interaction-%d", time.Now().UnixNano())
+	e.recordTrace(session.ID, "interaction.start", "interaction", map[string]any{
+		"span_id":       interactionID,
+		"prompt":        promptText,
+		"prompt_length": len(promptText),
+		"prompt_source": promptSource(true),
+		"working_dir":   session.WorkingDir,
+		"runtime":       "streaming_content",
+	})
+
+	e.ensureInitialModelContext(session)
+	session.AddUserContentMessage(promptText, prompt)
+
+	var output strings.Builder
+	for turn := 0; e.maxTurns <= 0 || turn < e.maxTurns; turn++ {
+		e.injectPendingMessages(ctx, session)
+		turnSpanID := fmt.Sprintf("%s:turn:%d", interactionID, turn)
+		e.recordTrace(session.ID, "planner.turn.start", "planner", map[string]any{
+			"span_id": turnSpanID,
+			"turn":    turn,
+			"tools":   len(e.registry.Descriptors()),
+		})
+		plan, err := streamingPlanner.StreamNext(ctx, session, e.registry.Descriptors(), func(token string) {
+			if token == "" {
+				return
+			}
+			output.WriteString(token)
+			if onToken != nil {
+				onToken(token)
+			}
+		})
+		if err != nil {
+			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+				"span_id": interactionID,
+				"status":  "error",
+				"error":   err.Error(),
+				"runtime": "streaming_content",
+			})
+			return Result{}, err
+		}
+		e.recordTrace(session.ID, "planner.turn.end", "planner", map[string]any{
+			"span_id":         turnSpanID,
+			"turn":            turn,
+			"status":          "ok",
+			"tool_call_count": len(plan.ToolCalls),
+			"assistant_chars": len(plan.AssistantText),
+			"stop_reason":     plan.StopReason,
+		})
+
+		if len(plan.ToolCalls) == 0 {
+			if plan.AssistantText != "" {
+				session.AddAssistantMessage(plan.AssistantText)
+			}
+			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+				"span_id":         interactionID,
+				"status":          "ok",
+				"tool_call_count": 0,
+				"output_chars":    len(plan.AssistantText),
+				"runtime":         "streaming_content",
+			})
+			return Result{Output: plan.AssistantText, Session: session}, nil
+		}
+
+		stateToolCalls := make([]state.ToolCall, len(plan.ToolCalls))
+		for i, tc := range plan.ToolCalls {
+			stateToolCalls[i] = state.ToolCall{ID: tc.ID, Name: tc.Name, Input: tc.Input, ThoughtSignature: tc.ThoughtSignature}
+		}
+		session.AddAssistantMessageWithTools(plan.AssistantText, stateToolCalls)
+		if err := e.executeToolCalls(ctx, session, plan.ToolCalls, interactionID); err != nil {
+			return Result{Output: output.String(), Session: session}, err
+		}
+	}
+	return Result{}, fmt.Errorf("planner exceeded max turns (%d)", e.maxTurns)
+}
+
 func (e *Engine) RunGeneratedPromptStream(ctx context.Context, session *state.Session, prompt string, onToken func(string)) (Result, error) {
 	return e.runStream(ctx, session, prompt, false, onToken)
 }

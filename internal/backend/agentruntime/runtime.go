@@ -3513,6 +3513,9 @@ func runWithTokenStreamContent(ctx context.Context, runner Runner, session *stat
 	if generated {
 		return runWithTokenStream(ctx, runner, session, promptContentText(prompt), generated, onToken)
 	}
+	if streamingContentRunner, ok := runner.(StreamingContentRunner); ok {
+		return streamingContentRunner.RunContentStream(ctx, session, prompt, onToken)
+	}
 	if contentRunner, ok := runner.(ContentRunner); ok {
 		return contentRunner.RunContent(ctx, session, prompt)
 	}
