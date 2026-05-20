@@ -1,4 +1,4 @@
-import { FormEvent, forwardRef, lazy, ReactNode, RefObject, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, forwardRef, lazy, ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertCircle,
@@ -38,6 +38,19 @@ import { ApiClient, ApiError } from "./api/client";
 import type { Asset, AuthSession, Job, JobEvent, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill } from "./types";
 import { readSSEStream } from "./lib/sse";
 import { sessionTitle } from "./lib/sessionTitle";
+import { Badge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "./components/ui/dialog";
+import { Input } from "./components/ui/input";
+import { Textarea } from "./components/ui/textarea";
+import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs";
 
 const AdminConsole = lazy(() => import("./admin/AdminConsole"));
 
@@ -229,8 +242,6 @@ export function App() {
   const lastJobEventRef = useRef("");
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const artifactsRef = useRef<Asset[]>([]);
-  const globalSearchDialogRef = useFocusTrap<HTMLElement>(globalSearchOpen, () => setGlobalSearchOpen(false));
-  const skillDetailDialogRef = useFocusTrap<HTMLElement>(Boolean(skillDetail), () => setSkillDetail(null));
   const authSession = auth || api.session();
   const activeSession = sessions.find((item) => item.id === sessionId);
   const latestJob = jobs[0];
@@ -1535,30 +1546,30 @@ export function App() {
             </div>
           </div>
           <div className="segmented">
-            <button type="button" className={authMode === "login" ? "active" : ""} onClick={() => setAuthMode("login")}>Login</button>
-            <button type="button" className={authMode === "register" ? "active" : ""} onClick={() => setAuthMode("register")}>Register</button>
+            <Button type="button" variant={authMode === "login" ? "primary" : "ghost"} onClick={() => setAuthMode("login")}>Login</Button>
+            <Button type="button" variant={authMode === "register" ? "primary" : "ghost"} onClick={() => setAuthMode("register")}>Register</Button>
           </div>
           <label>
             Email
-            <input name="email" type="email" autoComplete="email" required />
+            <Input name="email" type="email" autoComplete="email" required />
           </label>
           {authMode === "register" && (
             <label>
               Name
-              <input name="displayName" autoComplete="name" />
+              <Input name="displayName" autoComplete="name" />
             </label>
           )}
           <label>
             Password
-            <input name="password" type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} required minLength={8} />
+            <Input name="password" type="password" autoComplete={authMode === "login" ? "current-password" : "new-password"} required minLength={8} />
           </label>
           {authMode === "register" && (
             <label>
               Confirm Password
-              <input name="confirmPassword" type="password" autoComplete="new-password" required minLength={8} />
+              <Input name="confirmPassword" type="password" autoComplete="new-password" required minLength={8} />
             </label>
           )}
-          <button className="primary wide" type="submit">{authMode === "login" ? "Login" : "Create Account"}</button>
+          <Button className="wide" variant="primary" type="submit">{authMode === "login" ? "Login" : "Create Account"}</Button>
           <StatusLine status={status} />
         </form>
       </main>
@@ -1584,7 +1595,7 @@ export function App() {
     <main className={`app-shell ${leftSidebarOpen ? "" : "left-collapsed"} ${rightPanelOpen ? "" : "right-collapsed"}`}>
       <aside className={`sidebar ${mobileNav ? "open" : ""}`}>
         <div className="sidebar-head">
-          <button
+          <Button
             className="brand-toggle"
             onClick={() => {
               setGlobalSearchOpen(false);
@@ -1596,11 +1607,11 @@ export function App() {
           >
             <BrandLogo className="brand-icon" />
             <span className="brand-toggle-icon"><PanelLeft size={18} /></span>
-          </button>
+          </Button>
           <BrandLogo className="brand-mark sidebar-logo" />
           <strong>AgentAPI</strong>
           <ServiceStatusPill status={serviceStatus} />
-          <button
+          <Button
             className="icon sidebar-collapse-button"
             onClick={() => {
               setGlobalSearchOpen(false);
@@ -1611,12 +1622,12 @@ export function App() {
             aria-expanded={leftSidebarOpen}
           >
             <PanelLeft size={18} />
-          </button>
-          <button className="icon ghost mobile-only" onClick={() => setMobileNav(false)} title="Close navigation" aria-label="Close navigation"><X size={18} /></button>
+          </Button>
+          <Button className="icon ghost mobile-only" onClick={() => setMobileNav(false)} title="Close navigation" aria-label="Close navigation"><X size={18} /></Button>
         </div>
         <div className="toolbar">
-          <button className="icon primary" onClick={createSession} title="New session" aria-label="New session"><MessageSquarePlus size={18} /></button>
-          <button
+          <Button className="icon primary" onClick={createSession} title="New session" aria-label="New session"><MessageSquarePlus size={18} /></Button>
+          <Button
             className="icon"
             onClick={() => {
               setGlobalSearchOpen(true);
@@ -1626,18 +1637,18 @@ export function App() {
             aria-pressed={globalSearchOpen}
           >
             <Search size={18} />
-          </button>
-          <button className="icon" onClick={refreshAll} title="Refresh" aria-label="Refresh"><RefreshCw size={18} /></button>
+          </Button>
+          <Button className="icon" onClick={refreshAll} title="Refresh" aria-label="Refresh"><RefreshCw size={18} /></Button>
         </div>
         <div className="list sessions">
           {sessions.map((session) => (
             <div key={session.id} className={`list-item session-item ${session.id === sessionId ? "active" : ""}`}>
-              <button className="session-select" onClick={() => selectSession(session.id)}>
+              <Button className="session-select" onClick={() => selectSession(session.id)}>
                 <span>{sessionTitle(session)}</span>
-              </button>
-              <button className="session-delete" onClick={() => removeSession(session.id)} title="Delete session" aria-label="Delete session">
+              </Button>
+              <Button className="session-delete" onClick={() => removeSession(session.id)} title="Delete session" aria-label="Delete session">
                 <Trash2 size={16} />
-              </button>
+              </Button>
             </div>
           ))}
         </div>
@@ -1646,40 +1657,35 @@ export function App() {
             <strong>{authSession.user.display_name || authSession.user.email}</strong>
             <small>{authSession.user.email}</small>
           </div>
-          <button className="icon" onClick={() => setSettingsOpen((open) => !open)} title="Settings" aria-label="Settings"><Settings size={18} /></button>
+          <Button className="icon" onClick={() => setSettingsOpen((open) => !open)} title="Settings" aria-label="Settings"><Settings size={18} /></Button>
           {settingsOpen && (
             <div className="settings-menu">
-              <button onClick={() => { setSettingsOpen(false); setSettingsModalOpen(true); }}><Settings size={16} /> Settings</button>
-              <button onClick={() => openMemoryManager("all")}><Database size={16} /> Manage Memory</button>
-              <button onClick={logout}><LogOut size={16} /> Log Out</button>
+              <Button onClick={() => { setSettingsOpen(false); setSettingsModalOpen(true); }}><Settings size={16} /> Settings</Button>
+              <Button onClick={() => openMemoryManager("all")}><Database size={16} /> Manage Memory</Button>
+              <Button onClick={logout}><LogOut size={16} /> Log Out</Button>
             </div>
           )}
         </div>
       </aside>
 
-      {globalSearchOpen && (
-        <div className="global-search-overlay" onMouseDown={() => setGlobalSearchOpen(false)}>
-          <section
-            className="global-search-modal"
-            ref={globalSearchDialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Search across all sessions"
-            tabIndex={-1}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
+      <Dialog open={globalSearchOpen} onOpenChange={setGlobalSearchOpen}>
+        <DialogContent
+          className="global-search-modal"
+          hideClose
+          aria-label="Search across all sessions"
+        >
             <div className="global-search-input">
               <Search size={18} />
-              <input
+              <Input
                 value={globalSearchQuery}
                 onChange={(event) => setGlobalSearchQuery(event.target.value)}
                 placeholder="Search across all sessions"
                 aria-label="Search across all sessions"
                 autoFocus
               />
-              <button className="icon ghost" onClick={() => setGlobalSearchOpen(false)} title="Close search" aria-label="Close search">
+              <Button variant="ghost" size="icon" onClick={() => setGlobalSearchOpen(false)} title="Close search" aria-label="Close search">
                 <X size={20} />
-              </button>
+              </Button>
             </div>
             <div className="global-search-results">
               {!globalSearchQuery.trim() && <div className="global-search-empty">Type to search conversations</div>}
@@ -1687,23 +1693,22 @@ export function App() {
               {globalSearchQuery.trim() && !globalSearchLoading && globalSearchError && <div className="global-search-empty error-text">{globalSearchError}</div>}
               {globalSearchQuery.trim() && !globalSearchLoading && !globalSearchError && !globalSearchResults.length && <div className="global-search-empty">No results</div>}
               {globalSearchQuery.trim() && !globalSearchLoading && !globalSearchError && globalSearchResults.map((result) => (
-                <button key={`${result.session_id}-${result.message_index}-${result.created_at}`} className="global-search-result" onClick={() => openSearchResult(result)}>
+                <Button key={`${result.session_id}-${result.message_index}-${result.created_at}`} className="global-search-result" onClick={() => openSearchResult(result)}>
                   <MessageCircle size={19} />
                   <span>
                     <strong>{result.session_title || result.session_id}</strong>
                     <small>{result.snippet || result.content || ""}</small>
                   </span>
                   <time>{formatTime(result.created_at)}</time>
-                </button>
+                </Button>
               ))}
             </div>
-          </section>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
 
       <section className="workspace">
         <header className="topbar">
-          <button className="icon mobile-only" onClick={() => setMobileNav(true)} title="Open navigation" aria-label="Open navigation"><Menu size={20} /></button>
+          <Button className="icon mobile-only" onClick={() => setMobileNav(true)} title="Open navigation" aria-label="Open navigation"><Menu size={20} /></Button>
           <div>
             <h2>{activeSession ? sessionTitle(activeSession) : "New conversation"}</h2>
             <StatusLine status={status} />
@@ -1714,7 +1719,7 @@ export function App() {
             <AlertCircle size={16} />
             <span>{recoveryBanner.text}</span>
             {online && selectedJobId && (
-              <button className="inline" onClick={reconnectSelectedJob}>Reconnect</button>
+              <Button className="inline" onClick={reconnectSelectedJob}>Reconnect</Button>
             )}
           </div>
         )}
@@ -1735,13 +1740,13 @@ export function App() {
             <div className="composer-error" role="alert">
               <AlertCircle size={16} />
               <span>{runtimeError}</span>
-              <button className="icon ghost" onClick={() => setRuntimeError("")} title="Dismiss error" aria-label="Dismiss error"><X size={14} /></button>
+              <Button className="icon ghost" onClick={() => setRuntimeError("")} title="Dismiss error" aria-label="Dismiss error"><X size={14} /></Button>
             </div>
           )}
           {uploadError && (
             <div className="composer-error upload-error" role="alert">
               <span>{uploadError}</span>
-              <button className="icon ghost" onClick={() => setUploadError("")} title="Dismiss upload error" aria-label="Dismiss upload error"><X size={14} /></button>
+              <Button className="icon ghost" onClick={() => setUploadError("")} title="Dismiss upload error" aria-label="Dismiss upload error"><X size={14} /></Button>
             </div>
           )}
           {responseTiming && (
@@ -1756,20 +1761,20 @@ export function App() {
                 <span className="pending-attachment" key={asset.id} title={asset.filename}>
                   <FileUp size={13} />
                   <span>{asset.filename}</span>
-                  <button
+                  <Button
                     className="icon ghost"
                     onClick={() => setPendingAttachments((current) => current.filter((item) => item.id !== asset.id))}
                     title={`Remove ${asset.filename}`}
                     aria-label={`Remove ${asset.filename}`}
                   >
                     <X size={12} />
-                  </button>
+                  </Button>
                 </span>
               ))}
             </div>
           )}
           <div className="composer-row">
-            <button
+            <Button
               type="button"
               className="composer-upload"
               title="Upload attachment"
@@ -1778,8 +1783,8 @@ export function App() {
               disabled={uploading || inputMode !== "text" || liveStatus !== "idle"}
             >
               <FileUp size={18} />
-            </button>
-            <input
+            </Button>
+            <Input
               ref={attachmentInputRef}
               className="composer-file-input"
               type="file"
@@ -1789,7 +1794,7 @@ export function App() {
               onChange={(event) => uploadAttachment(event.currentTarget.files)}
               disabled={uploading || inputMode !== "text" || liveStatus !== "idle"}
             />
-            <textarea
+            <Textarea
               ref={composerInputRef}
               value={draft}
               aria-label="Message"
@@ -1806,7 +1811,7 @@ export function App() {
             />
             <div className="composer-actions">
               <div className="input-mode-toggle" role="group" aria-label="Input mode">
-                <button
+                <Button
                   type="button"
                   className={inputMode === "text" ? "active" : ""}
                   onClick={switchToTextMode}
@@ -1816,8 +1821,8 @@ export function App() {
                 >
                   <MessageCircle size={16} />
                   <span>Text</span>
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
                   className={inputMode === "live" ? "active" : ""}
                   onClick={switchToLiveMode}
@@ -1827,11 +1832,11 @@ export function App() {
                 >
                   <Mic size={16} />
                   <span>Live</span>
-                </button>
+                </Button>
               </div>
               {inputMode === "live" && (
                 <>
-                  <button
+                  <Button
                     type="button"
                     className={`voice-output-toggle ${liveMuted ? "muted" : ""}`}
                     onClick={toggleLiveMute}
@@ -1841,8 +1846,8 @@ export function App() {
                     aria-pressed={liveStatus !== "idle" && !liveMuted}
                   >
                     {liveMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
                     className={`live-control ${liveStatus === "listening" ? "active" : ""}`}
                     onClick={() => void toggleLiveCapture()}
@@ -1852,24 +1857,24 @@ export function App() {
                     aria-pressed={liveStatus === "listening"}
                   >
                     {liveStatus === "listening" ? <Mic size={18} /> : <MicOff size={18} />}
-                  </button>
+                  </Button>
                 </>
               )}
               {busyChat ? (
-                <button className="stop-generation" onClick={cancelChat} title="Stop generation" aria-label="Stop generation">
+                <Button className="stop-generation" onClick={cancelChat} title="Stop generation" aria-label="Stop generation">
                   <span><Square size={16} fill="currentColor" /></span>
-                </button>
+                </Button>
               ) : (
-                <button className="primary send" onClick={sendMessage} disabled={inputMode !== "text" || liveStatus !== "idle" || (!draft.trim() && pendingAttachments.length === 0) || !sessionId} title="Send" aria-label="Send">
+                <Button className="primary send" onClick={sendMessage} disabled={inputMode !== "text" || liveStatus !== "idle" || (!draft.trim() && pendingAttachments.length === 0) || !sessionId} title="Send" aria-label="Send">
                   <Send size={21} />
-                </button>
+                </Button>
               )}
             </div>
           </div>
         </footer>
       </section>
 
-      <button
+      <Button
         className="right-panel-toggle"
         onClick={() => setRightPanelOpen((open) => !open)}
         aria-label={rightPanelOpen ? "Collapse right panel" : "Expand right panel"}
@@ -1877,27 +1882,29 @@ export function App() {
         aria-expanded={rightPanelOpen}
       >
         <PanelLeft size={18} />
-      </button>
+      </Button>
 
       <aside className="right-panel" aria-hidden={!rightPanelOpen}>
-        <div className="right-tabs" role="tablist" aria-label="Right panel tools">
+        <Tabs value={rightPanelTab} onValueChange={(value) => setRightPanelTab(value as RightPanelTab)}>
+        <TabsList className="right-tabs" aria-label="Right panel tools">
           <RightTabButton tab="skills" activeTab={rightPanelTab} label="Skills" count={skills.length} icon={<Sparkles size={20} />} onClick={setRightPanelTab} />
           <RightTabButton tab="jobs" activeTab={rightPanelTab} label="Jobs" count={jobs.length} icon={<Briefcase size={20} />} onClick={setRightPanelTab} />
           <RightTabButton tab="attachments" activeTab={rightPanelTab} label="Attachments" count={attachments.length} icon={<FileUp size={20} />} onClick={setRightPanelTab} />
           <RightTabButton tab="artifacts" activeTab={rightPanelTab} label="Artifacts" count={artifacts.length} icon={<Image size={20} />} onClick={setRightPanelTab} />
-        </div>
+        </TabsList>
+        </Tabs>
         <div className="right-search">
           <Search size={16} />
-          <input
+          <Input
             value={rightSearch}
             onChange={(event) => updateRightSearch(event.target.value)}
             placeholder={`Search ${rightPanelLabel(rightPanelTab)}`}
             aria-label={`Search ${rightPanelLabel(rightPanelTab)}`}
           />
           {rightSearch && (
-            <button className="icon ghost" onClick={() => updateRightSearch("")} aria-label="Clear search" title="Clear search">
+            <Button className="icon ghost" onClick={() => updateRightSearch("")} aria-label="Clear search" title="Clear search">
               <X size={14} />
-            </button>
+            </Button>
           )}
         </div>
         <div className="right-tab-content">
@@ -1918,7 +1925,7 @@ export function App() {
                     const expanded = job.id === selectedJobId;
                     return (
                       <section key={job.id} className={`job-list-entry ${expanded ? "expanded" : ""}`}>
-                        <button
+                        <Button
                           className={`list-item job-summary ${expanded ? "active" : ""}`}
                           onClick={() => toggleJob(job.id)}
                           aria-expanded={expanded}
@@ -1926,7 +1933,7 @@ export function App() {
                           <span>{job.content || job.id}</span>
                           <small>{job.status} · {formatTime(job.updated_at)}</small>
                           <ChevronDown size={16} aria-hidden="true" />
-                        </button>
+                        </Button>
                         {expanded && (
                           <div className="job-expanded">
                             <div className="job-card">
@@ -1934,7 +1941,7 @@ export function App() {
                               {jobStreamNotice && !terminalJobs.has(job.status) && (
                                 <span className={`job-stream-state ${jobStreamStatus}`}>{jobStreamNotice}</span>
                               )}
-                              <button className="danger inline" disabled={terminalJobs.has(job.status)} onClick={cancelJob}>Cancel job</button>
+                              <Button className="danger inline" disabled={terminalJobs.has(job.status)} onClick={cancelJob}>Cancel job</Button>
                             </div>
                             <div className="timeline">
                               {visibleJobEvents(jobEvents).map((event) => (
@@ -1989,7 +1996,6 @@ export function App() {
       </aside>
       {skillDetail && (
         <SkillDetailModal
-          refElement={skillDetailDialogRef}
           skill={skillDetail}
           onInsert={insertSkill}
           onClose={() => setSkillDetail(null)}
@@ -2524,13 +2530,13 @@ function MessageAttachmentPreview({ attachment }: { attachment: AttachedTextSect
   const [expanded, setExpanded] = useState(false);
   return (
     <section className={`message-attachment-preview ${expanded ? "expanded" : ""}`}>
-      <button type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+      <Button type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
         <FileText size={15} />
         <span>
           <strong>{attachment.filename}</strong>
           <small>{attachment.contentType || "text"} · {expanded ? "Hide content" : "Show content"}</small>
         </span>
-      </button>
+      </Button>
       {expanded && (
         <pre>{attachment.content}</pre>
       )}
@@ -2637,17 +2643,16 @@ function RightTabButton({
 }) {
   const active = tab === activeTab;
   return (
-    <button
+    <TabsTrigger
       className={`right-tab ${active ? "active" : ""}`}
+      value={tab}
       onClick={() => onClick(tab)}
-      role="tab"
-      aria-selected={active}
       title={label}
       aria-label={label}
     >
       {icon}
-      <span className="tab-count">{count}</span>
-    </button>
+      <Badge className="tab-count" variant={active ? "default" : "secondary"}>{count}</Badge>
+    </TabsTrigger>
   );
 }
 
@@ -2690,10 +2695,10 @@ function SkillPanel({
           </div>
           <div className="recent-skill-list">
             {recentSkills.map((skill) => (
-              <button key={skill.name} type="button" onClick={() => jumpToSkill(skill)}>
+              <Button key={skill.name} type="button" onClick={() => jumpToSkill(skill)}>
                 <SkillGlyph skill={skill} />
                 <span>{skill.display_name || skill.name}</span>
-              </button>
+              </Button>
             ))}
           </div>
         </section>
@@ -2741,14 +2746,14 @@ const SkillCard = forwardRef<HTMLElement, {
   const title = skill.display_name || skill.name;
   return (
     <article ref={ref} className={`skill-card ${expanded ? "expanded" : "collapsed"} ${skill.featured ? "featured" : ""}`}>
-      <button type="button" className="skill-card-summary" onClick={onToggle} aria-expanded={expanded}>
+      <Button type="button" className="skill-card-summary" onClick={onToggle} aria-expanded={expanded}>
         <SkillGlyph skill={skill} />
         <div>
           <strong>{title}</strong>
           <small>/{skill.name}</small>
         </div>
         <ChevronDown size={16} />
-      </button>
+      </Button>
       {expanded && (
         <>
           <p>{skill.short_description || skill.description || skill.usage || "No description available."}</p>
@@ -2758,13 +2763,13 @@ const SkillCard = forwardRef<HTMLElement, {
             {skill.version && <span>v{skill.version}</span>}
           </div>
           <div className="skill-card-actions">
-            <button type="button" className="skill-action primary" onClick={() => onInsert(skill)} title={`Apply /${skill.name}`} aria-label={`Apply /${skill.name}`}>
+            <Button type="button" className="skill-action primary" onClick={() => onInsert(skill)} title={`Apply /${skill.name}`} aria-label={`Apply /${skill.name}`}>
               <PlayCircle size={15} />
               <span>Apply</span>
-            </button>
-            <button type="button" className="skill-action" onClick={() => onDetails(skill)} title={`Details for ${title}`} aria-label="Skill details">
+            </Button>
+            <Button type="button" className="skill-action" onClick={() => onDetails(skill)} title={`Details for ${title}`} aria-label="Skill details">
               <Info size={15} />
-            </button>
+            </Button>
           </div>
         </>
     )}
@@ -2784,7 +2789,7 @@ function AdminConsoleFallback({ onExit }: { onExit: () => void }) {
           </div>
         </div>
         <div className="admin-sidebar-actions">
-          <button onClick={onExit}><MessageCircle size={16} /> Back to app</button>
+          <Button onClick={onExit}><MessageCircle size={16} /> Back to app</Button>
         </div>
       </aside>
       <section className="admin-main">
@@ -2799,12 +2804,10 @@ function AdminConsoleFallback({ onExit }: { onExit: () => void }) {
 }
 
 function SkillDetailModal({
-  refElement,
   skill,
   onInsert,
   onClose
 }: {
-  refElement: RefObject<HTMLElement | null>;
   skill: Skill;
   onInsert: (skill: Skill) => void;
   onClose: () => void;
@@ -2813,8 +2816,10 @@ function SkillDetailModal({
   const examples = skill.usage_examples || [];
   const outputTypes = skill.output_artifact_types || [];
   return (
-    <div className="modal-backdrop">
-      <section className="skill-modal" ref={refElement as RefObject<HTMLElement>} role="dialog" aria-modal="true" aria-labelledby="skill-modal-title" tabIndex={-1}>
+    <Dialog open onOpenChange={(open) => {
+      if (!open) onClose();
+    }}>
+      <DialogContent className="skill-modal" hideClose>
         <header>
           <div className="skill-modal-heading">
             <SkillGlyph skill={skill} />
@@ -2823,9 +2828,9 @@ function SkillDetailModal({
               <small>/{skill.name}</small>
             </div>
           </div>
-          <button className="icon ghost" onClick={onClose} aria-label="Close skill details" title="Close">
+          <Button className="icon ghost" onClick={onClose} aria-label="Close skill details" title="Close">
             <X size={18} />
-          </button>
+          </Button>
         </header>
         <div className="skill-modal-body">
           <p>{skill.long_description || skill.description || skill.usage || "No description available."}</p>
@@ -2854,13 +2859,13 @@ function SkillDetailModal({
           ) : null}
         </div>
         <footer>
-          <button className="primary skill-modal-insert" onClick={() => onInsert(skill)}>
+          <Button className="primary skill-modal-insert" onClick={() => onInsert(skill)}>
             <PlayCircle size={16} />
             <span>Apply /{skill.name}</span>
-          </button>
+          </Button>
         </footer>
-      </section>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -3036,72 +3041,6 @@ function acronymSearch(value: string): string {
     .join("");
 }
 
-function useFocusTrap<T extends HTMLElement>(active: boolean, onEscape: () => void) {
-  const containerRef = useRef<T | null>(null);
-  const onEscapeRef = useRef(onEscape);
-
-  useEffect(() => {
-    onEscapeRef.current = onEscape;
-  }, [onEscape]);
-
-  useEffect(() => {
-    if (!active) return;
-    const container = containerRef.current;
-    if (!container) return;
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const focusFirst = () => {
-      const target = focusableElements(container)[0] || container;
-      target.focus();
-    };
-    const frame = window.requestAnimationFrame(focusFirst);
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onEscapeRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = focusableElements(container);
-      if (!focusable.length) {
-        event.preventDefault();
-        container.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const current = document.activeElement;
-      if (event.shiftKey && current === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && current === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      document.removeEventListener("keydown", handleKeyDown);
-      if (previousFocus?.isConnected) previousFocus.focus();
-    };
-  }, [active]);
-
-  return containerRef;
-}
-
-function focusableElements(container: HTMLElement): HTMLElement[] {
-  const selector = [
-    "a[href]",
-    "button:not([disabled])",
-    "input:not([disabled]):not([type='hidden'])",
-    "select:not([disabled])",
-    "textarea:not([disabled])",
-    "[tabindex]:not([tabindex='-1'])"
-  ].join(",");
-  return Array.from(container.querySelectorAll<HTMLElement>(selector))
-    .filter((element) => !element.closest("[aria-hidden='true']") && element.getClientRects().length > 0);
-}
-
 function Progress({ value }: { value: number }) {
   return <div className="progress"><span style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></div>;
 }
@@ -3141,12 +3080,12 @@ function AssetList({
             <small>{formatBytes(asset.size_bytes)} · {formatTime(asset.created_at)}</small>
           </div>
           {addToMessage && (
-            <button className="icon" onClick={() => addToMessage(asset)} title="Add to message" aria-label={`Add ${asset.filename} to message`}>
+            <Button className="icon" onClick={() => addToMessage(asset)} title="Add to message" aria-label={`Add ${asset.filename} to message`}>
               <MessageSquarePlus size={16} />
-            </button>
+            </Button>
           )}
           {extractMemory && (
-            <button
+            <Button
               className="icon"
               onClick={() => extractMemory(asset)}
               disabled={memoryDisabled || Boolean(memoryBusy[asset.id])}
@@ -3154,13 +3093,13 @@ function AssetList({
               aria-label={memoryDisabled ? "Memory saving is disabled" : `Extract memory from ${asset.filename}`}
             >
               <Brain size={16} />
-            </button>
+            </Button>
           )}
-          <button className="icon" onClick={() => preview(asset)} title={`Preview ${asset.filename}`} aria-label={`Preview ${asset.filename}`}>
+          <Button className="icon" onClick={() => preview(asset)} title={`Preview ${asset.filename}`} aria-label={`Preview ${asset.filename}`}>
             <AssetPreviewIcon asset={asset} />
-          </button>
-          <button className="icon" onClick={() => download(asset.id)} title={`Download ${asset.filename}`} aria-label={`Download ${asset.filename}`}><Download size={16} /></button>
-          <button className="icon danger" onClick={() => remove(asset.id)} title={`Delete ${asset.filename}`} aria-label={`Delete ${asset.filename}`}><Trash2 size={16} /></button>
+          </Button>
+          <Button className="icon" onClick={() => download(asset.id)} title={`Download ${asset.filename}`} aria-label={`Download ${asset.filename}`}><Download size={16} /></Button>
+          <Button className="icon danger" onClick={() => remove(asset.id)} title={`Delete ${asset.filename}`} aria-label={`Delete ${asset.filename}`}><Trash2 size={16} /></Button>
         </div>
       ))}
     </div>
@@ -3249,7 +3188,6 @@ function SettingsModal({
   onLogout: () => void;
   onClose: () => void;
 }) {
-  const modalRef = useFocusTrap<HTMLElement>(true, onClose);
   const [activeSection, setActiveSection] = useState<"personalization" | "data" | "account">("personalization");
   const [draftPersonalization, setDraftPersonalization] = useState<PersonalizationSettings>(personalizationSettings);
 
@@ -3260,23 +3198,17 @@ function SettingsModal({
   const personalizationDirty = JSON.stringify(normalizePersonalizationDraft(draftPersonalization)) !== JSON.stringify(normalizePersonalizationDraft(personalizationSettings));
 
   return (
-    <div className="modal-backdrop settings-backdrop" onClick={onClose}>
-      <section
-        className="settings-modal"
-        ref={modalRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="settings-title"
-        tabIndex={-1}
-        onClick={(event) => event.stopPropagation()}
-      >
+    <Dialog open onOpenChange={(open) => {
+      if (!open) onClose();
+    }}>
+      <DialogContent className="settings-modal" hideClose>
         <aside className="settings-nav" aria-label="Settings sections">
-          <button className="icon settings-close" onClick={onClose} title="Close settings" aria-label="Close settings">
+          <Button className="icon settings-close" onClick={onClose} title="Close settings" aria-label="Close settings">
             <X size={22} />
-          </button>
-          <button className={`settings-nav-item ${activeSection === "personalization" ? "active" : ""}`} onClick={() => setActiveSection("personalization")}><Brain size={18} /> Personalization</button>
-          <button className={`settings-nav-item ${activeSection === "data" ? "active" : ""}`} onClick={() => setActiveSection("data")}><Database size={18} /> Data controls</button>
-          <button className={`settings-nav-item ${activeSection === "account" ? "active" : ""}`} onClick={() => setActiveSection("account")}><UserX size={18} /> Account</button>
+          </Button>
+          <Button className={`settings-nav-item ${activeSection === "personalization" ? "active" : ""}`} onClick={() => setActiveSection("personalization")}><Brain size={18} /> Personalization</Button>
+          <Button className={`settings-nav-item ${activeSection === "data" ? "active" : ""}`} onClick={() => setActiveSection("data")}><Database size={18} /> Data controls</Button>
+          <Button className={`settings-nav-item ${activeSection === "account" ? "active" : ""}`} onClick={() => setActiveSection("account")}><UserX size={18} /> Account</Button>
         </aside>
         <section className="settings-panel">
           {activeSection === "personalization" && (
@@ -3312,8 +3244,8 @@ function SettingsModal({
             />
           )}
         </section>
-      </section>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -3411,7 +3343,7 @@ function PersonalizationSettingsPanel({
           <label className="settings-input-label" htmlFor="custom-instructions">Custom instructions</label>
           <CharCounter value={draft.custom_instructions} max={personalizationTextLimits.customInstructions} />
         </div>
-        <textarea
+        <Textarea
           id="custom-instructions"
           className="settings-textarea"
           maxLength={personalizationTextLimits.customInstructions}
@@ -3428,18 +3360,18 @@ function PersonalizationSettingsPanel({
         <div className="settings-input-grid">
           <label className="settings-input-label">
             <span className="settings-label-row"><span>Nickname</span><CharCounter value={draft.profile.nickname || ""} max={personalizationTextLimits.nickname} /></span>
-            <input className="settings-input" maxLength={personalizationTextLimits.nickname} value={draft.profile.nickname || ""} onChange={(event) => updateProfile({ nickname: event.target.value })} placeholder="What should Agent call you?" />
+            <Input className="settings-input" maxLength={personalizationTextLimits.nickname} value={draft.profile.nickname || ""} onChange={(event) => updateProfile({ nickname: event.target.value })} placeholder="What should Agent call you?" />
           </label>
           <label className="settings-input-label">
             <span className="settings-label-row"><span>Occupation</span><CharCounter value={draft.profile.occupation || ""} max={personalizationTextLimits.occupation} /></span>
-            <input className="settings-input" maxLength={personalizationTextLimits.occupation} value={draft.profile.occupation || ""} onChange={(event) => updateProfile({ occupation: event.target.value })} placeholder="Product manager, engineer..." />
+            <Input className="settings-input" maxLength={personalizationTextLimits.occupation} value={draft.profile.occupation || ""} onChange={(event) => updateProfile({ occupation: event.target.value })} placeholder="Product manager, engineer..." />
           </label>
         </div>
         <div className="settings-label-row">
           <label className="settings-input-label" htmlFor="about-you">Details</label>
           <CharCounter value={draft.profile.about || ""} max={personalizationTextLimits.about} />
         </div>
-        <textarea
+        <Textarea
           id="about-you"
           className="settings-textarea compact"
           maxLength={personalizationTextLimits.about}
@@ -3478,12 +3410,12 @@ function PersonalizationSettingsPanel({
           <strong>Saved memory</strong>
           <p>Review what the automatic memory system currently stores.</p>
         </div>
-        <button className="settings-action" onClick={onManageMemory}>Manage</button>
+        <Button className="settings-action" onClick={onManageMemory}>Manage</Button>
       </div>
       <div className="settings-footer-actions">
         <span className={`settings-save-state ${dirty ? "dirty" : ""}`}>{saveState}</span>
-        <button className="settings-action" onClick={onReset} disabled={saving}>Reset</button>
-        <button className="settings-action primary" onClick={onSave} disabled={!dirty || saving}>{saving ? "Saving" : "Save"}</button>
+        <Button className="settings-action" onClick={onReset} disabled={saving}>Reset</Button>
+        <Button className="settings-action primary" onClick={onSave} disabled={!dirty || saving}>{saving ? "Saving" : "Save"}</Button>
       </div>
     </>
   );
@@ -3548,28 +3480,28 @@ function DataControlsSettingsPanel({
           <strong>Saved memory</strong>
           <p>Review, edit, delete, and resolve saved memory items.</p>
         </div>
-        <button className="settings-action" onClick={onManageMemory}>Manage</button>
+        <Button className="settings-action" onClick={onManageMemory}>Manage</Button>
       </div>
       <div className="settings-row">
         <div>
           <strong>Current session memory</strong>
           <p>Remove memory saved from the current session only.</p>
         </div>
-        <button className="settings-action" onClick={onDeleteSessionMemory} disabled={!hasSession}>Delete</button>
+        <Button className="settings-action" onClick={onDeleteSessionMemory} disabled={!hasSession}>Delete</Button>
       </div>
       <div className="settings-row">
         <div>
           <strong>All memory</strong>
           <p>Remove all saved memory for this account.</p>
         </div>
-        <button className="settings-action danger-outline" onClick={onDeleteAllMemory}>Delete all</button>
+        <Button className="settings-action danger-outline" onClick={onDeleteAllMemory}>Delete all</Button>
       </div>
       <div className="settings-row">
         <div>
           <strong>Export data</strong>
           <p>Download account data, sessions, artifacts, jobs, and memory.</p>
         </div>
-        <button className="settings-action" onClick={onExportData}>Export</button>
+        <Button className="settings-action" onClick={onExportData}>Export</Button>
       </div>
     </>
   );
@@ -3589,14 +3521,14 @@ function AccountSettingsPanel({ userLabel, onLogout, onDeleteAccount }: { userLa
           <strong>Session</strong>
           <p>Sign out of this browser.</p>
         </div>
-        <button className="settings-action" onClick={onLogout}>Log out</button>
+        <Button className="settings-action" onClick={onLogout}>Log out</Button>
       </div>
       <div className="settings-row">
         <div>
           <strong>Delete account</strong>
           <p>Permanently remove this account and associated data.</p>
         </div>
-        <button className="settings-action danger-outline" onClick={onDeleteAccount}>Delete</button>
+        <Button className="settings-action danger-outline" onClick={onDeleteAccount}>Delete</Button>
       </div>
     </>
   );
@@ -3615,7 +3547,7 @@ function LabeledSelect({ label, value, options, onChange }: { label: string; val
 
 function SwitchButton({ checked, label, onChange }: { checked: boolean; label: string; onChange: (checked: boolean) => void }) {
   return (
-    <button
+    <Button
       type="button"
       className={`switch-button ${checked ? "checked" : ""}`}
       role="switch"
@@ -3624,7 +3556,7 @@ function SwitchButton({ checked, label, onChange }: { checked: boolean; label: s
       onClick={() => onChange(!checked)}
     >
       <span>{checked ? "On" : "Off"}</span>
-    </button>
+    </Button>
   );
 }
 
@@ -3635,7 +3567,6 @@ function PreviewModal({ asset, url, previewUrl, onClose }: { asset: Asset; url: 
   const isText = isTextAsset(asset);
   const isDocx = isDOCXAsset(asset);
   const isOffice = ["ppt", "pptx", "doc", "docx", "xls", "xlsx"].includes(ext);
-  const modalRef = useFocusTrap<HTMLElement>(true, onClose);
   const [textPreview, setTextPreview] = useState<{ status: "idle" | "loading" | "loaded" | "error"; content: string; error?: string }>({
     status: "idle",
     content: ""
@@ -3662,27 +3593,21 @@ function PreviewModal({ asset, url, previewUrl, onClose }: { asset: Asset; url: 
   }, [isText, url]);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <section
-        className="preview-modal"
-        ref={modalRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="preview-title"
-        tabIndex={-1}
-        onClick={(event) => event.stopPropagation()}
-      >
+    <Dialog open onOpenChange={(open) => {
+      if (!open) onClose();
+    }}>
+      <DialogContent className="preview-modal" hideClose>
         <header>
           <div>
             <strong id="preview-title">{asset.filename}</strong>
             <small>{asset.content_type || "file"} · {formatBytes(asset.size_bytes)}</small>
           </div>
           <div className="preview-actions">
-            <button className="preview-download" onClick={() => window.open(url, "_blank")} title={`Download ${asset.filename}`} aria-label={`Download ${asset.filename}`}>
+            <Button className="preview-download" onClick={() => window.open(url, "_blank")} title={`Download ${asset.filename}`} aria-label={`Download ${asset.filename}`}>
               <Download size={16} />
               <span>Download</span>
-            </button>
-            <button className="icon ghost" onClick={onClose} title="Close preview" aria-label="Close preview"><X size={18} /></button>
+            </Button>
+            <Button className="icon ghost" onClick={onClose} title="Close preview" aria-label="Close preview"><X size={18} /></Button>
           </div>
         </header>
         <div className="preview-body">
@@ -3710,8 +3635,8 @@ function PreviewModal({ asset, url, previewUrl, onClose }: { asset: Asset; url: 
             </div>
           )}
         </div>
-      </section>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -3810,7 +3735,6 @@ function MemoryModal({
   onDelete: (item: MemoryItem) => void;
   onClose: () => void;
 }) {
-  const modalRef = useFocusTrap<HTMLElement>(true, onClose);
   const [editingId, setEditingId] = useState("");
   const [draftContent, setDraftContent] = useState("");
   const [draftNamespace, setDraftNamespace] = useState("default");
@@ -3852,46 +3776,40 @@ function MemoryModal({
   const safeReviews = Math.max(0, pendingActions.length - conflictReviews);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <section
-        className="memory-modal"
-        ref={modalRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="memory-title"
-        tabIndex={-1}
-        onClick={(event) => event.stopPropagation()}
-      >
+    <Dialog open onOpenChange={(open) => {
+      if (!open) onClose();
+    }}>
+      <DialogContent className="memory-modal" hideClose>
         <header>
           <div>
             <strong id="memory-title">Memory</strong>
             <small>{items.length} saved item{items.length === 1 ? "" : "s"}</small>
           </div>
           <div className="memory-actions">
-            <button className="icon ghost" onClick={onScore} title="Score memory quality" aria-label="Score memory quality">
+            <Button className="icon ghost" onClick={onScore} title="Score memory quality" aria-label="Score memory quality">
               <Activity size={16} />
-            </button>
-            <button className="icon ghost" onClick={onRunMaintenance} title="Organize memory automatically" aria-label="Organize memory automatically">
+            </Button>
+            <Button className="icon ghost" onClick={onRunMaintenance} title="Organize memory automatically" aria-label="Organize memory automatically">
               <Briefcase size={16} />
-            </button>
-            <button className="icon ghost" onClick={onRebuild} title="Rebuild memory summaries" aria-label="Rebuild memory summaries">
+            </Button>
+            <Button className="icon ghost" onClick={onRebuild} title="Rebuild memory summaries" aria-label="Rebuild memory summaries">
               <Sparkles size={16} />
-            </button>
-            <button className="icon ghost" onClick={onRefresh} title="Refresh memory" aria-label="Refresh memory">
+            </Button>
+            <Button className="icon ghost" onClick={onRefresh} title="Refresh memory" aria-label="Refresh memory">
               <RefreshCw size={16} />
-            </button>
-            <button className="icon ghost" onClick={onClose} title="Close memory" aria-label="Close memory">
+            </Button>
+            <Button className="icon ghost" onClick={onClose} title="Close memory" aria-label="Close memory">
               <X size={16} />
-            </button>
+            </Button>
           </div>
         </header>
         <div className="memory-scope" role="tablist" aria-label="Memory scope">
-          <button type="button" className={scope === "all" ? "active" : ""} onClick={() => onScopeChange("all")}>
+          <Button type="button" className={scope === "all" ? "active" : ""} onClick={() => onScopeChange("all")}>
             All
-          </button>
-          <button type="button" className={scope === "session" ? "active" : ""} onClick={() => onScopeChange("session")} disabled={!hasSession}>
+          </Button>
+          <Button type="button" className={scope === "session" ? "active" : ""} onClick={() => onScopeChange("session")} disabled={!hasSession}>
             Current Session
-          </button>
+          </Button>
           <select value={statusFilter} onChange={(event) => onStatusChange(event.target.value)} aria-label="Memory status filter">
             <option value="active">Active</option>
             <option value="pending_confirm">Pending</option>
@@ -3926,9 +3844,9 @@ function MemoryModal({
               <article key={item.id} className="memory-item">
               {editingId === item.id ? (
                 <div className="memory-editor">
-                  <textarea value={draftContent} onChange={(event) => setDraftContent(event.target.value)} aria-label="Memory content" />
+                  <Textarea value={draftContent} onChange={(event) => setDraftContent(event.target.value)} aria-label="Memory content" />
                   <div className="memory-editor-row">
-                    <input value={draftNamespace} onChange={(event) => setDraftNamespace(event.target.value)} placeholder="namespace" aria-label="Memory namespace" />
+                    <Input value={draftNamespace} onChange={(event) => setDraftNamespace(event.target.value)} placeholder="namespace" aria-label="Memory namespace" />
                     <select value={draftCategory} onChange={(event) => setDraftCategory(event.target.value)} aria-label="Memory category">
                       <option value="fact">Fact</option>
                       <option value="preference">Preference</option>
@@ -3941,11 +3859,11 @@ function MemoryModal({
                       <option value="session_only">Session only</option>
                       <option value="shared">Shared</option>
                     </select>
-                    <input value={draftTags} onChange={(event) => setDraftTags(event.target.value)} placeholder="tags, comma separated" aria-label="Memory tags" />
+                    <Input value={draftTags} onChange={(event) => setDraftTags(event.target.value)} placeholder="tags, comma separated" aria-label="Memory tags" />
                   </div>
                   <div className="memory-editor-actions">
-                    <button type="button" onClick={cancelEdit}>Cancel</button>
-                    <button type="button" className="primary" onClick={() => saveEdit(item)}>Save</button>
+                    <Button type="button" onClick={cancelEdit}>Cancel</Button>
+                    <Button type="button" className="primary" onClick={() => saveEdit(item)}>Save</Button>
                   </div>
                 </div>
               ) : (
@@ -3973,29 +3891,29 @@ function MemoryModal({
                   {!!item.conflict_ids?.length && <small>Conflicts: {item.conflict_ids.join(", ")}</small>}
                   {(item.status === "pending_confirm" || item.status === "conflicted") && (
                     <div className="memory-resolution-actions" aria-label="Resolve memory conflict">
-                      <button type="button" onClick={() => onResolve(item, "accept")}>Accept</button>
-                      <button type="button" onClick={() => onResolve(item, "keep_both")}>Keep both</button>
-                      <button type="button" className="danger" onClick={() => onResolve(item, "reject")}>Reject</button>
+                      <Button type="button" onClick={() => onResolve(item, "accept")}>Accept</Button>
+                      <Button type="button" onClick={() => onResolve(item, "keep_both")}>Keep both</Button>
+                      <Button type="button" className="danger" onClick={() => onResolve(item, "reject")}>Reject</Button>
                     </div>
                   )}
                   <div className="memory-feedback-actions" aria-label="Memory feedback">
-                    <button className="icon ghost" onClick={() => onFeedback(item, "important")} title="Mark memory as important" aria-label="Mark memory as important">
+                    <Button className="icon ghost" onClick={() => onFeedback(item, "important")} title="Mark memory as important" aria-label="Mark memory as important">
                       <Star size={15} />
-                    </button>
-                    <button className="icon ghost" onClick={() => onFeedback(item, "not_relevant")} title="Mark memory as less relevant" aria-label="Mark memory as less relevant">
+                    </Button>
+                    <Button className="icon ghost" onClick={() => onFeedback(item, "not_relevant")} title="Mark memory as less relevant" aria-label="Mark memory as less relevant">
                       <Archive size={15} />
-                    </button>
-                    <button className="icon ghost danger" onClick={() => onFeedback(item, "incorrect")} title="Mark memory as incorrect" aria-label="Mark memory as incorrect">
+                    </Button>
+                    <Button className="icon ghost danger" onClick={() => onFeedback(item, "incorrect")} title="Mark memory as incorrect" aria-label="Mark memory as incorrect">
                       <X size={15} />
-                    </button>
+                    </Button>
                   </div>
                   <div className="memory-item-actions">
-                    <button className="icon ghost" onClick={() => startEdit(item)} title="Edit memory item" aria-label="Edit memory item">
+                    <Button className="icon ghost" onClick={() => startEdit(item)} title="Edit memory item" aria-label="Edit memory item">
                       <FileText size={16} />
-                    </button>
-                    <button className="icon ghost danger" onClick={() => onDelete(item)} title="Delete memory item" aria-label="Delete memory item">
+                    </Button>
+                    <Button className="icon ghost danger" onClick={() => onDelete(item)} title="Delete memory item" aria-label="Delete memory item">
                       <Trash2 size={16} />
-                    </button>
+                    </Button>
                   </div>
                 </>
               )}
@@ -4003,8 +3921,8 @@ function MemoryModal({
             ))}
           </div>
         </div>
-      </section>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -4017,31 +3935,24 @@ function ConfirmModal({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const modalRef = useFocusTrap<HTMLElement>(true, onCancel);
-
   return (
-    <div className="modal-backdrop confirm-backdrop" onClick={onCancel}>
-      <section
-        className="confirm-modal"
-        ref={modalRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="confirm-title"
-        aria-describedby={dialog.detail ? "confirm-message confirm-detail" : "confirm-message"}
-        tabIndex={-1}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <h2 id="confirm-title">{dialog.title}</h2>
-        <p id="confirm-message">{dialog.message}</p>
-        {dialog.detail && <small id="confirm-detail">{dialog.detail}</small>}
-        <footer>
-          <button type="button" onClick={onCancel}>{dialog.cancelLabel || "Cancel"}</button>
-          <button type="button" className={dialog.danger ? "danger-action" : "primary"} onClick={onConfirm}>
+    <Dialog open onOpenChange={(open) => {
+      if (!open) onCancel();
+    }}>
+      <DialogContent className="confirm-modal shadcn-confirm" hideClose>
+        <DialogHeader>
+          <DialogTitle>{dialog.title}</DialogTitle>
+          <DialogDescription>{dialog.message}</DialogDescription>
+          {dialog.detail && <small>{dialog.detail}</small>}
+        </DialogHeader>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onCancel}>{dialog.cancelLabel || "Cancel"}</Button>
+          <Button type="button" variant={dialog.danger ? "destructive" : "primary"} onClick={onConfirm}>
             {dialog.confirmLabel || "OK"}
-          </button>
-        </footer>
-      </section>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

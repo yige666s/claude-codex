@@ -1,3 +1,5 @@
+@import "../components/ui/shadcn.css";
+
 :root {
   color-scheme: light;
   --bg: #f4f6f7;
@@ -338,15 +340,6 @@ label.composer-upload {
   display: flex;
   gap: 8px;
   border-bottom: 1px solid var(--line);
-}
-.global-search-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  display: grid;
-  place-items: center;
-  padding: 28px;
-  background: rgba(0, 0, 0, 0.54);
 }
 .global-search-modal {
   width: min(860px, calc(100vw - 42px));
@@ -1367,6 +1360,7 @@ label.composer-upload {
 }
 .tab-count {
   min-width: 18px;
+  min-height: 18px;
   height: 18px;
   padding: 0 5px;
   border-radius: 999px;
@@ -1572,11 +1566,6 @@ label.composer-upload {
   background: rgba(15, 23, 42, 0.35);
   display: grid;
   place-items: center;
-}
-.settings-backdrop {
-  z-index: 35;
-  background: rgba(0, 0, 0, 0.54);
-  backdrop-filter: blur(2px);
 }
 .settings-modal {
   width: min(980px, calc(100vw - 48px));
@@ -2404,9 +2393,6 @@ label.composer-upload {
   font-size: 14px;
 }
 @media (max-width: 760px) {
-  .settings-backdrop {
-    padding: 0;
-  }
   .settings-modal {
     width: 100vw;
     height: 100vh;
@@ -2976,11 +2962,6 @@ label.composer-upload {
   min-height: 36px;
   padding: 0 14px;
 }
-.confirm-backdrop {
-  z-index: 40;
-  background: rgba(15, 23, 42, 0.52);
-  backdrop-filter: blur(2px);
-}
 .confirm-modal {
   width: min(480px, calc(100vw - 40px));
   padding: 24px;
@@ -3027,13 +3008,21 @@ label.composer-upload {
 .confirm-modal button:hover {
   background: #414141;
 }
-.confirm-modal .danger-action {
-  border-color: #f5a3a3;
-  background: #ef2f2f;
-  color: #fff;
+.shadcn-confirm {
+  padding-top: 0;
 }
-.confirm-modal .danger-action:hover {
-  background: #d82828;
+.shadcn-confirm .ui-dialog-description {
+  margin: 0;
+  color: #f3f4f6;
+  font-size: 16px;
+  line-height: 1.55;
+}
+.shadcn-confirm .ui-dialog-footer {
+  margin-top: 0;
+}
+.shadcn-confirm .ui-button {
+  min-width: 76px;
+  border-radius: 999px;
 }
 .mobile-only { display: none; }
 

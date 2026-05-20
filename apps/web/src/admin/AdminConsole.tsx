@@ -23,6 +23,12 @@ import {
   X
 } from "lucide-react";
 import { ApiClient, ApiError } from "../api/client";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Textarea } from "../components/ui/textarea";
+import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { AdminSectionNotice, AdminStatusBadge } from "./ui";
 import type {
   AdminHealthStatus,
   AdminSkill,
@@ -86,20 +92,21 @@ function AdminTabs<T extends string>({
   compact?: boolean;
 }) {
   return (
-    <nav className={`admin-tabs${compact ? " compact" : ""}`} aria-label={label}>
-      {tabs.map((tab) => (
-        <button
-          key={tab.id}
-          type="button"
-          className={tab.id === active ? "active" : ""}
-          onClick={() => onChange(tab.id)}
-        >
-          {tab.icon}
-          <span>{tab.label}</span>
-          {typeof tab.count === "number" && <small>{tab.count}</small>}
-        </button>
-      ))}
-    </nav>
+    <Tabs value={active} onValueChange={(value) => onChange(value as T)}>
+      <TabsList className={`admin-tabs${compact ? " compact" : ""}`} aria-label={label}>
+        {tabs.map((tab) => (
+          <TabsTrigger
+            key={tab.id}
+            value={tab.id}
+            className={tab.id === active ? "active" : ""}
+          >
+            {tab.icon}
+            <span>{tab.label}</span>
+            {typeof tab.count === "number" && <Badge variant={tab.id === active ? "default" : "secondary"}>{tab.count}</Badge>}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
   );
 }
 
@@ -263,7 +270,7 @@ function AdminConsole({
         <div className="admin-token-box">
           <label>
             Admin token
-            <input
+            <Input
               type="password"
               value={adminToken}
               onChange={(event) => onAdminTokenChange(event.currentTarget.value)}
@@ -271,13 +278,13 @@ function AdminConsole({
               autoComplete="off"
             />
           </label>
-          <button className="primary wide" onClick={loadSkills} disabled={loading || !token || adminSection !== "skills"}>
+          <Button className="wide" variant="primary" onClick={loadSkills} disabled={loading || !token || adminSection !== "skills"}>
             {loading ? "Loading" : "Load skill data"}
-          </button>
+          </Button>
         </div>
         <div className="admin-sidebar-actions">
-          <button onClick={onExit}><MessageCircle size={16} /> Back to app</button>
-          <button onClick={onLogout}><LogOut size={16} /> Log out</button>
+          <Button variant="outline" onClick={onExit}><MessageCircle size={16} /> Back to app</Button>
+          <Button variant="outline" onClick={onLogout}><LogOut size={16} /> Log out</Button>
         </div>
       </aside>
       <section className="admin-main">
@@ -287,21 +294,23 @@ function AdminConsole({
             <p>{selectedAdminSection.description}</p>
           </div>
           {adminSection === "skills" && (
-            <button className="skill-action" onClick={refreshSelected} disabled={loading || !token}>
+            <Button variant="outline" className="skill-action" onClick={refreshSelected} disabled={loading || !token}>
               <RefreshCw size={16} />
               <span>Refresh</span>
-            </button>
+            </Button>
           )}
         </header>
         <AdminTabs tabs={adminSections} active={adminSection} onChange={setAdminSection} label="Admin sections" />
         {(error || notice) && (
-          <div className={`admin-banner ${error ? "error" : "ok"}`} role="status">
-            {error ? <AlertCircle size={16} /> : <ShieldCheck size={16} />}
-            <span>{error || notice}</span>
-            <button className="icon ghost" onClick={() => { setError(""); setNotice(""); }} title="Dismiss" aria-label="Dismiss">
-              <X size={14} />
-            </button>
-          </div>
+          <AdminSectionNotice
+            tone={error ? "destructive" : "success"}
+            onDismiss={() => {
+              setError("");
+              setNotice("");
+            }}
+          >
+            {error || notice}
+          </AdminSectionNotice>
         )}
         {!token ? (
           <div className="admin-empty">
@@ -325,7 +334,7 @@ function AdminConsole({
               <div className="admin-list-tools">
                 <div className="admin-search">
                   <Search size={16} />
-                  <input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search skills" aria-label="Search admin skills" />
+                  <Input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search skills" aria-label="Search admin skills" />
                 </div>
                 <select value={statusFilter} onChange={(event) => setStatusFilter(event.currentTarget.value)} aria-label="Filter skill status">
                   <option value="all">All status</option>
@@ -338,7 +347,7 @@ function AdminConsole({
               </div>
               <div className="admin-skill-list">
                 {filteredSkills.map((skill) => (
-                  <button
+                  <Button
                     key={skill.name}
                     className={`admin-skill-row ${skill.name === selectedName ? "active" : ""}`}
                     onClick={() => setSelectedName(skill.name)}
@@ -349,7 +358,7 @@ function AdminConsole({
                       <small>/{skill.name}</small>
                     </span>
                     <StatusBadge value={skill.status || "unknown"} />
-                  </button>
+                  </Button>
                 ))}
                 {!filteredSkills.length && <div className="empty-small">{loading ? "Loading..." : "No skills"}</div>}
               </div>
@@ -375,26 +384,26 @@ function AdminConsole({
                   </div>
                   <p className="admin-description">{selectedSkill.description || "No description available."}</p>
                   <div className="admin-action-row">
-                    <button className="primary skill-action" onClick={() => changeSkillStatus("publish")} disabled={Boolean(actionBusy)}>
+                    <Button className="primary skill-action" onClick={() => changeSkillStatus("publish")} disabled={Boolean(actionBusy)}>
                       <PlayCircle size={16} />
                       <span>{actionBusy === "publish" ? "Publishing" : "Publish"}</span>
-                    </button>
-                    <button className="skill-action" onClick={() => changeSkillStatus("unpublish")} disabled={Boolean(actionBusy)}>
+                    </Button>
+                    <Button className="skill-action" onClick={() => changeSkillStatus("unpublish")} disabled={Boolean(actionBusy)}>
                       <Archive size={16} />
                       <span>{actionBusy === "unpublish" ? "Unpublishing" : "Unpublish"}</span>
-                    </button>
-                    <button className="skill-action danger-outline" onClick={() => changeSkillStatus("disable")} disabled={Boolean(actionBusy)}>
+                    </Button>
+                    <Button className="skill-action danger-outline" onClick={() => changeSkillStatus("disable")} disabled={Boolean(actionBusy)}>
                       <UserX size={16} />
                       <span>{actionBusy === "disable" ? "Disabling" : "Disable"}</span>
-                    </button>
-                    <button className="skill-action" onClick={() => setPolicyTarget(selectedSkill)}>
+                    </Button>
+                    <Button className="skill-action" onClick={() => setPolicyTarget(selectedSkill)}>
                       <ShieldCheck size={16} />
                       <span>Policy</span>
-                    </button>
-                    <button className="skill-action" onClick={() => loadSkillDetails(selectedSkill.name)} disabled={detailsLoading}>
+                    </Button>
+                    <Button className="skill-action" onClick={() => loadSkillDetails(selectedSkill.name)} disabled={detailsLoading}>
                       <RefreshCw size={16} />
                       <span>{detailsLoading ? "Loading" : "Review"}</span>
-                    </button>
+                    </Button>
                   </div>
                   <div className="admin-metrics">
                     <AdminMetric label="Runs" value={String(summary?.total ?? 0)} />
@@ -576,7 +585,7 @@ function AdminUsersPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
         <div className="admin-list-tools">
           <div className="admin-search">
             <Search size={16} />
-            <input
+            <Input
               value={query}
               onChange={(event) => setQuery(event.currentTarget.value)}
               onKeyDown={(event) => {
@@ -593,15 +602,15 @@ function AdminUsersPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
               <option value="disabled">Disabled</option>
               <option value="banned">Banned</option>
             </select>
-            <button className="skill-action" onClick={loadUsers} disabled={loading}>
+            <Button className="skill-action" onClick={loadUsers} disabled={loading}>
               <RefreshCw size={15} />
               <span>{loading ? "Loading" : "Search"}</span>
-            </button>
+            </Button>
           </div>
         </div>
         <div className="admin-skill-list">
           {users.map((user) => (
-            <button
+            <Button
               key={user.id}
               className={`admin-skill-row ${user.id === selectedID ? "active" : ""}`}
               onClick={() => setSelectedID(user.id)}
@@ -612,7 +621,7 @@ function AdminUsersPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
                 <small>{user.email}</small>
               </span>
               <StatusBadge value={user.status || "unknown"} />
-            </button>
+            </Button>
           ))}
           {!users.length && <div className="empty-small">{loading ? "Loading..." : "No users"}</div>}
         </div>
@@ -622,9 +631,9 @@ function AdminUsersPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
           <div className={`admin-inline-banner ${error ? "error" : "ok"}`} role="status">
             {error ? <AlertCircle size={16} /> : <ShieldCheck size={16} />}
             <span>{error || notice}</span>
-            <button className="icon ghost" onClick={() => { setError(""); setNotice(""); }} title="Dismiss" aria-label="Dismiss">
+            <Button className="icon ghost" onClick={() => { setError(""); setNotice(""); }} title="Dismiss" aria-label="Dismiss">
               <X size={14} />
-            </button>
+            </Button>
           </div>
         )}
         {!selectedUser ? (
@@ -646,18 +655,18 @@ function AdminUsersPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
               <StatusBadge value={selectedUser.status || "unknown"} />
             </div>
             <div className="admin-action-row">
-              <button className="primary skill-action" onClick={() => runAction("reactivate")} disabled={Boolean(actionBusy) || selectedUser.status === "active"}>
+              <Button className="primary skill-action" onClick={() => runAction("reactivate")} disabled={Boolean(actionBusy) || selectedUser.status === "active"}>
                 <PlayCircle size={16} />
                 <span>{actionBusy === "reactivate" ? "Reactivating" : "Reactivate"}</span>
-              </button>
-              <button className="skill-action" onClick={() => runAction("disable")} disabled={Boolean(actionBusy) || selectedUser.status === "disabled"}>
+              </Button>
+              <Button className="skill-action" onClick={() => runAction("disable")} disabled={Boolean(actionBusy) || selectedUser.status === "disabled"}>
                 <UserX size={16} />
                 <span>{actionBusy === "disable" ? "Disabling" : "Disable"}</span>
-              </button>
-              <button className="skill-action danger-outline" onClick={() => runAction("ban")} disabled={Boolean(actionBusy) || selectedUser.status === "banned"}>
+              </Button>
+              <Button className="skill-action danger-outline" onClick={() => runAction("ban")} disabled={Boolean(actionBusy) || selectedUser.status === "banned"}>
                 <UserX size={16} />
                 <span>{actionBusy === "ban" ? "Banning" : "Ban"}</span>
-              </button>
+              </Button>
               <select
                 className="admin-status-select"
                 value={selectedUser.status}
@@ -803,11 +812,11 @@ function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string
         <div className="admin-list-tools">
           <label className="admin-field">
             <span>User ID</span>
-            <input value={userID} onChange={(event) => setUserID(event.currentTarget.value)} placeholder="user_id" aria-label="Troubleshooting user ID" />
+            <Input value={userID} onChange={(event) => setUserID(event.currentTarget.value)} placeholder="user_id" aria-label="Troubleshooting user ID" />
           </label>
           <div className="admin-search">
             <Search size={16} />
-            <input
+            <Input
               value={query}
               onChange={(event) => setQuery(event.currentTarget.value)}
               onKeyDown={(event) => {
@@ -832,20 +841,20 @@ function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string
               <option value="artifact">Artifacts</option>
             </select>
           </div>
-          <button className="primary wide" onClick={() => loadOps()} disabled={loading || !token || !cleanUserID}>
+          <Button className="primary wide" onClick={() => loadOps()} disabled={loading || !token || !cleanUserID}>
             {loading ? "Loading" : "Load troubleshooting data"}
-          </button>
+          </Button>
         </div>
         <div className="admin-skill-list">
           {sessions.map((session) => (
-            <button key={session.id} className={`admin-skill-row ${session.id === selectedSessionID ? "active" : ""}`} onClick={() => openSession(session.id)}>
+            <Button key={session.id} className={`admin-skill-row ${session.id === selectedSessionID ? "active" : ""}`} onClick={() => openSession(session.id)}>
               <MessageCircle size={18} />
               <span>
                 <strong>{sessionTitle(session)}</strong>
                 <small>{session.id}</small>
               </span>
               <small>{(session.messages || []).filter((message) => !message.hidden).length}</small>
-            </button>
+            </Button>
           ))}
           {!sessions.length && <div className="empty-small">{loading ? "Loading..." : "No sessions"}</div>}
         </div>
@@ -855,9 +864,9 @@ function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string
           <div className={`admin-inline-banner ${error ? "error" : "ok"}`} role="status">
             {error ? <AlertCircle size={16} /> : <ShieldCheck size={16} />}
             <span>{error || notice}</span>
-            <button className="icon ghost" onClick={() => { setError(""); setNotice(""); }} title="Dismiss" aria-label="Dismiss">
+            <Button className="icon ghost" onClick={() => { setError(""); setNotice(""); }} title="Dismiss" aria-label="Dismiss">
               <X size={14} />
-            </button>
+            </Button>
           </div>
         )}
         {!cleanUserID ? (
@@ -873,10 +882,10 @@ function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string
                 <h2>{selectedSession ? sessionTitle(selectedSession) : "User scope"}</h2>
                 <small>{selectedSessionID || cleanUserID}</small>
               </div>
-              <button className="skill-action" onClick={() => loadOps()} disabled={loading}>
+              <Button className="skill-action" onClick={() => loadOps()} disabled={loading}>
                 <RefreshCw size={16} />
                 <span>{loading ? "Loading" : "Refresh"}</span>
-              </button>
+              </Button>
             </div>
             <div className="admin-metrics">
               <AdminMetric label="Sessions" value={String(sessions.length)} />
@@ -904,21 +913,21 @@ function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string
                 </div>
                 <div className="admin-table">
                   {jobs.slice(0, 12).map((job) => (
-                    <button key={job.id} className={`admin-table-row button-row ${job.id === selectedJobID ? "active" : ""}`} onClick={() => openJob(job.id)}>
+                    <Button key={job.id} className={`admin-table-row button-row ${job.id === selectedJobID ? "active" : ""}`} onClick={() => openJob(job.id)}>
                       <StatusBadge value={job.status} />
                       <span>{job.type || "chat"}</span>
                       <small>{job.id}</small>
                       {job.error && <em>{job.error}</em>}
-                    </button>
+                    </Button>
                   ))}
                   {!jobs.length && <p className="muted-text">No jobs found.</p>}
                 </div>
                 {selectedJob && (
                   <div className="admin-action-row">
-                    <button className="skill-action danger-outline" onClick={cancelJob} disabled={Boolean(actionBusy) || terminalJobs.has(selectedJob.status)}>
+                    <Button className="skill-action danger-outline" onClick={cancelJob} disabled={Boolean(actionBusy) || terminalJobs.has(selectedJob.status)}>
                       <Square size={15} />
                       <span>{actionBusy === "cancel" ? "Cancelling" : "Cancel job"}</span>
-                    </button>
+                    </Button>
                   </div>
                 )}
               </section>}
@@ -1086,11 +1095,11 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
         <div className="admin-list-tools">
           <label className="admin-field">
             <span>User ID filter</span>
-            <input value={userID} onChange={(event) => setUserID(event.currentTarget.value)} placeholder="optional user_id" aria-label="Audit user ID filter" />
+            <Input value={userID} onChange={(event) => setUserID(event.currentTarget.value)} placeholder="optional user_id" aria-label="Audit user ID filter" />
           </label>
           <div className="admin-search">
             <Search size={16} />
-            <input
+            <Input
               value={query}
               onChange={(event) => setQuery(event.currentTarget.value)}
               onKeyDown={(event) => {
@@ -1129,20 +1138,20 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
             <option value="dismissed">Dismissed</option>
             <option value="all">All reviews</option>
           </select>
-          <button className="primary wide" onClick={loadAudit} disabled={loading || !token}>
+          <Button className="primary wide" onClick={loadAudit} disabled={loading || !token}>
             {loading ? "Loading" : "Load audit logs"}
-          </button>
+          </Button>
         </div>
         <div className="admin-skill-list">
           {records.map((record) => (
-            <button key={record.id} className={`admin-skill-row ${record.id === selected?.id ? "active" : ""}`} onClick={() => setSelectedID(record.id)}>
+            <Button key={record.id} className={`admin-skill-row ${record.id === selected?.id ? "active" : ""}`} onClick={() => setSelectedID(record.id)}>
               <FileText size={18} />
               <span>
                 <strong>{record.event}</strong>
                 <small>{auditRecordSummary(record)}</small>
               </span>
               <StatusBadge value={record.risk_level || "low"} />
-            </button>
+            </Button>
           ))}
           {!records.length && <div className="empty-small">{loading ? "Loading..." : "No audit events"}</div>}
         </div>
@@ -1152,9 +1161,9 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
           <div className={`admin-inline-banner ${error ? "error" : "ok"}`} role="status">
             {error ? <AlertCircle size={16} /> : <ShieldCheck size={16} />}
             <span>{error || notice}</span>
-            <button className="icon ghost" onClick={() => { setError(""); setNotice(""); }} title="Dismiss" aria-label="Dismiss">
+            <Button className="icon ghost" onClick={() => { setError(""); setNotice(""); }} title="Dismiss" aria-label="Dismiss">
               <X size={14} />
-            </button>
+            </Button>
           </div>
         )}
         <div className="admin-skill-head">
@@ -1162,10 +1171,10 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
             <h2>Risk overview</h2>
             <small>{audit?.since ? `Since ${formatTime(audit.since)}` : "No audit window loaded"}</small>
           </div>
-          <button className="skill-action" onClick={loadAudit} disabled={loading || !token}>
+          <Button className="skill-action" onClick={loadAudit} disabled={loading || !token}>
             <RefreshCw size={16} />
             <span>{loading ? "Loading" : "Refresh"}</span>
-          </button>
+          </Button>
         </div>
         <div className="admin-metrics">
           <AdminMetric label="Events" value={String(audit?.total ?? 0)} />
@@ -1190,9 +1199,9 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
                     <small>{item.reason} · {item.user_id || item.ip_address || "anonymous"}</small>
                   </span>
                   <small>{formatTime(item.updated_at)}</small>
-                  <button className="small ghost" disabled={reviewBusy === item.id} onClick={() => updateReview(item.id, "in_review")}>Review</button>
-                  <button className="small ghost" disabled={reviewBusy === item.id} onClick={() => updateReview(item.id, "resolved", "resolved by admin")}>Resolve</button>
-                  <button className="small danger" disabled={reviewBusy === item.id} onClick={() => updateReview(item.id, "dismissed", "dismissed by admin")}>Dismiss</button>
+                  <Button className="small ghost" disabled={reviewBusy === item.id} onClick={() => updateReview(item.id, "in_review")}>Review</Button>
+                  <Button className="small ghost" disabled={reviewBusy === item.id} onClick={() => updateReview(item.id, "resolved", "resolved by admin")}>Resolve</Button>
+                  <Button className="small danger" disabled={reviewBusy === item.id} onClick={() => updateReview(item.id, "dismissed", "dismissed by admin")}>Dismiss</Button>
                 </div>
               ))}
               {!reviewItems.length && <p className="muted-text">No manual review items in this filter.</p>}
@@ -1204,11 +1213,11 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
             </div>
             <div className="admin-table">
               {(audit?.by_event || []).slice(0, 12).map((group) => (
-                <button key={group.key} className="admin-table-row button-row" onClick={() => setEventFilter(group.key)}>
+                <Button key={group.key} className="admin-table-row button-row" onClick={() => setEventFilter(group.key)}>
                   <StatusBadge value={auditRiskForEventName(group.key)} />
                   <span>{group.key}</span>
                   <small>{group.count} events</small>
-                </button>
+                </Button>
               ))}
               {!audit?.by_event?.length && <p className="muted-text">No events in this window.</p>}
             </div>
@@ -1219,11 +1228,11 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
             </div>
             <div className="admin-table">
               {(risk?.scores || []).slice(0, 10).map((score) => (
-                <button key={`${score.subject_type}:${score.subject_id}`} className="admin-table-row button-row" onClick={() => score.subject_type === "user" ? setUserID(score.subject_id) : undefined}>
+                <Button key={`${score.subject_type}:${score.subject_id}`} className="admin-table-row button-row" onClick={() => score.subject_type === "user" ? setUserID(score.subject_id) : undefined}>
                   <StatusBadge value={score.risk_level || "low"} />
                   <span>{score.subject_type}:{score.subject_id}</span>
                   <small>{score.score} score · {score.event_count} events</small>
-                </button>
+                </Button>
               ))}
               {!risk?.scores?.length && <p className="muted-text">No accumulated risk scores.</p>}
             </div>
@@ -1260,12 +1269,12 @@ function AdminAuditPanel({ api, adminToken }: { api: ApiClient; adminToken: stri
             </div>
             <div className="admin-table">
               {riskEvents.slice(0, 12).map((event) => (
-                <button key={event.id} className={`admin-table-row button-row ${event.id === selectedRisk?.id ? "active" : ""}`} onClick={() => setSelectedRiskID(event.id)}>
+                <Button key={event.id} className={`admin-table-row button-row ${event.id === selectedRisk?.id ? "active" : ""}`} onClick={() => setSelectedRiskID(event.id)}>
                   <StatusBadge value={event.risk_level || "low"} />
                   <span>{event.operation}</span>
                   <small>{riskEventSummary(event)}</small>
                   {event.reason && <em>{event.reason}</em>}
-                </button>
+                </Button>
               ))}
               {!riskEvents.length && <p className="muted-text">No risk events in the current filter.</p>}
             </div>
@@ -1538,7 +1547,7 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
         <div className="admin-list-tools">
           <label className="admin-field">
             <span>User ID</span>
-            <input value={userID} onChange={(event) => setUserID(event.currentTarget.value)} placeholder="required for new eval" aria-label="Evaluation user ID" />
+            <Input value={userID} onChange={(event) => setUserID(event.currentTarget.value)} placeholder="required for new eval" aria-label="Evaluation user ID" />
           </label>
           <div className="admin-filter-row">
             <select value={subjectType} onChange={(event) => setSubjectType(event.currentTarget.value)} aria-label="Evaluation subject">
@@ -1570,50 +1579,50 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
           <div className="admin-filter-row">
             <label className="admin-field">
               <span>Session ID</span>
-              <input value={sessionID} onChange={(event) => setSessionID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation session ID" />
+              <Input value={sessionID} onChange={(event) => setSessionID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation session ID" />
             </label>
             <label className="admin-field">
               <span>Job ID</span>
-              <input value={jobID} onChange={(event) => setJobID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation job ID" />
+              <Input value={jobID} onChange={(event) => setJobID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation job ID" />
             </label>
           </div>
           <label className="admin-field">
             <span>Skill / model</span>
-            <input value={skillName} onChange={(event) => setSkillName(event.currentTarget.value)} placeholder="skill name" aria-label="Evaluation skill name" />
+            <Input value={skillName} onChange={(event) => setSkillName(event.currentTarget.value)} placeholder="skill name" aria-label="Evaluation skill name" />
           </label>
           <div className="admin-filter-row">
-            <input value={provider} onChange={(event) => setProvider(event.currentTarget.value)} placeholder="provider" aria-label="Evaluation provider" />
-            <input value={model} onChange={(event) => setModel(event.currentTarget.value)} placeholder="model" aria-label="Evaluation model" />
+            <Input value={provider} onChange={(event) => setProvider(event.currentTarget.value)} placeholder="provider" aria-label="Evaluation provider" />
+            <Input value={model} onChange={(event) => setModel(event.currentTarget.value)} placeholder="model" aria-label="Evaluation model" />
           </div>
           <div className="admin-action-row compact evaluation-actions">
-            <button className="primary skill-action" onClick={createRun} disabled={running || !token || !cleanUserID}>
+            <Button className="primary skill-action" onClick={createRun} disabled={running || !token || !cleanUserID}>
               <PlayCircle size={16} />
               <span>{running ? "Running" : "Run eval"}</span>
-            </button>
-            <button className="skill-action" onClick={() => loadEvaluation()} disabled={loading || !token}>
+            </Button>
+            <Button className="skill-action" onClick={() => loadEvaluation()} disabled={loading || !token}>
               <RefreshCw size={16} />
               <span>{loading ? "Loading" : "Load"}</span>
-            </button>
-            <button className="skill-action" onClick={exportResultsCSV} disabled={exportBusy === "csv" || !token}>
+            </Button>
+            <Button className="skill-action" onClick={exportResultsCSV} disabled={exportBusy === "csv" || !token}>
               <Download size={16} />
               <span>{exportBusy === "csv" ? "Exporting" : "CSV"}</span>
-            </button>
-            <button className="skill-action" onClick={exportSummaryMarkdown} disabled={exportBusy === "markdown" || !token}>
+            </Button>
+            <Button className="skill-action" onClick={exportSummaryMarkdown} disabled={exportBusy === "markdown" || !token}>
               <FileText size={16} />
               <span>{exportBusy === "markdown" ? "Exporting" : "Report"}</span>
-            </button>
+            </Button>
           </div>
         </div>
         <div className="admin-skill-list">
           {runs.map((run) => (
-            <button key={run.id} className={`admin-skill-row ${run.id === selectedRun?.id ? "active" : ""}`} onClick={() => openRun(run.id)}>
+            <Button key={run.id} className={`admin-skill-row ${run.id === selectedRun?.id ? "active" : ""}`} onClick={() => openRun(run.id)}>
               <Activity size={18} />
               <span>
                 <strong>{run.name}</strong>
                 <small>{run.id} · {formatTime(run.completed_at || run.started_at)}</small>
               </span>
               <StatusBadge value={run.status} />
-            </button>
+            </Button>
           ))}
           {!runs.length && <div className="empty-small">{loading ? "Loading..." : "No eval runs"}</div>}
         </div>
@@ -1623,9 +1632,9 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
           <div className={`admin-inline-banner ${error ? "error" : "ok"}`} role="status">
             {error ? <AlertCircle size={16} /> : <ShieldCheck size={16} />}
             <span>{error || notice}</span>
-            <button className="icon ghost" onClick={() => { setError(""); setNotice(""); }} title="Dismiss" aria-label="Dismiss">
+            <Button className="icon ghost" onClick={() => { setError(""); setNotice(""); }} title="Dismiss" aria-label="Dismiss">
               <X size={14} />
-            </button>
+            </Button>
           </div>
         )}
         <div className="admin-skill-head">
@@ -1662,7 +1671,7 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
             </div>
             <div className="admin-table">
               {results.slice(0, 24).map((result) => (
-                <button key={result.id} className={`admin-table-row button-row ${result.id === selectedResult?.id ? "active" : ""}`} onClick={() => setSelectedResultID(result.id)}>
+                <Button key={result.id} className={`admin-table-row button-row ${result.id === selectedResult?.id ? "active" : ""}`} onClick={() => setSelectedResultID(result.id)}>
                   <StatusBadge value={result.status} />
                   <span>
                     <strong>{result.subject_type}:{result.subject_id}</strong>
@@ -1670,7 +1679,7 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
                   </span>
                   <small>{formatNumber(Math.round((result.score || 0) * 100))}</small>
                   {(result.findings || []).slice(0, 2).map((finding) => <em key={`${result.id}-${finding.code}`}>{finding.code}: {finding.message}</em>)}
-                </button>
+                </Button>
               ))}
               {!results.length && <p className="muted-text">No results in this filter.</p>}
             </div>
@@ -1720,8 +1729,8 @@ function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken:
                     <small>{review.note || "No note"}</small>
                   </span>
                   <small>{formatTime(review.updated_at)}</small>
-                  <button className="small ghost" disabled={reviewBusy === review.id} onClick={() => updateReview(review, "passed")}>Pass</button>
-                  <button className="small danger" disabled={reviewBusy === review.id} onClick={() => updateReview(review, "ignored")}>Ignore</button>
+                  <Button className="small ghost" disabled={reviewBusy === review.id} onClick={() => updateReview(review, "passed")}>Pass</Button>
+                  <Button className="small danger" disabled={reviewBusy === review.id} onClick={() => updateReview(review, "ignored")}>Ignore</Button>
                 </div>
               ))}
               {!selectedResultReviews.length && <p className="muted-text">No review items for the selected result.</p>}
@@ -1882,7 +1891,7 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
         <div className="admin-list-tools">
           <label className="admin-field">
             <span>User ID filter</span>
-            <input value={userID} onChange={(event) => setUserID(event.currentTarget.value)} placeholder="optional user_id" aria-label="LLM usage user filter" />
+            <Input value={userID} onChange={(event) => setUserID(event.currentTarget.value)} placeholder="optional user_id" aria-label="LLM usage user filter" />
           </label>
           <div className="admin-filter-row">
             <select value={String(days)} onChange={(event) => setDays(Number(event.currentTarget.value))} aria-label="Usage time range">
@@ -1891,10 +1900,10 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
               <option value="30">Last 30d</option>
               <option value="90">Last 90d</option>
             </select>
-            <button className="skill-action" onClick={loadHealthCost} disabled={loading || !token}>
+            <Button className="skill-action" onClick={loadHealthCost} disabled={loading || !token}>
               <RefreshCw size={15} />
               <span>{loading ? "Loading" : "Refresh"}</span>
-            </button>
+            </Button>
           </div>
         </div>
         <div className="admin-skill-list">
@@ -1916,9 +1925,9 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
           <div className={`admin-inline-banner ${error ? "error" : "ok"}`} role="status">
             {error ? <AlertCircle size={16} /> : <ShieldCheck size={16} />}
             <span>{error || notice}</span>
-            <button className="icon ghost" onClick={() => { setError(""); setNotice(""); }} title="Dismiss" aria-label="Dismiss">
+            <Button className="icon ghost" onClick={() => { setError(""); setNotice(""); }} title="Dismiss" aria-label="Dismiss">
               <X size={14} />
-            </button>
+            </Button>
           </div>
         )}
         <div className="admin-skill-head">
@@ -1956,10 +1965,10 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
           {healthTab === "governance" && <section className="admin-card wide">
             <div className="admin-card-head">
               <h3>Governance config</h3>
-              <button className="skill-action" onClick={saveLLMConfig} disabled={configBusy || !token}>
+              <Button className="skill-action" onClick={saveLLMConfig} disabled={configBusy || !token}>
                 <Settings size={15} />
                 <span>{configBusy ? "Saving" : "Save"}</span>
-              </button>
+              </Button>
             </div>
             <div className="admin-config-grid">
               <label className="admin-field">
@@ -1973,51 +1982,51 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
               </label>
               <label className="admin-field">
                 <span>Vertex location</span>
-                <input value={modelOptionLocation(llm?.config, configDraft.model) || configDraft.vertex_location || ""} readOnly aria-label="Selected model Vertex location" />
+                <Input value={modelOptionLocation(llm?.config, configDraft.model) || configDraft.vertex_location || ""} readOnly aria-label="Selected model Vertex location" />
               </label>
               <label className="admin-field">
                 <span>Daily token quota</span>
-                <input inputMode="numeric" value={configDraft.daily_token_quota || ""} onChange={(event) => updateConfigDraft("daily_token_quota", event.currentTarget.value)} placeholder="0 disables" />
+                <Input inputMode="numeric" value={configDraft.daily_token_quota || ""} onChange={(event) => updateConfigDraft("daily_token_quota", event.currentTarget.value)} placeholder="0 disables" />
               </label>
               <label className="admin-field">
                 <span>Daily request quota</span>
-                <input inputMode="numeric" value={configDraft.daily_request_quota || ""} onChange={(event) => updateConfigDraft("daily_request_quota", event.currentTarget.value)} placeholder="0 disables" />
+                <Input inputMode="numeric" value={configDraft.daily_request_quota || ""} onChange={(event) => updateConfigDraft("daily_request_quota", event.currentTarget.value)} placeholder="0 disables" />
               </label>
               <label className="admin-field">
                 <span>Daily cost quota USD</span>
-                <input inputMode="decimal" value={configDraft.daily_cost_quota_usd || ""} onChange={(event) => updateConfigDraft("daily_cost_quota_usd", event.currentTarget.value)} placeholder="0 disables" />
+                <Input inputMode="decimal" value={configDraft.daily_cost_quota_usd || ""} onChange={(event) => updateConfigDraft("daily_cost_quota_usd", event.currentTarget.value)} placeholder="0 disables" />
               </label>
               <label className="admin-field">
                 <span>Max attempts</span>
-                <input inputMode="numeric" value={configDraft.max_attempts || ""} onChange={(event) => updateConfigDraft("max_attempts", event.currentTarget.value)} placeholder="1" />
+                <Input inputMode="numeric" value={configDraft.max_attempts || ""} onChange={(event) => updateConfigDraft("max_attempts", event.currentTarget.value)} placeholder="1" />
               </label>
               <label className="admin-field">
                 <span>Chat timeout ms</span>
-                <input inputMode="numeric" value={configDraft.chat_timeout_ms || ""} onChange={(event) => updateConfigDraft("chat_timeout_ms", event.currentTarget.value)} placeholder="60000" />
+                <Input inputMode="numeric" value={configDraft.chat_timeout_ms || ""} onChange={(event) => updateConfigDraft("chat_timeout_ms", event.currentTarget.value)} placeholder="60000" />
               </label>
               <label className="admin-field">
                 <span>Skill timeout ms</span>
-                <input inputMode="numeric" value={configDraft.skill_timeout_ms || ""} onChange={(event) => updateConfigDraft("skill_timeout_ms", event.currentTarget.value)} placeholder="90000" />
+                <Input inputMode="numeric" value={configDraft.skill_timeout_ms || ""} onChange={(event) => updateConfigDraft("skill_timeout_ms", event.currentTarget.value)} placeholder="90000" />
               </label>
               <label className="admin-field">
                 <span>Input cost / 1M</span>
-                <input inputMode="decimal" value={configDraft.input_cost_per_million || ""} onChange={(event) => updateConfigDraft("input_cost_per_million", event.currentTarget.value)} placeholder="0.30" />
+                <Input inputMode="decimal" value={configDraft.input_cost_per_million || ""} onChange={(event) => updateConfigDraft("input_cost_per_million", event.currentTarget.value)} placeholder="0.30" />
               </label>
               <label className="admin-field">
                 <span>Output cost / 1M</span>
-                <input inputMode="decimal" value={configDraft.output_cost_per_million || ""} onChange={(event) => updateConfigDraft("output_cost_per_million", event.currentTarget.value)} placeholder="2.50" />
+                <Input inputMode="decimal" value={configDraft.output_cost_per_million || ""} onChange={(event) => updateConfigDraft("output_cost_per_million", event.currentTarget.value)} placeholder="2.50" />
               </label>
               <label className="admin-field">
                 <span>Retry backoff ms</span>
-                <input inputMode="numeric" value={configDraft.retry_backoff_ms || ""} onChange={(event) => updateConfigDraft("retry_backoff_ms", event.currentTarget.value)} placeholder="300" />
+                <Input inputMode="numeric" value={configDraft.retry_backoff_ms || ""} onChange={(event) => updateConfigDraft("retry_backoff_ms", event.currentTarget.value)} placeholder="300" />
               </label>
               <label className="admin-field">
                 <span>Failure threshold</span>
-                <input inputMode="numeric" value={configDraft.failure_threshold || ""} onChange={(event) => updateConfigDraft("failure_threshold", event.currentTarget.value)} placeholder="3" />
+                <Input inputMode="numeric" value={configDraft.failure_threshold || ""} onChange={(event) => updateConfigDraft("failure_threshold", event.currentTarget.value)} placeholder="3" />
               </label>
               <label className="admin-field">
                 <span>Circuit cooldown sec</span>
-                <input inputMode="numeric" value={configDraft.circuit_cooldown_seconds || ""} onChange={(event) => updateConfigDraft("circuit_cooldown_seconds", event.currentTarget.value)} placeholder="60" />
+                <Input inputMode="numeric" value={configDraft.circuit_cooldown_seconds || ""} onChange={(event) => updateConfigDraft("circuit_cooldown_seconds", event.currentTarget.value)} placeholder="60" />
               </label>
             </div>
           </section>}
@@ -2067,30 +2076,30 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
             <div className="admin-quota-tools">
               <label className="admin-field">
                 <span>Refund requests</span>
-                <input inputMode="numeric" value={refundRequests} onChange={(event) => setRefundRequests(event.currentTarget.value)} placeholder="0" />
+                <Input inputMode="numeric" value={refundRequests} onChange={(event) => setRefundRequests(event.currentTarget.value)} placeholder="0" />
               </label>
               <label className="admin-field">
                 <span>Refund tokens</span>
-                <input inputMode="numeric" value={refundTokens} onChange={(event) => setRefundTokens(event.currentTarget.value)} placeholder="0" />
+                <Input inputMode="numeric" value={refundTokens} onChange={(event) => setRefundTokens(event.currentTarget.value)} placeholder="0" />
               </label>
               <label className="admin-field">
                 <span>Refund cost USD</span>
-                <input inputMode="decimal" value={refundCost} onChange={(event) => setRefundCost(event.currentTarget.value)} placeholder="0.00" />
+                <Input inputMode="decimal" value={refundCost} onChange={(event) => setRefundCost(event.currentTarget.value)} placeholder="0.00" />
               </label>
               <label className="admin-field">
                 <span>Reason</span>
-                <input value={quotaReason} onChange={(event) => setQuotaReason(event.currentTarget.value)} placeholder="support note" />
+                <Input value={quotaReason} onChange={(event) => setQuotaReason(event.currentTarget.value)} placeholder="support note" />
               </label>
             </div>
             <div className="admin-action-row">
-              <button className="skill-action" onClick={refundQuota} disabled={!cleanUserID || Boolean(quotaBusy)}>
+              <Button className="skill-action" onClick={refundQuota} disabled={!cleanUserID || Boolean(quotaBusy)}>
                 <Download size={15} />
                 <span>{quotaBusy === "refund" ? "Applying" : "Apply refund"}</span>
-              </button>
-              <button className="skill-action danger-outline" onClick={resetQuota} disabled={!cleanUserID || Boolean(quotaBusy)}>
+              </Button>
+              <Button className="skill-action danger-outline" onClick={resetQuota} disabled={!cleanUserID || Boolean(quotaBusy)}>
                 <RefreshCw size={15} />
                 <span>{quotaBusy === "reset" ? "Resetting" : "Reset daily quota"}</span>
-              </button>
+              </Button>
             </div>
             <div className="admin-table">
               {(quota?.recent_adjustments || []).slice(0, 8).map((adjustment) => (
@@ -2111,8 +2120,7 @@ function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; adminToken:
 }
 
 function StatusBadge({ value }: { value: string }) {
-  const normalized = value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
-  return <span className={`status-badge ${normalized}`}>{value}</span>;
+  return <AdminStatusBadge value={value} />;
 }
 
 function llmConfigDraftFromConfig(config: LLMGovernanceConfig): Record<string, string> {
@@ -2320,24 +2328,24 @@ function SkillPolicyModal({
               <small>{loadedSkill?.status ? `Registry status: ${loadedSkill.status}` : "Admin registry policy"}</small>
             </div>
           </div>
-          <button className="icon ghost" onClick={onClose} aria-label="Close skill policy" title="Close">
+          <Button className="icon ghost" onClick={onClose} aria-label="Close skill policy" title="Close">
             <X size={18} />
-          </button>
+          </Button>
         </header>
         <div className="skill-policy-body">
           <label className="policy-field policy-token">
             <span>Admin token</span>
-            <input
+            <Input
               type="password"
               value={adminToken}
               onChange={(event) => onAdminTokenChange(event.currentTarget.value)}
               placeholder="AGENT_API_ADMIN_TOKEN"
               autoComplete="off"
             />
-            <button type="button" className="skill-action" onClick={loadPolicy} disabled={loading}>
+            <Button type="button" className="skill-action" onClick={loadPolicy} disabled={loading}>
               {loading ? <RefreshCw size={15} /> : <ShieldCheck size={15} />}
               <span>{loading ? "Loading" : "Load"}</span>
-            </button>
+            </Button>
           </label>
           {error && <div className="policy-error"><AlertCircle size={15} /> {error}</div>}
           <section className="policy-section">
@@ -2348,7 +2356,7 @@ function SkillPolicyModal({
             <PolicyTextArea label="Artifact content types" value={draft.artifactContentTypes} onChange={(value) => updateDraft("artifactContentTypes", value)} placeholder={"text/markdown\napplication/vnd.openxmlformats-officedocument.wordprocessingml.document"} />
             <label className="policy-field">
               <span>Shell timeout</span>
-              <input value={draft.shellTimeout} onChange={(event) => updateDraft("shellTimeout", event.currentTarget.value)} placeholder="90s, 2m" />
+              <Input value={draft.shellTimeout} onChange={(event) => updateDraft("shellTimeout", event.currentTarget.value)} placeholder="90s, 2m" />
             </label>
           </section>
           <section className="policy-section">
@@ -2356,45 +2364,45 @@ function SkillPolicyModal({
             <div className="policy-grid">
               <label className="policy-field">
                 <span>Runner</span>
-                <input value={draft.sandboxRunner} onChange={(event) => updateDraft("sandboxRunner", event.currentTarget.value)} placeholder="docker" />
+                <Input value={draft.sandboxRunner} onChange={(event) => updateDraft("sandboxRunner", event.currentTarget.value)} placeholder="docker" />
               </label>
               <label className="policy-field">
                 <span>Image</span>
-                <input value={draft.sandboxImage} onChange={(event) => updateDraft("sandboxImage", event.currentTarget.value)} placeholder="python:3.12-slim" />
+                <Input value={draft.sandboxImage} onChange={(event) => updateDraft("sandboxImage", event.currentTarget.value)} placeholder="python:3.12-slim" />
               </label>
               <label className="policy-field">
                 <span>Network</span>
-                <input value={draft.sandboxNetwork} onChange={(event) => updateDraft("sandboxNetwork", event.currentTarget.value)} placeholder="none, bridge" />
+                <Input value={draft.sandboxNetwork} onChange={(event) => updateDraft("sandboxNetwork", event.currentTarget.value)} placeholder="none, bridge" />
               </label>
               <label className="policy-field">
                 <span>Memory</span>
-                <input value={draft.sandboxMemory} onChange={(event) => updateDraft("sandboxMemory", event.currentTarget.value)} placeholder="512m" />
+                <Input value={draft.sandboxMemory} onChange={(event) => updateDraft("sandboxMemory", event.currentTarget.value)} placeholder="512m" />
               </label>
               <label className="policy-field">
                 <span>CPUs</span>
-                <input value={draft.sandboxCpus} onChange={(event) => updateDraft("sandboxCpus", event.currentTarget.value)} placeholder="1" />
+                <Input value={draft.sandboxCpus} onChange={(event) => updateDraft("sandboxCpus", event.currentTarget.value)} placeholder="1" />
               </label>
               <label className="policy-field">
                 <span>Pids limit</span>
-                <input inputMode="numeric" value={draft.sandboxPidsLimit} onChange={(event) => updateDraft("sandboxPidsLimit", event.currentTarget.value)} placeholder="128" />
+                <Input inputMode="numeric" value={draft.sandboxPidsLimit} onChange={(event) => updateDraft("sandboxPidsLimit", event.currentTarget.value)} placeholder="128" />
               </label>
               <label className="policy-field">
                 <span>Tmpfs size</span>
-                <input value={draft.sandboxTmpfsSize} onChange={(event) => updateDraft("sandboxTmpfsSize", event.currentTarget.value)} placeholder="64m" />
+                <Input value={draft.sandboxTmpfsSize} onChange={(event) => updateDraft("sandboxTmpfsSize", event.currentTarget.value)} placeholder="64m" />
               </label>
               <label className="policy-field">
                 <span>Max output bytes</span>
-                <input inputMode="numeric" value={draft.sandboxMaxOutputBytes} onChange={(event) => updateDraft("sandboxMaxOutputBytes", event.currentTarget.value)} placeholder="1048576" />
+                <Input inputMode="numeric" value={draft.sandboxMaxOutputBytes} onChange={(event) => updateDraft("sandboxMaxOutputBytes", event.currentTarget.value)} placeholder="1048576" />
               </label>
             </div>
           </section>
         </div>
         <footer>
-          <button className="skill-action" onClick={onClose}>Cancel</button>
-          <button className="primary skill-modal-insert" onClick={savePolicy} disabled={saving || loading || !loadedSkill}>
+          <Button className="skill-action" onClick={onClose}>Cancel</Button>
+          <Button className="primary skill-modal-insert" onClick={savePolicy} disabled={saving || loading || !loadedSkill}>
             <ShieldCheck size={16} />
             <span>{saving ? "Saving" : "Save policy"}</span>
-          </button>
+          </Button>
         </footer>
       </section>
     </div>
@@ -2405,7 +2413,7 @@ function PolicyTextArea({ label, value, onChange, placeholder }: { label: string
   return (
     <label className="policy-field">
       <span>{label}</span>
-      <textarea value={value} onChange={(event) => onChange(event.currentTarget.value)} placeholder={placeholder} rows={3} />
+      <Textarea value={value} onChange={(event) => onChange(event.currentTarget.value)} placeholder={placeholder} rows={3} />
     </label>
   );
 }
