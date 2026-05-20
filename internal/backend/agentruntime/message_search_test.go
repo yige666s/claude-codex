@@ -61,6 +61,38 @@ func TestMessageSearchServiceFallbackUsesSQLStore(t *testing.T) {
 	}
 }
 
+func TestMessageSearchServiceElasticsearchDoesNotFallbackToSQL(t *testing.T) {
+	fallback := &stubMessageSearchStore{results: []MessageSearchResult{{SessionID: "s1", MessageIndex: 1, Content: "sql result"}}}
+	service := NewMessageSearchService(MessageSearchConfig{Backend: messageSearchBackendElasticsearch}, fallback)
+
+	_, err := service.SearchMessages(context.Background(), "alice", "query", 10, 0)
+	if err == nil {
+		t.Fatal("expected full-text backend configuration error")
+	}
+	if fallback.limit != 0 || fallback.offset != 0 {
+		t.Fatalf("elasticsearch search should not call SQL fallback, got limit=%d offset=%d", fallback.limit, fallback.offset)
+	}
+}
+
+func TestMessageSearchServiceHybridDoesNotFallbackToSQL(t *testing.T) {
+	fallback := &stubMessageSearchStore{results: []MessageSearchResult{{SessionID: "s1", MessageIndex: 1, Content: "sql result"}}}
+	service := &MessageSearchService{
+		config:   normalizeMessageSearchConfig(MessageSearchConfig{Backend: messageSearchBackendHybrid}),
+		fallback: fallback,
+	}
+
+	results, err := service.SearchMessages(context.Background(), "alice", "query", 10, 0)
+	if err != nil {
+		t.Fatalf("SearchMessages() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected no results without configured ES/semantic backends, got %#v", results)
+	}
+	if fallback.limit != 0 || fallback.offset != 0 {
+		t.Fatalf("hybrid search should not call SQL fallback, got limit=%d offset=%d", fallback.limit, fallback.offset)
+	}
+}
+
 func TestMessageSearchServiceHybridMergesWithRRF(t *testing.T) {
 	now := time.Now()
 	keyword := &stubMessageSearchStore{results: []MessageSearchResult{

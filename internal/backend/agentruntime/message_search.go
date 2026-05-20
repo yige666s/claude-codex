@@ -26,6 +26,7 @@ const (
 	defaultMessageSearchSearchAnalyzer             = "ik_smart"
 	defaultMessageSearchIndexMaintenanceInterval   = 24 * time.Hour
 	defaultMessageSearchIndexMaintenanceBatchLimit = 50
+	defaultMessageSearchIndexEnsureInterval        = time.Minute
 
 	messageEmbeddingProviderOpenAI = "openai"
 	messageEmbeddingProviderVertex = "vertex"
@@ -85,7 +86,7 @@ func (s *MessageSearchService) SearchMessages(ctx context.Context, userID, query
 		if s.keyword != nil {
 			return s.keyword.SearchMessages(ctx, userID, query, limit, offset)
 		}
-		return s.searchFallback(ctx, userID, query, limit, offset)
+		return nil, errMessageSearchNotConfigured("full-text backend")
 	case messageSearchBackendSemantic:
 		if s.semantic != nil {
 			results, err := s.semantic.SearchSemanticMessages(ctx, userID, query, limit+offset)
@@ -135,8 +136,6 @@ func (s *MessageSearchService) searchHybrid(ctx context.Context, userID, query s
 
 	if s.keyword != nil {
 		keywordResults, keywordErr = s.keyword.SearchMessages(ctx, userID, query, window, 0)
-	} else if s.fallback != nil {
-		keywordResults, keywordErr = s.searchFallback(ctx, userID, query, window, 0)
 	}
 	if s.semantic != nil {
 		semanticResults, semanticErr = s.semantic.SearchSemanticMessages(ctx, userID, query, window)

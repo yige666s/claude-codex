@@ -80,6 +80,34 @@ func TestElasticsearchMessageIndexManagerBootstrapCreatesILMTemplateAndAlias(t *
 	}
 }
 
+func TestElasticsearchMessageIndexManagerEnsureIntervalIsShorterThanMaintenance(t *testing.T) {
+	manager := NewElasticsearchMessageIndexManager(MessageSearchConfig{
+		Backend:                  messageSearchBackendElasticsearch,
+		Endpoint:                 "http://localhost:9200",
+		Index:                    "agent_messages",
+		IndexMaintenanceInterval: 24 * time.Hour,
+		Timeout:                  time.Second,
+	}, nil)
+
+	if got := manager.indexEnsureInterval(); got != defaultMessageSearchIndexEnsureInterval {
+		t.Fatalf("indexEnsureInterval() = %s, want %s", got, defaultMessageSearchIndexEnsureInterval)
+	}
+}
+
+func TestElasticsearchMessageIndexManagerEnsureIntervalHonorsShortMaintenance(t *testing.T) {
+	manager := NewElasticsearchMessageIndexManager(MessageSearchConfig{
+		Backend:                  messageSearchBackendElasticsearch,
+		Endpoint:                 "http://localhost:9200",
+		Index:                    "agent_messages",
+		IndexMaintenanceInterval: 10 * time.Second,
+		Timeout:                  time.Second,
+	}, nil)
+
+	if got := manager.indexEnsureInterval(); got != 10*time.Second {
+		t.Fatalf("indexEnsureInterval() = %s, want 10s", got)
+	}
+}
+
 func TestElasticsearchMessageIndexManagerMaintainDowngradesAndClosesOldIndices(t *testing.T) {
 	now := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
 	type action struct {

@@ -344,10 +344,14 @@ For Elasticsearch-backed full-text search, enable
 `AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED=true` to let AgentAPI create
 and maintain the message index lifecycle. The bootstrap step writes an ILM
 policy, a rollover index template, and an initial `{alias}-000001` write index
-when the alias is missing. Text fields use Chinese IK analyzers by default:
+when the alias is missing. AgentAPI rechecks this bootstrap state every minute,
+so an accidentally deleted write alias/index is recreated without falling back
+to SQL search. Text fields use Chinese IK analyzers by default:
 `AGENT_API_MESSAGE_SEARCH_INDEX_ANALYZER=ik_max_word` for indexing and
 `AGENT_API_MESSAGE_SEARCH_INDEX_SEARCH_ANALYZER=ik_smart` for querying. The ES
 cluster must have the IK plugin installed before enabling this in production.
+Do not expose unauthenticated Elasticsearch to the public internet; local compose
+binds ES to `127.0.0.1` by default via `AGENT_API_ELASTICSEARCH_HOST`.
 
 Managed ES indices roll over at 30 days through ILM. The AgentAPI maintenance
 worker additionally downgrades old backing indices to read-only with fewer

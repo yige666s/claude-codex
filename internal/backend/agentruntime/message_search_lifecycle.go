@@ -73,18 +73,36 @@ func (m *ElasticsearchMessageIndexManager) Run(ctx context.Context) error {
 		}
 		break
 	}
-	ticker := time.NewTicker(m.config.IndexMaintenanceInterval)
-	defer ticker.Stop()
+	ensureTicker := time.NewTicker(m.indexEnsureInterval())
+	defer ensureTicker.Stop()
+	maintenanceTicker := time.NewTicker(m.config.IndexMaintenanceInterval)
+	defer maintenanceTicker.Stop()
 	for {
-		if _, err := m.Maintain(ctx); err != nil && !errorsIsContextDone(ctx, err) {
-			m.logger.Printf("elasticsearch message index maintenance failed: %v", err)
-		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
+		case <-ensureTicker.C:
+			if err := m.Bootstrap(ctx); err != nil && !errorsIsContextDone(ctx, err) {
+				m.logger.Printf("elasticsearch message index bootstrap failed: %v", err)
+			}
+		case <-maintenanceTicker.C:
+			if err := m.Bootstrap(ctx); err != nil && !errorsIsContextDone(ctx, err) {
+				m.logger.Printf("elasticsearch message index bootstrap failed: %v", err)
+				continue
+			}
+			if _, err := m.Maintain(ctx); err != nil && !errorsIsContextDone(ctx, err) {
+				m.logger.Printf("elasticsearch message index maintenance failed: %v", err)
+			}
 		}
 	}
+}
+
+func (m *ElasticsearchMessageIndexManager) indexEnsureInterval() time.Duration {
+	interval := defaultMessageSearchIndexEnsureInterval
+	if m != nil && m.config.IndexMaintenanceInterval > 0 && m.config.IndexMaintenanceInterval < interval {
+		interval = m.config.IndexMaintenanceInterval
+	}
+	return interval
 }
 
 func (m *ElasticsearchMessageIndexManager) Maintain(ctx context.Context) (int, error) {
