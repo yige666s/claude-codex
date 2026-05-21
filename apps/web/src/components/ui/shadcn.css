@@ -2,33 +2,40 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
   white-space: nowrap;
   border-radius: 6px;
   border: 1px solid transparent;
   font-weight: 700;
   line-height: 1;
-  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
 }
 .ui-button:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--focus);
+  box-shadow: 0 0 0 3px var(--focus), 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 .ui-button:disabled {
   pointer-events: none;
-  opacity: 0.55;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.ui-button-xs {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
 }
 .ui-button-md {
   min-height: 36px;
-  padding: 0 14px;
+  padding: 0 16px;
 }
 .ui-button-sm {
   min-height: 32px;
-  padding: 0 10px;
+  padding: 0 12px;
   font-size: 13px;
 }
 .ui-button-lg {
-  min-height: 42px;
+  min-height: 40px;
   padding: 0 18px;
 }
 .ui-button-icon {
@@ -37,12 +44,25 @@
   min-height: 36px;
   padding: 0;
 }
+.ui-button-icon-sm {
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+.ui-button-icon-lg {
+  width: 46px;
+  min-width: 46px;
+  min-height: 46px;
+  padding: 0;
+}
 .ui-button-default {
   border-color: var(--line);
   background: var(--panel);
   color: var(--text);
 }
 .ui-button-default:hover:not(:disabled) {
+  border-color: #b8c4cc;
   background: var(--panel-soft);
 }
 .ui-button-primary {
@@ -51,7 +71,16 @@
   color: #fff;
 }
 .ui-button-primary:hover:not(:disabled) {
+  border-color: var(--accent-strong);
   background: var(--accent-strong);
+}
+.ui-button-secondary {
+  border-color: var(--accent);
+  background: var(--active-bg);
+  color: var(--accent);
+}
+.ui-button-secondary:hover:not(:disabled) {
+  background: #e2f0ed;
 }
 .ui-button-destructive {
   border-color: #f0b8b2;
@@ -64,17 +93,20 @@
 }
 .ui-button-outline {
   border-color: var(--line);
-  background: transparent;
+  background: var(--panel);
   color: var(--text);
 }
-.ui-button-outline:hover:not(:disabled),
-.ui-button-ghost:hover:not(:disabled) {
+.ui-button-outline:hover:not(:disabled) {
+  border-color: #b8c4cc;
   background: var(--panel-soft);
 }
 .ui-button-ghost {
   border-color: transparent;
   background: transparent;
   color: var(--text);
+}
+.ui-button-ghost:hover:not(:disabled) {
+  background: var(--panel-soft);
 }
 .ui-button-link {
   min-height: auto;

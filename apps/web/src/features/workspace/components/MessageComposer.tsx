@@ -81,13 +81,13 @@ export function MessageComposer({
         <div className="composer-error" role="alert">
           <AlertCircle size={16} />
           <span>{runtimeError}</span>
-          <Button className="icon ghost" onClick={onClearRuntimeError} title="Dismiss error" aria-label="Dismiss error"><X size={14} /></Button>
+          <Button className="icon" variant="ghost" size="icon-sm" onClick={onClearRuntimeError} title="Dismiss error" aria-label="Dismiss error"><X size={14} /></Button>
         </div>
       )}
       {uploadError && (
         <div className="composer-error upload-error" role="alert">
           <span>{uploadError}</span>
-          <Button className="icon ghost" onClick={onClearUploadError} title="Dismiss upload error" aria-label="Dismiss upload error"><X size={14} /></Button>
+          <Button className="icon" variant="ghost" size="icon-sm" onClick={onClearUploadError} title="Dismiss upload error" aria-label="Dismiss upload error"><X size={14} /></Button>
         </div>
       )}
       {responseTiming && (
@@ -103,7 +103,9 @@ export function MessageComposer({
               <FileUp size={13} />
               <span>{asset.filename}</span>
               <Button
-                className="icon ghost"
+                className="icon"
+                variant="ghost"
+                size="icon-sm"
                 onClick={() => onRemovePendingAttachment(asset.id)}
                 title={`Remove ${asset.filename}`}
                 aria-label={`Remove ${asset.filename}`}
@@ -118,6 +120,8 @@ export function MessageComposer({
         <Button
           type="button"
           className="composer-upload"
+          variant="outline"
+          size="icon-lg"
           title="Upload attachment"
           aria-label="Upload attachment"
           onClick={() => attachmentInputRef.current?.click()}
@@ -150,6 +154,8 @@ export function MessageComposer({
             <Button
               type="button"
               className={inputMode === "text" ? "active" : ""}
+              variant={inputMode === "text" ? "secondary" : "ghost"}
+              size="sm"
               onClick={onSwitchToText}
               disabled={busyChat}
               title="Text mode"
@@ -161,6 +167,8 @@ export function MessageComposer({
             <Button
               type="button"
               className={inputMode === "live" ? "active" : ""}
+              variant={inputMode === "live" ? "secondary" : "ghost"}
+              size="sm"
               onClick={onSwitchToLive}
               disabled={!sessionId || busyChat}
               title="Live mode"
@@ -175,6 +183,8 @@ export function MessageComposer({
               <Button
                 type="button"
                 className={`voice-output-toggle ${liveMuted ? "muted" : ""}`}
+                variant={liveMuted ? "destructive" : "outline"}
+                size="icon-lg"
                 onClick={onToggleLiveMute}
                 disabled={liveStatus === "idle" || liveStatus === "connecting" || !sessionId}
                 title={liveMuted ? "Unmute voice output" : "Mute voice output"}
@@ -186,6 +196,8 @@ export function MessageComposer({
               <Button
                 type="button"
                 className={`live-control ${liveStatus === "listening" ? "active" : ""}`}
+                variant={liveStatus === "listening" ? "destructive" : "outline"}
+                size="icon-lg"
                 onClick={onToggleLiveCapture}
                 disabled={!sessionId || busyChat || liveStatus === "connecting" || liveStatus === "error"}
                 title={liveStatus === "listening" ? "Pause microphone" : "Resume microphone"}
@@ -197,11 +209,11 @@ export function MessageComposer({
             </>
           )}
           {busyChat ? (
-            <Button className="stop-generation" onClick={onCancelChat} title="Stop generation" aria-label="Stop generation">
+            <Button className="stop-generation" variant="destructive" size="icon-lg" onClick={onCancelChat} title="Stop generation" aria-label="Stop generation">
               <span><Square size={16} fill="currentColor" /></span>
             </Button>
           ) : (
-            <Button className="primary send" onClick={onSendMessage} disabled={!canSend} title="Send" aria-label="Send">
+            <Button className="send" variant="primary" size="icon-lg" onClick={onSendMessage} disabled={!canSend} title="Send" aria-label="Send">
               <Send size={21} />
             </Button>
           )}

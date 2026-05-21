@@ -58,6 +58,7 @@ export function WorkspaceSidebar({
       <div className="sidebar-head">
         <Button
           className="brand-toggle"
+          variant="ghost"
           onClick={onToggleLeft}
           title={leftOpen ? "Collapse sidebar" : "Expand sidebar"}
           aria-label={leftOpen ? "Collapse sidebar" : "Expand sidebar"}
@@ -71,6 +72,8 @@ export function WorkspaceSidebar({
         {serviceStatusPill(serviceStatus)}
         <Button
           className="icon sidebar-collapse-button"
+          variant="outline"
+          size="icon"
           onClick={onCollapseLeft}
           title="Collapse sidebar"
           aria-label="Collapse sidebar"
@@ -78,7 +81,7 @@ export function WorkspaceSidebar({
         >
           <PanelLeft size={18} />
         </Button>
-        <Button className="icon ghost mobile-only" onClick={onCloseMobile} title="Close navigation" aria-label="Close navigation"><X size={18} /></Button>
+        <Button className="icon mobile-only" variant="ghost" size="icon" onClick={onCloseMobile} title="Close navigation" aria-label="Close navigation"><X size={18} /></Button>
       </div>
       <div className="toolbar">
         <Button className="icon" variant="primary" size="icon" onClick={onCreateSession} title="New session" aria-label="New session"><MessageSquarePlus size={18} /></Button>
@@ -90,7 +93,7 @@ export function WorkspaceSidebar({
       <div className="list sessions">
         {sessions.map((session) => (
           <div key={session.id} className={`list-item session-item ${session.id === sessionId ? "active" : ""}`}>
-            <Button className="session-select" onClick={() => onSelectSession(session.id)}>
+            <Button className="session-select" variant="ghost" onClick={() => onSelectSession(session.id)}>
               <span>{sessionTitle(session)}</span>
             </Button>
             <Button className="session-delete" variant="ghost" size="icon" onClick={() => onRemoveSession(session.id)} title="Delete session" aria-label="Delete session">

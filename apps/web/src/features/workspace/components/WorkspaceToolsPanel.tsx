@@ -38,6 +38,8 @@ export function WorkspaceToolsPanel({
     <>
       <Button
         className="right-panel-toggle"
+        variant="outline"
+        size="icon-sm"
         onClick={onToggle}
         aria-label={open ? "Collapse right panel" : "Expand right panel"}
         title={open ? "Collapse right panel" : "Expand right panel"}
@@ -72,7 +74,7 @@ export function WorkspaceToolsPanel({
             aria-label={`Search ${rightPanelLabel(activeTab)}`}
           />
           {searchValue && (
-            <Button className="icon ghost" onClick={() => onSearchChange("")} aria-label="Clear search" title="Clear search">
+            <Button className="icon" variant="ghost" size="icon-sm" onClick={() => onSearchChange("")} aria-label="Clear search" title="Clear search">
               <X size={14} />
             </Button>
           )}
