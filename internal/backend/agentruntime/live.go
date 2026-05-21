@@ -24,8 +24,8 @@ const (
 	defaultLiveVertexAPIVersion   = "v1beta1"
 	defaultLiveInputAudioMIMEType = "audio/pcm;rate=16000"
 	defaultLiveSessionTimeout     = 10 * time.Minute
-	defaultLiveVADPrefixPadding   = 450 * time.Millisecond
-	defaultLiveVADSilenceDuration = 900 * time.Millisecond
+	defaultLiveVADPrefixPadding   = 150 * time.Millisecond
+	defaultLiveVADSilenceDuration = 350 * time.Millisecond
 )
 
 type VertexLiveService struct {
@@ -78,8 +78,8 @@ func normalizeLiveConfig(config LiveConfig) LiveConfig {
 		config.InputAudioMIMEType = defaultLiveInputAudioMIMEType
 	}
 	config.OutputAudioMIMEType = strings.TrimSpace(config.OutputAudioMIMEType)
-	config.LiveVADStartSensitivity = liveNormalizeEnum(config.LiveVADStartSensitivity, "START_SENSITIVITY_LOW")
-	config.LiveVADEndSensitivity = liveNormalizeEnum(config.LiveVADEndSensitivity, "END_SENSITIVITY_LOW")
+	config.LiveVADStartSensitivity = liveNormalizeEnum(config.LiveVADStartSensitivity, "START_SENSITIVITY_HIGH")
+	config.LiveVADEndSensitivity = liveNormalizeEnum(config.LiveVADEndSensitivity, "END_SENSITIVITY_HIGH")
 	if config.LiveVADPrefixPadding <= 0 {
 		config.LiveVADPrefixPadding = defaultLiveVADPrefixPadding
 	}

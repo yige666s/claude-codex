@@ -18,9 +18,10 @@ type UseLiveVoiceOptions = {
 
 const liveVoiceStartRmsThreshold = 0.018;
 const liveVoiceContinueRmsThreshold = 0.01;
-const liveVoiceStartFrames = 3;
-const liveVoiceHangoverFrames = 12;
-const liveVoicePrerollFrames = 4;
+const liveVoiceStartFrames = 2;
+const liveVoiceHangoverFrames = 8;
+const liveVoicePrerollFrames = 3;
+const liveVoiceProcessorBufferSize = 2048;
 
 export function useLiveVoice({
   api,
@@ -338,7 +339,7 @@ export function useLiveVoice({
     }
     const audioContext = new AudioContextCtor();
     const source = audioContext.createMediaStreamSource(stream);
-    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+    const processor = audioContext.createScriptProcessor(liveVoiceProcessorBufferSize, 1, 1);
     let activeSpeech = false;
     let voicedFrames = 0;
     let quietFrames = 0;

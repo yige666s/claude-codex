@@ -23,6 +23,22 @@ func TestLiveVertexWebSocketURL(t *testing.T) {
 	}
 }
 
+func TestNormalizeLiveConfigUsesLowLatencyVADDefaults(t *testing.T) {
+	config := normalizeLiveConfig(LiveConfig{})
+	if config.LiveVADStartSensitivity != "START_SENSITIVITY_HIGH" {
+		t.Fatalf("start sensitivity = %q", config.LiveVADStartSensitivity)
+	}
+	if config.LiveVADEndSensitivity != "END_SENSITIVITY_HIGH" {
+		t.Fatalf("end sensitivity = %q", config.LiveVADEndSensitivity)
+	}
+	if config.LiveVADPrefixPadding != 150*time.Millisecond {
+		t.Fatalf("prefix padding = %s", config.LiveVADPrefixPadding)
+	}
+	if config.LiveVADSilenceDuration != 350*time.Millisecond {
+		t.Fatalf("silence duration = %s", config.LiveVADSilenceDuration)
+	}
+}
+
 func TestLiveSetupMessageConfiguresConservativeVAD(t *testing.T) {
 	service := NewVertexLiveService(LiveConfig{
 		Enabled:                   true,
