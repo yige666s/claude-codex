@@ -92,6 +92,18 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByRole("dialog", { name: "Search across all sessions" }).locator(".global-search-result", { hasText: "hello from playwright" }).first().click();
   await expect(page.getByRole("heading", { name: "hello from playwright" })).toBeVisible();
 
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Settings" })).toBeHidden();
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("menuitem", { name: "Manage Memory" }).click();
+  await expect(page.getByRole("dialog", { name: "Memory" })).toBeVisible();
+  await page.getByRole("button", { name: "Close memory" }).click();
+  await expect(page.getByRole("dialog", { name: "Memory" })).toBeHidden();
+
   expect(api.sessions.some((session) => session.messages.some((message) => message.content?.includes("hello from playwright")))).toBe(true);
 });
 
@@ -162,6 +174,20 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean } = {}) {
   await page.route("**/v1/auth/refresh", (route) => json(route, authSession("e2e@example.com")));
   await page.route("**/v1/auth/logout", (route) => json(route, {}));
   await page.route("**/v1/auth/me", (route) => json(route, { user: authSession("e2e@example.com").user }));
+  await page.route("**/v1/memory/settings", (route) => json(route, {
+    enabled: true,
+    capture_enabled: true,
+    context_enabled: true
+  }));
+  await page.route("**/v1/personalization", (route) => json(route, {
+    profile: {},
+    style: {},
+    traits: {},
+    custom_instructions: "",
+    feature_flags: {}
+  }));
+  await page.route("**/v1/memory?**", (route) => json(route, { items: [] }));
+  await page.route("**/v1/memory/maintenance", (route) => json(route, { actions: [] }));
   await page.route("**/v1/skills", (route) => json(route, {
     skills: [
       { name: "vertex-image-artifact", description: "Generate an artifact", run_as_job: true }

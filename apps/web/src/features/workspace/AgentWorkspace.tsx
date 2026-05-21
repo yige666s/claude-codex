@@ -426,17 +426,6 @@ export function AgentWorkspace() {
     return () => window.cancelAnimationFrame(id);
   }, [messages, sessionId, globalSearchTarget]);
 
-  useEffect(() => {
-    if (!settingsOpen) return;
-    const close = (event: MouseEvent) => {
-      const target = event.target;
-      if (target instanceof Node && accountRef.current?.contains(target)) return;
-      setSettingsOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [settingsOpen]);
-
   async function refreshAll() {
     setServiceStatus(await readServiceStatus(api));
     await bootstrap(api, setStatus, setSessions, setSessionId, setMessages, setSkills, setJobs, setAttachments, setArtifacts);
