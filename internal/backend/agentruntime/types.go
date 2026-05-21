@@ -428,6 +428,10 @@ type LiveConfig struct {
 	OutputAudioMIMEType        string
 	InputTranscriptionEnabled  bool
 	OutputTranscriptionEnabled bool
+	LiveVADStartSensitivity    string
+	LiveVADEndSensitivity      string
+	LiveVADPrefixPadding       time.Duration
+	LiveVADSilenceDuration     time.Duration
 	SessionTimeout             time.Duration
 }
 

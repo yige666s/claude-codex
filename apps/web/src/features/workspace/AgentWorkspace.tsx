@@ -110,6 +110,11 @@ const recentSkillsStorageKey = "agentapi.recentSkills";
 const adminTokenStorageKey = "agentapi.adminToken";
 const jobReconnectBaseMs = 1_000;
 const jobReconnectMaxMs = 10_000;
+const liveVoiceStartRmsThreshold = 0.018;
+const liveVoiceContinueRmsThreshold = 0.01;
+const liveVoiceStartFrames = 3;
+const liveVoiceHangoverFrames = 12;
+const liveVoicePrerollFrames = 4;
 
 function isAdminPath(): boolean {
   return typeof window !== "undefined" && window.location.pathname.replace(/\/+$/, "") === "/admin";
@@ -1113,22 +1118,54 @@ export function AgentWorkspace() {
     if (socket.readyState !== WebSocket.OPEN) throw new Error("Live voice connection is not ready.");
     if (liveMediaRef.current) return;
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false }
     });
     const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextCtor) throw new Error("AudioContext is unavailable.");
     const audioContext = new AudioContextCtor();
     const source = audioContext.createMediaStreamSource(stream);
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
-    processor.onaudioprocess = (event) => {
-      if (socket.readyState !== WebSocket.OPEN) return;
-      const pcm = downsampleToPCM16(event.inputBuffer.getChannelData(0), audioContext.sampleRate, 16000);
-      if (!pcm.length) return;
+    let activeSpeech = false;
+    let voicedFrames = 0;
+    let quietFrames = 0;
+    const prerollFrames: string[] = [];
+    const sendAudioFrame = (data: string) => {
       socket.send(JSON.stringify({
         type: "audio",
         mime_type: "audio/pcm;rate=16000",
-        data: bytesToBase64(pcm)
+        data
       }));
+    };
+    processor.onaudioprocess = (event) => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      const input = event.inputBuffer.getChannelData(0);
+      const rms = audioRMS(input);
+      const pcm = downsampleToPCM16(input, audioContext.sampleRate, 16000);
+      if (!pcm.length) return;
+      const frame = bytesToBase64(pcm);
+      if (activeSpeech) {
+        sendAudioFrame(frame);
+        quietFrames = rms >= liveVoiceContinueRmsThreshold ? 0 : quietFrames + 1;
+        if (quietFrames >= liveVoiceHangoverFrames) {
+          activeSpeech = false;
+          voicedFrames = 0;
+          quietFrames = 0;
+          socket.send(JSON.stringify({ type: "audio_end" }));
+        }
+        return;
+      }
+      prerollFrames.push(frame);
+      if (prerollFrames.length > liveVoicePrerollFrames) {
+        prerollFrames.shift();
+      }
+      voicedFrames = rms >= liveVoiceStartRmsThreshold ? voicedFrames + 1 : 0;
+      if (voicedFrames < liveVoiceStartFrames) return;
+      activeSpeech = true;
+      quietFrames = 0;
+      for (const bufferedFrame of prerollFrames) {
+        sendAudioFrame(bufferedFrame);
+      }
+      prerollFrames.length = 0;
     };
     source.connect(processor);
     processor.connect(audioContext.destination);
@@ -2287,6 +2324,16 @@ function downsampleToPCM16(input: Float32Array, inputSampleRate: number, targetS
     view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
   }
   return bytes;
+}
+
+function audioRMS(input: Float32Array): number {
+  if (!input.length) return 0;
+  let sum = 0;
+  for (let index = 0; index < input.length; index += 1) {
+    const sample = input[index] || 0;
+    sum += sample * sample;
+  }
+  return Math.sqrt(sum / input.length);
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

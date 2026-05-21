@@ -520,15 +520,18 @@ label.composer-upload {
 .session-select {
   width: 100%;
   min-width: 0;
+  max-width: 100%;
   min-height: 52px;
   padding: 8px 0;
   border: 0;
   background: transparent;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   justify-content: start;
   justify-items: start;
   text-align: left;
   align-items: center;
+  overflow: hidden;
 }
 .session-delete {
   width: 32px;
@@ -549,6 +552,8 @@ label.composer-upload {
   opacity: 1;
 }
 .list-item span {
+  max-width: 100%;
+  min-width: 0;
   font-weight: 650;
   overflow: hidden;
   text-overflow: ellipsis;

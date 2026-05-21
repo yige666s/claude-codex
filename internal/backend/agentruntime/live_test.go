@@ -23,6 +23,34 @@ func TestLiveVertexWebSocketURL(t *testing.T) {
 	}
 }
 
+func TestLiveSetupMessageConfiguresConservativeVAD(t *testing.T) {
+	service := NewVertexLiveService(LiveConfig{
+		Enabled:                   true,
+		VertexProjectID:           "project-1",
+		LiveVADPrefixPadding:      650 * time.Millisecond,
+		LiveVADSilenceDuration:    1200 * time.Millisecond,
+		LiveVADStartSensitivity:   "start_sensitivity_low",
+		LiveVADEndSensitivity:     "end_sensitivity_low",
+		InputTranscriptionEnabled: true,
+	}, nil, nil)
+	message := service.setupMessage(context.Background(), LiveRequest{UserID: "alice", SessionID: "session-1"})
+	setup := message["setup"].(map[string]any)
+	realtime := setup["realtimeInputConfig"].(map[string]any)
+	detection := realtime["automaticActivityDetection"].(map[string]any)
+	if detection["startOfSpeechSensitivity"] != "START_SENSITIVITY_LOW" {
+		t.Fatalf("unexpected start sensitivity: %#v", detection)
+	}
+	if detection["endOfSpeechSensitivity"] != "END_SENSITIVITY_LOW" {
+		t.Fatalf("unexpected end sensitivity: %#v", detection)
+	}
+	if detection["prefixPaddingMs"] != 650 || detection["silenceDurationMs"] != 1200 {
+		t.Fatalf("unexpected VAD timing: %#v", detection)
+	}
+	if realtime["turnCoverage"] != "TURN_INCLUDES_ONLY_ACTIVITY" {
+		t.Fatalf("unexpected realtime input config: %#v", realtime)
+	}
+}
+
 func TestLiveClientAudioEventToVertexPayload(t *testing.T) {
 	payload, err := liveClientEventToVertexPayload(LiveClientEvent{Type: "audio", Data: "AAEC"}, "audio/pcm;rate=16000")
 	if err != nil {

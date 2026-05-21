@@ -24,6 +24,8 @@ const (
 	defaultLiveVertexAPIVersion   = "v1beta1"
 	defaultLiveInputAudioMIMEType = "audio/pcm;rate=16000"
 	defaultLiveSessionTimeout     = 10 * time.Minute
+	defaultLiveVADPrefixPadding   = 450 * time.Millisecond
+	defaultLiveVADSilenceDuration = 900 * time.Millisecond
 )
 
 type VertexLiveService struct {
@@ -76,10 +78,30 @@ func normalizeLiveConfig(config LiveConfig) LiveConfig {
 		config.InputAudioMIMEType = defaultLiveInputAudioMIMEType
 	}
 	config.OutputAudioMIMEType = strings.TrimSpace(config.OutputAudioMIMEType)
+	config.LiveVADStartSensitivity = liveNormalizeEnum(config.LiveVADStartSensitivity, "START_SENSITIVITY_LOW")
+	config.LiveVADEndSensitivity = liveNormalizeEnum(config.LiveVADEndSensitivity, "END_SENSITIVITY_LOW")
+	if config.LiveVADPrefixPadding <= 0 {
+		config.LiveVADPrefixPadding = defaultLiveVADPrefixPadding
+	}
+	if config.LiveVADSilenceDuration <= 0 {
+		config.LiveVADSilenceDuration = defaultLiveVADSilenceDuration
+	}
 	if config.SessionTimeout <= 0 {
 		config.SessionTimeout = defaultLiveSessionTimeout
 	}
 	return config
+}
+
+func liveNormalizeEnum(value, fallback string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func durationMillis(value time.Duration) int {
+	return int(value / time.Millisecond)
 }
 
 func validateLiveConfig(config LiveConfig) error {
@@ -181,6 +203,15 @@ func (s *VertexLiveService) setupMessage(ctx context.Context, req LiveRequest) m
 		"model": liveVertexModelResource(s.config),
 		"generationConfig": map[string]any{
 			"responseModalities": []string{"AUDIO"},
+		},
+		"realtimeInputConfig": map[string]any{
+			"automaticActivityDetection": map[string]any{
+				"startOfSpeechSensitivity": s.config.LiveVADStartSensitivity,
+				"endOfSpeechSensitivity":   s.config.LiveVADEndSensitivity,
+				"prefixPaddingMs":          durationMillis(s.config.LiveVADPrefixPadding),
+				"silenceDurationMs":        durationMillis(s.config.LiveVADSilenceDuration),
+			},
+			"turnCoverage": "TURN_INCLUDES_ONLY_ACTIVITY",
 		},
 	}
 	if s.config.InputTranscriptionEnabled {
