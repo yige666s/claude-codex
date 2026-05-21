@@ -2,11 +2,11 @@
 
 :root {
   color-scheme: light;
-  --bg: #f4f6f7;
+  --bg: #edf2f4;
   --panel: #ffffff;
-  --panel-soft: #f8faf9;
+  --panel-soft: #f3f7f7;
   --panel-raised: #ffffff;
-  --line: #d7dde2;
+  --line: #dce3e8;
   --text: #172026;
   --muted: #64717d;
   --accent: #0f766e;
@@ -33,9 +33,7 @@ html, body, #root {
 }
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at 50% 34%, rgba(255, 255, 255, 0.9), transparent 34%),
-    linear-gradient(180deg, #ededee 0%, #e3e4e6 100%);
+  background: #050505;
   color: var(--text);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   overflow: hidden;
@@ -423,20 +421,21 @@ label.composer-upload {
 
 .app-shell {
   --left-sidebar-width: 300px;
-  width: 100vw;
-  height: 100vh;
-  height: 100dvh;
+  width: calc(100vw - 40px);
+  height: calc(100vh - 40px);
+  height: calc(100dvh - 40px);
   min-height: 0;
   position: relative;
-  margin: 0;
+  margin: 20px;
   display: grid;
   grid-template-columns: var(--left-sidebar-width) minmax(0, 1fr);
   overflow: hidden;
-  border: 0;
-  border-radius: 0;
-  background: rgba(249, 250, 252, 0.9);
+  border: 1px solid rgba(218, 226, 232, 0.92);
+  border-radius: 16px;
+  background: #eef3f5;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.94);
+    0 18px 52px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
   transition: grid-template-columns 160ms ease;
 }
 .app-shell.left-collapsed {
@@ -445,21 +444,21 @@ label.composer-upload {
 .sidebar, .right-panel {
   height: 100%;
   min-height: 0;
-  background: rgba(250, 251, 253, 0.74);
+  background: rgba(247, 250, 251, 0.88);
   border-color: var(--line);
   display: flex;
   flex-direction: column;
-  backdrop-filter: blur(24px);
+  backdrop-filter: blur(18px);
 }
 .sidebar {
   margin: 16px 0 16px 16px;
   height: calc(100% - 32px);
-  border: 1px solid rgba(225, 230, 238, 0.9);
-  border-radius: 18px;
+  border: 1px solid rgba(220, 228, 235, 0.94);
+  border-radius: 16px;
   position: relative;
   z-index: 7;
   overflow: hidden;
-  box-shadow: 0 24px 70px rgba(35, 43, 61, 0.06);
+  box-shadow: 0 22px 58px rgba(35, 43, 61, 0.065);
 }
 .right-panel {
   margin: 16px 16px 16px 0;
@@ -480,7 +479,7 @@ label.composer-upload {
 }
 .sidebar-head, .topbar {
   min-height: 62px;
-  padding: 12px 16px;
+  padding: 12px 15px;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -587,9 +586,9 @@ label.composer-upload {
   padding: 10px;
   display: grid;
   gap: 8px;
-  border: 1px solid rgba(227, 232, 240, 0.86);
+  border: 1px solid rgba(221, 229, 236, 0.9);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.58);
+  background: rgba(255, 255, 255, 0.66);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 .sidebar-action-button,
@@ -617,12 +616,12 @@ label.composer-upload {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 .sidebar-action-button.primary-action {
-  background: #0f8d7e;
+  background: #11927f;
   color: #fff;
-  box-shadow: 0 12px 24px rgba(15, 141, 126, 0.16);
+  box-shadow: 0 12px 24px rgba(17, 146, 127, 0.15);
 }
 .sidebar-action-button.primary-action:hover {
-  background: #0b756a;
+  background: #0d786d;
 }
 .sidebar-action-label {
   min-width: 0;
@@ -633,11 +632,11 @@ label.composer-upload {
 .sidebar-resource-nav {
   margin: 0 14px 12px;
   padding: 8px;
-  border: 1px solid rgba(227, 232, 240, 0.86);
+  border: 1px solid rgba(221, 229, 236, 0.9);
   border-radius: 14px;
   display: grid;
   gap: 3px;
-  background: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.62);
 }
 .sidebar-resource-button {
   min-height: 38px;
@@ -891,7 +890,7 @@ label.composer-upload {
   overflow: auto;
   min-height: 0;
   flex: 1;
-  padding: 10px 12px;
+  padding: 10px 13px;
   background: transparent;
 }
 .session-list-item,
@@ -912,11 +911,11 @@ label.composer-upload {
   align-items: center;
   gap: 8px;
   min-height: 46px;
-  margin-bottom: 6px;
+  margin-bottom: 7px;
   padding: 0 8px 0 10px;
   border-width: 1px;
   border-color: transparent;
-  border-radius: 12px;
+  border-radius: 10px;
   box-shadow: none;
   background: transparent;
 }
@@ -980,9 +979,9 @@ label.composer-upload {
 }
 .session-list-item.active,
 .job-summary.active {
-  background: rgba(241, 247, 255, 0.96);
-  border-color: rgba(196, 212, 237, 0.9);
-  box-shadow: inset 3px 0 0 #5367ff, 0 14px 30px rgba(83, 103, 255, 0.09);
+  background: rgba(244, 249, 255, 0.94);
+  border-color: rgba(188, 208, 242, 0.92);
+  box-shadow: inset 3px 0 0 #5267ff, 0 12px 26px rgba(82, 103, 255, 0.08);
 }
 .job-list {
   overflow: visible;
@@ -1254,16 +1253,16 @@ label.composer-upload {
 }
 .account {
   min-height: calc(var(--control-size) + 24px);
-  margin: 10px 12px 12px;
+  margin: 10px 13px 12px;
   padding: 10px;
-  border: 1px solid rgba(227, 232, 240, 0.88);
+  border: 1px solid rgba(221, 229, 236, 0.92);
   border-radius: 14px;
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.74);
   box-shadow: 0 18px 42px rgba(42, 50, 67, 0.06);
 }
 .account > .icon {
@@ -1292,15 +1291,12 @@ label.composer-upload {
   position: relative;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
-  background:
-    radial-gradient(circle at 50% 42%, rgba(120, 120, 255, 0.08), transparent 18%),
-    radial-gradient(circle at 63% 67%, rgba(111, 227, 204, 0.12), transparent 26%),
-    linear-gradient(180deg, rgba(252, 253, 255, 0.98), rgba(247, 249, 252, 0.95));
+  background: linear-gradient(180deg, #f6f8f9 0%, #eef4f6 100%);
 }
 .topbar {
   grid-row: 1;
-  min-height: 76px;
-  padding: 16px 28px 10px;
+  min-height: 72px;
+  padding: 16px 28px 8px;
   border-bottom: 0;
 }
 .topbar > div {
@@ -1357,7 +1353,7 @@ label.composer-upload {
   grid-row: 3;
   min-height: 0;
   overflow: auto;
-  padding: 22px 54px;
+  padding: 20px 54px 24px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -1437,8 +1433,8 @@ label.composer-upload {
 }
 .message.user {
   align-self: flex-end;
-  border-color: #c9d9d6;
-  background: var(--user-message-bg);
+  border-color: #c8dbd8;
+  background: #edf7f5;
 }
 .message.assistant {
   align-self: flex-start;
@@ -1623,12 +1619,12 @@ label.composer-upload {
   grid-row: 4;
   --composer-control-size: var(--control-size);
   min-height: 0;
-  border-top: 1px solid rgba(226, 232, 240, 0.78);
-  background: rgba(255, 255, 255, 0.84);
-  padding: 12px 18px;
+  border-top: 1px solid rgba(220, 228, 235, 0.8);
+  background: rgba(250, 252, 252, 0.9);
+  padding: 12px 18px 10px;
   display: grid;
   gap: 8px;
-  backdrop-filter: blur(20px);
+  backdrop-filter: blur(16px);
 }
 .empty-workspace .composer {
   width: min(720px, calc(100% - 64px));
