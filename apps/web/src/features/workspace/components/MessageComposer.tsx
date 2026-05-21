@@ -19,6 +19,8 @@ type MessageComposerProps = {
   inputMode: InputMode;
   liveStatus: LiveStatus;
   liveMuted: boolean;
+  liveSpeakerVolume: number;
+  liveMicVolume: number;
   busyChat: boolean;
   sessionId: string;
   draft: string;
@@ -33,6 +35,8 @@ type MessageComposerProps = {
   onSwitchToLive: () => void;
   onToggleLiveMute: () => void;
   onToggleLiveCapture: () => void;
+  onLiveSpeakerVolumeChange: (value: number) => void;
+  onLiveMicVolumeChange: (value: number) => void;
   formatNumber: (value: number) => string;
 };
 
@@ -49,6 +53,8 @@ export function MessageComposer({
   inputMode,
   liveStatus,
   liveMuted,
+  liveSpeakerVolume,
+  liveMicVolume,
   busyChat,
   sessionId,
   draft,
@@ -63,6 +69,8 @@ export function MessageComposer({
   onSwitchToLive,
   onToggleLiveMute,
   onToggleLiveCapture,
+  onLiveSpeakerVolumeChange,
+  onLiveMicVolumeChange,
   formatNumber
 }: MessageComposerProps) {
   const canUseText = inputMode === "text" && liveStatus === "idle";
@@ -180,32 +188,58 @@ export function MessageComposer({
           </div>
           {inputMode === "live" && (
             <>
-              <Button
-                type="button"
-                className={`voice-output-toggle ${liveMuted ? "muted" : ""}`}
-                variant={liveMuted ? "destructive" : "outline"}
-                size="icon-lg"
-                onClick={onToggleLiveMute}
-                disabled={liveStatus === "idle" || liveStatus === "connecting" || !sessionId}
-                title={liveMuted ? "Unmute voice output" : "Mute voice output"}
-                aria-label={liveMuted ? "Unmute voice output" : "Mute voice output"}
-                aria-pressed={liveStatus !== "idle" && !liveMuted}
-              >
-                {liveMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
-              </Button>
-              <Button
-                type="button"
-                className={`live-control ${liveStatus === "listening" ? "active" : ""}`}
-                variant={liveStatus === "listening" ? "destructive" : "outline"}
-                size="icon-lg"
-                onClick={onToggleLiveCapture}
-                disabled={!sessionId || busyChat || liveStatus === "connecting" || liveStatus === "error"}
-                title={liveStatus === "listening" ? "Pause microphone" : "Resume microphone"}
-                aria-label={liveStatus === "listening" ? "Pause microphone" : "Resume microphone"}
-                aria-pressed={liveStatus === "listening"}
-              >
-                {liveStatus === "listening" ? <Mic size={18} /> : <MicOff size={18} />}
-              </Button>
+              <div className="live-volume-control">
+                <div className="live-volume-popover" aria-label="Voice output volume">
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={liveMuted ? 0 : Math.round(liveSpeakerVolume * 100)}
+                    onChange={(event) => onLiveSpeakerVolumeChange(Number(event.currentTarget.value) / 100)}
+                    aria-label="Voice output volume"
+                    aria-orientation="vertical"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  className={`voice-output-toggle ${liveMuted ? "muted" : ""}`}
+                  variant={liveMuted ? "destructive" : "outline"}
+                  size="icon-lg"
+                  onClick={onToggleLiveMute}
+                  disabled={liveStatus === "idle" || liveStatus === "connecting" || !sessionId}
+                  title={liveMuted ? "Unmute voice output" : "Mute voice output"}
+                  aria-label={liveMuted ? "Unmute voice output" : "Mute voice output"}
+                  aria-pressed={liveStatus !== "idle" && !liveMuted}
+                >
+                  {liveMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                </Button>
+              </div>
+              <div className="live-volume-control">
+                <div className="live-volume-popover" aria-label="Microphone volume">
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={liveStatus === "listening" ? Math.round(liveMicVolume * 100) : 0}
+                    onChange={(event) => onLiveMicVolumeChange(Number(event.currentTarget.value) / 100)}
+                    aria-label="Microphone volume"
+                    aria-orientation="vertical"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  className={`live-control ${liveStatus === "listening" ? "active" : ""}`}
+                  variant={liveStatus === "listening" ? "destructive" : "outline"}
+                  size="icon-lg"
+                  onClick={onToggleLiveCapture}
+                  disabled={!sessionId || busyChat || liveStatus === "connecting" || liveStatus === "error"}
+                  title={liveStatus === "listening" ? "Mute microphone" : "Unmute microphone"}
+                  aria-label={liveStatus === "listening" ? "Mute microphone" : "Unmute microphone"}
+                  aria-pressed={liveStatus === "listening"}
+                >
+                  {liveStatus === "listening" ? <Mic size={18} /> : <MicOff size={18} />}
+                </Button>
+              </div>
             </>
           )}
           {busyChat ? (

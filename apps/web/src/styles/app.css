@@ -1278,6 +1278,57 @@ label.composer-upload {
   cursor: not-allowed;
   opacity: 0.55;
 }
+.live-volume-control {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+}
+.live-volume-popover {
+  width: 42px;
+  height: 128px;
+  padding: 10px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  z-index: 14;
+  display: grid;
+  place-items: center;
+  background: var(--panel-raised);
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.16);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 6px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+.live-volume-control:hover .live-volume-popover,
+.live-volume-control:focus-within .live-volume-popover {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+.live-volume-popover::after {
+  width: 10px;
+  height: 10px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  background: var(--panel-raised);
+  transform: translateX(-50%) rotate(45deg);
+}
+.live-volume-popover input[type="range"] {
+  width: 96px;
+  height: 26px;
+  border: 0;
+  box-shadow: none;
+  accent-color: var(--accent);
+  transform: rotate(-90deg);
+  cursor: pointer;
+}
 .composer-error {
   min-height: 34px;
   padding: 7px 10px;

@@ -159,6 +159,8 @@ export function AgentWorkspace() {
   const [inputMode, setInputMode] = useState<"text" | "live">("text");
   const [liveStatus, setLiveStatus] = useState<"idle" | "connecting" | "listening" | "paused" | "error">("idle");
   const [liveMuted, setLiveMuted] = useState(false);
+  const [liveSpeakerVolume, setLiveSpeakerVolume] = useState(1);
+  const [liveMicVolume, setLiveMicVolume] = useState(1);
   const [liveUserDraft, setLiveUserDraft] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -196,10 +198,15 @@ export function AgentWorkspace() {
   const liveProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const liveSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const livePlaybackContextRef = useRef<AudioContext | null>(null);
+  const livePlaybackGainRef = useRef<GainNode | null>(null);
   const livePlaybackTimeRef = useRef(0);
   const livePlaybackGenerationRef = useRef(0);
   const livePlaybackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const liveMutedRef = useRef(liveMuted);
+  const liveSpeakerVolumeRef = useRef(liveSpeakerVolume);
+  const liveMicVolumeRef = useRef(liveMicVolume);
+  const lastLiveSpeakerVolumeRef = useRef(1);
+  const lastLiveMicVolumeRef = useRef(1);
   const liveAudioChunkCountRef = useRef(0);
   const livePlaybackQueueRef = useRef(Promise.resolve());
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
@@ -340,6 +347,23 @@ export function AgentWorkspace() {
       stopLivePlayback();
     }
   }, [liveMuted]);
+
+  useEffect(() => {
+    liveSpeakerVolumeRef.current = liveMuted ? 0 : liveSpeakerVolume;
+    if (liveSpeakerVolume > 0) {
+      lastLiveSpeakerVolumeRef.current = liveSpeakerVolume;
+    }
+    if (livePlaybackGainRef.current) {
+      livePlaybackGainRef.current.gain.value = liveMuted ? 0 : liveSpeakerVolume;
+    }
+  }, [liveMuted, liveSpeakerVolume]);
+
+  useEffect(() => {
+    liveMicVolumeRef.current = liveMicVolume;
+    if (liveMicVolume > 0) {
+      lastLiveMicVolumeRef.current = liveMicVolume;
+    }
+  }, [liveMicVolume]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -1012,17 +1036,49 @@ export function AgentWorkspace() {
 
   function toggleLiveMute() {
     if (inputMode !== "live" || liveStatus === "idle") return;
-    setLiveMuted((current) => !current);
+    setLiveMuted((current) => {
+      if (current && liveSpeakerVolume <= 0) {
+        setLiveSpeakerVolume(lastLiveSpeakerVolumeRef.current || 1);
+      }
+      return !current;
+    });
+  }
+
+  function changeLiveSpeakerVolume(value: number) {
+    const next = clamp01(value);
+    setLiveSpeakerVolume(next);
+    setLiveMuted(next <= 0);
+  }
+
+  async function changeLiveMicVolume(value: number) {
+    const next = clamp01(value);
+    setLiveMicVolume(next);
+    if (inputMode !== "live" || liveStatus === "connecting" || liveStatus === "error") return;
+    if (next <= 0) {
+      if (liveStatus === "listening") {
+        stopLiveCapture();
+        setLiveStatus("paused");
+        setStatus({ tone: "idle", text: "Microphone muted" });
+      }
+      return;
+    }
+    if (liveStatus !== "listening") {
+      await toggleLiveCapture();
+    }
   }
 
   async function toggleLiveCapture() {
     if (inputMode !== "live" || liveStatus === "connecting") return;
     const socket = liveSocketRef.current;
     if (liveStatus === "listening") {
+      setLiveMicVolume(0);
       stopLiveCapture();
       setLiveStatus("paused");
-      setStatus({ tone: "idle", text: "Microphone paused" });
+      setStatus({ tone: "idle", text: "Microphone muted" });
       return;
+    }
+    if (liveMicVolume <= 0) {
+      setLiveMicVolume(lastLiveMicVolumeRef.current || 1);
     }
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       if (liveStatus === "idle") {
@@ -1139,8 +1195,11 @@ export function AgentWorkspace() {
     processor.onaudioprocess = (event) => {
       if (socket.readyState !== WebSocket.OPEN) return;
       const input = event.inputBuffer.getChannelData(0);
-      const rms = audioRMS(input);
-      const pcm = downsampleToPCM16(input, audioContext.sampleRate, 16000);
+      const micVolume = liveMicVolumeRef.current;
+      if (micVolume <= 0) return;
+      const adjustedInput = scaleAudio(input, micVolume);
+      const rms = audioRMS(adjustedInput);
+      const pcm = downsampleToPCM16(adjustedInput, audioContext.sampleRate, 16000);
       if (!pcm.length) return;
       const frame = bytesToBase64(pcm);
       if (activeSpeech) {
@@ -1191,7 +1250,9 @@ export function AgentWorkspace() {
   function cleanupLiveAudio() {
     stopLiveCapture();
     stopLivePlayback();
+    livePlaybackGainRef.current?.disconnect();
     void livePlaybackContextRef.current?.close();
+    livePlaybackGainRef.current = null;
     livePlaybackContextRef.current = null;
   }
 
@@ -1214,6 +1275,12 @@ export function AgentWorkspace() {
     if (!AudioContextCtor) throw new Error("AudioContext is unavailable.");
     const context = livePlaybackContextRef.current || new AudioContextCtor();
     livePlaybackContextRef.current = context;
+    if (!livePlaybackGainRef.current) {
+      const gain = context.createGain();
+      gain.gain.value = liveMutedRef.current ? 0 : liveSpeakerVolumeRef.current;
+      gain.connect(context.destination);
+      livePlaybackGainRef.current = gain;
+    }
     if (context.state === "suspended") {
       await context.resume();
     }
@@ -1244,7 +1311,7 @@ export function AgentWorkspace() {
     channel.set(samples);
     const source = context.createBufferSource();
     source.buffer = buffer;
-    source.connect(context.destination);
+    source.connect(livePlaybackGainRef.current || context.destination);
     livePlaybackSourcesRef.current.add(source);
     source.onended = () => {
       livePlaybackSourcesRef.current.delete(source);
@@ -1632,6 +1699,8 @@ export function AgentWorkspace() {
               inputMode={inputMode}
               liveStatus={liveStatus}
               liveMuted={liveMuted}
+              liveSpeakerVolume={liveSpeakerVolume}
+              liveMicVolume={liveMicVolume}
               busyChat={busyChat}
               sessionId={sessionId}
               draft={draft}
@@ -1646,6 +1715,8 @@ export function AgentWorkspace() {
               onSwitchToLive={switchToLiveMode}
               onToggleLiveMute={toggleLiveMute}
               onToggleLiveCapture={() => void toggleLiveCapture()}
+              onLiveSpeakerVolumeChange={changeLiveSpeakerVolume}
+              onLiveMicVolumeChange={(value) => void changeLiveMicVolume(value)}
               formatNumber={formatNumber}
             />
           )}
@@ -2334,6 +2405,21 @@ function audioRMS(input: Float32Array): number {
     sum += sample * sample;
   }
   return Math.sqrt(sum / input.length);
+}
+
+function scaleAudio(input: Float32Array, volume: number): Float32Array {
+  const scale = clamp01(volume);
+  if (scale >= 0.999) return input;
+  const output = new Float32Array(input.length);
+  for (let index = 0; index < input.length; index += 1) {
+    output[index] = (input[index] || 0) * scale;
+  }
+  return output;
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
