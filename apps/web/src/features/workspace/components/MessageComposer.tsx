@@ -188,7 +188,7 @@ export function MessageComposer({
           </div>
           {inputMode === "live" && (
             <>
-              <div className="live-volume-control">
+              <div className="live-volume-control speaker">
                 <div className="live-volume-popover" aria-label="Voice output volume">
                   <input
                     type="range"
@@ -214,7 +214,7 @@ export function MessageComposer({
                   {liveMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
                 </Button>
               </div>
-              <div className="live-volume-control">
+              <div className="live-volume-control mic">
                 <div className="live-volume-popover" aria-label="Microphone volume">
                   <input
                     type="range"

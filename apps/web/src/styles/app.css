@@ -1284,13 +1284,12 @@ label.composer-upload {
   place-items: center;
 }
 .live-volume-popover {
-  width: 42px;
-  height: 128px;
-  padding: 10px 0;
+  width: 34px;
+  height: 116px;
+  padding: 8px 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   position: absolute;
-  left: 50%;
   bottom: calc(100% + 8px);
   z-index: 14;
   display: grid;
@@ -1299,14 +1298,20 @@ label.composer-upload {
   box-shadow: 0 14px 32px rgba(15, 23, 42, 0.16);
   opacity: 0;
   pointer-events: none;
-  transform: translate(-50%, 6px);
+  transform: translateY(6px);
   transition: opacity 140ms ease, transform 140ms ease;
+}
+.live-volume-control.speaker .live-volume-popover {
+  left: 0;
+}
+.live-volume-control.mic .live-volume-popover {
+  right: 0;
 }
 .live-volume-control:hover .live-volume-popover,
 .live-volume-control:focus-within .live-volume-popover {
   opacity: 1;
   pointer-events: auto;
-  transform: translate(-50%, 0);
+  transform: translateY(0);
 }
 .live-volume-popover::after {
   width: 10px;
@@ -1315,19 +1320,35 @@ label.composer-upload {
   border-bottom: 1px solid var(--line);
   content: "";
   position: absolute;
-  left: 50%;
   bottom: -6px;
   background: var(--panel-raised);
-  transform: translateX(-50%) rotate(45deg);
+  transform: rotate(45deg);
+}
+.live-volume-control.speaker .live-volume-popover::after {
+  left: 17px;
+}
+.live-volume-control.mic .live-volume-popover::after {
+  right: 17px;
 }
 .live-volume-popover input[type="range"] {
-  width: 96px;
-  height: 26px;
+  width: 84px;
+  height: 20px;
   border: 0;
   box-shadow: none;
   accent-color: var(--accent);
+  appearance: slider-vertical;
+  -webkit-appearance: slider-vertical;
+  writing-mode: vertical-lr;
+  direction: rtl;
   transform: rotate(-90deg);
   cursor: pointer;
+}
+@supports (appearance: slider-vertical) {
+  .live-volume-popover input[type="range"] {
+    width: 20px;
+    height: 84px;
+    transform: none;
+  }
 }
 .composer-error {
   min-height: 34px;
