@@ -1,6 +1,5 @@
 import { FormEvent, ReactNode } from "react";
 import { ArrowRight, Check, LockKeyhole, Mail, UserRound } from "lucide-react";
-import { BrandLogo } from "../../components/brand/BrandLogo";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import type { Status } from "../workspace/workspaceTypes";
@@ -18,9 +17,6 @@ export function AuthPage({ mode, status, onModeChange, onSubmit, statusLine }: A
   return (
     <main className="auth-page">
       <section className="auth-stage" aria-label="AgentAPI access">
-        <div className="auth-brand-badge">
-          <BrandLogo />
-        </div>
         <div className="auth-photo-panel" aria-hidden="true">
           <div className="auth-photo-copy">
             <span>{isLogin ? "SIGN" : "JOIN"}</span>
