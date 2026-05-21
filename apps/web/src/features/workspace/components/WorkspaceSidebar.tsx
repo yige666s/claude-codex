@@ -1,5 +1,5 @@
 import { ReactNode, Ref, RefObject } from "react";
-import { Database, LogOut, MessageSquarePlus, PanelLeft, RefreshCw, Search, Settings, X } from "lucide-react";
+import { Briefcase, Database, FileUp, Image, LogOut, MessageSquarePlus, PanelLeft, Search, Settings, Sparkles, X } from "lucide-react";
 import { BrandLogo } from "../../../components/brand/BrandLogo";
 import { Button } from "../../../components/ui/button";
 import {
@@ -9,7 +9,7 @@ import {
   DropdownMenuTrigger
 } from "../../../components/ui/dropdown-menu";
 import type { AuthSession, Session } from "../../../types";
-import type { ServiceStatus } from "../workspaceTypes";
+import type { RightPanelTab, ServiceStatus } from "../workspaceTypes";
 import { SessionList } from "./sidebar/SessionList";
 
 type WorkspaceSidebarProps = {
@@ -21,13 +21,14 @@ type WorkspaceSidebarProps = {
   serviceStatus: ServiceStatus;
   settingsOpen: boolean;
   accountRef: RefObject<HTMLDivElement | null>;
+  resourceCounts: Record<RightPanelTab, number>;
   serviceStatusPill: (status: ServiceStatus) => ReactNode;
   onToggleLeft: () => void;
   onCollapseLeft: () => void;
   onCloseMobile: () => void;
   onCreateSession: () => void;
   onOpenSearch: () => void;
-  onRefresh: () => void;
+  onOpenResource: (tab: RightPanelTab) => void;
   onSelectSession: (id: string) => void;
   onRemoveSession: (id: string) => void;
   onToggleSettings: (open: boolean) => void;
@@ -45,13 +46,14 @@ export function WorkspaceSidebar({
   serviceStatus,
   settingsOpen,
   accountRef,
+  resourceCounts,
   serviceStatusPill,
   onToggleLeft,
   onCollapseLeft,
   onCloseMobile,
   onCreateSession,
   onOpenSearch,
-  onRefresh,
+  onOpenResource,
   onSelectSession,
   onRemoveSession,
   onToggleSettings,
@@ -90,12 +92,21 @@ export function WorkspaceSidebar({
         <Button className="icon mobile-only" variant="ghost" size="icon" onClick={onCloseMobile} title="Close navigation" aria-label="Close navigation"><X size={18} /></Button>
       </div>
       <div className="toolbar">
-        <Button className="icon" variant="primary" size="icon" onClick={onCreateSession} title="New session" aria-label="New session"><MessageSquarePlus size={18} /></Button>
-        <Button className="icon" variant="outline" size="icon" onClick={onOpenSearch} title="Search messages" aria-label="Search messages">
-          <Search size={18} />
+        <Button className="sidebar-action-button primary-action" variant="ghost" onClick={onCreateSession} title="新聊天" aria-label="新聊天">
+          <MessageSquarePlus size={18} />
+          <span className="sidebar-action-label">新聊天</span>
         </Button>
-        <Button className="icon" variant="outline" size="icon" onClick={onRefresh} title="Refresh" aria-label="Refresh"><RefreshCw size={18} /></Button>
+        <Button className="sidebar-action-button" variant="ghost" onClick={onOpenSearch} title="搜索聊天" aria-label="搜索聊天">
+          <Search size={18} />
+          <span className="sidebar-action-label">搜索聊天</span>
+        </Button>
       </div>
+      <nav className="sidebar-resource-nav" aria-label="Workspace resources">
+        <ResourceButton tab="skills" label="Skills" count={resourceCounts.skills} icon={<Sparkles size={17} />} onOpen={onOpenResource} />
+        <ResourceButton tab="jobs" label="Jobs" count={resourceCounts.jobs} icon={<Briefcase size={17} />} onOpen={onOpenResource} />
+        <ResourceButton tab="attachments" label="Attachments" count={resourceCounts.attachments} icon={<FileUp size={17} />} onOpen={onOpenResource} />
+        <ResourceButton tab="artifacts" label="Artifacts" count={resourceCounts.artifacts} icon={<Image size={17} />} onOpen={onOpenResource} />
+      </nav>
       <SessionList
         sessions={sessions}
         sessionId={sessionId}
@@ -121,5 +132,27 @@ export function WorkspaceSidebar({
         </DropdownMenu>
       </div>
     </aside>
+  );
+}
+
+function ResourceButton({
+  tab,
+  label,
+  count,
+  icon,
+  onOpen
+}: {
+  tab: RightPanelTab;
+  label: string;
+  count: number;
+  icon: ReactNode;
+  onOpen: (tab: RightPanelTab) => void;
+}) {
+  return (
+    <Button className="sidebar-resource-button" variant="ghost" onClick={() => onOpen(tab)} title={label} aria-label={label}>
+      {icon}
+      <span className="sidebar-action-label">{label}</span>
+      <small className="sidebar-resource-count">{count}</small>
+    </Button>
   );
 }

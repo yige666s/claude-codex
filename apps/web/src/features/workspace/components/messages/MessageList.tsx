@@ -1,4 +1,5 @@
 import { Fragment, ReactNode, Ref, RefObject } from "react";
+import { Sparkles } from "lucide-react";
 import type { Message } from "../../../../types";
 
 type MessageListProps = {
@@ -21,7 +22,19 @@ export function MessageList({
   const empty = !messages.length && !liveUserDraft && !assistantDraft;
   return (
     <div className="messages" ref={messagesRef as Ref<HTMLDivElement>}>
-      {empty && <div className="empty-state">Start with a message or choose a skill from the right panel.</div>}
+      {empty && (
+        <div className="empty-state">
+          <div className="empty-orb" aria-hidden="true" />
+          <h1>
+            Good Morning
+            <span>How Can I Assist You Today?</span>
+          </h1>
+          <div className="empty-prompt-card" aria-hidden="true">
+            <Sparkles size={16} />
+            <span>Initiate a query or send a command to the AI...</span>
+          </div>
+        </div>
+      )}
       {messages.map((message, index) => (
         <Fragment key={`${message.created_at || index}-${index}`}>
           {renderMessage({

@@ -33,11 +33,9 @@ import { SettingsModal } from "./components/SettingsModal";
 import { GlobalSearchDialog } from "./components/GlobalSearchDialog";
 import { MessageComposer } from "./components/MessageComposer";
 import { WorkspaceFrame } from "./components/WorkspaceFrame";
+import { WorkspaceResourceDialog } from "./components/WorkspaceResourceDialog";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
-import { WorkspaceToolsPanel } from "./components/WorkspaceToolsPanel";
-import { AssetPanel } from "./components/right-panel/AssetPanel";
-import { JobPanel } from "./components/right-panel/JobPanel";
-import { SkillGlyph, SkillPanel } from "./components/right-panel/SkillPanel";
+import { SkillGlyph } from "./components/right-panel/SkillPanel";
 import { useLiveVoice } from "./hooks/useLiveVoice";
 import type { ConfirmDialog, JobStreamStatus, RightPanelSearch, RightPanelTab, ServiceStatus, Status } from "./workspaceTypes";
 
@@ -100,6 +98,7 @@ const recentSkillsStorageKey = "agentapi.recentSkills";
 const adminTokenStorageKey = "agentapi.adminToken";
 const jobReconnectBaseMs = 1_000;
 const jobReconnectMaxMs = 10_000;
+const resourcePageSize = 10;
 
 function isAdminPath(): boolean {
   return typeof window !== "undefined" && window.location.pathname.replace(/\/+$/, "") === "/admin";
@@ -161,13 +160,18 @@ export function AgentWorkspace() {
   const [personalizationSettings, setPersonalizationSettings] = useState<PersonalizationSettings>(defaultPersonalizationSettings);
   const [personalizationSaving, setPersonalizationSaving] = useState(false);
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
-  const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>("skills");
-  const [rightPanelSearch, setRightPanelSearch] = useState<RightPanelSearch>({
+  const [resourceDialogTab, setResourceDialogTab] = useState<RightPanelTab | null>(null);
+  const [resourceSearch, setResourceSearch] = useState<RightPanelSearch>({
     skills: "",
     jobs: "",
     attachments: "",
     artifacts: ""
+  });
+  const [resourceVisibleCount, setResourceVisibleCount] = useState<Record<RightPanelTab, number>>({
+    skills: resourcePageSize,
+    jobs: resourcePageSize,
+    attachments: resourcePageSize,
+    artifacts: resourcePageSize
   });
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -188,7 +192,9 @@ export function AgentWorkspace() {
   const activeSession = sessions.find((item) => item.id === sessionId);
   const latestJob = jobs[0];
   const latestJobId = latestJob?.id || "";
-  const rightSearch = rightPanelSearch[rightPanelTab];
+  const activeResourceTab = resourceDialogTab || "skills";
+  const activeResourceSearch = resourceSearch[activeResourceTab];
+  const activeResourceVisibleCount = resourceVisibleCount[activeResourceTab];
   const {
     inputMode,
     liveStatus,
@@ -216,7 +222,7 @@ export function AgentWorkspace() {
     onStatus: setStatus
   });
   const filteredSkills = useMemo(
-    () => skills.filter((skill) => fuzzyMatch(rightPanelSearch.skills, [
+    () => skills.filter((skill) => fuzzyMatch(resourceSearch.skills, [
       skill.name,
       skill.display_name,
       skill.description,
@@ -225,20 +231,30 @@ export function AgentWorkspace() {
       skill.version,
       ...(skill.tags || [])
     ])),
-    [skills, rightPanelSearch.skills]
+    [skills, resourceSearch.skills]
   );
   const filteredJobs = useMemo(
-    () => jobs.filter((job) => fuzzyMatch(rightPanelSearch.jobs, [job.id, job.content])),
-    [jobs, rightPanelSearch.jobs]
+    () => jobs.filter((job) => fuzzyMatch(resourceSearch.jobs, [job.id, job.content, job.status, job.type])),
+    [jobs, resourceSearch.jobs]
   );
   const filteredAttachments = useMemo(
-    () => attachments.filter((asset) => fuzzyMatch(rightPanelSearch.attachments, [asset.filename, asset.id])),
-    [attachments, rightPanelSearch.attachments]
+    () => attachments.filter((asset) => fuzzyMatch(resourceSearch.attachments, [asset.filename, asset.id, asset.content_type])),
+    [attachments, resourceSearch.attachments]
   );
   const filteredArtifacts = useMemo(
-    () => artifacts.filter((asset) => fuzzyMatch(rightPanelSearch.artifacts, [asset.filename, asset.id])),
-    [artifacts, rightPanelSearch.artifacts]
+    () => artifacts.filter((asset) => fuzzyMatch(resourceSearch.artifacts, [asset.filename, asset.id, asset.content_type, asset.job_id])),
+    [artifacts, resourceSearch.artifacts]
   );
+  const visibleResourceSkills = filteredSkills.slice(0, resourceVisibleCount.skills);
+  const visibleResourceJobs = filteredJobs.slice(0, resourceVisibleCount.jobs);
+  const visibleResourceAttachments = filteredAttachments.slice(0, resourceVisibleCount.attachments);
+  const visibleResourceArtifacts = filteredArtifacts.slice(0, resourceVisibleCount.artifacts);
+  const activeResourceTotalCount = resourceDialogTab ? resourceTotalCount(resourceDialogTab, {
+    skills: filteredSkills.length,
+    jobs: filteredJobs.length,
+    attachments: filteredAttachments.length,
+    artifacts: filteredArtifacts.length
+  }) : 0;
   const recoveryBanner: { tone: "busy" | "error"; text: string } | null = !online
     ? { tone: "error", text: "Network connection lost. New messages may fail until the browser is back online." }
     : selectedJobId && (jobStreamStatus === "reconnecting" || jobStreamStatus === "failed")
@@ -348,8 +364,6 @@ export function AgentWorkspace() {
     setSelectedJobId(latestJobId);
     setAutoExpandedJobId(latestJobId);
     if (latestJob && !terminalJobs.has(latestJob.status) && (!sessionId || latestJob.session_id === sessionId)) {
-      setRightPanelOpen(true);
-      setRightPanelTab("jobs");
       setStatus({ tone: "busy", text: "Restoring job" });
     }
   }, [autoExpandedJobId, latestJob, latestJobId, sessionId]);
@@ -454,7 +468,8 @@ export function AgentWorkspace() {
     artifactsRef.current = artifactList;
     setArtifacts(artifactList);
     if (options.revealNewArtifacts && artifactList.some((asset) => !previousArtifactIds.has(asset.id))) {
-      revealRightPanel("artifacts");
+      setStatus({ tone: "ok", text: "New artifact available" });
+      return;
     }
     setStatus({ tone: "ok", text: "Ready" });
   }
@@ -470,9 +485,18 @@ export function AgentWorkspace() {
     }
   }
 
-  function revealRightPanel(tab: RightPanelTab) {
-    setRightPanelOpen(true);
-    setRightPanelTab(tab);
+  function openResourceDialog(tab: RightPanelTab) {
+    setResourceDialogTab(tab);
+    setResourceVisibleCount((current) => ({ ...current, [tab]: resourcePageSize }));
+    setMobileNav(false);
+  }
+
+  function closeResourceDialog(open: boolean) {
+    if (!open) {
+      setResourceDialogTab(null);
+      return;
+    }
+    setResourceDialogTab((current) => current || "skills");
   }
 
   async function openSearchResult(result: MessageSearchResult) {
@@ -918,7 +942,6 @@ export function AgentWorkspace() {
     setUploadError("");
     setUploadProgress(0);
     setStatus({ tone: "busy", text: "Uploading" });
-    revealRightPanel("attachments");
     try {
       const uploaded = await api.uploadAttachment(file, sessionId || undefined, setUploadProgress);
       setPendingAttachments((current) => [...current, uploaded]);
@@ -945,7 +968,7 @@ export function AgentWorkspace() {
     const nextDraft = `/${skill.name} `;
     setDraft(nextDraft);
     setSkillDetail(null);
-    setRightPanelTab("skills");
+    setResourceDialogTab(null);
     setRecentSkillNames((current) => {
       const next = [skill.name, ...current.filter((name) => name !== skill.name)].slice(0, 6);
       writeRecentSkills(next);
@@ -1048,7 +1071,6 @@ export function AgentWorkspace() {
     }
     if (event.type === "job" && event.job_id) {
       setSelectedJobId(event.job_id);
-      revealRightPanel("jobs");
       setStatus({ tone: "busy", text: "Job started" });
       saveActiveJob(event.job_id, event.job?.session_id || event.session_id || sessionId);
       const submitted = event.job?.content || "";
@@ -1186,8 +1208,21 @@ export function AgentWorkspace() {
     readServiceStatus(api).then(setServiceStatus).catch(() => {});
   }
 
-  function updateRightSearch(value: string) {
-    setRightPanelSearch((current) => ({ ...current, [rightPanelTab]: value }));
+  function updateResourceSearch(value: string) {
+    setResourceSearch((current) => ({ ...current, [activeResourceTab]: value }));
+    setResourceVisibleCount((current) => ({ ...current, [activeResourceTab]: resourcePageSize }));
+  }
+
+  function changeResourceTab(tab: RightPanelTab) {
+    setResourceDialogTab(tab);
+    setResourceVisibleCount((current) => ({ ...current, [tab]: resourcePageSize }));
+  }
+
+  function loadMoreResources() {
+    setResourceVisibleCount((current) => ({
+      ...current,
+      [activeResourceTab]: current[activeResourceTab] + resourcePageSize
+    }));
   }
 
   function leaveAdminConsole() {
@@ -1225,7 +1260,6 @@ export function AgentWorkspace() {
   return (
     <WorkspaceFrame
       leftCollapsed={!leftSidebarOpen}
-      rightCollapsed={!rightPanelOpen}
       sidebar={(
         <WorkspaceSidebar
           authSession={authSession}
@@ -1236,6 +1270,12 @@ export function AgentWorkspace() {
           serviceStatus={serviceStatus}
           settingsOpen={settingsOpen}
           accountRef={accountRef}
+          resourceCounts={{
+            skills: skills.length,
+            jobs: jobs.length,
+            attachments: attachments.length,
+            artifacts: artifacts.length
+          }}
           serviceStatusPill={(nextStatus) => <ServiceStatusPill status={nextStatus} />}
           onToggleLeft={() => {
             setGlobalSearchOpen(false);
@@ -1248,7 +1288,7 @@ export function AgentWorkspace() {
           onCloseMobile={() => setMobileNav(false)}
           onCreateSession={createSession}
           onOpenSearch={() => setGlobalSearchOpen(true)}
-          onRefresh={refreshAll}
+          onOpenResource={openResourceDialog}
           onSelectSession={selectSession}
           onRemoveSession={removeSession}
           onToggleSettings={setSettingsOpen}
@@ -1311,79 +1351,45 @@ export function AgentWorkspace() {
           )}
         />
       )}
-      rightPanel={(
-        <WorkspaceToolsPanel
-          open={rightPanelOpen}
-          activeTab={rightPanelTab}
-          searchValue={rightSearch}
-          counts={{
-            skills: skills.length,
-            jobs: jobs.length,
-            attachments: attachments.length,
-            artifacts: artifacts.length
-          }}
-          onToggle={() => setRightPanelOpen((open) => !open)}
-          onTabChange={setRightPanelTab}
-          onSearchChange={updateRightSearch}
-        >
-          {rightPanelTab === "skills" && (
-            <SkillPanel
-              skills={filteredSkills}
-              recentSkillNames={recentSkillNames}
-              emptyLabel={rightPanelSearch.skills ? "No matching skills" : "No skills"}
-              onInsert={insertSkill}
-              onDetails={setSkillDetail}
-            />
-          )}
-          {rightPanelTab === "jobs" && (
-            <JobPanel
-              jobs={filteredJobs}
-              selectedJobId={selectedJobId}
-              jobEvents={jobEvents}
-              jobStreamNotice={jobStreamNotice}
-              jobStreamStatus={jobStreamStatus}
-              emptyLabel={rightPanelSearch.jobs ? "No results" : "No items"}
-              onToggleJob={toggleJob}
-              onCancelJob={cancelJob}
-              formatTime={formatTime}
-            />
-          )}
-          {rightPanelTab === "attachments" && (
-            <AssetPanel
-              assets={filteredAttachments}
-              icon="file"
-              emptyLabel={rightPanelSearch.attachments ? "No results" : "No items"}
-              uploadProgress={uploadProgress}
-              preview={(asset) => setPreviewAsset({ asset, url: api.attachmentURL(asset.id) })}
-              download={(id) => window.open(api.attachmentURL(id), "_blank")}
-              remove={(id) => deleteAsset("attachment", id)}
-              extractMemory={extractAssetMemory}
-              memoryBusy={assetMemoryBusy}
-              memoryDisabled={!memorySettings.capture_enabled}
-              addToMessage={addAttachmentToMessage}
-              formatBytes={formatBytes}
-              formatTime={formatTime}
-            />
-          )}
-          {rightPanelTab === "artifacts" && (
-            <AssetPanel
-              assets={filteredArtifacts}
-              icon="image"
-              emptyLabel={rightPanelSearch.artifacts ? "No results" : "No items"}
-              preview={(asset) => setPreviewAsset({ asset, url: api.artifactURL(asset.id), previewUrl: api.artifactPreviewURL(asset.id) })}
-              download={(id) => window.open(api.artifactURL(id), "_blank")}
-              remove={(id) => deleteAsset("artifact", id)}
-              extractMemory={extractAssetMemory}
-              memoryBusy={assetMemoryBusy}
-              memoryDisabled={!memorySettings.capture_enabled}
-              formatBytes={formatBytes}
-              formatTime={formatTime}
-            />
-          )}
-        </WorkspaceToolsPanel>
-      )}
       modals={(
         <>
+          <WorkspaceResourceDialog
+            open={Boolean(resourceDialogTab)}
+            activeTab={activeResourceTab}
+            searchValue={activeResourceSearch}
+            visibleCount={activeResourceVisibleCount}
+            totalCount={activeResourceTotalCount}
+            skills={visibleResourceSkills}
+            recentSkillNames={recentSkillNames}
+            jobs={visibleResourceJobs}
+            selectedJobId={selectedJobId}
+            jobEvents={jobEvents}
+            jobStreamNotice={jobStreamNotice}
+            jobStreamStatus={jobStreamStatus}
+            attachments={visibleResourceAttachments}
+            artifacts={visibleResourceArtifacts}
+            uploadProgress={uploadProgress}
+            assetMemoryBusy={assetMemoryBusy}
+            memoryDisabled={!memorySettings.capture_enabled}
+            onOpenChange={closeResourceDialog}
+            onTabChange={changeResourceTab}
+            onSearchChange={updateResourceSearch}
+            onLoadMore={loadMoreResources}
+            onInsertSkill={insertSkill}
+            onSkillDetails={setSkillDetail}
+            onToggleJob={toggleJob}
+            onCancelJob={cancelJob}
+            onPreviewAttachment={(asset) => setPreviewAsset({ asset, url: api.attachmentURL(asset.id) })}
+            onDownloadAttachment={(id) => window.open(api.attachmentURL(id), "_blank")}
+            onDeleteAttachment={(id) => deleteAsset("attachment", id)}
+            onAddAttachmentToMessage={addAttachmentToMessage}
+            onPreviewArtifact={(asset) => setPreviewAsset({ asset, url: api.artifactURL(asset.id), previewUrl: api.artifactPreviewURL(asset.id) })}
+            onDownloadArtifact={(id) => window.open(api.artifactURL(id), "_blank")}
+            onDeleteArtifact={(id) => deleteAsset("artifact", id)}
+            onExtractMemory={extractAssetMemory}
+            formatBytes={formatBytes}
+            formatTime={formatTime}
+          />
           <GlobalSearchDialog
             open={globalSearchOpen}
             query={globalSearchQuery}
@@ -1628,6 +1634,10 @@ function clearActiveJob(jobId?: string) {
   }
 }
 
+function resourceTotalCount(tab: RightPanelTab, counts: Record<RightPanelTab, number>): number {
+  return counts[tab];
+}
+
 function messageWithAttachmentNames(content: string, assets: Asset[]): string {
   if (assets.length === 0) return content;
   const names = assets.map((asset) => asset.filename).join(", ");
@@ -1663,9 +1673,9 @@ function ServiceStatusPill({ status }: { status: ServiceStatus }) {
 
 function jobStartedMessage(event: RuntimeEvent): string {
   if (event.job?.type === "skill") {
-    return "已开始执行工作流，完成后会自动更新结果。你也可以在右侧 Jobs 面板查看进度。";
+    return "已开始执行工作流，完成后会自动更新结果。你也可以从左侧 Jobs 查看进度。";
   }
-  return "已开始后台处理，完成后会自动更新结果。你也可以在右侧 Jobs 面板查看进度。";
+  return "已开始后台处理，完成后会自动更新结果。你也可以从左侧 Jobs 查看进度。";
 }
 
 function shouldDisplayJobSubmittedContent(event: RuntimeEvent): boolean {

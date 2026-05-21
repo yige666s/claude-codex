@@ -17,9 +17,10 @@ test.describe("frontend phase 0 visual baselines", () => {
     await page.screenshot({ path: `${baselineDir}/desktop-settings-menu.png`, fullPage: true });
     await page.keyboard.press("Escape");
 
-    await page.getByRole("tab", { name: /Jobs/ }).click();
+    await page.getByRole("button", { name: "Jobs" }).click();
     await expect(page.getByText("/docx baseline")).toBeVisible();
-    await screenshot(page, ".app-shell", `${baselineDir}/desktop-right-panel-jobs.png`);
+    await page.screenshot({ path: `${baselineDir}/desktop-resource-jobs.png`, fullPage: true });
+    await page.getByLabel("Close resources").click();
 
     await page.goto("/admin");
     await expect(page.getByRole("heading", { name: "Skills" })).toBeVisible();
@@ -36,7 +37,7 @@ test.describe("frontend phase 0 visual baselines", () => {
     await screenshot(page, ".app-shell", `${baselineDir}/mobile-workspace.png`);
 
     await page.locator(".topbar button[aria-label='Open navigation']").click();
-    await expect(page.getByRole("button", { name: "New session" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "新聊天" })).toBeVisible();
     await screenshot(page, ".app-shell", `${baselineDir}/mobile-navigation.png`);
   });
 });
@@ -70,7 +71,7 @@ async function mockBaselineAPI(page: Page) {
       { role: "user", content: "当前有哪些 provider-model 支持 live api", created_at: now, message_index: 0 },
       {
         role: "assistant",
-        content: "Gemini Live is configured for voice mode. Use the right panel to inspect jobs, assets, and skills.",
+        content: "Gemini Live is configured for voice mode. Use the left panel to inspect jobs, assets, and skills.",
         created_at: now,
         message_index: 1
       }

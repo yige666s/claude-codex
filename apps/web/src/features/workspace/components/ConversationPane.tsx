@@ -46,8 +46,9 @@ export function ConversationPane({
   onOpenMobileNav,
   onReconnectJob
 }: ConversationPaneProps) {
+  const empty = !messages.length && !liveUserDraft && !assistantDraft;
   return (
-    <section className="workspace">
+    <section className={`workspace ${empty ? "empty-workspace" : ""}`}>
       <header className="topbar">
         <Button className="icon mobile-only" onClick={onOpenMobileNav} title="Open navigation" aria-label="Open navigation"><Menu size={20} /></Button>
         <div>

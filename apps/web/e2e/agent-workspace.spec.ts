@@ -51,7 +51,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
 
   await expect(page.getByRole("heading", { name: "20260509T120000Z-e2e" })).toBeVisible();
 
-  await page.getByRole("button", { name: "New session" }).click();
+  await page.getByRole("button", { name: "新聊天" }).click();
   await expect(page.getByRole("heading", { name: "20260509T120100Z-e2e" })).toBeVisible();
 
   await page.getByRole("textbox", { name: "Message" }).fill("hello from playwright");
@@ -68,26 +68,28 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Attachment received: notes.md")).toBeVisible();
 
-  await page.getByRole("tab", { name: "Attachments" }).click();
+  await page.getByRole("button", { name: "Attachments" }).click();
   await page.getByRole("button", { name: "Preview notes.md" }).click();
   await expect(page.getByRole("dialog", { name: "notes.md" })).toBeVisible();
   await expect(page.getByText("# Notes")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "notes.md" })).toBeHidden();
 
-  await page.getByRole("tab", { name: "Skills" }).click();
+  await page.getByRole("dialog", { name: "Attachments" }).getByLabel("Close resources").click();
+  await page.getByRole("button", { name: "Skills" }).click();
   await page.getByRole("button", { name: /vertex-image-artifact/i }).click();
+  await page.getByRole("button", { name: /Apply \/vertex-image-artifact/i }).click();
   await page.getByRole("textbox", { name: "Message" }).fill("/vertex-image-artifact draw a blue square");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByRole("button", { name: "Preview result.txt" })).toBeVisible();
 
-  await page.getByRole("tab", { name: "Artifacts" }).click();
+  await page.getByRole("button", { name: "Artifacts" }).click();
   await page.getByRole("button", { name: "Preview result.txt" }).click();
   await expect(page.getByRole("dialog", { name: "result.txt" })).toBeVisible();
   await expect(page.getByText("generated artifact body")).toBeVisible();
   await page.getByRole("button", { name: "Close preview" }).click();
+  await page.getByRole("dialog", { name: "Artifacts" }).getByLabel("Close resources").click();
 
-  await page.getByRole("button", { name: "Search messages" }).click();
+  await page.getByRole("button", { name: "搜索聊天" }).click();
   await page.getByRole("textbox", { name: "Search across all sessions" }).fill("playwright");
   await page.getByRole("dialog", { name: "Search across all sessions" }).locator(".global-search-result", { hasText: "hello from playwright" }).first().click();
   await expect(page.getByRole("heading", { name: "hello from playwright" })).toBeVisible();
