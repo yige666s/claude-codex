@@ -276,11 +276,19 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean } = {}) {
     return json(route, { attachments: state.attachments });
   });
   await page.route("**/v1/attachments?**", (route) => json(route, { attachments: state.attachments }));
-  await page.route("**/v1/attachments/attachment-1?**", (route) => text(route, "# Notes\n\nhello attachment", "text/markdown"));
+  await page.route(/.*\/v1\/attachments\/attachment-1(?:\?.*)?$/, (route) => {
+    expect(new URL(route.request().url()).searchParams.has("token")).toBe(false);
+    expect(route.request().headers().authorization).toBe("Bearer access-token");
+    return text(route, "# Notes\n\nhello attachment", "text/markdown");
+  });
 
   await page.route("**/v1/artifacts", (route) => json(route, { artifacts: state.artifacts }));
   await page.route("**/v1/artifacts?**", (route) => json(route, { artifacts: state.artifacts }));
-  await page.route("**/v1/artifacts/artifact-1?**", (route) => text(route, "generated artifact body", "text/plain"));
+  await page.route(/.*\/v1\/artifacts\/artifact-1(?:\?.*)?$/, (route) => {
+    expect(new URL(route.request().url()).searchParams.has("token")).toBe(false);
+    expect(route.request().headers().authorization).toBe("Bearer access-token");
+    return text(route, "generated artifact body", "text/plain");
+  });
 
   await page.route("**/v1/jobs/job-1/events?stream=1**", (route) => sse(route, [
     { id: "evt-1", event: "start", data: { type: "start", session_id: state.sessions[0].id } },

@@ -144,7 +144,7 @@ export function AgentWorkspace() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<Asset[]>([]);
-  const [previewAsset, setPreviewAsset] = useState<{ asset: Asset; url: string; previewUrl?: string } | null>(null);
+  const [previewAsset, setPreviewAsset] = useState<{ asset: Asset; loadAsset: () => Promise<Blob>; loadPreview?: () => Promise<Blob> } | null>(null);
   const [assetMemoryBusy, setAssetMemoryBusy] = useState<Record<string, boolean>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
@@ -964,6 +964,53 @@ export function AgentWorkspace() {
     setStatus({ tone: "ok", text: "Attachment added" });
   }
 
+  function previewAttachment(asset: Asset) {
+    setPreviewAsset({
+      asset,
+      loadAsset: () => api.attachmentBlob(asset.id)
+    });
+  }
+
+  function previewArtifact(asset: Asset) {
+    setPreviewAsset({
+      asset,
+      loadAsset: () => api.artifactBlob(asset.id),
+      loadPreview: () => api.artifactPreviewBlob(asset.id)
+    });
+  }
+
+  async function downloadAttachment(id: string) {
+    const asset = attachments.find((item) => item.id === id);
+    await downloadAsset(() => api.attachmentBlob(id), asset?.filename || id);
+  }
+
+  async function downloadArtifact(id: string) {
+    const asset = artifacts.find((item) => item.id === id);
+    await downloadAsset(() => api.artifactBlob(id), asset?.filename || id);
+  }
+
+  async function downloadAsset(loadAsset: () => Promise<Blob>, filename: string) {
+    setStatus({ tone: "busy", text: "Preparing download" });
+    try {
+      const blob = await loadAsset();
+      const url = URL.createObjectURL(blob);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        anchor.rel = "noopener";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+      setStatus({ tone: "ok", text: "Download ready" });
+    } catch (error) {
+      showError(error);
+    }
+  }
+
   function insertSkill(skill: Skill) {
     const nextDraft = `/${skill.name} `;
     setDraft(nextDraft);
@@ -1379,12 +1426,12 @@ export function AgentWorkspace() {
             onSkillDetails={setSkillDetail}
             onToggleJob={toggleJob}
             onCancelJob={cancelJob}
-            onPreviewAttachment={(asset) => setPreviewAsset({ asset, url: api.attachmentURL(asset.id) })}
-            onDownloadAttachment={(id) => window.open(api.attachmentURL(id), "_blank")}
+            onPreviewAttachment={previewAttachment}
+            onDownloadAttachment={(id) => { void downloadAttachment(id); }}
             onDeleteAttachment={(id) => deleteAsset("attachment", id)}
             onAddAttachmentToMessage={addAttachmentToMessage}
-            onPreviewArtifact={(asset) => setPreviewAsset({ asset, url: api.artifactURL(asset.id), previewUrl: api.artifactPreviewURL(asset.id) })}
-            onDownloadArtifact={(id) => window.open(api.artifactURL(id), "_blank")}
+            onPreviewArtifact={previewArtifact}
+            onDownloadArtifact={(id) => { void downloadArtifact(id); }}
             onDeleteArtifact={(id) => deleteAsset("artifact", id)}
             onExtractMemory={extractAssetMemory}
             formatBytes={formatBytes}
@@ -1460,7 +1507,14 @@ export function AgentWorkspace() {
               onClose={() => setSettingsModalOpen(false)}
             />
           )}
-          {previewAsset && <PreviewModal asset={previewAsset.asset} url={previewAsset.url} previewUrl={previewAsset.previewUrl} onClose={() => setPreviewAsset(null)} />}
+          {previewAsset && (
+            <PreviewModal
+              asset={previewAsset.asset}
+              loadAsset={previewAsset.loadAsset}
+              loadPreview={previewAsset.loadPreview}
+              onClose={() => setPreviewAsset(null)}
+            />
+          )}
           {confirmDialog && (
             <ConfirmModal
               dialog={confirmDialog}

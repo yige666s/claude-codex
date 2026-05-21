@@ -1993,6 +1993,40 @@ func TestJWTAuthenticatorAcceptsSignedToken(t *testing.T) {
 	}
 }
 
+func TestJWTAuthenticatorRejectsQueryTokenForAttachmentDownload(t *testing.T) {
+	token := signTestJWT(t, "secret", map[string]any{
+		"sub": "alice",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/attachments/asset-1?token="+url.QueryEscape(token), nil)
+
+	if _, err := (JWTAuthenticator{Secret: "secret"}).Authenticate(req); err == nil {
+		t.Fatal("expected query token to be rejected for attachment download")
+	}
+}
+
+func TestJWTAuthenticatorAllowsQueryTokenForBrowserStreams(t *testing.T) {
+	token := signTestJWT(t, "secret", map[string]any{
+		"sub": "alice",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	authenticator := JWTAuthenticator{Secret: "secret"}
+
+	for _, target := range []string{
+		"/v1/jobs/job-1/events?stream=1&token=" + url.QueryEscape(token),
+		"/v1/sessions/session-1/live/ws?token=" + url.QueryEscape(token),
+	} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		user, err := authenticator.Authenticate(req)
+		if err != nil {
+			t.Fatalf("authenticate %s: %v", target, err)
+		}
+		if user.ID != "alice" {
+			t.Fatalf("user ID for %s = %q, want alice", target, user.ID)
+		}
+	}
+}
+
 func TestJWTAuthenticatorRejectsInvalidSignature(t *testing.T) {
 	token := signTestJWT(t, "secret", map[string]any{"sub": "alice"})
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)

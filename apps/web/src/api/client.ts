@@ -715,16 +715,16 @@ export class ApiClient {
     return payload.items || [];
   }
 
-  attachmentURL(id: string): string {
-    return this.authURL(`/v1/attachments/${encodeURIComponent(id)}`);
+  async attachmentBlob(id: string): Promise<Blob> {
+    return this.fetchBlob(`/v1/attachments/${encodeURIComponent(id)}`);
   }
 
-  artifactURL(id: string): string {
-    return this.authURL(`/v1/artifacts/${encodeURIComponent(id)}`);
+  async artifactBlob(id: string): Promise<Blob> {
+    return this.fetchBlob(`/v1/artifacts/${encodeURIComponent(id)}`);
   }
 
-  artifactPreviewURL(id: string): string {
-    return this.authURL(`/v1/artifacts/${encodeURIComponent(id)}/preview`);
+  async artifactPreviewBlob(id: string): Promise<Blob> {
+    return this.fetchBlob(`/v1/artifacts/${encodeURIComponent(id)}/preview`);
   }
 
   jobStreamURL(jobId: string, afterId?: string): string {
@@ -798,6 +798,20 @@ export class ApiClient {
     }
     if (!response.ok) throw await toApiError(response);
     return response.text();
+  }
+
+  private async fetchBlob(path: string, options: RequestInit = {}, retry = true): Promise<Blob> {
+    await this.ensureFreshAccess();
+    const response = await fetch(this.apiURL(path), {
+      ...options,
+      credentials: "include",
+      headers: this.headers(options.headers)
+    });
+    if (response.status === 401 && retry && this.auth?.refresh_token) {
+      if (await this.refresh({ clearOnFailure: true })) return this.fetchBlob(path, options, false);
+    }
+    if (!response.ok) throw await toApiError(response);
+    return response.blob();
   }
 
   private async ensureFreshAccess(): Promise<void> {
@@ -886,13 +900,6 @@ export class ApiClient {
     if (includeAuth && this.auth?.access_token) headers.set("Authorization", `Bearer ${this.auth.access_token}`);
     if (this.auth?.csrf_token) headers.set("X-CSRF-Token", this.auth.csrf_token);
     return headers;
-  }
-
-  private authURL(path: string): string {
-    const url = this.apiURL(path);
-    if (!this.auth?.access_token) return url;
-    const sep = url.includes("?") ? "&" : "?";
-    return `${url}${sep}token=${encodeURIComponent(this.auth.access_token)}`;
   }
 
   private apiURL(path: string): string {

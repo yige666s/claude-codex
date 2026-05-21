@@ -40,7 +40,7 @@ func (a HeaderAuthenticator) Authenticate(r *http.Request) (User, error) {
 	if strings.TrimSpace(a.BearerToken) != "" {
 		got := bearerToken(r)
 		if got == "" {
-			got = r.URL.Query().Get("token")
+			got = queryToken(r)
 		}
 		if got != a.BearerToken {
 			return User{}, fmt.Errorf("unauthorized")
@@ -92,7 +92,7 @@ type JWTAuthenticator struct {
 func (a JWTAuthenticator) Authenticate(r *http.Request) (User, error) {
 	token := bearerToken(r)
 	if token == "" {
-		token = r.URL.Query().Get("token")
+		token = queryToken(r)
 	}
 	if token == "" {
 		return User{}, fmt.Errorf("bearer token is required")
@@ -223,4 +223,20 @@ func bearerToken(r *http.Request) string {
 		return strings.TrimSpace(auth[len("bearer "):])
 	}
 	return ""
+}
+
+func queryToken(r *http.Request) string {
+	if !allowsQueryToken(r) {
+		return ""
+	}
+	return strings.TrimSpace(r.URL.Query().Get("token"))
+}
+
+func allowsQueryToken(r *http.Request) bool {
+	path := strings.Trim(r.URL.Path, "/")
+	parts := strings.Split(path, "/")
+	if r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "v1" && parts[1] == "jobs" && parts[3] == "events" {
+		return r.URL.Query().Get("stream") == "1"
+	}
+	return r.Method == http.MethodGet && len(parts) == 5 && parts[0] == "v1" && parts[1] == "sessions" && parts[3] == "live" && parts[4] == "ws"
 }
