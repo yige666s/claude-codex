@@ -423,20 +423,19 @@ label.composer-upload {
 
 .app-shell {
   --left-sidebar-width: 300px;
-  width: min(1780px, calc(100vw - clamp(22px, 8vw, 150px)));
-  height: min(1180px, calc(100vh - clamp(32px, 11vh, 132px)));
-  height: min(1180px, calc(100dvh - clamp(32px, 11vh, 132px)));
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
   min-height: 0;
   position: relative;
-  margin: clamp(16px, 5.8vh, 66px) auto;
+  margin: 0;
   display: grid;
   grid-template-columns: var(--left-sidebar-width) minmax(0, 1fr);
   overflow: hidden;
-  border: 1px solid rgba(216, 222, 231, 0.9);
-  border-radius: 22px;
+  border: 0;
+  border-radius: 0;
   background: rgba(249, 250, 252, 0.9);
   box-shadow:
-    0 42px 120px rgba(36, 41, 53, 0.13),
     inset 0 1px 0 rgba(255, 255, 255, 0.94);
   transition: grid-template-columns 160ms ease;
 }
@@ -550,13 +549,16 @@ label.composer-upload {
   align-items: center;
 }
 .left-collapsed .account {
-  width: 100%;
-  min-height: calc(var(--control-size) + 24px);
-  margin-top: auto;
-  padding: 12px 0;
-  border-top: 0;
-  display: flex;
-  justify-content: center;
+  width: calc(var(--control-size) + 10px);
+  min-height: calc(var(--control-size) + 10px);
+  margin: auto 0 14px;
+  padding: 4px;
+  border: 1px solid rgba(227, 232, 240, 0.88);
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 14px 34px rgba(42, 50, 67, 0.08);
 }
 .left-collapsed .toolbar .icon,
 .left-collapsed .sidebar-action-button,
