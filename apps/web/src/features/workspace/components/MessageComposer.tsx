@@ -77,6 +77,7 @@ export function MessageComposer({
 }: MessageComposerProps) {
   const canUseText = inputMode === "text" && liveStatus === "idle";
   const canSend = canUseText && (!!draft.trim() || pendingAttachments.length > 0) && !!sessionId;
+  const expandedComposer = draft.length > 80 || draft.includes("\n");
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -86,7 +87,7 @@ export function MessageComposer({
   };
 
   return (
-    <footer className="composer">
+    <footer className={`composer ${expandedComposer ? "composer-expanded" : ""}`}>
       <RuntimeErrorBanner message={runtimeError} onDismiss={onClearRuntimeError} />
       <RuntimeErrorBanner message={uploadError} upload onDismiss={onClearUploadError} />
       <ResponseTimingBadges timing={responseTiming} formatNumber={formatNumber} />

@@ -1632,7 +1632,7 @@ label.composer-upload {
   grid-column: 1;
   position: absolute;
   left: 50%;
-  top: calc(50% + 105px);
+  top: calc(50% + 58px);
   z-index: 3;
   transform: translateX(-50%);
   border: 1px solid rgba(222, 228, 238, 0.95);
@@ -1648,20 +1648,44 @@ label.composer-upload {
   align-items: end;
   gap: 12px;
 }
+.composer-expanded .composer-row {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(var(--composer-control-size), auto) var(--composer-control-size);
+  align-items: stretch;
+  gap: 8px 12px;
+}
 .composer textarea {
   height: var(--composer-control-size);
   min-height: var(--composer-control-size);
-  max-height: 180px;
+  max-height: min(180px, calc(100vh - 220px));
   padding: 11px 14px;
   border-color: transparent;
   background: transparent;
   line-height: 1.4;
   resize: none;
   overflow-y: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .composer textarea:focus {
   border-color: transparent;
   box-shadow: none;
+}
+.composer-expanded textarea {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  width: 100%;
+  min-width: 0;
+  padding: 0 14px 8px;
+}
+.composer-expanded .composer-upload {
+  grid-column: 1;
+  grid-row: 2;
+}
+.composer-expanded .composer-actions {
+  grid-column: 3;
+  grid-row: 2;
+  align-self: end;
 }
 .composer-upload {
   width: var(--composer-control-size);
@@ -3833,9 +3857,22 @@ label.composer-upload {
     grid-template-columns: auto minmax(0, 1fr);
     gap: 8px;
   }
+  .composer-expanded .composer-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: minmax(var(--composer-control-size), auto) auto;
+  }
   .composer-actions {
     grid-column: 1 / -1;
     justify-content: flex-end;
+  }
+  .composer-expanded .composer-actions {
+    grid-column: 2;
+    grid-row: 2;
+    justify-content: flex-end;
+  }
+  .composer-expanded .composer-upload {
+    grid-column: 1;
+    grid-row: 2;
   }
   .composer textarea {
     min-width: 0;

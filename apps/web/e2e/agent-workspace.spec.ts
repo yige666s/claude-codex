@@ -50,6 +50,14 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByRole("button", { name: "Create Account" }).click();
 
   await expect(page.getByRole("heading", { name: "20260509T120000Z-e2e" })).toBeVisible();
+  await expect(page.locator(".empty-prompt-card")).toBeVisible();
+  await page.getByRole("textbox", { name: "Message" }).fill("d".repeat(56) + "\n" + "d".repeat(10));
+  const emptyPromptBox = await page.locator(".empty-prompt-card").boundingBox();
+  const emptyComposerBox = await page.locator(".composer").boundingBox();
+  expect(emptyPromptBox).not.toBeNull();
+  expect(emptyComposerBox).not.toBeNull();
+  expect(emptyComposerBox!.y).toBeLessThan(emptyPromptBox!.y + emptyPromptBox!.height);
+  await page.getByRole("textbox", { name: "Message" }).fill("");
 
   await page.getByRole("button", { name: "新聊天" }).click();
   await expect(page.getByRole("heading", { name: "20260509T120100Z-e2e" })).toBeVisible();
@@ -105,6 +113,17 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await expect(page.getByRole("dialog", { name: "Memory" })).toBeVisible();
   await page.getByRole("button", { name: "Close memory" }).click();
   await expect(page.getByRole("dialog", { name: "Memory" })).toBeHidden();
+
+  const longComposerText = "asdaasdfsafasfsafasfas1c2e`2c1111111112wasdasd".repeat(10);
+  await page.getByRole("textbox", { name: "Message" }).fill(longComposerText);
+  const composerBox = await page.locator(".composer").boundingBox();
+  const textareaBox = await page.locator(".composer textarea").boundingBox();
+  const actionsBox = await page.locator(".composer-actions").boundingBox();
+  expect(composerBox).not.toBeNull();
+  expect(textareaBox).not.toBeNull();
+  expect(actionsBox).not.toBeNull();
+  expect(textareaBox!.width / composerBox!.width).toBeGreaterThan(0.9);
+  expect(actionsBox!.y).toBeGreaterThanOrEqual(textareaBox!.y + textareaBox!.height - 2);
 
   expect(api.sessions.some((session) => session.messages.some((message) => message.content?.includes("hello from playwright")))).toBe(true);
 });
