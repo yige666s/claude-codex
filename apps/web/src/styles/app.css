@@ -447,7 +447,7 @@ label.composer-upload {
   border-color: var(--accent);
   color: #fff;
 }
-.primary:hover { background: var(--accent-strong); }
+.primary:hover:not(:disabled) { background: var(--accent-strong); }
 .danger { color: var(--danger); border-color: #f0b8b2; }
 .wide { width: 100%; }
 .send {
@@ -518,12 +518,15 @@ label.composer-upload {
   box-shadow: inset 3px 0 0 rgba(15, 118, 110, 0.32);
 }
 .session-select {
+  width: 100%;
   min-width: 0;
   min-height: 52px;
   padding: 8px 0;
   border: 0;
   background: transparent;
   display: grid;
+  justify-content: start;
+  justify-items: start;
   text-align: left;
   align-items: center;
 }
@@ -871,6 +874,7 @@ label.composer-upload {
   border: 0;
   border-radius: 6px;
   display: flex;
+  justify-content: flex-start;
   align-items: center;
   gap: 9px;
   background: transparent;

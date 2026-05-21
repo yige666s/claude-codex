@@ -81,11 +81,11 @@ export function WorkspaceSidebar({
         <Button className="icon ghost mobile-only" onClick={onCloseMobile} title="Close navigation" aria-label="Close navigation"><X size={18} /></Button>
       </div>
       <div className="toolbar">
-        <Button className="icon primary" onClick={onCreateSession} title="New session" aria-label="New session"><MessageSquarePlus size={18} /></Button>
-        <Button className="icon" onClick={onOpenSearch} title="Search messages" aria-label="Search messages">
+        <Button className="icon" variant="primary" size="icon" onClick={onCreateSession} title="New session" aria-label="New session"><MessageSquarePlus size={18} /></Button>
+        <Button className="icon" variant="outline" size="icon" onClick={onOpenSearch} title="Search messages" aria-label="Search messages">
           <Search size={18} />
         </Button>
-        <Button className="icon" onClick={onRefresh} title="Refresh" aria-label="Refresh"><RefreshCw size={18} /></Button>
+        <Button className="icon" variant="outline" size="icon" onClick={onRefresh} title="Refresh" aria-label="Refresh"><RefreshCw size={18} /></Button>
       </div>
       <div className="list sessions">
         {sessions.map((session) => (
@@ -93,7 +93,7 @@ export function WorkspaceSidebar({
             <Button className="session-select" onClick={() => onSelectSession(session.id)}>
               <span>{sessionTitle(session)}</span>
             </Button>
-            <Button className="session-delete" onClick={() => onRemoveSession(session.id)} title="Delete session" aria-label="Delete session">
+            <Button className="session-delete" variant="ghost" size="icon" onClick={() => onRemoveSession(session.id)} title="Delete session" aria-label="Delete session">
               <Trash2 size={16} />
             </Button>
           </div>
@@ -104,12 +104,12 @@ export function WorkspaceSidebar({
           <strong>{authSession.user.display_name || authSession.user.email}</strong>
           <small>{authSession.user.email}</small>
         </div>
-        <Button className="icon" onClick={onToggleSettings} title="Settings" aria-label="Settings"><Settings size={18} /></Button>
+        <Button className="icon" variant="outline" size="icon" onClick={onToggleSettings} title="Settings" aria-label="Settings"><Settings size={18} /></Button>
         {settingsOpen && (
           <div className="settings-menu">
-            <Button onClick={onOpenSettings}><Settings size={16} /> Settings</Button>
-            <Button onClick={onManageMemory}><Database size={16} /> Manage Memory</Button>
-            <Button onClick={onLogout}><LogOut size={16} /> Log Out</Button>
+            <Button variant="ghost" onClick={onOpenSettings}><Settings size={16} /> Settings</Button>
+            <Button variant="ghost" onClick={onManageMemory}><Database size={16} /> Manage Memory</Button>
+            <Button variant="ghost" onClick={onLogout}><LogOut size={16} /> Log Out</Button>
           </div>
         )}
       </div>
