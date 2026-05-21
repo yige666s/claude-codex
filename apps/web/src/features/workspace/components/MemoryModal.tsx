@@ -94,6 +94,8 @@ export function MemoryModal({
       if (!open) onClose();
     }}>
       <DialogContent className="memory-modal" hideClose>
+        <DialogTitle className="sr-only">Memory</DialogTitle>
+        <DialogDescription className="sr-only">Review, edit, score, and organize saved memory items.</DialogDescription>
         <header>
           <div>
             <strong id="memory-title">Memory</strong>

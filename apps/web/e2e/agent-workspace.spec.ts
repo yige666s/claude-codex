@@ -49,7 +49,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByLabel("Repeat secret").fill("password123");
   await page.getByRole("button", { name: "Create Account" }).click();
 
-  await expect(page.getByRole("heading", { name: "New conversation" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "20260509T120000Z-e2e" })).toBeVisible();
 
   await page.getByRole("button", { name: "New session" }).click();
   await expect(page.getByRole("heading", { name: "20260509T120100Z-e2e" })).toBeVisible();
@@ -117,7 +117,7 @@ test("covers admin console smoke after the panel split", async ({ page }) => {
   await page.getByLabel("Email").fill("admin@example.com");
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Login" }).last().click();
-  await expect(page.getByRole("heading", { name: "New conversation" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "20260509T120000Z-e2e" })).toBeVisible();
 
   await page.goto("/admin");
   await expect(page.getByRole("heading", { name: "Skills" })).toBeVisible();

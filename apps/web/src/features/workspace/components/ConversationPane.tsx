@@ -1,9 +1,10 @@
-import { Fragment, ReactNode, Ref, RefObject } from "react";
+import { ReactNode, RefObject } from "react";
 import { AlertCircle, Menu } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import type { Message, Session } from "../../../types";
 import { sessionTitle } from "../../../lib/sessionTitle";
 import type { Status } from "../workspaceTypes";
+import { MessageList } from "./messages/MessageList";
 
 type RecoveryBanner = {
   tone: "busy" | "error";
@@ -63,19 +64,14 @@ export function ConversationPane({
           )}
         </div>
       )}
-      <div className="messages" ref={messagesRef as Ref<HTMLDivElement>}>
-        {!messages.length && !liveUserDraft && !assistantDraft && <div className="empty-state">Start with a message or choose a skill from the right panel.</div>}
-        {messages.map((message, index) => (
-          <Fragment key={`${message.created_at || index}-${index}`}>
-            {messageBubble({
-              message,
-              highlighted: message.message_index !== undefined && message.message_index === highlightedMessageIndex
-            })}
-          </Fragment>
-        ))}
-        {liveUserDraft && messageBubble({ message: { role: "user", content: liveUserDraft }, streaming: true })}
-        {assistantDraft && messageBubble({ message: { role: "assistant", content: assistantDraft }, streaming: true })}
-      </div>
+      <MessageList
+        messages={messages}
+        liveUserDraft={liveUserDraft}
+        assistantDraft={assistantDraft}
+        highlightedMessageIndex={highlightedMessageIndex}
+        messagesRef={messagesRef}
+        renderMessage={messageBubble}
+      />
       {composer}
     </section>
   );

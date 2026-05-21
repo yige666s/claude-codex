@@ -1,24 +1,10 @@
-import { FormEvent, forwardRef, lazy, ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, lazy, ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
-  Archive,
-  Brain,
-  Briefcase,
-  ChevronDown,
-  Clock,
   Database,
-  Download,
-  FileText,
-  FileUp,
-  Image,
-  Info,
   MessageCircle,
-  MessageSquarePlus,
   PlayCircle,
   RefreshCw,
-  Sparkles,
-  Star,
-  Trash2,
   UserX,
   X
 } from "lucide-react";
@@ -49,6 +35,10 @@ import { MessageComposer } from "./components/MessageComposer";
 import { WorkspaceFrame } from "./components/WorkspaceFrame";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceToolsPanel } from "./components/WorkspaceToolsPanel";
+import { AssetPanel } from "./components/right-panel/AssetPanel";
+import { JobPanel } from "./components/right-panel/JobPanel";
+import { SkillGlyph, SkillPanel } from "./components/right-panel/SkillPanel";
+import { useLiveVoice } from "./hooks/useLiveVoice";
 import type { ConfirmDialog, JobStreamStatus, RightPanelSearch, RightPanelTab, ServiceStatus, Status } from "./workspaceTypes";
 
 const AdminConsole = lazy(() => import("../../admin/AdminConsole"));
@@ -110,11 +100,6 @@ const recentSkillsStorageKey = "agentapi.recentSkills";
 const adminTokenStorageKey = "agentapi.adminToken";
 const jobReconnectBaseMs = 1_000;
 const jobReconnectMaxMs = 10_000;
-const liveVoiceStartRmsThreshold = 0.018;
-const liveVoiceContinueRmsThreshold = 0.01;
-const liveVoiceStartFrames = 3;
-const liveVoiceHangoverFrames = 12;
-const liveVoicePrerollFrames = 4;
 
 function isAdminPath(): boolean {
   return typeof window !== "undefined" && window.location.pathname.replace(/\/+$/, "") === "/admin";
@@ -156,12 +141,6 @@ export function AgentWorkspace() {
   const [highlightedMessageIndex, setHighlightedMessageIndex] = useState<number | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
   const [busyChat, setBusyChat] = useState(false);
-  const [inputMode, setInputMode] = useState<"text" | "live">("text");
-  const [liveStatus, setLiveStatus] = useState<"idle" | "connecting" | "listening" | "paused" | "error">("idle");
-  const [liveMuted, setLiveMuted] = useState(false);
-  const [liveSpeakerVolume, setLiveSpeakerVolume] = useState(1);
-  const [liveMicVolume, setLiveMicVolume] = useState(1);
-  const [liveUserDraft, setLiveUserDraft] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState("");
@@ -192,23 +171,6 @@ export function AgentWorkspace() {
   });
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const liveSocketRef = useRef<WebSocket | null>(null);
-  const liveMediaRef = useRef<MediaStream | null>(null);
-  const liveAudioContextRef = useRef<AudioContext | null>(null);
-  const liveProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const liveSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const livePlaybackContextRef = useRef<AudioContext | null>(null);
-  const livePlaybackGainRef = useRef<GainNode | null>(null);
-  const livePlaybackTimeRef = useRef(0);
-  const livePlaybackGenerationRef = useRef(0);
-  const livePlaybackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const liveMutedRef = useRef(liveMuted);
-  const liveSpeakerVolumeRef = useRef(liveSpeakerVolume);
-  const liveMicVolumeRef = useRef(liveMicVolume);
-  const lastLiveSpeakerVolumeRef = useRef(1);
-  const lastLiveMicVolumeRef = useRef(1);
-  const liveAudioChunkCountRef = useRef(0);
-  const livePlaybackQueueRef = useRef(Promise.resolve());
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const jobSourceRef = useRef<EventSource | null>(null);
   const jobReconnectTimerRef = useRef<number | null>(null);
@@ -227,6 +189,32 @@ export function AgentWorkspace() {
   const latestJob = jobs[0];
   const latestJobId = latestJob?.id || "";
   const rightSearch = rightPanelSearch[rightPanelTab];
+  const {
+    inputMode,
+    liveStatus,
+    liveMuted,
+    speakerVolume: liveSpeakerVolume,
+    micVolume: liveMicVolume,
+    liveUserDraft,
+    stopLiveMode,
+    switchToTextMode,
+    switchToLiveMode,
+    toggleSpeakerMute,
+    toggleMicMute,
+    setSpeakerVolume: changeLiveSpeakerVolume,
+    setMicVolume: changeLiveMicVolume
+  } = useLiveVoice({
+    api,
+    sessionId,
+    onRuntimeEvent: handleRuntimeEvent,
+    onAssistantDraftChange: setAssistantDraft,
+    onLiveSkillMessage: (event) => {
+      handleRuntimeEvent(event);
+      void refreshSessionData(sessionId, { revealNewArtifacts: true });
+    },
+    onError: setRuntimeError,
+    onStatus: setStatus
+  });
   const filteredSkills = useMemo(
     () => skills.filter((skill) => fuzzyMatch(rightPanelSearch.skills, [
       skill.name,
@@ -258,6 +246,7 @@ export function AgentWorkspace() {
       : null;
 
   useEffect(() => {
+    api.start();
     const existing = api.session();
     if (existing) {
       setAuth(existing);
@@ -275,6 +264,7 @@ export function AgentWorkspace() {
     return () => {
       closeJobStream();
       stopLiveMode(false);
+      api.dispose();
     };
   }, [api]);
 
@@ -340,30 +330,6 @@ export function AgentWorkspace() {
   useEffect(() => {
     resizeComposerInput(composerInputRef.current);
   }, [draft]);
-
-  useEffect(() => {
-    liveMutedRef.current = liveMuted;
-    if (liveMuted) {
-      stopLivePlayback();
-    }
-  }, [liveMuted]);
-
-  useEffect(() => {
-    liveSpeakerVolumeRef.current = liveMuted ? 0 : liveSpeakerVolume;
-    if (liveSpeakerVolume > 0) {
-      lastLiveSpeakerVolumeRef.current = liveSpeakerVolume;
-    }
-    if (livePlaybackGainRef.current) {
-      livePlaybackGainRef.current.gain.value = liveMuted ? 0 : liveSpeakerVolume;
-    }
-  }, [liveMuted, liveSpeakerVolume]);
-
-  useEffect(() => {
-    liveMicVolumeRef.current = liveMicVolume;
-    if (liveMicVolume > 0) {
-      lastLiveMicVolumeRef.current = liveMicVolume;
-    }
-  }, [liveMicVolume]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -509,7 +475,6 @@ export function AgentWorkspace() {
     setSessionId(id);
     setMobileNav(false);
     setAssistantDraft("");
-    setLiveUserDraft("");
     setRuntimeError("");
     if (id === sessionId) {
       refreshSessionData(id).catch((error) => showError(error));
@@ -957,370 +922,6 @@ export function AgentWorkspace() {
     setStatus({ tone: "idle", text: "Cancelled" });
   }
 
-  async function startLiveMode() {
-    if (!sessionId || liveStatus !== "idle") return;
-    if (typeof WebSocket === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      setRuntimeError("Live voice is unavailable in this browser.");
-      setLiveStatus("error");
-      return;
-    }
-    stopLiveMode(false);
-    setInputMode("live");
-    setRuntimeError("");
-    setAssistantDraft("");
-    setLiveUserDraft("");
-    setLiveMuted(false);
-    liveAudioChunkCountRef.current = 0;
-    stopLivePlayback();
-    try {
-      await ensureLivePlaybackContext();
-    } catch {
-      setRuntimeError("Audio playback is unavailable in this browser.");
-      setLiveStatus("error");
-      return;
-    }
-    setLiveStatus("connecting");
-    setStatus({ tone: "busy", text: "Connecting live voice" });
-    const socket = new WebSocket(api.liveSessionURL(sessionId));
-    liveSocketRef.current = socket;
-    socket.onmessage = (message) => {
-      try {
-        void handleLiveRuntimeEvent(JSON.parse(message.data) as RuntimeEvent, socket);
-      } catch {
-        // Ignore malformed live frames; the socket error handler covers transport failures.
-      }
-    };
-    socket.onerror = () => {
-      if (liveSocketRef.current !== socket) return;
-      setLiveStatus("error");
-      setStatus({ tone: "error", text: "Live voice failed" });
-    };
-    socket.onclose = () => {
-      if (liveSocketRef.current !== socket) return;
-      cleanupLiveAudio();
-      liveSocketRef.current = null;
-      setLiveStatus("idle");
-      setStatus((current) => current.tone === "error" ? current : { tone: "idle", text: "Live voice stopped" });
-    };
-  }
-
-  function stopLiveMode(sendEnd = true) {
-    const socket = liveSocketRef.current;
-    cleanupLiveAudio();
-    liveSocketRef.current = null;
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      if (sendEnd) {
-        socket.send(JSON.stringify({ type: "audio_end" }));
-        socket.send(JSON.stringify({ type: "close" }));
-      }
-      socket.close();
-    }
-    setLiveStatus("idle");
-    setLiveUserDraft("");
-    setAssistantDraft("");
-  }
-
-  function switchToTextMode() {
-    if (inputMode === "text" && liveStatus === "idle") return;
-    setInputMode("text");
-    stopLiveMode();
-    setStatus({ tone: "idle", text: "Text input ready" });
-  }
-
-  function switchToLiveMode() {
-    setInputMode("live");
-    if (liveStatus === "idle") {
-      void startLiveMode();
-    }
-  }
-
-  function toggleLiveMute() {
-    if (inputMode !== "live" || liveStatus === "idle") return;
-    setLiveMuted((current) => {
-      if (current && liveSpeakerVolume <= 0) {
-        setLiveSpeakerVolume(lastLiveSpeakerVolumeRef.current || 1);
-      }
-      return !current;
-    });
-  }
-
-  function changeLiveSpeakerVolume(value: number) {
-    const next = clamp01(value);
-    setLiveSpeakerVolume(next);
-    setLiveMuted(next <= 0);
-  }
-
-  async function changeLiveMicVolume(value: number) {
-    const next = clamp01(value);
-    setLiveMicVolume(next);
-    if (inputMode !== "live" || liveStatus === "connecting" || liveStatus === "error") return;
-    if (next <= 0) {
-      if (liveStatus === "listening") {
-        stopLiveCapture();
-        setLiveStatus("paused");
-        setStatus({ tone: "idle", text: "Microphone muted" });
-      }
-      return;
-    }
-    if (liveStatus !== "listening") {
-      await toggleLiveCapture();
-    }
-  }
-
-  async function toggleLiveCapture() {
-    if (inputMode !== "live" || liveStatus === "connecting") return;
-    const socket = liveSocketRef.current;
-    if (liveStatus === "listening") {
-      setLiveMicVolume(0);
-      stopLiveCapture();
-      setLiveStatus("paused");
-      setStatus({ tone: "idle", text: "Microphone muted" });
-      return;
-    }
-    if (liveMicVolume <= 0) {
-      setLiveMicVolume(lastLiveMicVolumeRef.current || 1);
-    }
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      if (liveStatus === "idle") {
-        await startLiveMode();
-      }
-      return;
-    }
-    try {
-      await startLiveCapture(socket);
-    } catch (error) {
-      setRuntimeError(errorMessage(error));
-      setLiveStatus("error");
-      setStatus({ tone: "error", text: "Microphone unavailable" });
-    }
-  }
-
-  async function handleLiveRuntimeEvent(event: RuntimeEvent, socket: WebSocket) {
-    if (event.type === "live_ready") {
-      setStatus({ tone: "busy", text: "Live voice connected" });
-      return;
-    }
-    if (event.type === "live_setup_complete") {
-      try {
-        await startLiveCapture(socket);
-      } catch (error) {
-        setRuntimeError(errorMessage(error));
-        setLiveStatus("error");
-        setStatus({ tone: "error", text: "Microphone unavailable" });
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: "close" }));
-        }
-        socket.close();
-      }
-      return;
-    }
-    if (event.type === "live_transcript" && event.role === "user") {
-      setLiveUserDraft((current) => current + (event.content || ""));
-      return;
-    }
-    if (event.type === "live_transcript" && event.role === "assistant") {
-      setAssistantDraft((current) => current + (event.content || ""));
-      return;
-    }
-    if (event.type === "live_audio") {
-      liveAudioChunkCountRef.current += 1;
-      if (liveMutedRef.current) {
-        setStatus({ tone: "busy", text: "Voice muted" });
-      } else {
-        setStatus({ tone: "busy", text: "Playing voice" });
-        await queueLiveAudio(event.data);
-      }
-      return;
-    }
-    if (event.type === "live_interrupted") {
-      setAssistantDraft("");
-      setLiveUserDraft("");
-      liveAudioChunkCountRef.current = 0;
-      stopLivePlayback();
-      setStatus({ tone: "idle", text: "Voice interrupted" });
-      return;
-    }
-    if (event.type === "live_skill_start") {
-      stopLivePlayback();
-      setAssistantDraft("");
-      setLiveUserDraft("");
-      liveAudioChunkCountRef.current = 0;
-      setStatus({ tone: "busy", text: "Running skill" });
-      return;
-    }
-    if (event.type === "live_skill_result") {
-      setStatus({ tone: "ok", text: "Skill completed" });
-      return;
-    }
-    if (event.type === "message" && event.role === "assistant" && isLiveSkillEvent(event)) {
-      handleRuntimeEvent(event);
-      void refreshSessionData(sessionId, { revealNewArtifacts: true });
-      return;
-    }
-    handleRuntimeEvent(event);
-    if (event.type === "message" && event.role === "user") {
-      setLiveUserDraft("");
-    }
-    if (event.type === "message" && event.role === "assistant") {
-      setStatus(liveMutedRef.current
-        ? { tone: "ok", text: "Voice response muted" }
-        : liveAudioChunkCountRef.current > 0
-          ? { tone: "ok", text: "Voice response played" }
-          : { tone: "ok", text: "Voice transcript received" });
-    }
-  }
-
-  async function startLiveCapture(socket: WebSocket) {
-    if (socket.readyState !== WebSocket.OPEN) throw new Error("Live voice connection is not ready.");
-    if (liveMediaRef.current) return;
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false }
-    });
-    const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextCtor) throw new Error("AudioContext is unavailable.");
-    const audioContext = new AudioContextCtor();
-    const source = audioContext.createMediaStreamSource(stream);
-    const processor = audioContext.createScriptProcessor(4096, 1, 1);
-    let activeSpeech = false;
-    let voicedFrames = 0;
-    let quietFrames = 0;
-    const prerollFrames: string[] = [];
-    const sendAudioFrame = (data: string) => {
-      socket.send(JSON.stringify({
-        type: "audio",
-        mime_type: "audio/pcm;rate=16000",
-        data
-      }));
-    };
-    processor.onaudioprocess = (event) => {
-      if (socket.readyState !== WebSocket.OPEN) return;
-      const input = event.inputBuffer.getChannelData(0);
-      const micVolume = liveMicVolumeRef.current;
-      if (micVolume <= 0) return;
-      const adjustedInput = scaleAudio(input, micVolume);
-      const rms = audioRMS(adjustedInput);
-      const pcm = downsampleToPCM16(adjustedInput, audioContext.sampleRate, 16000);
-      if (!pcm.length) return;
-      const frame = bytesToBase64(pcm);
-      if (activeSpeech) {
-        sendAudioFrame(frame);
-        quietFrames = rms >= liveVoiceContinueRmsThreshold ? 0 : quietFrames + 1;
-        if (quietFrames >= liveVoiceHangoverFrames) {
-          activeSpeech = false;
-          voicedFrames = 0;
-          quietFrames = 0;
-          socket.send(JSON.stringify({ type: "audio_end" }));
-        }
-        return;
-      }
-      prerollFrames.push(frame);
-      if (prerollFrames.length > liveVoicePrerollFrames) {
-        prerollFrames.shift();
-      }
-      voicedFrames = rms >= liveVoiceStartRmsThreshold ? voicedFrames + 1 : 0;
-      if (voicedFrames < liveVoiceStartFrames) return;
-      activeSpeech = true;
-      quietFrames = 0;
-      for (const bufferedFrame of prerollFrames) {
-        sendAudioFrame(bufferedFrame);
-      }
-      prerollFrames.length = 0;
-    };
-    source.connect(processor);
-    processor.connect(audioContext.destination);
-    liveMediaRef.current = stream;
-    liveAudioContextRef.current = audioContext;
-    liveSourceRef.current = source;
-    liveProcessorRef.current = processor;
-    setLiveStatus("listening");
-    setStatus({ tone: "busy", text: "Listening" });
-  }
-
-  function stopLiveCapture() {
-    liveProcessorRef.current?.disconnect();
-    liveSourceRef.current?.disconnect();
-    liveMediaRef.current?.getTracks().forEach((track) => track.stop());
-    void liveAudioContextRef.current?.close();
-    liveProcessorRef.current = null;
-    liveSourceRef.current = null;
-    liveMediaRef.current = null;
-    liveAudioContextRef.current = null;
-  }
-
-  function cleanupLiveAudio() {
-    stopLiveCapture();
-    stopLivePlayback();
-    livePlaybackGainRef.current?.disconnect();
-    void livePlaybackContextRef.current?.close();
-    livePlaybackGainRef.current = null;
-    livePlaybackContextRef.current = null;
-  }
-
-  function stopLivePlayback() {
-    livePlaybackGenerationRef.current += 1;
-    livePlaybackSourcesRef.current.forEach((source) => {
-      try {
-        source.stop();
-      } catch {
-        // Source may already have ended.
-      }
-    });
-    livePlaybackSourcesRef.current.clear();
-    livePlaybackTimeRef.current = 0;
-    livePlaybackQueueRef.current = Promise.resolve();
-  }
-
-  async function ensureLivePlaybackContext(): Promise<AudioContext> {
-    const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextCtor) throw new Error("AudioContext is unavailable.");
-    const context = livePlaybackContextRef.current || new AudioContextCtor();
-    livePlaybackContextRef.current = context;
-    if (!livePlaybackGainRef.current) {
-      const gain = context.createGain();
-      gain.gain.value = liveMutedRef.current ? 0 : liveSpeakerVolumeRef.current;
-      gain.connect(context.destination);
-      livePlaybackGainRef.current = gain;
-    }
-    if (context.state === "suspended") {
-      await context.resume();
-    }
-    return context;
-  }
-
-  async function queueLiveAudio(data: unknown) {
-    const generation = livePlaybackGenerationRef.current;
-    const next = livePlaybackQueueRef.current.catch(() => {}).then(() => {
-      if (generation !== livePlaybackGenerationRef.current) return;
-      return playLiveAudio(data, generation);
-    });
-    livePlaybackQueueRef.current = next;
-    await next;
-  }
-
-  async function playLiveAudio(data: unknown, generation: number) {
-    if (generation !== livePlaybackGenerationRef.current) return;
-    const payload = data as { data?: string; mime_type?: string };
-    if (!payload?.data) return;
-    const sampleRate = sampleRateFromMime(payload.mime_type || "") || 24000;
-    const samples = base64PCMToFloat32(payload.data, payload.mime_type || "");
-    if (!samples.length) return;
-    const context = await ensureLivePlaybackContext();
-    if (generation !== livePlaybackGenerationRef.current) return;
-    const buffer = context.createBuffer(1, samples.length, sampleRate);
-    const channel = buffer.getChannelData(0);
-    channel.set(samples);
-    const source = context.createBufferSource();
-    source.buffer = buffer;
-    source.connect(livePlaybackGainRef.current || context.destination);
-    livePlaybackSourcesRef.current.add(source);
-    source.onended = () => {
-      livePlaybackSourcesRef.current.delete(source);
-    };
-    const startAt = Math.max(context.currentTime + 0.02, livePlaybackTimeRef.current || 0);
-    source.start(startAt);
-    livePlaybackTimeRef.current = startAt + buffer.duration;
-  }
-
   async function uploadAttachment(fileList: FileList | null) {
     const file = fileList?.[0];
     if (!file) return;
@@ -1447,7 +1048,6 @@ export function AgentWorkspace() {
 
   function handleRuntimeEvent(event: RuntimeEvent) {
     if (event.type === "message" && event.role === "user") {
-      setLiveUserDraft("");
       setMessages((current) => appendRuntimeMessage(current, { role: "user", content: event.content || "" }));
     }
     if (event.type === "delta") {
@@ -1662,7 +1262,7 @@ export function AgentWorkspace() {
           onRefresh={refreshAll}
           onSelectSession={selectSession}
           onRemoveSession={removeSession}
-          onToggleSettings={() => setSettingsOpen((open) => !open)}
+          onToggleSettings={setSettingsOpen}
           onOpenSettings={() => {
             setSettingsOpen(false);
             setSettingsModalOpen(true);
@@ -1713,8 +1313,8 @@ export function AgentWorkspace() {
               onCancelChat={cancelChat}
               onSwitchToText={switchToTextMode}
               onSwitchToLive={switchToLiveMode}
-              onToggleLiveMute={toggleLiveMute}
-              onToggleLiveCapture={() => void toggleLiveCapture()}
+              onToggleLiveMute={toggleSpeakerMute}
+              onToggleLiveCapture={() => void toggleMicMute()}
               onLiveSpeakerVolumeChange={changeLiveSpeakerVolume}
               onLiveMicVolumeChange={(value) => void changeLiveMicVolume(value)}
               formatNumber={formatNumber}
@@ -1747,69 +1347,37 @@ export function AgentWorkspace() {
             />
           )}
           {rightPanelTab === "jobs" && (
-            <>
-              {filteredJobs.length ? (
-                <div className="list compact job-list">
-                  {filteredJobs.map((job) => {
-                    const expanded = job.id === selectedJobId;
-                    return (
-                      <section key={job.id} className={`job-list-entry ${expanded ? "expanded" : ""}`}>
-                        <Button
-                          className={`list-item job-summary ${expanded ? "active" : ""}`}
-                          onClick={() => toggleJob(job.id)}
-                          aria-expanded={expanded}
-                        >
-                          <span>{job.content || job.id}</span>
-                          <small>{job.status} · {formatTime(job.updated_at)}</small>
-                          <ChevronDown size={16} aria-hidden="true" />
-                        </Button>
-                        {expanded && (
-                          <div className="job-expanded">
-                            <div className="job-card">
-                              <div className={`pill ${job.status}`}>{job.status}</div>
-                              {jobStreamNotice && !terminalJobs.has(job.status) && (
-                                <span className={`job-stream-state ${jobStreamStatus}`}>{jobStreamNotice}</span>
-                              )}
-                              <Button className="danger inline" disabled={terminalJobs.has(job.status)} onClick={cancelJob}>Cancel job</Button>
-                            </div>
-                            <div className="timeline">
-                              {visibleJobEvents(jobEvents).map((event) => (
-                                <div key={event.id} className="timeline-row">
-                                  <span>{event.type}</span>
-                                  <p>{event.event.error || event.event.content || event.event.job_reason || event.id}</p>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </section>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="empty-small">{rightPanelSearch.jobs ? "No results" : "No items"}</div>
-              )}
-            </>
+            <JobPanel
+              jobs={filteredJobs}
+              selectedJobId={selectedJobId}
+              jobEvents={jobEvents}
+              jobStreamNotice={jobStreamNotice}
+              jobStreamStatus={jobStreamStatus}
+              emptyLabel={rightPanelSearch.jobs ? "No results" : "No items"}
+              onToggleJob={toggleJob}
+              onCancelJob={cancelJob}
+              formatTime={formatTime}
+            />
           )}
           {rightPanelTab === "attachments" && (
-            <>
-              {uploadProgress > 0 && <Progress value={uploadProgress} />}
-              <AssetList
-                assets={filteredAttachments}
-                icon="file"
-                emptyLabel={rightPanelSearch.attachments ? "No results" : "No items"}
-                preview={(asset) => setPreviewAsset({ asset, url: api.attachmentURL(asset.id) })}
-                download={(id) => window.open(api.attachmentURL(id), "_blank")}
-                remove={(id) => deleteAsset("attachment", id)}
-                extractMemory={extractAssetMemory}
-                memoryBusy={assetMemoryBusy}
-                memoryDisabled={!memorySettings.capture_enabled}
-                addToMessage={addAttachmentToMessage}
-              />
-            </>
+            <AssetPanel
+              assets={filteredAttachments}
+              icon="file"
+              emptyLabel={rightPanelSearch.attachments ? "No results" : "No items"}
+              uploadProgress={uploadProgress}
+              preview={(asset) => setPreviewAsset({ asset, url: api.attachmentURL(asset.id) })}
+              download={(id) => window.open(api.attachmentURL(id), "_blank")}
+              remove={(id) => deleteAsset("attachment", id)}
+              extractMemory={extractAssetMemory}
+              memoryBusy={assetMemoryBusy}
+              memoryDisabled={!memorySettings.capture_enabled}
+              addToMessage={addAttachmentToMessage}
+              formatBytes={formatBytes}
+              formatTime={formatTime}
+            />
           )}
           {rightPanelTab === "artifacts" && (
-            <AssetList
+            <AssetPanel
               assets={filteredArtifacts}
               icon="image"
               emptyLabel={rightPanelSearch.artifacts ? "No results" : "No items"}
@@ -1819,6 +1387,8 @@ export function AgentWorkspace() {
               extractMemory={extractAssetMemory}
               memoryBusy={assetMemoryBusy}
               memoryDisabled={!memorySettings.capture_enabled}
+              formatBytes={formatBytes}
+              formatTime={formatTime}
             />
           )}
         </WorkspaceToolsPanel>
@@ -2005,11 +1575,6 @@ function appendRuntimeMessage(messages: Message[], message: Message): Message[] 
   return [...messages, message];
 }
 
-function isLiveSkillEvent(event: RuntimeEvent): boolean {
-  const data = event.data as { source?: unknown } | undefined;
-  return data?.source === "live_skill";
-}
-
 function isConvertedSkillCommandMessage(messages: Message[], message: Message): boolean {
   const content = (message.content || message.tool_output || "").trim();
   if (message.hidden || message.role !== "user" || !isSlashSkillCommand(content)) {
@@ -2121,10 +1686,6 @@ function shouldDisplayJobSubmittedContent(event: RuntimeEvent): boolean {
   return true;
 }
 
-function visibleJobEvents(events: JobEvent[]): JobEvent[] {
-  return events.filter((event) => !(event.type === "delta" && event.event.role === "assistant"));
-}
-
 async function readServiceStatus(api: ApiClient): Promise<ServiceStatus> {
   try {
     return readinessToServiceStatus(await api.readiness());
@@ -2147,127 +1708,6 @@ function readinessToServiceStatus(readiness: ReadinessStatus): ServiceStatus {
     : `readiness: ${readiness.status}`;
   return { tone: "error", text: "Degraded", details };
 }
-
-function SkillPanel({
-  skills,
-  recentSkillNames,
-  emptyLabel,
-  onInsert,
-  onDetails
-}: {
-  skills: Skill[];
-  recentSkillNames: string[];
-  emptyLabel: string;
-  onInsert: (skill: Skill) => void;
-  onDetails: (skill: Skill) => void;
-}) {
-  const recentSkills = recentSkillsFromNames(skills, recentSkillNames);
-  const orderedSkills = useMemo(() => [...skills].sort(compareSkills), [skills]);
-  const [expandedSkillName, setExpandedSkillName] = useState("");
-  const skillRefs = useRef(new Map<string, HTMLElement>());
-  if (!orderedSkills.length) return <div className="empty-small">{emptyLabel}</div>;
-  const jumpToSkill = (skill: Skill) => {
-    setExpandedSkillName(skill.name);
-    window.requestAnimationFrame(() => {
-      skillRefs.current.get(skill.name)?.scrollIntoView({ block: "start", behavior: "smooth" });
-    });
-  };
-  const setSkillRef = (name: string) => (element: HTMLElement | null) => {
-    if (element) skillRefs.current.set(name, element);
-    else skillRefs.current.delete(name);
-  };
-  return (
-    <div className="skill-browser">
-      {recentSkills.length > 0 && (
-        <section className="skill-section">
-          <div className="skill-section-title">
-            <Star size={14} />
-            <span>Recent</span>
-            <small>{recentSkills.length}</small>
-          </div>
-          <div className="recent-skill-list">
-            {recentSkills.map((skill) => (
-              <Button key={skill.name} type="button" onClick={() => jumpToSkill(skill)}>
-                <SkillGlyph skill={skill} />
-                <span>{skill.display_name || skill.name}</span>
-              </Button>
-            ))}
-          </div>
-        </section>
-      )}
-      <section className="skill-section">
-        <div className="skill-section-title">
-          <Sparkles size={14} />
-          <span>Skills</span>
-          <small>{orderedSkills.length}</small>
-        </div>
-        <div className="skill-grid">
-          {orderedSkills.map((skill) => {
-            const expanded = expandedSkillName === skill.name;
-            return (
-              <SkillCard
-                key={skill.name}
-                ref={setSkillRef(skill.name)}
-                skill={skill}
-                expanded={expanded}
-                onToggle={() => setExpandedSkillName(expanded ? "" : skill.name)}
-                onInsert={onInsert}
-                onDetails={onDetails}
-              />
-            );
-          })}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-const SkillCard = forwardRef<HTMLElement, {
-  skill: Skill;
-  expanded: boolean;
-  onToggle: () => void;
-  onInsert: (skill: Skill) => void;
-  onDetails: (skill: Skill) => void;
-}>(function SkillCard({
-  skill,
-  expanded,
-  onToggle,
-  onInsert,
-  onDetails
-}, ref) {
-  const title = skill.display_name || skill.name;
-  return (
-    <article ref={ref} className={`skill-card ${expanded ? "expanded" : "collapsed"} ${skill.featured ? "featured" : ""}`}>
-      <Button type="button" className="skill-card-summary" onClick={onToggle} aria-expanded={expanded}>
-        <SkillGlyph skill={skill} />
-        <div>
-          <strong>{title}</strong>
-          <small>/{skill.name}</small>
-        </div>
-        <ChevronDown size={16} />
-      </Button>
-      {expanded && (
-        <>
-          <p>{skill.short_description || skill.description || skill.usage || "No description available."}</p>
-          <div className="skill-meta-row">
-            {skill.run_as_job && <span>Job</span>}
-            {skill.produces_artifacts && <span>Artifacts</span>}
-            {skill.version && <span>v{skill.version}</span>}
-          </div>
-          <div className="skill-card-actions">
-            <Button type="button" className="skill-action primary" onClick={() => onInsert(skill)} title={`Apply /${skill.name}`} aria-label={`Apply /${skill.name}`}>
-              <PlayCircle size={15} />
-              <span>Apply</span>
-            </Button>
-            <Button type="button" className="skill-action" onClick={() => onDetails(skill)} title={`Details for ${title}`} aria-label="Skill details">
-              <Info size={15} />
-            </Button>
-          </div>
-        </>
-    )}
-  </article>
-);
-});
 
 function AdminConsoleFallback({ onExit }: { onExit: () => void }) {
   return (
@@ -2312,6 +1752,8 @@ function SkillDetailModal({
       if (!open) onClose();
     }}>
       <DialogContent className="skill-modal" hideClose>
+        <DialogTitle className="sr-only">{title}</DialogTitle>
+        <DialogDescription className="sr-only">Review skill details and apply the skill to the current message.</DialogDescription>
         <header>
           <div className="skill-modal-heading">
             <SkillGlyph skill={skill} />
@@ -2370,93 +1812,6 @@ function SkillFact({ label, value }: { label: string; value: string }) {
   );
 }
 
-function SkillGlyph({ skill }: { skill: Skill }) {
-  if (skill.icon) return <span className="skill-glyph text">{skill.icon}</span>;
-  if (skill.produces_artifacts) return <span className="skill-glyph"><Archive size={17} /></span>;
-  if (skill.run_as_job) return <span className="skill-glyph"><Clock size={17} /></span>;
-  return <span className="skill-glyph"><Sparkles size={17} /></span>;
-}
-
-function downsampleToPCM16(input: Float32Array, inputSampleRate: number, targetSampleRate: number): Uint8Array {
-  if (!input.length || inputSampleRate <= 0 || targetSampleRate <= 0) return new Uint8Array();
-  const ratio = Math.max(inputSampleRate / targetSampleRate, 1);
-  const outputLength = Math.floor(input.length / ratio);
-  const bytes = new Uint8Array(outputLength * 2);
-  const view = new DataView(bytes.buffer);
-  for (let index = 0; index < outputLength; index += 1) {
-    const start = Math.floor(index * ratio);
-    const end = Math.min(Math.floor((index + 1) * ratio), input.length);
-    let total = 0;
-    const count = Math.max(end - start, 1);
-    for (let sourceIndex = start; sourceIndex < end; sourceIndex += 1) {
-      total += input[sourceIndex] || 0;
-    }
-    const sample = Math.max(-1, Math.min(1, total / count));
-    view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-  }
-  return bytes;
-}
-
-function audioRMS(input: Float32Array): number {
-  if (!input.length) return 0;
-  let sum = 0;
-  for (let index = 0; index < input.length; index += 1) {
-    const sample = input[index] || 0;
-    sum += sample * sample;
-  }
-  return Math.sqrt(sum / input.length);
-}
-
-function scaleAudio(input: Float32Array, volume: number): Float32Array {
-  const scale = clamp01(volume);
-  if (scale >= 0.999) return input;
-  const output = new Float32Array(input.length);
-  for (let index = 0; index < input.length; index += 1) {
-    output[index] = (input[index] || 0) * scale;
-  }
-  return output;
-}
-
-function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(1, value));
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
-  }
-  return window.btoa(binary);
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = window.atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-function base64PCMToFloat32(value: string, mimeType: string): Float32Array {
-  const bytes = base64ToBytes(value);
-  const sampleCount = Math.floor(bytes.byteLength / 2);
-  const samples = new Float32Array(sampleCount);
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const littleEndian = !/audio\/l16/i.test(mimeType);
-  for (let index = 0; index < sampleCount; index += 1) {
-    samples[index] = Math.max(-1, Math.min(1, view.getInt16(index * 2, littleEndian) / 32768));
-  }
-  return samples;
-}
-
-function sampleRateFromMime(mime: string): number {
-  const match = /(?:^|;)rate=(\d+)/i.exec(mime);
-  return match ? Number.parseInt(match[1], 10) : 0;
-}
-
 function resizeComposerInput(element: HTMLTextAreaElement | null) {
   if (!element) return;
   element.style.height = "auto";
@@ -2466,27 +1821,6 @@ function resizeComposerInput(element: HTMLTextAreaElement | null) {
   const nextHeight = Math.min(Math.max(element.scrollHeight, minHeight), maxHeight);
   element.style.height = `${nextHeight}px`;
   element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
-}
-
-function compareSkills(a: Skill, b: Skill): number {
-  if (Boolean(a.featured) !== Boolean(b.featured)) return a.featured ? -1 : 1;
-  const orderA = a.sort_order ?? Number.MAX_SAFE_INTEGER;
-  const orderB = b.sort_order ?? Number.MAX_SAFE_INTEGER;
-  if (orderA !== orderB) return orderA - orderB;
-  return (a.display_name || a.name).localeCompare(b.display_name || b.name);
-}
-
-function recentSkillsFromNames(skills: Skill[], names: string[]): Skill[] {
-  const byName = new Map(skills.map((skill) => [skill.name, skill]));
-  const seenNames = new Set<string>();
-  const out: Skill[] = [];
-  for (const name of names) {
-    const skill = byName.get(name);
-    if (!skill || seenNames.has(skill.name)) continue;
-    seenNames.add(skill.name);
-    out.push(skill);
-  }
-  return out;
 }
 
 function readRecentSkills(): string[] {
@@ -2549,86 +1883,6 @@ function acronymSearch(value: string): string {
     .filter(Boolean)
     .map((word) => word[0])
     .join("");
-}
-
-function Progress({ value }: { value: number }) {
-  return <div className="progress"><span style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></div>;
-}
-
-function AssetList({
-  assets,
-  icon,
-  emptyLabel = "No items",
-  preview,
-  download,
-  remove,
-  extractMemory,
-  memoryBusy = {},
-  memoryDisabled = false,
-  addToMessage
-}: {
-  assets: Asset[];
-  icon: "file" | "image";
-  emptyLabel?: string;
-  preview: (asset: Asset) => void;
-  download: (id: string) => void;
-  remove: (id: string) => void;
-  extractMemory?: (asset: Asset) => void;
-  memoryBusy?: Record<string, boolean>;
-  memoryDisabled?: boolean;
-  addToMessage?: (asset: Asset) => void;
-}) {
-  if (!assets.length) return <div className="empty-small">{emptyLabel}</div>;
-  const Icon = icon === "image" ? Image : FileUp;
-  return (
-    <div className="asset-list">
-      {assets.map((asset) => (
-        <div key={asset.id} className={`asset-row ${addToMessage ? "with-add" : ""} ${extractMemory ? "with-memory" : ""}`}>
-          <Icon size={18} />
-          <div>
-            <strong>{asset.filename}</strong>
-            <small>{formatBytes(asset.size_bytes)} · {formatTime(asset.created_at)}</small>
-          </div>
-          {addToMessage && (
-            <Button className="icon" onClick={() => addToMessage(asset)} title="Add to message" aria-label={`Add ${asset.filename} to message`}>
-              <MessageSquarePlus size={16} />
-            </Button>
-          )}
-          {extractMemory && (
-            <Button
-              className="icon"
-              onClick={() => extractMemory(asset)}
-              disabled={memoryDisabled || Boolean(memoryBusy[asset.id])}
-              title={memoryDisabled ? "Memory saving is disabled" : `Extract memory from ${asset.filename}`}
-              aria-label={memoryDisabled ? "Memory saving is disabled" : `Extract memory from ${asset.filename}`}
-            >
-              <Brain size={16} />
-            </Button>
-          )}
-          <Button className="icon" onClick={() => preview(asset)} title={`Preview ${asset.filename}`} aria-label={`Preview ${asset.filename}`}>
-            <AssetPreviewIcon asset={asset} />
-          </Button>
-          <Button className="icon" onClick={() => download(asset.id)} title={`Download ${asset.filename}`} aria-label={`Download ${asset.filename}`}><Download size={16} /></Button>
-          <Button className="icon danger" onClick={() => remove(asset.id)} title={`Delete ${asset.filename}`} aria-label={`Delete ${asset.filename}`}><Trash2 size={16} /></Button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function AssetPreviewIcon({ asset }: { asset: Asset }) {
-  if (isTextAsset(asset) || isPDFAsset(asset)) return <FileText size={16} />;
-  return <Image size={16} />;
-}
-
-function isPDFAsset(asset: Asset): boolean {
-  return asset.content_type === "application/pdf" || asset.filename.toLowerCase().endsWith(".pdf");
-}
-
-function isTextAsset(asset: Asset): boolean {
-  const contentType = asset.content_type || "";
-  const filename = asset.filename.toLowerCase();
-  return contentType.startsWith("text/") || contentType.includes("json") || [".md", ".txt", ".csv", ".json", ".log"].some((suffix) => filename.endsWith(suffix));
 }
 
 function ConfirmModal({

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Download, FileUp, X } from "lucide-react";
 import { Button } from "../../../components/ui/button";
-import { Dialog, DialogContent } from "../../../components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../../components/ui/dialog";
 import type { Asset } from "../../../types";
 
 export function PreviewModal({ asset, url, previewUrl, onClose }: { asset: Asset; url: string; previewUrl?: string; onClose: () => void }) {
@@ -40,7 +40,9 @@ export function PreviewModal({ asset, url, previewUrl, onClose }: { asset: Asset
     <Dialog open onOpenChange={(open) => {
       if (!open) onClose();
     }}>
-      <DialogContent className="preview-modal" hideClose aria-label={asset.filename}>
+      <DialogContent className="preview-modal" hideClose>
+        <DialogTitle className="sr-only">{asset.filename}</DialogTitle>
+        <DialogDescription className="sr-only">Preview and download this file.</DialogDescription>
         <header>
           <div>
             <strong id="preview-title">{asset.filename}</strong>

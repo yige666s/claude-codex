@@ -2,8 +2,11 @@ import { ReactNode } from "react";
 import { FileUp, Image, PanelLeft, Search, Sparkles, Briefcase, X } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
+import { ScrollArea } from "../../../components/ui/scroll-area";
 import { Tabs, TabsList, TabsTrigger } from "../../../components/ui/tabs";
 import { Badge } from "../../../components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip";
+import { MotionPanel } from "../../../components/motion";
 import type { RightPanelTab } from "../workspaceTypes";
 
 type WorkspaceToolsPanelProps = {
@@ -60,6 +63,7 @@ export function WorkspaceToolsPanel({
                 aria-label={item.label}
               >
                 {item.icon}
+                <span className="sr-only">{item.label}</span>
                 <Badge className="tab-count" variant="secondary">{counts[item.tab]}</Badge>
               </TabsTrigger>
             ))}
@@ -74,14 +78,21 @@ export function WorkspaceToolsPanel({
             aria-label={`Search ${rightPanelLabel(activeTab)}`}
           />
           {searchValue && (
-            <Button className="icon" variant="ghost" size="icon-sm" onClick={() => onSearchChange("")} aria-label="Clear search" title="Clear search">
-              <X size={14} />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button className="icon" variant="ghost" size="icon-sm" onClick={() => onSearchChange("")} aria-label="Clear search">
+                  <X size={14} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Clear search</TooltipContent>
+            </Tooltip>
           )}
         </div>
-        <div className="right-tab-content">
-          {children}
-        </div>
+        <ScrollArea className="right-tab-content">
+          <MotionPanel key={activeTab} className="right-panel-motion">
+            {children}
+          </MotionPanel>
+        </ScrollArea>
       </aside>
     </>
   );

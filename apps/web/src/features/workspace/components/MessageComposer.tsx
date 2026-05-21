@@ -1,12 +1,14 @@
 import { KeyboardEvent, Ref, RefObject } from "react";
-import { AlertCircle, FileUp, MessageCircle, Mic, MicOff, Send, Square, Volume2, VolumeX, X } from "lucide-react";
-import { Button } from "../../../components/ui/button";
-import { Input } from "../../../components/ui/input";
 import { Textarea } from "../../../components/ui/textarea";
 import type { Asset } from "../../../types";
-
-type InputMode = "text" | "live";
-type LiveStatus = "idle" | "connecting" | "listening" | "paused" | "error";
+import type { InputMode, LiveStatus } from "../hooks/useLiveVoice";
+import { ComposerUploadButton } from "./composer/ComposerUploadButton";
+import { InputModeSegmentedControl } from "./composer/InputModeSegmentedControl";
+import { LiveVoiceControls } from "./composer/LiveVoiceControls";
+import { PendingAttachments } from "./composer/PendingAttachments";
+import { ResponseTimingBadges } from "./composer/ResponseTimingBadges";
+import { RuntimeErrorBanner } from "./composer/RuntimeErrorBanner";
+import { SendButton } from "./composer/SendButton";
 
 type MessageComposerProps = {
   runtimeError: string;
@@ -85,67 +87,17 @@ export function MessageComposer({
 
   return (
     <footer className="composer">
-      {runtimeError && (
-        <div className="composer-error" role="alert">
-          <AlertCircle size={16} />
-          <span>{runtimeError}</span>
-          <Button className="icon" variant="ghost" size="icon-sm" onClick={onClearRuntimeError} title="Dismiss error" aria-label="Dismiss error"><X size={14} /></Button>
-        </div>
-      )}
-      {uploadError && (
-        <div className="composer-error upload-error" role="alert">
-          <span>{uploadError}</span>
-          <Button className="icon" variant="ghost" size="icon-sm" onClick={onClearUploadError} title="Dismiss upload error" aria-label="Dismiss upload error"><X size={14} /></Button>
-        </div>
-      )}
-      {responseTiming && (
-        <div className="response-metrics" aria-live="polite">
-          <span>TTFT {formatNumber(responseTiming.ttftMs || 0)} ms</span>
-          {responseTiming.totalMs !== undefined && <span>Total {formatNumber(responseTiming.totalMs)} ms</span>}
-        </div>
-      )}
-      {pendingAttachments.length > 0 && (
-        <div className="pending-attachments" aria-label="Pending attachments">
-          {pendingAttachments.map((asset) => (
-            <span className="pending-attachment" key={asset.id} title={asset.filename}>
-              <FileUp size={13} />
-              <span>{asset.filename}</span>
-              <Button
-                className="icon"
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => onRemovePendingAttachment(asset.id)}
-                title={`Remove ${asset.filename}`}
-                aria-label={`Remove ${asset.filename}`}
-              >
-                <X size={12} />
-              </Button>
-            </span>
-          ))}
-        </div>
-      )}
+      <RuntimeErrorBanner message={runtimeError} onDismiss={onClearRuntimeError} />
+      <RuntimeErrorBanner message={uploadError} upload onDismiss={onClearUploadError} />
+      <ResponseTimingBadges timing={responseTiming} formatNumber={formatNumber} />
+      <PendingAttachments attachments={pendingAttachments} onRemove={onRemovePendingAttachment} />
       <div className="composer-row">
-        <Button
-          type="button"
-          className="composer-upload"
-          variant="outline"
-          size="icon-lg"
-          title="Upload attachment"
-          aria-label="Upload attachment"
-          onClick={() => attachmentInputRef.current?.click()}
-          disabled={uploading || !canUseText}
-        >
-          <FileUp size={18} />
-        </Button>
-        <Input
-          ref={attachmentInputRef as Ref<HTMLInputElement>}
-          className="composer-file-input"
-          type="file"
-          tabIndex={-1}
-          aria-hidden="true"
+        <ComposerUploadButton
+          inputRef={attachmentInputRef}
+          uploading={uploading}
+          disabled={!canUseText}
           accept={acceptedAttachmentTypes}
-          onChange={(event) => onUploadAttachment(event.currentTarget.files)}
-          disabled={uploading || !canUseText}
+          onUpload={onUploadAttachment}
         />
         <Textarea
           ref={composerInputRef as Ref<HTMLTextAreaElement>}
@@ -158,99 +110,27 @@ export function MessageComposer({
           rows={1}
         />
         <div className="composer-actions">
-          <div className="input-mode-toggle" role="group" aria-label="Input mode">
-            <Button
-              type="button"
-              className={inputMode === "text" ? "active" : ""}
-              variant={inputMode === "text" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={onSwitchToText}
-              disabled={busyChat}
-              title="Text mode"
-              aria-label="Text mode"
-            >
-              <MessageCircle size={16} />
-              <span>Text</span>
-            </Button>
-            <Button
-              type="button"
-              className={inputMode === "live" ? "active" : ""}
-              variant={inputMode === "live" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={onSwitchToLive}
-              disabled={!sessionId || busyChat}
-              title="Live mode"
-              aria-label="Live mode"
-            >
-              <Mic size={16} />
-              <span>Live</span>
-            </Button>
-          </div>
-          {inputMode === "live" && (
-            <>
-              <div className="live-volume-control speaker">
-                <div className="live-volume-popover" aria-label="Voice output volume">
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={liveMuted ? 0 : Math.round(liveSpeakerVolume * 100)}
-                    onChange={(event) => onLiveSpeakerVolumeChange(Number(event.currentTarget.value) / 100)}
-                    aria-label="Voice output volume"
-                    aria-orientation="vertical"
-                  />
-                </div>
-                <Button
-                  type="button"
-                  className={`voice-output-toggle ${liveMuted ? "muted" : ""}`}
-                  variant={liveMuted ? "destructive" : "outline"}
-                  size="icon-lg"
-                  onClick={onToggleLiveMute}
-                  disabled={liveStatus === "idle" || liveStatus === "connecting" || !sessionId}
-                  title={liveMuted ? "Unmute voice output" : "Mute voice output"}
-                  aria-label={liveMuted ? "Unmute voice output" : "Mute voice output"}
-                  aria-pressed={liveStatus !== "idle" && !liveMuted}
-                >
-                  {liveMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                </Button>
-              </div>
-              <div className="live-volume-control mic">
-                <div className="live-volume-popover" aria-label="Microphone volume">
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={liveStatus === "listening" ? Math.round(liveMicVolume * 100) : 0}
-                    onChange={(event) => onLiveMicVolumeChange(Number(event.currentTarget.value) / 100)}
-                    aria-label="Microphone volume"
-                    aria-orientation="vertical"
-                  />
-                </div>
-                <Button
-                  type="button"
-                  className={`live-control ${liveStatus === "listening" ? "active" : ""}`}
-                  variant={liveStatus === "listening" ? "destructive" : "outline"}
-                  size="icon-lg"
-                  onClick={onToggleLiveCapture}
-                  disabled={!sessionId || busyChat || liveStatus === "connecting" || liveStatus === "error"}
-                  title={liveStatus === "listening" ? "Mute microphone" : "Unmute microphone"}
-                  aria-label={liveStatus === "listening" ? "Mute microphone" : "Unmute microphone"}
-                  aria-pressed={liveStatus === "listening"}
-                >
-                  {liveStatus === "listening" ? <Mic size={18} /> : <MicOff size={18} />}
-                </Button>
-              </div>
-            </>
-          )}
-          {busyChat ? (
-            <Button className="stop-generation" variant="destructive" size="icon-lg" onClick={onCancelChat} title="Stop generation" aria-label="Stop generation">
-              <span><Square size={16} fill="currentColor" /></span>
-            </Button>
-          ) : (
-            <Button className="send" variant="primary" size="icon-lg" onClick={onSendMessage} disabled={!canSend} title="Send" aria-label="Send">
-              <Send size={21} />
-            </Button>
-          )}
+          <InputModeSegmentedControl
+            inputMode={inputMode}
+            busyChat={busyChat}
+            sessionId={sessionId}
+            onSwitchToText={onSwitchToText}
+            onSwitchToLive={onSwitchToLive}
+          />
+          <LiveVoiceControls
+            inputMode={inputMode}
+            liveStatus={liveStatus}
+            liveMuted={liveMuted}
+            speakerVolume={liveSpeakerVolume}
+            micVolume={liveMicVolume}
+            busyChat={busyChat}
+            sessionId={sessionId}
+            onToggleSpeakerMute={onToggleLiveMute}
+            onToggleMicMute={onToggleLiveCapture}
+            onSpeakerVolumeChange={onLiveSpeakerVolumeChange}
+            onMicVolumeChange={onLiveMicVolumeChange}
+          />
+          <SendButton busyChat={busyChat} canSend={canSend} onSend={onSendMessage} onCancel={onCancelChat} />
         </div>
       </div>
     </footer>

@@ -22,14 +22,25 @@ export class ApiClient {
   private onAuthChange: (session: AuthSession | null) => void;
   private refreshPromise: Promise<boolean> | null = null;
   private refreshTimer: number | null = null;
+  private disposed = false;
 
   constructor(onAuthChange: (session: AuthSession | null) => void) {
     this.onAuthChange = onAuthChange;
-    this.scheduleAccessRefresh();
   }
 
   session(): AuthSession | null {
     return this.auth;
+  }
+
+  start(): void {
+    this.disposed = false;
+    this.scheduleAccessRefresh();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    if (this.refreshTimer && typeof window !== "undefined") window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
   }
 
   async login(email: string, password: string): Promise<AuthSession> {
@@ -829,7 +840,7 @@ export class ApiClient {
   }
 
   private scheduleAccessRefresh(): void {
-    if (typeof window === "undefined") return;
+    if (this.disposed || typeof window === "undefined") return;
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
     if (!this.auth?.refresh_token) return;
@@ -893,7 +904,7 @@ export class ApiClient {
     if (session) saveAuth(session);
     else clearAuth();
     this.scheduleAccessRefresh();
-    this.onAuthChange(session);
+    if (!this.disposed) this.onAuthChange(session);
   }
 }
 

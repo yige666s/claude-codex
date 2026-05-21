@@ -97,6 +97,8 @@ export function SettingsModal({
       if (!open) onClose();
     }}>
       <DialogContent className="settings-modal" hideClose>
+        <DialogTitle className="sr-only">Settings</DialogTitle>
+        <DialogDescription className="sr-only">Manage personalization, data controls, and account actions.</DialogDescription>
         <aside className="settings-nav" aria-label="Settings sections">
           <Button className="icon settings-close" onClick={onClose} title="Close settings" aria-label="Close settings">
             <X size={22} />

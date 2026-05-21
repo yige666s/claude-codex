@@ -19,7 +19,17 @@ import { ApiClient } from "../api/client";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { BrandLogo } from "../components/brand/BrandLogo";
-import { AdminSectionNotice } from "./ui";
+import {
+  AdminDetailPanel,
+  AdminEmptyState,
+  AdminListPanel,
+  AdminPageHeader,
+  AdminSearchBox,
+  AdminSectionNotice,
+  AdminShell,
+  AdminSidebar,
+  AdminSplitPane
+} from "./ui";
 import {
   AdminTabs,
   type AdminTabOption,
@@ -197,9 +207,8 @@ function AdminConsole({
     void loadSkillDetails(updated.name);
   };
 
-  return (
-    <main className="admin-shell">
-      <aside className="admin-sidebar">
+  const sidebar = (
+      <AdminSidebar>
         <div className="admin-brand">
           <BrandLogo />
           <div>
@@ -226,20 +235,21 @@ function AdminConsole({
           <Button variant="outline" onClick={onExit}><MessageCircle size={16} /> Back to app</Button>
           <Button variant="outline" onClick={onLogout}><LogOut size={16} /> Log out</Button>
         </div>
-      </aside>
-      <section className="admin-main">
-        <header className="admin-header">
-          <div>
-            <h1>{selectedAdminSection.label}</h1>
-            <p>{selectedAdminSection.description}</p>
-          </div>
-          {adminSection === "skills" && (
+      </AdminSidebar>
+  );
+
+  return (
+    <AdminShell sidebar={sidebar}>
+        <AdminPageHeader
+          title={selectedAdminSection.label}
+          description={selectedAdminSection.description}
+          action={adminSection === "skills" && (
             <Button variant="outline" className="skill-action" onClick={refreshSelected} disabled={loading || !token}>
               <RefreshCw size={16} />
               <span>Refresh</span>
             </Button>
           )}
-        </header>
+        />
         <AdminTabs tabs={adminSections} active={adminSection} onChange={setAdminSection} label="Admin sections" />
         {(error || notice) && (
           <AdminSectionNotice
@@ -253,11 +263,9 @@ function AdminConsole({
           </AdminSectionNotice>
         )}
         {!token ? (
-          <div className="admin-empty">
-            <ShieldCheck size={26} />
-            <strong>Admin token required</strong>
-            <p>Enter `AGENT_API_ADMIN_TOKEN` to load protected admin APIs. This console is separate from the C-end workspace.</p>
-          </div>
+          <AdminEmptyState icon={<ShieldCheck size={26} />} title="Admin token required">
+            Enter `AGENT_API_ADMIN_TOKEN` to load protected admin APIs. This console is separate from the C-end workspace.
+          </AdminEmptyState>
         ) : adminSection === "users" ? (
           <AdminUsersPanel api={api} adminToken={adminToken} />
         ) : adminSection === "jobs-assets" ? (
@@ -269,13 +277,12 @@ function AdminConsole({
         ) : adminSection === "evaluation" ? (
           <AdminEvaluationPanel api={api} adminToken={adminToken} />
         ) : (
-          <div className="admin-skill-layout">
-            <section className="admin-list-panel">
+          <AdminSplitPane>
+            <AdminListPanel>
               <div className="admin-list-tools">
-                <div className="admin-search">
-                  <Search size={16} />
+                <AdminSearchBox icon={<Search size={16} />}>
                   <Input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search skills" aria-label="Search admin skills" />
-                </div>
+                </AdminSearchBox>
                 <select value={statusFilter} onChange={(event) => setStatusFilter(event.currentTarget.value)} aria-label="Filter skill status">
                   <option value="all">All status</option>
                   <option value="published">Published</option>
@@ -302,14 +309,12 @@ function AdminConsole({
                 ))}
                 {!filteredSkills.length && <div className="empty-small">{loading ? "Loading..." : "No skills"}</div>}
               </div>
-            </section>
-            <section className="admin-detail-panel">
+            </AdminListPanel>
+            <AdminDetailPanel>
               {!selectedSkill ? (
-                <div className="admin-empty">
-                  <Sparkles size={24} />
-                  <strong>Select a skill</strong>
-                  <p>Choose a registry skill to inspect release status, policy, review issues, and execution metrics.</p>
-                </div>
+                <AdminEmptyState icon={<Sparkles size={24} />} title="Select a skill">
+                  Choose a registry skill to inspect release status, policy, review issues, and execution metrics.
+                </AdminEmptyState>
               ) : (
                 <>
                   <div className="admin-skill-head">
@@ -426,10 +431,9 @@ function AdminConsole({
                   </div>
                 </>
               )}
-            </section>
-          </div>
+            </AdminDetailPanel>
+          </AdminSplitPane>
         )}
-      </section>
       {policyTarget && (
         <SkillPolicyModal
           api={api}
@@ -440,7 +444,7 @@ function AdminConsole({
           onClose={() => setPolicyTarget(null)}
         />
       )}
-    </main>
+    </AdminShell>
   );
 }
 

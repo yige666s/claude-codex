@@ -1,10 +1,16 @@
 import { ReactNode, Ref, RefObject } from "react";
-import { Database, LogOut, MessageSquarePlus, PanelLeft, RefreshCw, Search, Settings, Trash2, X } from "lucide-react";
+import { Database, LogOut, MessageSquarePlus, PanelLeft, RefreshCw, Search, Settings, X } from "lucide-react";
 import { BrandLogo } from "../../../components/brand/BrandLogo";
 import { Button } from "../../../components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from "../../../components/ui/dropdown-menu";
 import type { AuthSession, Session } from "../../../types";
-import { sessionTitle } from "../../../lib/sessionTitle";
 import type { ServiceStatus } from "../workspaceTypes";
+import { SessionList } from "./sidebar/SessionList";
 
 type WorkspaceSidebarProps = {
   authSession: AuthSession;
@@ -24,7 +30,7 @@ type WorkspaceSidebarProps = {
   onRefresh: () => void;
   onSelectSession: (id: string) => void;
   onRemoveSession: (id: string) => void;
-  onToggleSettings: () => void;
+  onToggleSettings: (open: boolean) => void;
   onOpenSettings: () => void;
   onManageMemory: () => void;
   onLogout: () => void;
@@ -90,31 +96,29 @@ export function WorkspaceSidebar({
         </Button>
         <Button className="icon" variant="outline" size="icon" onClick={onRefresh} title="Refresh" aria-label="Refresh"><RefreshCw size={18} /></Button>
       </div>
-      <div className="list sessions">
-        {sessions.map((session) => (
-          <div key={session.id} className={`list-item session-item ${session.id === sessionId ? "active" : ""}`}>
-            <Button className="session-select" variant="ghost" onClick={() => onSelectSession(session.id)}>
-              <span>{sessionTitle(session)}</span>
-            </Button>
-            <Button className="session-delete" variant="ghost" size="icon" onClick={() => onRemoveSession(session.id)} title="Delete session" aria-label="Delete session">
-              <Trash2 size={16} />
-            </Button>
-          </div>
-        ))}
-      </div>
+      <SessionList
+        sessions={sessions}
+        sessionId={sessionId}
+        onSelectSession={onSelectSession}
+        onRemoveSession={onRemoveSession}
+      />
       <div className="account" ref={accountRef as Ref<HTMLDivElement>}>
         <div className="account-identity">
           <strong>{authSession.user.display_name || authSession.user.email}</strong>
           <small>{authSession.user.email}</small>
         </div>
-        <Button className="icon" variant="outline" size="icon" onClick={onToggleSettings} title="Settings" aria-label="Settings"><Settings size={18} /></Button>
-        {settingsOpen && (
-          <div className="settings-menu">
-            <Button variant="ghost" onClick={onOpenSettings}><Settings size={16} /> Settings</Button>
-            <Button variant="ghost" onClick={onManageMemory}><Database size={16} /> Manage Memory</Button>
-            <Button variant="ghost" onClick={onLogout}><LogOut size={16} /> Log Out</Button>
-          </div>
-        )}
+        <DropdownMenu open={settingsOpen} onOpenChange={onToggleSettings}>
+          <DropdownMenuTrigger asChild>
+            <Button className="icon" variant="outline" size="icon" title="Settings" aria-label="Settings">
+              <Settings size={18} />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="settings-menu" align="end" side="top" sideOffset={8}>
+            <DropdownMenuItem onClick={onOpenSettings}><Settings size={16} /> Settings</DropdownMenuItem>
+            <DropdownMenuItem onClick={onManageMemory}><Database size={16} /> Manage Memory</DropdownMenuItem>
+            <DropdownMenuItem onClick={onLogout}><LogOut size={16} /> Log Out</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </aside>
   );

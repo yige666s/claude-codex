@@ -1,6 +1,6 @@
 import { MessageCircle, Search, X } from "lucide-react";
 import { Button } from "../../../components/ui/button";
-import { Dialog, DialogContent } from "../../../components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../../components/ui/dialog";
 import { Input } from "../../../components/ui/input";
 import type { MessageSearchResult } from "../../../types";
 
@@ -34,8 +34,9 @@ export function GlobalSearchDialog({
       <DialogContent
         className="global-search-modal"
         hideClose
-        aria-label="Search across all sessions"
       >
+        <DialogTitle className="sr-only">Search across all sessions</DialogTitle>
+        <DialogDescription className="sr-only">Search messages across all saved conversations.</DialogDescription>
         <div className="global-search-input">
           <Search size={18} />
           <Input

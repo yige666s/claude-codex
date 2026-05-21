@@ -6,6 +6,88 @@ import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
 import { cn } from "../lib/utils";
 
+export function AdminShell({ sidebar, children }: { sidebar: ReactNode; children: ReactNode }) {
+  return (
+    <main className="admin-shell">
+      {sidebar}
+      <section className="admin-main">{children}</section>
+    </main>
+  );
+}
+
+export function AdminSidebar({ children }: { children: ReactNode }) {
+  return <aside className="admin-sidebar">{children}</aside>;
+}
+
+export function AdminPageHeader({
+  title,
+  description,
+  action
+}: {
+  title: ReactNode;
+  description?: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <header className="admin-header">
+      <div>
+        <h1>{title}</h1>
+        {description && <p>{description}</p>}
+      </div>
+      {action}
+    </header>
+  );
+}
+
+export function AdminSplitPane({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn("admin-skill-layout", className)}>{children}</div>;
+}
+
+export function AdminListPanel({ children, className }: { children: ReactNode; className?: string }) {
+  return <section className={cn("admin-list-panel", className)}>{children}</section>;
+}
+
+export function AdminDetailPanel({ children, className }: { children: ReactNode; className?: string }) {
+  return <section className={cn("admin-detail-panel", className)}>{children}</section>;
+}
+
+export function AdminEmptyState({
+  icon,
+  title,
+  children,
+  className
+}: {
+  icon?: ReactNode;
+  title: ReactNode;
+  children?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn("admin-empty", className)}>
+      {icon}
+      <strong>{title}</strong>
+      {children && <p>{children}</p>}
+    </div>
+  );
+}
+
+export function AdminSearchBox({
+  icon,
+  children,
+  className
+}: {
+  icon?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn("admin-search", className)}>
+      {icon}
+      {children}
+    </div>
+  );
+}
+
 export function AdminFilterBar({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn("admin-filter-row shadcn-admin-filter-bar", className)}>{children}</div>;
 }
