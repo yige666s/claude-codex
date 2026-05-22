@@ -16,11 +16,6 @@ type UseLiveVoiceOptions = {
   onStatus: (status: Status | ((current: Status) => Status)) => void;
 };
 
-const liveVoiceStartRmsThreshold = 0.012;
-const liveVoiceContinueRmsThreshold = 0.007;
-const liveVoiceStartFrames = 1;
-const liveVoiceHangoverFrames = 9;
-const liveVoicePrerollFrames = 4;
 const liveVoiceProcessorBufferSize = 1024;
 
 export function useLiveVoice({
@@ -326,7 +321,7 @@ export function useLiveVoice({
     }
     if (liveMediaRef.current) return;
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
     if (!isCurrentLiveSession(socket, generation) || liveMicVolumeRef.current <= 0) {
       stopMediaStream(stream);
@@ -340,10 +335,6 @@ export function useLiveVoice({
     const audioContext = new AudioContextCtor();
     const source = audioContext.createMediaStreamSource(stream);
     const processor = audioContext.createScriptProcessor(liveVoiceProcessorBufferSize, 1, 1);
-    let activeSpeech = false;
-    let voicedFrames = 0;
-    let quietFrames = 0;
-    const prerollFrames: string[] = [];
     const sendAudioFrame = (data: string) => {
       socket.send(JSON.stringify({
         type: "audio",
@@ -357,32 +348,9 @@ export function useLiveVoice({
       const currentMicVolume = liveMicVolumeRef.current;
       if (currentMicVolume <= 0) return;
       const adjustedInput = scaleAudio(input, currentMicVolume);
-      const rms = audioRMS(adjustedInput);
       const pcm = downsampleToPCM16(adjustedInput, audioContext.sampleRate, 16000);
       if (!pcm.length) return;
-      const frame = bytesToBase64(pcm);
-      if (activeSpeech) {
-        sendAudioFrame(frame);
-        quietFrames = rms >= liveVoiceContinueRmsThreshold ? 0 : quietFrames + 1;
-        if (quietFrames >= liveVoiceHangoverFrames) {
-          activeSpeech = false;
-          voicedFrames = 0;
-          quietFrames = 0;
-        }
-        return;
-      }
-      prerollFrames.push(frame);
-      if (prerollFrames.length > liveVoicePrerollFrames) {
-        prerollFrames.shift();
-      }
-      voicedFrames = rms >= liveVoiceStartRmsThreshold ? voicedFrames + 1 : 0;
-      if (voicedFrames < liveVoiceStartFrames) return;
-      activeSpeech = true;
-      quietFrames = 0;
-      for (const bufferedFrame of prerollFrames) {
-        sendAudioFrame(bufferedFrame);
-      }
-      prerollFrames.length = 0;
+      sendAudioFrame(bytesToBase64(pcm));
     };
     source.connect(processor);
     processor.connect(audioContext.destination);
@@ -532,16 +500,6 @@ function downsampleToPCM16(input: Float32Array, inputSampleRate: number, targetS
     view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
   }
   return bytes;
-}
-
-function audioRMS(input: Float32Array): number {
-  if (!input.length) return 0;
-  let sum = 0;
-  for (let index = 0; index < input.length; index += 1) {
-    const sample = input[index] || 0;
-    sum += sample * sample;
-  }
-  return Math.sqrt(sum / input.length);
 }
 
 function scaleAudio(input: Float32Array, volume: number): Float32Array {
