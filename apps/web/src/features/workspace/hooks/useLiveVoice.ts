@@ -19,7 +19,7 @@ type UseLiveVoiceOptions = {
 const liveVoiceStartRmsThreshold = 0.012;
 const liveVoiceContinueRmsThreshold = 0.007;
 const liveVoiceStartFrames = 1;
-const liveVoiceHangoverFrames = 5;
+const liveVoiceHangoverFrames = 9;
 const liveVoicePrerollFrames = 4;
 const liveVoiceProcessorBufferSize = 1024;
 
@@ -368,7 +368,6 @@ export function useLiveVoice({
           activeSpeech = false;
           voicedFrames = 0;
           quietFrames = 0;
-          socket.send(JSON.stringify({ type: "audio_end" }));
         }
         return;
       }
