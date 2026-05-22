@@ -16,12 +16,12 @@ type UseLiveVoiceOptions = {
   onStatus: (status: Status | ((current: Status) => Status)) => void;
 };
 
-const liveVoiceStartRmsThreshold = 0.018;
-const liveVoiceContinueRmsThreshold = 0.01;
-const liveVoiceStartFrames = 2;
-const liveVoiceHangoverFrames = 8;
-const liveVoicePrerollFrames = 3;
-const liveVoiceProcessorBufferSize = 2048;
+const liveVoiceStartRmsThreshold = 0.012;
+const liveVoiceContinueRmsThreshold = 0.007;
+const liveVoiceStartFrames = 1;
+const liveVoiceHangoverFrames = 5;
+const liveVoicePrerollFrames = 4;
+const liveVoiceProcessorBufferSize = 1024;
 
 export function useLiveVoice({
   api,

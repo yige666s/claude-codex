@@ -24,8 +24,8 @@ const (
 	defaultLiveVertexAPIVersion   = "v1beta1"
 	defaultLiveInputAudioMIMEType = "audio/pcm;rate=16000"
 	defaultLiveSessionTimeout     = 10 * time.Minute
-	defaultLiveVADPrefixPadding   = 150 * time.Millisecond
-	defaultLiveVADSilenceDuration = 350 * time.Millisecond
+	defaultLiveVADPrefixPadding   = 40 * time.Millisecond
+	defaultLiveVADSilenceDuration = 180 * time.Millisecond
 )
 
 type VertexLiveService struct {
@@ -292,7 +292,6 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 	var turn liveTurnAccumulator
 	skillHandler, _ := s.recorder.(LiveSkillHandler)
 	skillTurn := false
-	var pendingAssistantEvents []Event
 	for {
 		var message map[string]any
 		if err := conn.ReadJSON(&message); err != nil {
@@ -305,14 +304,9 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 		if skillHandler != nil && !skillTurn && skillHandler.DetectLiveSkillCommand(ctx, req.UserID, req.SessionID, turn.inputText()) {
 			skillTurn = true
 			turn.suppressOutput()
-			pendingAssistantEvents = nil
 		}
 		if skillTurn {
 			events = liveSkillVisibleEvents(events)
-		} else if skillHandler != nil && turn.inputText() != "" {
-			var visible []Event
-			visible, pendingAssistantEvents = splitLiveSkillPendingEvents(events, pendingAssistantEvents)
-			events = visible
 		}
 		for _, event := range events {
 			event.SessionID = req.SessionID
@@ -330,28 +324,10 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 						return err
 					}
 					if handled {
-						pendingAssistantEvents = nil
 						continue
 					}
 				}
 			}
-			if !skillTurn && strings.TrimSpace(userText) != "" && skillHandler != nil {
-				handled, err := skillHandler.ExecuteLiveSkillCommand(ctx, req.UserID, req.SessionID, userText, sink)
-				if err != nil {
-					return err
-				}
-				if handled {
-					pendingAssistantEvents = nil
-					continue
-				}
-			}
-			for _, event := range pendingAssistantEvents {
-				event.SessionID = req.SessionID
-				if err := sink.Send(ctx, event); err != nil {
-					return err
-				}
-			}
-			pendingAssistantEvents = nil
 			if strings.TrimSpace(userText) != "" || strings.TrimSpace(assistantText) != "" {
 				if err := s.recorder.RecordLiveTurn(ctx, req.UserID, req.SessionID, userText, assistantText, s.config.Model); err != nil {
 					return err
@@ -365,18 +341,6 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 			}
 		}
 	}
-}
-
-func splitLiveSkillPendingEvents(events []Event, pending []Event) ([]Event, []Event) {
-	visible := make([]Event, 0, len(events))
-	for _, event := range events {
-		if event.Type == "live_audio" || (event.Type == "live_transcript" && event.Role == state.MessageRoleAssistant) {
-			pending = append(pending, event)
-			continue
-		}
-		visible = append(visible, event)
-	}
-	return visible, pending
 }
 
 func liveSkillVisibleEvents(events []Event) []Event {

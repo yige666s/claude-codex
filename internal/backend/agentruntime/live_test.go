@@ -31,10 +31,10 @@ func TestNormalizeLiveConfigUsesLowLatencyVADDefaults(t *testing.T) {
 	if config.LiveVADEndSensitivity != "END_SENSITIVITY_HIGH" {
 		t.Fatalf("end sensitivity = %q", config.LiveVADEndSensitivity)
 	}
-	if config.LiveVADPrefixPadding != 150*time.Millisecond {
+	if config.LiveVADPrefixPadding != 40*time.Millisecond {
 		t.Fatalf("prefix padding = %s", config.LiveVADPrefixPadding)
 	}
-	if config.LiveVADSilenceDuration != 350*time.Millisecond {
+	if config.LiveVADSilenceDuration != 180*time.Millisecond {
 		t.Fatalf("silence duration = %s", config.LiveVADSilenceDuration)
 	}
 }
