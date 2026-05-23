@@ -18,7 +18,30 @@ describe("MarkdownContent", () => {
       />
     );
 
-    expect(html.match(/<ol>/g)).toHaveLength(1);
+    expect(html.match(/<ol(?:\s|>)/g)).toHaveLength(1);
     expect(html.match(/<li>/g)).toHaveLength(4);
+  });
+
+  it("preserves ordered list starts after intervening bullet lists", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownContent
+        text={[
+          "1. Market context",
+          "2. Product advantages",
+          "",
+          "- Multi-provider models",
+          "- Automation hooks",
+          "",
+          "3. Business model",
+          "",
+          "- Subscription plus usage",
+          "",
+          "4. Target markets"
+        ].join("\n")}
+      />
+    );
+
+    expect(html).toContain("<ol start=\"3\">");
+    expect(html).toContain("<ol start=\"4\">");
   });
 });

@@ -4,7 +4,7 @@ type MarkdownBlock =
   | { type: "paragraph"; lines: string[] }
   | { type: "heading"; level: number; text: string }
   | { type: "code"; language: string; text: string }
-  | { type: "list"; ordered: boolean; items: string[] }
+  | { type: "list"; ordered: boolean; items: string[]; start?: number }
   | { type: "quote"; lines: string[] }
   | { type: "table"; headers: string[]; rows: string[][] };
 
@@ -76,13 +76,14 @@ function parseMarkdown(text: string): MarkdownBlock[] {
       flushParagraph();
       const items = [bullet.text];
       const ordered = bullet.ordered;
+      const start = bullet.number;
       for (let j = i + 1; j < lines.length; j++) {
         const next = parseListItem(lines[j].trim());
         if (!next || next.ordered !== ordered) break;
         items.push(next.text);
         i = j;
       }
-      blocks.push({ type: "list", ordered, items });
+      blocks.push({ type: "list", ordered, items, start });
       continue;
     }
 
@@ -122,7 +123,7 @@ function renderMarkdownBlock(block: MarkdownBlock, index: number): ReactNode {
     case "list": {
       const List = block.ordered ? "ol" : "ul";
       return (
-        <List key={index}>
+        <List key={index} start={block.ordered ? block.start : undefined}>
           {block.items.map((item, itemIndex) => (
             <li key={itemIndex}>{renderInlineMarkdown(item, `li-${index}-${itemIndex}`)}</li>
           ))}
@@ -152,9 +153,9 @@ function renderMarkdownBlock(block: MarkdownBlock, index: number): ReactNode {
   }
 }
 
-function parseListItem(line: string): { ordered: boolean; text: string } | null {
-  const ordered = line.match(/^\d+[.)]\s+(.+)$/);
-  if (ordered) return { ordered: true, text: ordered[1] };
+function parseListItem(line: string): { ordered: boolean; text: string; number?: number } | null {
+  const ordered = line.match(/^(\d+)[.)]\s+(.+)$/);
+  if (ordered) return { ordered: true, text: ordered[2], number: Number.parseInt(ordered[1], 10) || 1 };
   const bullet = line.match(/^[-*+]\s+(.+)$/);
   if (bullet) return { ordered: false, text: bullet[1] };
   return null;
