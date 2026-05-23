@@ -1,5 +1,5 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, Project, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -100,19 +100,43 @@ export class ApiClient {
     return { status: response.ok ? "ok" : "error", checks: [] };
   }
 
-  async sessions(limit = 50, offset = 0): Promise<Session[]> {
+  async projects(): Promise<Project[]> {
+    const payload = await this.fetchJSON<{ projects: Project[] }>("/v1/projects");
+    return payload.projects || [];
+  }
+
+  async createProject(input: Pick<Project, "name"> & Partial<Pick<Project, "description" | "instructions" | "color">>): Promise<Project> {
+    return this.fetchJSON<Project>("/v1/projects", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
+  async updateProject(id: string, patch: Partial<Pick<Project, "name" | "description" | "instructions" | "color">>): Promise<Project> {
+    return this.fetchJSON<Project>(`/v1/projects/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch)
+    });
+  }
+
+  async deleteProject(id: string): Promise<void> {
+    await this.fetchJSON(`/v1/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  async sessions(limit = 50, offset = 0, projectId?: string): Promise<Session[]> {
     const params = new URLSearchParams({
       limit: String(limit),
       summary: "1"
     });
     if (offset > 0) params.set("offset", String(offset));
+    if (projectId !== undefined) params.set("project_id", projectId);
     return this.fetchJSON<Session[]>(`/v1/sessions?${params.toString()}`);
   }
 
-  async createSession(): Promise<Session> {
+  async createSession(projectId = ""): Promise<Session> {
     return this.fetchJSON<Session>("/v1/sessions", {
       method: "POST",
-      body: JSON.stringify({ working_dir: "" })
+      body: JSON.stringify({ working_dir: "", project_id: projectId })
     });
   }
 

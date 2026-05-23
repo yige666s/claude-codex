@@ -138,6 +138,7 @@ func agentSessionSchemaStatements(timeType, jsonType string) []string {
 	user_id TEXT NOT NULL,
 	session_id TEXT NOT NULL,
 	agent_id TEXT NOT NULL DEFAULT '',
+	project_id TEXT NOT NULL DEFAULT '',
 	title TEXT NOT NULL DEFAULT '',
 	status INTEGER NOT NULL DEFAULT 1,
 	message_count INTEGER NOT NULL DEFAULT 0,
@@ -156,6 +157,7 @@ func agentSessionSchemaStatements(timeType, jsonType string) []string {
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_status_last_message ON agent_sessions (user_id, status, last_message_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_status ON agent_sessions (agent_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_project_updated ON agent_sessions (user_id, project_id, updated_at)`,
 	}
 }
 
@@ -400,7 +402,7 @@ func (s *SQLSessionStore) Create(ctx context.Context, userID, workingDir string)
 
 func (s *SQLSessionStore) Get(ctx context.Context, userID, sessionID string) (*state.Session, error) {
 	row := s.db.QueryRowContext(ctx, s.dialect.Bind(`
-SELECT user_id, session_id, agent_id, title, status, message_count, total_tokens,
+SELECT user_id, session_id, agent_id, project_id, title, status, message_count, total_tokens,
 	working_dir, tags, description, parent_id, branch_point, metadata, archived,
 	created_at, updated_at, last_message_at
 FROM agent_sessions
@@ -457,6 +459,7 @@ func (s *SQLSessionStore) ListPage(ctx context.Context, userID string, limit, of
 func (s *SQLSessionStore) listSessionsFromSQL(ctx context.Context, userID string, limit, offset int) ([]*state.Session, error) {
 	query := `
 SELECT s.user_id, s.session_id, s.agent_id,
+	s.project_id,
 	COALESCE(NULLIF(s.title, ''), (
 		SELECT m.content
 		FROM agent_messages m
@@ -572,12 +575,13 @@ func (s *SQLSessionStore) saveSessionMetadataTx(ctx context.Context, tx *sql.Tx,
 	}
 	if _, err = tx.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_sessions (
-	user_id, session_id, agent_id, title, status, message_count, total_tokens,
+	user_id, session_id, agent_id, project_id, title, status, message_count, total_tokens,
 	working_dir, tags, description, parent_id, branch_point, metadata, archived,
 	created_at, updated_at, last_message_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(user_id, session_id) DO UPDATE SET
 	agent_id = excluded.agent_id,
+	project_id = excluded.project_id,
 	title = excluded.title,
 	status = excluded.status,
 	message_count = excluded.message_count,
@@ -594,6 +598,7 @@ ON CONFLICT(user_id, session_id) DO UPDATE SET
 		userID,
 		sessionForSQL.ID,
 		sessionForSQL.AgentID,
+		sessionForSQL.ProjectID,
 		sessionForSQL.Title,
 		sessionForSQL.Status,
 		sessionForSQL.MessageCount,
@@ -1642,6 +1647,7 @@ func scanSQLSession(scanner sqlScanner) (*state.Session, error) {
 		&session.UserID,
 		&session.ID,
 		&session.AgentID,
+		&session.ProjectID,
 		&session.Title,
 		&session.Status,
 		&session.MessageCount,
@@ -1853,6 +1859,7 @@ func sanitizeSessionForSQL(session *state.Session) *state.Session {
 	clone.ID = sanitizeSQLText(clone.ID)
 	clone.UserID = sanitizeSQLText(clone.UserID)
 	clone.AgentID = sanitizeSQLText(clone.AgentID)
+	clone.ProjectID = sanitizeSQLText(clone.ProjectID)
 	clone.Title = sanitizeSQLText(clone.Title)
 	clone.WorkingDir = sanitizeSQLText(clone.WorkingDir)
 	clone.Description = sanitizeSQLText(clone.Description)

@@ -8,7 +8,7 @@ import {
   X
 } from "lucide-react";
 import { ApiClient, ApiError } from "../../api/client";
-import type { Asset, AuthSession, Job, JobEvent, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill } from "../../types";
+import type { Asset, AuthSession, Job, JobEvent, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, Project, ReadinessStatus, RuntimeEvent, Session, Skill } from "../../types";
 import { readSSEStream } from "../../lib/sse";
 import { sessionTitle } from "../../lib/sessionTitle";
 import { AuthPage, type AuthMode } from "../auth/AuthPage";
@@ -138,6 +138,9 @@ export function AgentWorkspace() {
   const [forgotCooldownSeconds, setForgotCooldownSeconds] = useState(0);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState("");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectId, setProjectId] = useState("");
+  const [projectDialog, setProjectDialog] = useState<Project | "new" | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [draft, setDraft] = useState("");
@@ -220,6 +223,8 @@ export function AgentWorkspace() {
   const artifactsRef = useRef<Asset[]>([]);
   const authSession = auth || api.session();
   const activeSession = sessions.find((item) => item.id === sessionId);
+  const visibleSessions = projectId ? sessions.filter((item) => item.project_id === projectId) : sessions;
+  const activeProject = projects.find((item) => item.id === projectId);
   const latestJob = jobs[0];
   const latestJobId = latestJob?.id || "";
   const activeResourceTab = resourceDialogTab || "skills";
@@ -296,7 +301,7 @@ export function AgentWorkspace() {
     const existing = api.session();
     if (existing) {
       setAuth(existing);
-      bootstrap(api, setStatus, setSessions, setSessionId, setMessages, setSkills, setJobs, setAttachments, setArtifacts, baselineFetchedResources).catch((err) => {
+      bootstrap(api, setStatus, setProjects, setSessions, setProjectId, setSessionId, setMessages, setSkills, setJobs, setAttachments, setArtifacts, baselineFetchedResources).catch((err) => {
         if (err instanceof ApiError && err.status === 401) {
           setAuth(null);
           setStatus({ tone: "idle", text: "Please log in again" });
@@ -508,7 +513,7 @@ export function AgentWorkspace() {
 
   async function refreshAll() {
     setServiceStatus(await readServiceStatus(api));
-    await bootstrap(api, setStatus, setSessions, setSessionId, setMessages, setSkills, setJobs, setAttachments, setArtifacts, baselineFetchedResources);
+    await bootstrap(api, setStatus, setProjects, setSessions, setProjectId, setSessionId, setMessages, setSkills, setJobs, setAttachments, setArtifacts, baselineFetchedResources);
     await loadMemorySettings();
     await loadPersonalizationSettings();
   }
@@ -660,12 +665,66 @@ export function AgentWorkspace() {
 
   async function createSession() {
     try {
-      const session = await api.createSession();
+      const session = await api.createSession(projectId);
       setSessions((current) => [session, ...current]);
+      if (session.project_id) {
+        setProjects((current) => current.map((item) => item.id === session.project_id ? { ...item, session_count: (item.session_count || 0) + 1 } : item));
+      }
       selectedSessionIdRef.current = session.id;
       setSessionId(session.id);
       setMessages([]);
       resetSessionScopedFeedback({ clearDraft: true });
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  function selectProject(nextProjectId: string) {
+    setProjectId(nextProjectId);
+    setMobileNav(false);
+    const nextSession = sessions.find((item) => (nextProjectId ? item.project_id === nextProjectId : true));
+    if (nextSession && nextSession.id !== sessionId) {
+      selectSession(nextSession.id);
+    } else if (!nextSession) {
+      selectedSessionIdRef.current = "";
+      setSessionId("");
+      setMessages([]);
+      resetSessionScopedFeedback({ clearDraft: true });
+    }
+  }
+
+  async function saveProject(input: { id?: string; name: string; description: string; instructions: string; color: string }) {
+    try {
+      setStatus({ tone: "busy", text: input.id ? "Saving project" : "Creating project" });
+      const saved = input.id
+        ? await api.updateProject(input.id, input)
+        : await api.createProject(input);
+      const nextProjects = await api.projects();
+      setProjects(upsertProject(nextProjects, saved));
+      setProjectId(saved.id);
+      setProjectDialog(null);
+      setStatus({ tone: "ok", text: input.id ? "Project saved" : "Project created" });
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  async function deleteProject(project: Project) {
+    const confirmed = await requestConfirmation({
+      title: "Delete project?",
+      message: `This will delete "${project.name}".`,
+      detail: "Chats remain available in All chats, but project instructions will no longer apply to them.",
+      confirmLabel: "Delete",
+      danger: true
+    });
+    if (!confirmed) return;
+    try {
+      await api.deleteProject(project.id);
+      setProjects((current) => current.filter((item) => item.id !== project.id));
+      setSessions((current) => current.map((item) => item.project_id === project.id ? { ...item, project_id: "" } : item));
+      if (projectId === project.id) setProjectId("");
+      setProjectDialog(null);
+      setStatus({ tone: "ok", text: "Project deleted" });
     } catch (error) {
       showError(error);
     }
@@ -687,6 +746,9 @@ export function AgentWorkspace() {
       await api.deleteSession(targetSessionId);
       const next = sessions.filter((item) => item.id !== targetSessionId);
       setSessions(next);
+      if (targetSession?.project_id) {
+        setProjects((current) => current.map((item) => item.id === targetSession.project_id ? { ...item, session_count: Math.max(0, (item.session_count || 0) - 1) } : item));
+      }
       if (targetSessionId === sessionId) {
         const nextSessionId = next[0]?.id || "";
         selectedSessionIdRef.current = nextSessionId;
@@ -1503,7 +1565,10 @@ export function AgentWorkspace() {
       sidebar={(
         <WorkspaceSidebar
           authSession={authSession}
-          sessions={sessions}
+          projects={projects}
+          projectId={projectId}
+          sessions={visibleSessions}
+          allSessionCount={sessions.length}
           sessionId={sessionId}
           mobileOpen={mobileNav}
           leftOpen={leftSidebarOpen}
@@ -1528,6 +1593,9 @@ export function AgentWorkspace() {
           }}
           onCloseMobile={() => setMobileNav(false)}
           onCreateSession={createSession}
+          onSelectProject={selectProject}
+          onCreateProject={() => setProjectDialog("new")}
+          onEditProject={(project) => setProjectDialog(project)}
           onOpenSearch={() => setGlobalSearchOpen(true)}
           onOpenResource={openResourceDialog}
           onSelectSession={selectSession}
@@ -1544,6 +1612,7 @@ export function AgentWorkspace() {
       workspace={(
         <ConversationPane
           activeSession={activeSession}
+          activeProject={activeProject}
           status={status}
           recoveryBanner={recoveryBanner}
           online={online}
@@ -1703,6 +1772,14 @@ export function AgentWorkspace() {
               onClose={() => setSettingsModalOpen(false)}
             />
           )}
+          {projectDialog && (
+            <ProjectModal
+              project={projectDialog === "new" ? null : projectDialog}
+              onSave={saveProject}
+              onDelete={projectDialog === "new" ? undefined : deleteProject}
+              onClose={() => setProjectDialog(null)}
+            />
+          )}
           {previewAsset && (
             <PreviewModal
               asset={previewAsset.asset}
@@ -1729,7 +1806,9 @@ export default AgentWorkspace;
 async function bootstrap(
   api: ApiClient,
   setStatus: (status: Status) => void,
+  setProjects: (projects: Project[]) => void,
   setSessions: (sessions: Session[]) => void,
+  setProjectId: (projectId: string) => void,
   setSessionId: (sessionId: string) => void,
   setMessages: (messages: Message[]) => void,
   setSkills: (skills: Skill[]) => void,
@@ -1744,6 +1823,7 @@ async function bootstrap(
   }) => void
 ) {
   setStatus({ tone: "busy", text: "Loading" });
+  const projects = await api.projects();
   let sessionList = await api.sessions();
   if (!sessionList.length) {
     const session = await api.createSession();
@@ -1759,6 +1839,8 @@ async function bootstrap(
     api.artifacts(currentSummary.id)
   ]);
   baselineResources?.({ skills, jobs, attachments, artifacts });
+  setProjects(projects);
+  setProjectId(current.project_id || "");
   setSessions(upsertSession(sessionList, current));
   setSessionId(current.id);
   setMessages(visibleMessages(current.messages || []));
@@ -1812,6 +1894,11 @@ function tagContent(content: string, tag: string): string {
 function upsertSession(items: Session[], session: Session): Session[] {
   const next = items.filter((item) => item.id !== session.id);
   return [session, ...next].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+}
+
+function upsertProject(items: Project[], project: Project): Project[] {
+  const next = items.filter((item) => item.id !== project.id);
+  return [project, ...next].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 }
 
 function appendRuntimeMessage(messages: Message[], message: Message): Message[] {
@@ -2164,6 +2251,69 @@ function ConfirmModal({
           <Button type="button" variant="outline" onClick={onCancel}>{dialog.cancelLabel || "Cancel"}</Button>
           <Button type="button" variant={dialog.danger ? "destructive" : "primary"} onClick={onConfirm}>
             {dialog.confirmLabel || "OK"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ProjectModal({
+  project,
+  onSave,
+  onDelete,
+  onClose
+}: {
+  project: Project | null;
+  onSave: (input: { id?: string; name: string; description: string; instructions: string; color: string }) => void;
+  onDelete?: (project: Project) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(project?.name || "");
+  const [description, setDescription] = useState(project?.description || "");
+  const [instructions, setInstructions] = useState(project?.instructions || "");
+  const [color, setColor] = useState(project?.color || "#159a85");
+  const trimmedName = name.trim();
+
+  return (
+    <Dialog open onOpenChange={(open) => {
+      if (!open) onClose();
+    }}>
+      <DialogContent className="project-modal" hideClose>
+        <DialogHeader>
+          <DialogTitle>{project ? "Project" : "New project"}</DialogTitle>
+          <DialogDescription>{project ? "Update this project workspace." : "Create a workspace for related chats and instructions."}</DialogDescription>
+        </DialogHeader>
+        <div className="project-modal-fields">
+          <label>
+            <span>Name</span>
+            <Input value={name} maxLength={120} onChange={(event) => setName(event.target.value)} autoFocus />
+          </label>
+          <label>
+            <span>Description</span>
+            <Textarea value={description} maxLength={1000} onChange={(event) => setDescription(event.target.value)} rows={3} />
+          </label>
+          <label>
+            <span>Instructions</span>
+            <Textarea value={instructions} maxLength={8000} onChange={(event) => setInstructions(event.target.value)} rows={7} />
+          </label>
+          <label className="project-color-field">
+            <span>Color</span>
+            <input type="color" value={color} onChange={(event) => setColor(event.target.value)} aria-label="Project color" />
+          </label>
+        </div>
+        <DialogFooter>
+          {project && onDelete && (
+            <Button type="button" variant="destructive" onClick={() => onDelete(project)}>Delete</Button>
+          )}
+          <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+          <Button
+            type="button"
+            variant="primary"
+            disabled={!trimmedName}
+            onClick={() => onSave({ id: project?.id, name: trimmedName, description, instructions, color })}
+          >
+            Save
           </Button>
         </DialogFooter>
       </DialogContent>
