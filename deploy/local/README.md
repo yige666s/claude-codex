@@ -21,6 +21,11 @@ Override provider settings with
 environment variables such as `AGENT_API_LLM_PROVIDER`, `OPENAI_API_KEY`,
 `DASHSCOPE_API_KEY`, `GEMINI_API_KEY`, or `VERTEX_*`.
 Runtime model selection is managed from the Admin UI and stored in SQL.
+Gemini Live mode requires Vertex credentials inside the container. Prefer
+`VERTEX_ACCESS_TOKEN` or `GOOGLE_APPLICATION_CREDENTIALS_JSON` for test
+environments. If you mount a local service-account file with
+`AGENT_API_SECRETS_MOUNT`, set
+`AGENT_API_CONTAINER_GOOGLE_APPLICATION_CREDENTIALS=/run/agentapi/secrets/vertex-service-account.json`.
 Attachment upload uses the presigned S3-compatible flow: AgentAPI signs the
 upload, the browser PUTs directly to the object store, then confirms metadata
 back to AgentAPI. File-backed local runs fall back to the legacy multipart path.

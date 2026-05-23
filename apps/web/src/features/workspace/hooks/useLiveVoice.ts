@@ -142,6 +142,8 @@ export function useLiveVoice({
     socket.onerror = () => {
       if (!isCurrentLiveSession(socket, generation)) return;
       updateLiveStatus("error");
+      setInputMode("text");
+      inputModeRef.current = "text";
       onStatus({ tone: "error", text: "Live voice failed" });
     };
     socket.onclose = () => {
@@ -185,6 +187,9 @@ export function useLiveVoice({
   function switchToLiveMode() {
     setInputMode("live");
     inputModeRef.current = "live";
+    if (liveStatusRef.current === "error") {
+      updateLiveStatus("idle");
+    }
     if (liveStatusRef.current === "idle") {
       void startLiveMode();
     }
@@ -306,6 +311,20 @@ export function useLiveVoice({
     }
     if (event.type === "live_skill_result") {
       onStatus({ tone: "ok", text: "Skill completed" });
+      return;
+    }
+    if (event.type === "error") {
+      const message = liveErrorMessage(event.error || event.content || "Live voice failed.");
+      onError(message);
+      onStatus({ tone: "error", text: "Live voice failed" });
+      setInputMode("text");
+      inputModeRef.current = "text";
+      updateLiveStatus("error");
+      cleanupLiveAudio();
+      liveSocketRef.current = null;
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.close();
+      }
       return;
     }
     if (event.type === "message" && event.role === "assistant" && isLiveSkillEvent(event)) {
@@ -617,4 +636,12 @@ function errorMessage(error: unknown): string {
     : error instanceof Error
       ? error.message
       : String(error);
+}
+
+function liveErrorMessage(message: string): string {
+  const text = message.trim();
+  if (/live vertex access token is required|GOOGLE_APPLICATION_CREDENTIALS|VERTEX_ACCESS_TOKEN|vertex-service-account/i.test(text)) {
+    return "Live mode is not configured in this environment. Set VERTEX_ACCESS_TOKEN or GOOGLE_APPLICATION_CREDENTIALS_JSON, or mount the Vertex service account secret.";
+  }
+  return text || "Live voice failed.";
 }
