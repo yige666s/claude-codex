@@ -39,6 +39,15 @@ type EmailVerificationTokenRecord struct {
 	UsedAt    *time.Time `json:"used_at,omitempty"`
 }
 
+type PasswordResetTokenRecord struct {
+	TokenHash string     `json:"-"`
+	UserID    string     `json:"user_id"`
+	Email     string     `json:"email"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	UsedAt    *time.Time `json:"used_at,omitempty"`
+}
+
 type AdminUserRecord struct {
 	ID                      string     `json:"id"`
 	Email                   string     `json:"email"`
@@ -70,6 +79,8 @@ type UserStore interface {
 	RevokeUserRefreshTokens(ctx context.Context, userID string, at time.Time) error
 	CreateEmailVerificationToken(ctx context.Context, token *EmailVerificationTokenRecord) error
 	ConsumeEmailVerificationToken(ctx context.Context, tokenHash string, at time.Time) (*UserAccount, error)
+	CreatePasswordResetToken(ctx context.Context, token *PasswordResetTokenRecord) error
+	ConsumePasswordResetToken(ctx context.Context, tokenHash string, newPasswordHash string, at time.Time) (*UserAccount, error)
 	DeleteUser(ctx context.Context, userID string) error
 	PruneExpiredRefreshTokens(ctx context.Context, cutoff time.Time) (int, error)
 }
@@ -132,6 +143,15 @@ func (s *SQLUserStore) Init(ctx context.Context) error {
 	used_at ` + timeType + `
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_email_verification_tokens_user ON agent_email_verification_tokens (user_id, expires_at)`,
+		`CREATE TABLE IF NOT EXISTS agent_password_reset_tokens (
+	token_hash TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL REFERENCES agent_users(user_id) ON DELETE CASCADE,
+	email TEXT NOT NULL,
+	created_at ` + timeType + ` NOT NULL,
+	expires_at ` + timeType + ` NOT NULL,
+	used_at ` + timeType + `
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_password_reset_tokens_user ON agent_password_reset_tokens (user_id, expires_at)`,
 		`INSERT INTO agent_schema_migrations (version, applied_at)
 VALUES (2, ` + s.dialect.Placeholder(1) + `)
 ON CONFLICT(version) DO NOTHING`,
@@ -158,7 +178,10 @@ ON CONFLICT(version) DO NOTHING`,
 	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_refresh_tokens", "created_at", "expires_at", "revoked_at"); err != nil {
 		return err
 	}
-	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_email_verification_tokens", "created_at", "expires_at", "used_at")
+	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_email_verification_tokens", "created_at", "expires_at", "used_at"); err != nil {
+		return err
+	}
+	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_password_reset_tokens", "created_at", "expires_at", "used_at")
 }
 
 func (s *SQLUserStore) CreateUser(ctx context.Context, user *UserAccount) error {
@@ -398,6 +421,67 @@ UPDATE agent_users SET status = ?, email_verified_at = ?, updated_at = ? WHERE u
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetUserByID(ctx, userID)
+}
+
+func (s *SQLUserStore) CreatePasswordResetToken(ctx context.Context, token *PasswordResetTokenRecord) error {
+	if strings.TrimSpace(token.TokenHash) == "" {
+		return fmt.Errorf("password reset token is required")
+	}
+	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
+INSERT INTO agent_password_reset_tokens (token_hash, user_id, email, created_at, expires_at, used_at)
+VALUES (?, ?, ?, ?, ?, ?)`),
+		token.TokenHash,
+		token.UserID,
+		token.Email,
+		sqlTimeValue(token.CreatedAt, s.dialect),
+		sqlTimeValue(token.ExpiresAt, s.dialect),
+		nullableSQLTimeValue(token.UsedAt, s.dialect),
+	)
+	return err
+}
+
+func (s *SQLUserStore) ConsumePasswordResetToken(ctx context.Context, tokenHash string, newPasswordHash string, at time.Time) (*UserAccount, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	tokenHash = strings.TrimSpace(tokenHash)
+	var userID string
+	var expiresAt any
+	var usedAt any
+	row := tx.QueryRowContext(ctx, s.dialect.Bind(`
+SELECT user_id, expires_at, used_at
+FROM agent_password_reset_tokens
+WHERE token_hash = ?`), tokenHash)
+	if err := row.Scan(&userID, &expiresAt, &usedAt); err != nil {
+		return nil, err
+	}
+	parsedExpiresAt, err := parseSQLTime(expiresAt)
+	if err != nil {
+		return nil, err
+	}
+	parsedUsedAt, err := parseNullableSQLTime(usedAt)
+	if err != nil {
+		return nil, err
+	}
+	if parsedUsedAt != nil || !at.Before(parsedExpiresAt) {
+		return nil, fmt.Errorf("password reset token expired")
+	}
+	res, err := tx.ExecContext(ctx, s.dialect.Bind(`UPDATE agent_password_reset_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL`), sqlTimeValue(at, s.dialect), tokenHash)
+	if err != nil {
+		return nil, err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return nil, fmt.Errorf("password reset token expired")
+	}
+	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`UPDATE agent_users SET password_hash = ?, updated_at = ? WHERE user_id = ?`), newPasswordHash, sqlTimeValue(at, s.dialect), userID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return s.GetUserByID(ctx, userID)

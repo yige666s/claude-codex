@@ -36,6 +36,7 @@ type AuthService struct {
 	RefreshTTL                time.Duration
 	EmailVerificationRequired bool
 	EmailVerificationTTL      time.Duration
+	PasswordResetTTL          time.Duration
 	PublicBaseURL             string
 	Mailer                    Mailer
 }
@@ -228,6 +229,73 @@ func (s *AuthService) VerifyEmail(ctx context.Context, token string) (*UserProfi
 	return &profile, nil
 }
 
+func (s *AuthService) RequestPasswordReset(ctx context.Context, email string, r *http.Request) error {
+	if s == nil || s.Store == nil {
+		return fmt.Errorf("user system is not configured")
+	}
+	email = normalizeEmail(email)
+	if !validEmail(email) {
+		return fmt.Errorf("valid email is required")
+	}
+	user, err := s.Store.GetUserByEmail(ctx, email)
+	if err != nil {
+		return nil
+	}
+	if s.Mailer == nil {
+		return fmt.Errorf("password reset mailer is not configured")
+	}
+	token, err := randomToken()
+	if err != nil {
+		return err
+	}
+	ttl := s.PasswordResetTTL
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	now := time.Now().UTC()
+	rec := &PasswordResetTokenRecord{
+		TokenHash: tokenHash(token),
+		UserID:    user.ID,
+		Email:     user.Email,
+		CreatedAt: now,
+		ExpiresAt: now.Add(ttl),
+	}
+	if err := s.Store.CreatePasswordResetToken(ctx, rec); err != nil {
+		return err
+	}
+	link := s.passwordResetURL(token, r)
+	return s.Mailer.Send(ctx, EmailMessage{
+		To:      user.Email,
+		Subject: "Reset your AgentAPI password",
+		HTML:    passwordResetEmailHTML(user.DisplayName, link),
+		Text:    "Reset your AgentAPI password: " + link,
+	})
+}
+
+func (s *AuthService) ResetPassword(ctx context.Context, token string, password string) (*UserProfile, error) {
+	if s == nil || s.Store == nil {
+		return nil, fmt.Errorf("user system is not configured")
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, fmt.Errorf("password reset token is required")
+	}
+	if len(password) < 8 {
+		return nil, fmt.Errorf("password must be at least 8 characters")
+	}
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.Store.ConsumePasswordResetToken(ctx, tokenHash(token), string(passwordHash), time.Now().UTC())
+	if err != nil {
+		return nil, fmt.Errorf("password reset link is invalid or expired")
+	}
+	_ = s.Store.RevokeUserRefreshTokens(ctx, user.ID, time.Now().UTC())
+	profile := userProfile(user)
+	return &profile, nil
+}
+
 func (s *AuthService) sendVerificationEmail(ctx context.Context, user *UserAccount, r *http.Request) error {
 	if s.Mailer == nil {
 		return fmt.Errorf("email verification mailer is not configured")
@@ -279,6 +347,25 @@ func (s *AuthService) verificationURL(token string, r *http.Request) string {
 	return strings.TrimRight(base, "/") + "/v1/auth/verify-email?token=" + url.QueryEscape(token)
 }
 
+func (s *AuthService) passwordResetURL(token string, r *http.Request) string {
+	base := strings.TrimSpace(s.PublicBaseURL)
+	if base == "" && r != nil {
+		scheme := "http"
+		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+			scheme = "https"
+		}
+		if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+			base = scheme + "://" + forwarded
+		} else if host := strings.TrimSpace(r.Host); host != "" {
+			base = scheme + "://" + host
+		}
+	}
+	if base == "" {
+		base = "http://localhost:8081"
+	}
+	return strings.TrimRight(base, "/") + "/reset-password?token=" + url.QueryEscape(token)
+}
+
 func verificationEmailHTML(displayName, link string) string {
 	name := strings.TrimSpace(displayName)
 	if name == "" {
@@ -293,6 +380,26 @@ func verificationEmailHTML(displayName, link string) string {
     <p>Hi ` + escapedName + `,</p>
     <p>Confirm this email address to finish creating your account.</p>
     <p><a href="` + escapedLink + `" style="display:inline-block;background:#0f766e;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none;">Verify email</a></p>
+    <p>If the button does not work, paste this link into your browser:</p>
+    <p><a href="` + escapedLink + `">` + escapedLink + `</a></p>
+  </body>
+</html>`
+}
+
+func passwordResetEmailHTML(displayName, link string) string {
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		name = "there"
+	}
+	escapedName := html.EscapeString(name)
+	escapedLink := html.EscapeString(link)
+	return `<!doctype html>
+<html>
+  <body style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #1f2933; line-height: 1.5;">
+    <h2>Reset your AgentAPI password</h2>
+    <p>Hi ` + escapedName + `,</p>
+    <p>Use this link to choose a new password for your account. The link expires soon.</p>
+    <p><a href="` + escapedLink + `" style="display:inline-block;background:#0f766e;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none;">Reset password</a></p>
     <p>If the button does not work, paste this link into your browser:</p>
     <p><a href="` + escapedLink + `">` + escapedLink + `</a></p>
   </body>

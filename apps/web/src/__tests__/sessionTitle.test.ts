@@ -26,10 +26,10 @@ describe("session titles", () => {
     expect(truncateOneLine("make\n\nan image   with a very very very very long instruction", 24)).toBe("make an image with a...");
   });
 
-  it("falls back when no user message exists", () => {
+  it("leaves empty sessions untitled instead of showing the id", () => {
     const item = session([{ role: "assistant", content: "ready" }]);
     expect(firstUserText(item)).toBe("");
-    expect(sessionTitle(item)).toBe("20260508T120000Z-demo");
+    expect(sessionTitle(item)).toBe("");
   });
 
   it("uses the stored title when list rows omit messages", () => {

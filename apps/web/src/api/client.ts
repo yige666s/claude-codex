@@ -53,6 +53,26 @@ export class ApiClient {
     return this.authRequest("/v1/auth/register", { email, password, display_name: displayName });
   }
 
+  async requestPasswordReset(email: string): Promise<void> {
+    const response = await fetch(this.apiURL("/v1/auth/password-reset/request"), {
+      method: "POST",
+      credentials: "include",
+      headers: this.headers({ "Content-Type": "application/json" }, false),
+      body: JSON.stringify({ email })
+    });
+    if (!response.ok) throw await toApiError(response);
+  }
+
+  async resetPassword(token: string, password: string): Promise<void> {
+    const response = await fetch(this.apiURL("/v1/auth/password-reset/confirm"), {
+      method: "POST",
+      credentials: "include",
+      headers: this.headers({ "Content-Type": "application/json" }, false),
+      body: JSON.stringify({ token, password })
+    });
+    if (!response.ok) throw await toApiError(response);
+  }
+
   async logout(): Promise<void> {
     const refreshToken = this.auth?.refresh_token || "";
     try {

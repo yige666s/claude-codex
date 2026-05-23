@@ -1,9 +1,9 @@
 import { Fragment, ReactNode, Ref, RefObject } from "react";
-import { Sparkles } from "lucide-react";
 import type { Message } from "../../../../types";
 
 type MessageListProps = {
   messages: Message[];
+  userLabel: string;
   liveUserDraft: string;
   assistantDraft: string;
   highlightedMessageIndex: number | null;
@@ -13,6 +13,7 @@ type MessageListProps = {
 
 export function MessageList({
   messages,
+  userLabel,
   liveUserDraft,
   assistantDraft,
   highlightedMessageIndex,
@@ -26,13 +27,9 @@ export function MessageList({
         <div className="empty-state">
           <div className="empty-orb" aria-hidden="true" />
           <h1>
-            Good Morning
+            Hello {userLabel}
             <span>How Can I Assist You Today?</span>
           </h1>
-          <div className="empty-prompt-card" aria-hidden="true">
-            <Sparkles size={16} />
-            <span>Initiate a query or send a command to the AI...</span>
-          </div>
         </div>
       )}
       {messages.map((message, index) => (

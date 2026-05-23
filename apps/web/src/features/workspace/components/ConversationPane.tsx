@@ -17,6 +17,7 @@ type ConversationPaneProps = {
   recoveryBanner: RecoveryBanner;
   online: boolean;
   selectedJobId: string;
+  userLabel: string;
   messages: Message[];
   liveUserDraft: string;
   assistantDraft: string;
@@ -35,6 +36,7 @@ export function ConversationPane({
   recoveryBanner,
   online,
   selectedJobId,
+  userLabel,
   messages,
   liveUserDraft,
   assistantDraft,
@@ -47,12 +49,13 @@ export function ConversationPane({
   onReconnectJob
 }: ConversationPaneProps) {
   const empty = !messages.length && !liveUserDraft && !assistantDraft;
+  const title = activeSession ? sessionTitle(activeSession.messages?.length ? activeSession : { ...activeSession, messages }) : "";
   return (
     <section className={`workspace ${empty ? "empty-workspace" : ""}`}>
       <header className="topbar">
         <Button className="icon mobile-only" onClick={onOpenMobileNav} title="Open navigation" aria-label="Open navigation"><Menu size={20} /></Button>
         <div>
-          <h2>{activeSession ? sessionTitle(activeSession) : "New conversation"}</h2>
+          <h2>{title}</h2>
           {statusLine(status)}
         </div>
       </header>
@@ -67,6 +70,7 @@ export function ConversationPane({
       )}
       <MessageList
         messages={messages}
+        userLabel={userLabel}
         liveUserDraft={liveUserDraft}
         assistantDraft={assistantDraft}
         highlightedMessageIndex={highlightedMessageIndex}

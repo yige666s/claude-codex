@@ -2258,6 +2258,55 @@ func TestAuthServiceRequiresEmailVerificationWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestAuthServicePasswordResetSendsEmailAndUpdatesPassword(t *testing.T) {
+	store := newMemoryUserStore()
+	mailer := &captureMailer{}
+	service := &AuthService{
+		Store:            store,
+		JWTSecret:        "secret",
+		AccessTTL:        time.Minute,
+		RefreshTTL:       time.Hour,
+		PasswordResetTTL: time.Hour,
+		PublicBaseURL:    "https://www.mkason.com",
+		Mailer:           mailer,
+	}
+
+	registration, err := service.Register(context.Background(), "reset@example.com", "password123", "Reset User", nil)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	session := registration.Session
+	if session == nil {
+		t.Fatal("register did not issue session")
+	}
+	if err := service.RequestPasswordReset(context.Background(), "reset@example.com", nil); err != nil {
+		t.Fatalf("request reset: %v", err)
+	}
+	if len(mailer.messages) != 1 {
+		t.Fatalf("expected one reset email, got %d", len(mailer.messages))
+	}
+	token := passwordResetTokenFromMessage(t, mailer.messages[0])
+	profile, err := service.ResetPassword(context.Background(), token, "newpassword123")
+	if err != nil {
+		t.Fatalf("reset password: %v", err)
+	}
+	if profile.Email != "reset@example.com" {
+		t.Fatalf("reset profile = %#v", profile)
+	}
+	if _, err := service.Login(context.Background(), "reset@example.com", "password123", nil); err == nil {
+		t.Fatal("old password should not work")
+	}
+	if _, err := service.Login(context.Background(), "reset@example.com", "newpassword123", nil); err != nil {
+		t.Fatalf("new password should work: %v", err)
+	}
+	if _, err := service.Refresh(context.Background(), session.RefreshToken, nil); err == nil {
+		t.Fatal("existing refresh token should be revoked after password reset")
+	}
+	if _, err := service.ResetPassword(context.Background(), token, "anotherpassword123"); err == nil {
+		t.Fatal("password reset token should be single-use")
+	}
+}
+
 func TestServerAuthRoutesIssueUsableJWT(t *testing.T) {
 	authService := &AuthService{
 		Store:      newMemoryUserStore(),
@@ -4980,6 +5029,7 @@ type memoryUserStore struct {
 	emails       map[string]string
 	refresh      map[string]*RefreshTokenRecord
 	verification map[string]*EmailVerificationTokenRecord
+	reset        map[string]*PasswordResetTokenRecord
 }
 
 type captureMailer struct {
@@ -5002,6 +5052,21 @@ func verificationTokenFromMessage(t *testing.T, message EmailMessage) string {
 	token := parsed.Query().Get("token")
 	if token == "" {
 		t.Fatalf("verification link missing token: %q", rawURL)
+	}
+	return token
+}
+
+func passwordResetTokenFromMessage(t *testing.T, message EmailMessage) string {
+	t.Helper()
+	prefix := "Reset your AgentAPI password: "
+	rawURL := strings.TrimSpace(strings.TrimPrefix(message.Text, prefix))
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse reset link %q: %v", rawURL, err)
+	}
+	token := parsed.Query().Get("token")
+	if token == "" {
+		t.Fatalf("reset link missing token: %q", rawURL)
 	}
 	return token
 }
@@ -5099,6 +5164,7 @@ func newMemoryUserStore() *memoryUserStore {
 		emails:       make(map[string]string),
 		refresh:      make(map[string]*RefreshTokenRecord),
 		verification: make(map[string]*EmailVerificationTokenRecord),
+		reset:        make(map[string]*PasswordResetTokenRecord),
 	}
 }
 
@@ -5297,6 +5363,32 @@ func (s *memoryUserStore) ConsumeEmailVerificationToken(_ context.Context, token
 	return &clone, nil
 }
 
+func (s *memoryUserStore) CreatePasswordResetToken(_ context.Context, token *PasswordResetTokenRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clone := *token
+	s.reset[token.TokenHash] = &clone
+	return nil
+}
+
+func (s *memoryUserStore) ConsumePasswordResetToken(_ context.Context, tokenHash string, newPasswordHash string, at time.Time) (*UserAccount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token, ok := s.reset[tokenHash]
+	if !ok || token.UsedAt != nil || !at.Before(token.ExpiresAt) {
+		return nil, errors.New("not found")
+	}
+	user, ok := s.users[token.UserID]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	token.UsedAt = &at
+	user.PasswordHash = newPasswordHash
+	user.UpdatedAt = at
+	clone := *user
+	return &clone, nil
+}
+
 func (s *memoryUserStore) DeleteUser(_ context.Context, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -5312,6 +5404,11 @@ func (s *memoryUserStore) DeleteUser(_ context.Context, userID string) error {
 	for hash, token := range s.verification {
 		if token.UserID == userID {
 			delete(s.verification, hash)
+		}
+	}
+	for hash, token := range s.reset {
+		if token.UserID == userID {
+			delete(s.reset, hash)
 		}
 	}
 	return nil

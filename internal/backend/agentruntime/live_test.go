@@ -31,10 +31,10 @@ func TestNormalizeLiveConfigUsesLowLatencyVADDefaults(t *testing.T) {
 	if config.LiveVADEndSensitivity != "END_SENSITIVITY_HIGH" {
 		t.Fatalf("end sensitivity = %q", config.LiveVADEndSensitivity)
 	}
-	if config.LiveVADPrefixPadding != 40*time.Millisecond {
+	if config.LiveVADPrefixPadding != 150*time.Millisecond {
 		t.Fatalf("prefix padding = %s", config.LiveVADPrefixPadding)
 	}
-	if config.LiveVADSilenceDuration != 180*time.Millisecond {
+	if config.LiveVADSilenceDuration != 500*time.Millisecond {
 		t.Fatalf("silence duration = %s", config.LiveVADSilenceDuration)
 	}
 }
@@ -64,6 +64,36 @@ func TestLiveSetupMessageConfiguresConservativeVAD(t *testing.T) {
 	}
 	if realtime["turnCoverage"] != "TURN_INCLUDES_ONLY_ACTIVITY" {
 		t.Fatalf("unexpected realtime input config: %#v", realtime)
+	}
+}
+
+func TestLiveSetupMessageDisablesThinkingForDefault25Model(t *testing.T) {
+	service := NewVertexLiveService(LiveConfig{
+		Enabled:         true,
+		VertexProjectID: "project-1",
+		Model:           defaultLiveModel,
+	}, nil, nil)
+	message := service.setupMessage(context.Background(), LiveRequest{UserID: "alice", SessionID: "session-1"})
+	setup := message["setup"].(map[string]any)
+	generation := setup["generationConfig"].(map[string]any)
+	thinking := generation["thinkingConfig"].(map[string]any)
+	if thinking["thinkingBudget"] != 0 {
+		t.Fatalf("unexpected thinking config: %#v", thinking)
+	}
+}
+
+func TestLiveSetupMessageUsesMinimalThinkingFor31Model(t *testing.T) {
+	service := NewVertexLiveService(LiveConfig{
+		Enabled:         true,
+		VertexProjectID: "project-1",
+		Model:           "gemini-3.1-flash-live-preview",
+	}, nil, nil)
+	message := service.setupMessage(context.Background(), LiveRequest{UserID: "alice", SessionID: "session-1"})
+	setup := message["setup"].(map[string]any)
+	generation := setup["generationConfig"].(map[string]any)
+	thinking := generation["thinkingConfig"].(map[string]any)
+	if thinking["thinkingLevel"] != "MINIMAL" {
+		t.Fatalf("unexpected thinking config: %#v", thinking)
 	}
 }
 

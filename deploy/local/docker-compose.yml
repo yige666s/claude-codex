@@ -228,7 +228,7 @@ services:
       AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL: ${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:processed}
       AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL: ${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL:-24h}
       AGENT_API_OPERATION_RATE_LIMITS: ${AGENT_API_OPERATION_RATE_LIMITS:-auth_login=20/m,auth_register=10/h,chat_message=60/m,job_create=20/m,attachment_upload=30/m,asset_download=120/m,memory_extract=30/h,data_export=5/h,account_delete=3/h,admin_action=120/m}
-      AGENT_API_CORS_ALLOWED_ORIGINS: ${AGENT_API_CORS_ALLOWED_ORIGINS:-http://localhost:8081,http://localhost:5173}
+      AGENT_API_CORS_ALLOWED_ORIGINS: ${AGENT_API_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:8081,http://127.0.0.1:8081,http://localhost:5173,http://127.0.0.1:5173}
       AGENT_API_LLM_PROVIDER: ${AGENT_API_LLM_PROVIDER:-vertex}
       AGENT_API_LLM_BASE_URL: ${AGENT_API_LLM_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -240,7 +240,7 @@ services:
       VERTEX_ACCESS_TOKEN: ${VERTEX_ACCESS_TOKEN:-}
       GOOGLE_OAUTH_ACCESS_TOKEN: ${GOOGLE_OAUTH_ACCESS_TOKEN:-}
       GOOGLE_ACCESS_TOKEN: ${GOOGLE_ACCESS_TOKEN:-}
-      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+      GOOGLE_APPLICATION_CREDENTIALS: ${AGENT_API_CONTAINER_GOOGLE_APPLICATION_CREDENTIALS:-/run/agentapi/secrets/vertex-service-account.json}
       GOOGLE_APPLICATION_CREDENTIALS_JSON: ${GOOGLE_APPLICATION_CREDENTIALS_JSON:-}
       VERTEX_SERVICE_ACCOUNT_FILE: ${VERTEX_SERVICE_ACCOUNT_FILE:-}
       VERTEX_SERVICE_ACCOUNT_JSON: ${VERTEX_SERVICE_ACCOUNT_JSON:-}
@@ -253,7 +253,7 @@ services:
       VERTEX_BASE_URL: ${VERTEX_BASE_URL:-}
       VERTEX_IMAGE_MODEL: ${VERTEX_IMAGE_MODEL:-}
       VERTEX_IMAGE_ASPECT_RATIO: ${VERTEX_IMAGE_ASPECT_RATIO:-}
-      AGENT_API_LIVE_ENABLED: ${AGENT_API_LIVE_ENABLED:-false}
+      AGENT_API_LIVE_ENABLED: ${AGENT_API_LIVE_ENABLED:-true}
       AGENT_API_LIVE_PROVIDER: ${AGENT_API_LIVE_PROVIDER:-vertex}
       AGENT_API_LIVE_MODEL: ${AGENT_API_LIVE_MODEL:-gemini-live-2.5-flash-preview-native-audio-09-2025}
       AGENT_API_LIVE_VERTEX_PROJECT_ID: ${AGENT_API_LIVE_VERTEX_PROJECT_ID:-}
@@ -267,7 +267,7 @@ services:
       AGENT_API_LIVE_VAD_START_SENSITIVITY: ${AGENT_API_LIVE_VAD_START_SENSITIVITY:-START_SENSITIVITY_HIGH}
       AGENT_API_LIVE_VAD_END_SENSITIVITY: ${AGENT_API_LIVE_VAD_END_SENSITIVITY:-END_SENSITIVITY_HIGH}
       AGENT_API_LIVE_VAD_PREFIX_PADDING: ${AGENT_API_LIVE_VAD_PREFIX_PADDING:-150ms}
-      AGENT_API_LIVE_VAD_SILENCE_DURATION: ${AGENT_API_LIVE_VAD_SILENCE_DURATION:-350ms}
+      AGENT_API_LIVE_VAD_SILENCE_DURATION: ${AGENT_API_LIVE_VAD_SILENCE_DURATION:-500ms}
       AGENT_API_LIVE_SESSION_TIMEOUT: ${AGENT_API_LIVE_SESSION_TIMEOUT:-10m}
     ports:
       - "${AGENT_API_HOST:-127.0.0.1}:${AGENT_API_PORT:-8081}:8081"
@@ -275,7 +275,7 @@ services:
     volumes:
       - agentapi_data:/var/lib/agentapi
       - ../../.claude:/workspace/.claude:ro
-      - ${AGENT_API_SECRETS_DIR:-../../secrets}:/run/agentapi/secrets:ro
+      - ${AGENT_API_SECRETS_MOUNT:-../../secrets}:/run/agentapi/secrets:ro
       - ${AGENT_API_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     group_add:
       - "${AGENT_API_DOCKER_GID:-0}"
@@ -431,7 +431,7 @@ services:
       - "${AGENT_API_LLM_DAILY_TOKEN_QUOTA:-500000}"
       - -llm-daily-request-quota
       - "${AGENT_API_LLM_DAILY_REQUEST_QUOTA:-1000}"
-      - "-live-enabled=${AGENT_API_LIVE_ENABLED:-false}"
+      - "-live-enabled=${AGENT_API_LIVE_ENABLED:-true}"
       - -live-provider
       - "${AGENT_API_LIVE_PROVIDER:-vertex}"
       - -live-model
@@ -451,7 +451,7 @@ services:
       - -live-vad-prefix-padding
       - "${AGENT_API_LIVE_VAD_PREFIX_PADDING:-150ms}"
       - -live-vad-silence-duration
-      - "${AGENT_API_LIVE_VAD_SILENCE_DURATION:-350ms}"
+      - "${AGENT_API_LIVE_VAD_SILENCE_DURATION:-500ms}"
       - -live-session-timeout
       - "${AGENT_API_LIVE_SESSION_TIMEOUT:-10m}"
       - -retention-days

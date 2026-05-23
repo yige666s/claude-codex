@@ -22,6 +22,7 @@ type WorkspaceSidebarProps = {
   settingsOpen: boolean;
   accountRef: RefObject<HTMLDivElement | null>;
   resourceCounts: Record<RightPanelTab, number>;
+  resourceNotices: Record<RightPanelTab, boolean>;
   serviceStatusPill: (status: ServiceStatus) => ReactNode;
   onToggleLeft: () => void;
   onCollapseLeft: () => void;
@@ -47,6 +48,7 @@ export function WorkspaceSidebar({
   settingsOpen,
   accountRef,
   resourceCounts,
+  resourceNotices,
   serviceStatusPill,
   onToggleLeft,
   onCollapseLeft,
@@ -102,10 +104,10 @@ export function WorkspaceSidebar({
         </Button>
       </div>
       <nav className="sidebar-resource-nav" aria-label="Workspace resources">
-        <ResourceButton tab="skills" label="Skills" count={resourceCounts.skills} icon={<Sparkles size={17} />} onOpen={onOpenResource} />
-        <ResourceButton tab="jobs" label="Jobs" count={resourceCounts.jobs} icon={<Briefcase size={17} />} onOpen={onOpenResource} />
-        <ResourceButton tab="attachments" label="Attachments" count={resourceCounts.attachments} icon={<FileUp size={17} />} onOpen={onOpenResource} />
-        <ResourceButton tab="artifacts" label="Artifacts" count={resourceCounts.artifacts} icon={<Image size={17} />} onOpen={onOpenResource} />
+        <ResourceButton tab="skills" label="Skills" count={resourceCounts.skills} hasNew={resourceNotices.skills} icon={<Sparkles size={17} />} onOpen={onOpenResource} />
+        <ResourceButton tab="jobs" label="Jobs" count={resourceCounts.jobs} hasNew={resourceNotices.jobs} icon={<Briefcase size={17} />} onOpen={onOpenResource} />
+        <ResourceButton tab="attachments" label="Attachments" count={resourceCounts.attachments} hasNew={resourceNotices.attachments} icon={<FileUp size={17} />} onOpen={onOpenResource} />
+        <ResourceButton tab="artifacts" label="Artifacts" count={resourceCounts.artifacts} hasNew={resourceNotices.artifacts} icon={<Image size={17} />} onOpen={onOpenResource} />
       </nav>
       <SessionList
         sessions={sessions}
@@ -139,20 +141,23 @@ function ResourceButton({
   tab,
   label,
   count,
+  hasNew,
   icon,
   onOpen
 }: {
   tab: RightPanelTab;
   label: string;
   count: number;
+  hasNew: boolean;
   icon: ReactNode;
   onOpen: (tab: RightPanelTab) => void;
 }) {
   return (
-    <Button className="sidebar-resource-button" variant="ghost" onClick={() => onOpen(tab)} title={label} aria-label={label}>
+    <Button className={`sidebar-resource-button ${hasNew ? "has-new" : ""}`} variant="ghost" onClick={() => onOpen(tab)} title={label} aria-label={hasNew ? `${label}, new item available` : label}>
       {icon}
       <span className="sidebar-action-label">{label}</span>
       <small className="sidebar-resource-count">{count}</small>
+      {hasNew && <span className="resource-new-indicator" aria-hidden="true" />}
     </Button>
   );
 }

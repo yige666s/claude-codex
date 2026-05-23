@@ -9,7 +9,7 @@ export function firstUserText(session: Session): string {
 }
 
 export function sessionTitle(session: Session): string {
-  const source = firstUserText(session) || session.title || session.description || session.id;
+  const source = firstUserText(session) || session.title || session.description || "";
   return truncateOneLine(source, MAX_TITLE_LENGTH);
 }
 

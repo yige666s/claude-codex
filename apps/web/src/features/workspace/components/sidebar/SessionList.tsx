@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../../types";
+import { sessionTitle } from "../../../../lib/sessionTitle";
 import { SessionRow } from "./SessionRow";
 
 const sessionPageSize = 10;
@@ -18,11 +19,12 @@ export function SessionList({
   onRemoveSession
 }: SessionListProps) {
   const [visibleCount, setVisibleCount] = useState(sessionPageSize);
-  const visibleSessions = useMemo(() => sessions.slice(0, visibleCount), [sessions, visibleCount]);
+  const titledSessions = useMemo(() => sessions.filter((session) => Boolean(sessionTitle(session))), [sessions]);
+  const visibleSessions = useMemo(() => titledSessions.slice(0, visibleCount), [titledSessions, visibleCount]);
 
   useEffect(() => {
     setVisibleCount(sessionPageSize);
-  }, [sessions.length]);
+  }, [titledSessions.length]);
 
   return (
     <div
@@ -30,9 +32,9 @@ export function SessionList({
       aria-label="Sessions"
       onScroll={(event) => {
         const node = event.currentTarget;
-        if (visibleCount >= sessions.length) return;
+        if (visibleCount >= titledSessions.length) return;
         if (node.scrollTop + node.clientHeight >= node.scrollHeight - 60) {
-          setVisibleCount((count) => Math.min(sessions.length, count + sessionPageSize));
+          setVisibleCount((count) => Math.min(titledSessions.length, count + sessionPageSize));
         }
       }}
     >

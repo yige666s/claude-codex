@@ -4,7 +4,6 @@ import {
   Database,
   MessageCircle,
   PlayCircle,
-  RefreshCw,
   UserX,
   X
 } from "lucide-react";
@@ -12,7 +11,7 @@ import { ApiClient, ApiError } from "../../api/client";
 import type { Asset, AuthSession, Job, JobEvent, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill } from "../../types";
 import { readSSEStream } from "../../lib/sse";
 import { sessionTitle } from "../../lib/sessionTitle";
-import { AuthPage } from "../auth/AuthPage";
+import { AuthPage, type AuthMode } from "../auth/AuthPage";
 import { BrandLogo } from "../../components/brand/BrandLogo";
 import { Button } from "../../components/ui/button";
 import {
@@ -99,9 +98,34 @@ const adminTokenStorageKey = "agentapi.adminToken";
 const jobReconnectBaseMs = 1_000;
 const jobReconnectMaxMs = 10_000;
 const resourcePageSize = 10;
+const resourceTabs: RightPanelTab[] = ["skills", "jobs", "attachments", "artifacts"];
 
 function isAdminPath(): boolean {
   return typeof window !== "undefined" && window.location.pathname.replace(/\/+$/, "") === "/admin";
+}
+
+function passwordResetTokenFromLocation(): string {
+  if (typeof window === "undefined") return "";
+  if (window.location.pathname.replace(/\/+$/, "") !== "/reset-password") return "";
+  return new URLSearchParams(window.location.search).get("token") || "";
+}
+
+function emptyResourceNotices(): Record<RightPanelTab, boolean> {
+  return {
+    skills: false,
+    jobs: false,
+    attachments: false,
+    artifacts: false
+  };
+}
+
+function emptyResourceIdSets(): Record<RightPanelTab, Set<string>> {
+  return {
+    skills: new Set(),
+    jobs: new Set(),
+    attachments: new Set(),
+    artifacts: new Set()
+  };
 }
 
 export function AgentWorkspace() {
@@ -109,14 +133,16 @@ export function AgentWorkspace() {
   const api = useMemo(() => new ApiClient(setAuth), []);
   const [status, setStatus] = useState<Status>({ tone: "idle", text: "Idle" });
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus>({ tone: "busy", text: "Checking" });
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [passwordResetToken, setPasswordResetToken] = useState(passwordResetTokenFromLocation);
+  const [authMode, setAuthMode] = useState<AuthMode>(() => passwordResetTokenFromLocation() ? "reset" : "login");
+  const [forgotCooldownSeconds, setForgotCooldownSeconds] = useState(0);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [draft, setDraft] = useState("");
   const [assistantDraft, setAssistantDraft] = useState("");
-  const [responseTiming, setResponseTiming] = useState<{ ttftMs?: number; totalMs?: number } | null>(null);
+  const [responseTiming, setResponseTiming] = useState<{ sessionId: string; ttftMs?: number; totalMs?: number } | null>(null);
   const [runtimeError, setRuntimeError] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skillDetail, setSkillDetail] = useState<Skill | null>(null);
@@ -173,6 +199,7 @@ export function AgentWorkspace() {
     attachments: resourcePageSize,
     artifacts: resourcePageSize
   });
+  const [resourceNotices, setResourceNotices] = useState<Record<RightPanelTab, boolean>>(emptyResourceNotices);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
@@ -183,6 +210,9 @@ export function AgentWorkspace() {
   const activeJobStreamIdRef = useRef("");
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const selectedSessionIdRef = useRef("");
+  const resourceDialogTabRef = useRef<RightPanelTab | null>(null);
+  const resourceIdsRef = useRef<Record<RightPanelTab, Set<string>>>(emptyResourceIdSets());
+  const resourceBaselineReadyRef = useRef<Record<RightPanelTab, boolean>>(emptyResourceNotices());
   const accountRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const lastJobEventRef = useRef("");
@@ -266,7 +296,7 @@ export function AgentWorkspace() {
     const existing = api.session();
     if (existing) {
       setAuth(existing);
-      bootstrap(api, setStatus, setSessions, setSessionId, setMessages, setSkills, setJobs, setAttachments, setArtifacts).catch((err) => {
+      bootstrap(api, setStatus, setSessions, setSessionId, setMessages, setSkills, setJobs, setAttachments, setArtifacts, baselineFetchedResources).catch((err) => {
         if (err instanceof ApiError && err.status === 401) {
           setAuth(null);
           setStatus({ tone: "idle", text: "Please log in again" });
@@ -289,6 +319,14 @@ export function AgentWorkspace() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  useEffect(() => {
+    if (forgotCooldownSeconds <= 0) return;
+    const timer = window.setTimeout(() => {
+      setForgotCooldownSeconds((current) => Math.max(0, current - 1));
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [forgotCooldownSeconds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -335,12 +373,40 @@ export function AgentWorkspace() {
   useEffect(() => {
     if (!sessionId) return;
     selectedSessionIdRef.current = sessionId;
+    resetSessionScopedFeedback();
     refreshSessionData(sessionId).catch((error) => showError(error));
     stopLiveMode(false);
   }, [sessionId]);
 
   useEffect(() => {
     artifactsRef.current = artifacts;
+  }, [artifacts]);
+
+  useEffect(() => {
+    resourceDialogTabRef.current = resourceDialogTab;
+    if (resourceDialogTab) {
+      markResourceViewed(resourceDialogTab);
+    }
+  }, [resourceDialogTab]);
+
+  useEffect(() => {
+    resetSessionResourceNotices();
+  }, [sessionId]);
+
+  useEffect(() => {
+    trackResourceIds("skills", skills.map((skill) => `${skill.name}:${skill.version || ""}`));
+  }, [skills]);
+
+  useEffect(() => {
+    trackResourceIds("jobs", jobs.map((job) => job.id));
+  }, [jobs]);
+
+  useEffect(() => {
+    trackResourceIds("attachments", attachments.map((asset) => asset.id));
+  }, [attachments]);
+
+  useEffect(() => {
+    trackResourceIds("artifacts", artifacts.map((asset) => asset.id));
   }, [artifacts]);
 
   useEffect(() => {
@@ -442,7 +508,7 @@ export function AgentWorkspace() {
 
   async function refreshAll() {
     setServiceStatus(await readServiceStatus(api));
-    await bootstrap(api, setStatus, setSessions, setSessionId, setMessages, setSkills, setJobs, setAttachments, setArtifacts);
+    await bootstrap(api, setStatus, setSessions, setSessionId, setMessages, setSkills, setJobs, setAttachments, setArtifacts, baselineFetchedResources);
     await loadMemorySettings();
     await loadPersonalizationSettings();
   }
@@ -463,6 +529,9 @@ export function AgentWorkspace() {
       return;
     }
     setMessages(visibleMessages(session.messages || []));
+    if (!resourceBaselineReadyRef.current.jobs) baselineResourceIds("jobs", jobList.map((job) => job.id));
+    if (!resourceBaselineReadyRef.current.attachments) baselineResourceIds("attachments", attachmentList.map((asset) => asset.id));
+    if (!resourceBaselineReadyRef.current.artifacts) baselineResourceIds("artifacts", artifactList.map((asset) => asset.id));
     setJobs(jobList);
     setAttachments(attachmentList);
     artifactsRef.current = artifactList;
@@ -478,14 +547,14 @@ export function AgentWorkspace() {
     selectedSessionIdRef.current = id;
     setSessionId(id);
     setMobileNav(false);
-    setAssistantDraft("");
-    setRuntimeError("");
+    resetSessionScopedFeedback();
     if (id === sessionId) {
       refreshSessionData(id).catch((error) => showError(error));
     }
   }
 
   function openResourceDialog(tab: RightPanelTab) {
+    markResourceViewed(tab);
     setResourceDialogTab(tab);
     setResourceVisibleCount((current) => ({ ...current, [tab]: resourcePageSize }));
     setMobileNav(false);
@@ -509,6 +578,17 @@ export function AgentWorkspace() {
     }
   }
 
+  function changeAuthMode(mode: AuthMode) {
+    setAuthMode(mode);
+    if (mode !== "reset") {
+      setPasswordResetToken("");
+      if (typeof window !== "undefined" && window.location.pathname.replace(/\/+$/, "") === "/reset-password") {
+        window.history.replaceState({}, "", "/");
+      }
+    }
+    setStatus({ tone: "idle", text: mode === "forgot" ? "Enter your account email" : "Idle" });
+  }
+
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -516,29 +596,62 @@ export function AgentWorkspace() {
     const password = String(form.get("password") || "");
     const confirmPassword = String(form.get("confirmPassword") || "");
     const displayName = String(form.get("displayName") || "").trim();
-    if (authMode === "register" && password !== confirmPassword) {
+    if ((authMode === "register" || authMode === "reset") && password !== confirmPassword) {
       setStatus({ tone: "error", text: "Passwords do not match" });
       return;
     }
-    setStatus({ tone: "busy", text: authMode === "register" ? "Creating account and sending verification email" : "Signing in" });
+    if (authMode === "reset" && !passwordResetToken) {
+      setStatus({ tone: "error", text: "Reset link is missing or expired" });
+      return;
+    }
+    if (authMode === "forgot" && forgotCooldownSeconds > 0) {
+      setStatus({ tone: "ok", text: `Reset email already sent. Try again in ${forgotCooldownSeconds}s.` });
+      return;
+    }
+    setStatus({
+      tone: "busy",
+      text: authMode === "register"
+        ? "Creating account and sending verification email"
+        : authMode === "forgot"
+          ? "Sending password reset email"
+          : authMode === "reset"
+            ? "Resetting password"
+            : "Signing in"
+    });
     try {
       if (authMode === "register") {
         const result = await api.register(email, password, displayName);
         if ("verification_required" in result && result.verification_required) {
-          setAuthMode("login");
+          changeAuthMode("login");
           setStatus({ tone: "ok", text: `Verification email sent to ${result.email}. Check your inbox and spam folder.` });
           return;
         }
+      } else if (authMode === "forgot") {
+        await api.requestPasswordReset(email);
+        setForgotCooldownSeconds(60);
+        setStatus({ tone: "ok", text: "If an account exists, a reset link has been sent. Check your inbox and spam folder." });
+        return;
+      } else if (authMode === "reset") {
+        await api.resetPassword(passwordResetToken, password);
+        changeAuthMode("login");
+        setStatus({ tone: "ok", text: "Password reset. Sign in with your new password." });
+        return;
       } else {
         await api.login(email, password);
       }
       await refreshAll();
     } catch (error) {
-      if (authMode === "register") {
-        const message = `Could not send verification email: ${errorMessage(error)}`;
+      if (authMode === "register" || authMode === "forgot") {
+        const message = authMode === "register"
+          ? `Could not send verification email: ${errorMessage(error)}`
+          : `Could not send password reset email: ${errorMessage(error)}`;
         setRuntimeError(message);
         setStatus({ tone: "error", text: message });
         readServiceStatus(api).then(setServiceStatus).catch(() => {});
+      } else if (authMode === "reset") {
+        const message = `Could not reset password: ${errorMessage(error)}`;
+        setRuntimeError(message);
+        setStatus({ tone: "error", text: message });
       } else {
         showError(error);
       }
@@ -552,6 +665,7 @@ export function AgentWorkspace() {
       selectedSessionIdRef.current = session.id;
       setSessionId(session.id);
       setMessages([]);
+      resetSessionScopedFeedback({ clearDraft: true });
     } catch (error) {
       showError(error);
     }
@@ -560,7 +674,7 @@ export function AgentWorkspace() {
   async function removeSession(targetSessionId: string) {
     if (!targetSessionId) return;
     const targetSession = sessions.find((item) => item.id === targetSessionId);
-    const targetTitle = targetSession ? sessionTitle(targetSession) : targetSessionId;
+    const targetTitle = targetSession ? sessionTitle(targetSession) || targetSessionId : targetSessionId;
     const confirmed = await requestConfirmation({
       title: "Delete session?",
       message: `This will delete "${targetTitle}" and its related data.`,
@@ -578,6 +692,7 @@ export function AgentWorkspace() {
         selectedSessionIdRef.current = nextSessionId;
         setSessionId(nextSessionId);
         setMessages(visibleMessages(next[0]?.messages || []));
+        resetSessionScopedFeedback({ clearDraft: true });
       }
       setSettingsOpen(false);
     } catch (error) {
@@ -869,6 +984,7 @@ export function AgentWorkspace() {
   async function sendMessage() {
     const content = draft.trim();
     if ((!content && pendingAttachments.length === 0) || !sessionId || busyChat) return;
+    const requestSessionId = sessionId;
     const attachmentIds = pendingAttachments.map((asset) => asset.id);
     const abort = new AbortController();
     let routedToJob = false;
@@ -881,38 +997,51 @@ export function AgentWorkspace() {
     setResponseTiming(null);
     setRuntimeError("");
     const displayContent = content || "Please analyze the attached file(s).";
-    setMessages((current) => appendRuntimeMessage(current, { role: "user", content: messageWithAttachmentNames(displayContent, pendingAttachments), created_at: new Date().toISOString() }));
+    const sentMessage: Message = { role: "user", content: messageWithAttachmentNames(displayContent, pendingAttachments), created_at: new Date().toISOString() };
+    setMessages((current) => appendRuntimeMessage(current, sentMessage));
+    setSessions((current) => current.map((item) => {
+      if (item.id !== requestSessionId || sessionTitle(item)) return item;
+      return { ...item, messages: appendRuntimeMessage(item.messages || [], sentMessage) };
+    }));
     setBusyChat(true);
     setStatus({ tone: "busy", text: "Generating" });
     try {
-      const response = await api.chatResponse(sessionId, displayContent, attachmentIds, abort.signal);
+      const response = await api.chatResponse(requestSessionId, displayContent, attachmentIds, abort.signal);
       await readSSEStream(response, ({ data }) => {
         if (data.type === "job") routedToJob = true;
         if (data.type === "error") sawRuntimeError = true;
         if (!firstTokenSeen && data.type === "delta" && data.content) {
           firstTokenSeen = true;
           const ttftMs = Math.max(0, Math.round(performance.now() - startedAt));
-          setResponseTiming({ ttftMs });
-          setStatus({ tone: "busy", text: `First response ${formatNumber(ttftMs)} ms` });
+          if (selectedSessionIdRef.current === requestSessionId) {
+            setResponseTiming({ sessionId: requestSessionId, ttftMs });
+            setStatus({ tone: "busy", text: `First response ${formatNumber(ttftMs)} ms` });
+          }
         }
-        handleRuntimeEvent(data);
+        if (selectedSessionIdRef.current === requestSessionId) {
+          handleRuntimeEvent(data);
+        }
       });
-      setResponseTiming((current) => current ? { ...current, totalMs: Math.max(0, Math.round(performance.now() - startedAt)) } : current);
+      if (selectedSessionIdRef.current === requestSessionId) {
+        setResponseTiming((current) => current?.sessionId === requestSessionId ? { ...current, totalMs: Math.max(0, Math.round(performance.now() - startedAt)) } : current);
+      }
       setPendingAttachments([]);
-      if (!routedToJob) await refreshSessionData(sessionId, { revealNewArtifacts: true });
+      if (!routedToJob) await refreshSessionData(requestSessionId, { revealNewArtifacts: true });
       if (sawRuntimeError) {
         setStatus((current) => current.tone === "error" ? current : { tone: "error", text: "Request failed" });
       }
     } catch (error) {
       if ((error as Error).name !== "AbortError") {
         const message = errorMessage(error);
-        setRuntimeError(`Message delivery failed. Your sent message was kept in the conversation. ${message}`);
-        setStatus({ tone: "error", text: "Message failed" });
-        setMessages((current) => appendRuntimeMessage(current, {
-          role: "assistant",
-          content: `Message delivery failed. Your sent message was kept here, but the response stream did not finish.\n\n${message}`,
-          created_at: new Date().toISOString()
-        }));
+        if (selectedSessionIdRef.current === requestSessionId) {
+          setRuntimeError(`Message delivery failed. Your sent message was kept in the conversation. ${message}`);
+          setStatus({ tone: "error", text: "Message failed" });
+          setMessages((current) => appendRuntimeMessage(current, {
+            role: "assistant",
+            content: `Message delivery failed. Your sent message was kept here, but the response stream did not finish.\n\n${message}`,
+            created_at: new Date().toISOString()
+          }));
+        }
         readServiceStatus(api).then(setServiceStatus).catch(() => {});
       }
     } finally {
@@ -933,6 +1062,17 @@ export function AgentWorkspace() {
     }
     setBusyChat(false);
     setStatus({ tone: "idle", text: "Cancelled" });
+  }
+
+  function resetSessionScopedFeedback(options: { clearDraft?: boolean } = {}) {
+    setAssistantDraft("");
+    setRuntimeError("");
+    setUploadError("");
+    setResponseTiming(null);
+    setPendingAttachments([]);
+    if (options.clearDraft) {
+      setDraft("");
+    }
   }
 
   async function uploadAttachment(fileList: FileList | null) {
@@ -1261,8 +1401,60 @@ export function AgentWorkspace() {
   }
 
   function changeResourceTab(tab: RightPanelTab) {
+    markResourceViewed(tab);
     setResourceDialogTab(tab);
     setResourceVisibleCount((current) => ({ ...current, [tab]: resourcePageSize }));
+  }
+
+  function trackResourceIds(tab: RightPanelTab, ids: string[]) {
+    const nextIds = new Set(ids);
+    const wasReady = resourceBaselineReadyRef.current[tab];
+    const previousIds = resourceIdsRef.current[tab];
+    if (!wasReady) {
+      resourceIdsRef.current[tab] = nextIds;
+      if (ids.length > 0) resourceBaselineReadyRef.current[tab] = true;
+      return;
+    }
+    const hasNewItem = wasReady && ids.some((id) => !previousIds.has(id));
+    resourceIdsRef.current[tab] = nextIds;
+    resourceBaselineReadyRef.current[tab] = true;
+    if (!hasNewItem) return;
+    if (resourceDialogTabRef.current === tab) {
+      markResourceViewed(tab);
+      return;
+    }
+    setResourceNotices((current) => current[tab] ? current : { ...current, [tab]: true });
+  }
+
+  function markResourceViewed(tab: RightPanelTab) {
+    setResourceNotices((current) => current[tab] ? { ...current, [tab]: false } : current);
+  }
+
+  function baselineResourceIds(tab: RightPanelTab, ids: string[]) {
+    resourceIdsRef.current[tab] = new Set(ids);
+    resourceBaselineReadyRef.current[tab] = true;
+  }
+
+  function baselineFetchedResources(resources: {
+    skills: Skill[];
+    jobs: Job[];
+    attachments: Asset[];
+    artifacts: Asset[];
+  }) {
+    baselineResourceIds("skills", resources.skills.map((skill) => `${skill.name}:${skill.version || ""}`));
+    baselineResourceIds("jobs", resources.jobs.map((job) => job.id));
+    baselineResourceIds("attachments", resources.attachments.map((asset) => asset.id));
+    baselineResourceIds("artifacts", resources.artifacts.map((asset) => asset.id));
+    setResourceNotices(emptyResourceNotices());
+  }
+
+  function resetSessionResourceNotices() {
+    for (const tab of resourceTabs) {
+      if (tab === "skills") continue;
+      resourceIdsRef.current[tab] = new Set();
+      resourceBaselineReadyRef.current[tab] = false;
+    }
+    setResourceNotices(emptyResourceNotices());
   }
 
   function loadMoreResources() {
@@ -1282,7 +1474,8 @@ export function AgentWorkspace() {
       <AuthPage
         mode={authMode}
         status={status}
-        onModeChange={setAuthMode}
+        forgotCooldownSeconds={forgotCooldownSeconds}
+        onModeChange={changeAuthMode}
         onSubmit={submitAuth}
         statusLine={(nextStatus) => <StatusLine status={nextStatus} />}
       />
@@ -1323,6 +1516,7 @@ export function AgentWorkspace() {
             attachments: attachments.length,
             artifacts: artifacts.length
           }}
+          resourceNotices={resourceNotices}
           serviceStatusPill={(nextStatus) => <ServiceStatusPill status={nextStatus} />}
           onToggleLeft={() => {
             setGlobalSearchOpen(false);
@@ -1354,6 +1548,7 @@ export function AgentWorkspace() {
           recoveryBanner={recoveryBanner}
           online={online}
           selectedJobId={selectedJobId}
+          userLabel={authSession.user.display_name || authSession.user.email}
           messages={messages}
           liveUserDraft={liveUserDraft}
           assistantDraft={assistantDraft}
@@ -1367,7 +1562,7 @@ export function AgentWorkspace() {
             <MessageComposer
               runtimeError={runtimeError}
               uploadError={uploadError}
-              responseTiming={responseTiming}
+              responseTiming={responseTiming?.sessionId === sessionId ? responseTiming : null}
               pendingAttachments={pendingAttachments}
               attachmentInputRef={attachmentInputRef}
               composerInputRef={composerInputRef}
@@ -1418,6 +1613,7 @@ export function AgentWorkspace() {
             uploadProgress={uploadProgress}
             assetMemoryBusy={assetMemoryBusy}
             memoryDisabled={!memorySettings.capture_enabled}
+            resourceNotices={resourceNotices}
             onOpenChange={closeResourceDialog}
             onTabChange={changeResourceTab}
             onSearchChange={updateResourceSearch}
@@ -1539,7 +1735,13 @@ async function bootstrap(
   setSkills: (skills: Skill[]) => void,
   setJobs: (jobs: Job[]) => void,
   setAttachments: (assets: Asset[]) => void,
-  setArtifacts: (assets: Asset[]) => void
+  setArtifacts: (assets: Asset[]) => void,
+  baselineResources?: (resources: {
+    skills: Skill[];
+    jobs: Job[];
+    attachments: Asset[];
+    artifacts: Asset[];
+  }) => void
 ) {
   setStatus({ tone: "busy", text: "Loading" });
   let sessionList = await api.sessions();
@@ -1556,6 +1758,7 @@ async function bootstrap(
     api.attachments(currentSummary.id),
     api.artifacts(currentSummary.id)
   ]);
+  baselineResources?.({ skills, jobs, attachments, artifacts });
   setSessions(upsertSession(sessionList, current));
   setSessionId(current.id);
   setMessages(visibleMessages(current.messages || []));

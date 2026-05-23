@@ -17,12 +17,6 @@ type UseLiveVoiceOptions = {
 };
 
 const liveVoiceProcessorBufferSize = 1024;
-const liveVoiceNoiseFloorFrames = 18;
-const liveVoiceMinStartRmsThreshold = 0.018;
-const liveVoiceMinContinueRmsThreshold = 0.011;
-const liveVoiceStartFrames = 3;
-const liveVoiceHangoverFrames = 12;
-const liveVoicePrerollFrames = 5;
 
 export function useLiveVoice({
   api,
@@ -56,6 +50,7 @@ export function useLiveVoice({
   const liveStatusRef = useRef(liveStatus);
   const inputModeRef = useRef(inputMode);
   const liveSessionGenerationRef = useRef(0);
+  const liveCaptureGenerationRef = useRef(0);
   const lastLiveSpeakerVolumeRef = useRef(1);
   const lastLiveMicVolumeRef = useRef(1);
   const liveAudioChunkCountRef = useRef(0);
@@ -68,6 +63,11 @@ export function useLiveVoice({
   useEffect(() => {
     liveStatusRef.current = liveStatus;
   }, [liveStatus]);
+
+  function updateLiveStatus(next: LiveStatus) {
+    liveStatusRef.current = next;
+    setLiveStatus(next);
+  }
 
   useEffect(() => {
     liveMutedRef.current = liveMuted;
@@ -98,10 +98,10 @@ export function useLiveVoice({
   }, [micVolume]);
 
   async function startLiveMode() {
-    if (!sessionId || liveStatus !== "idle") return;
+    if (!sessionId || liveStatusRef.current !== "idle") return;
     if (typeof WebSocket === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       onError("Live voice is unavailable in this browser.");
-      setLiveStatus("error");
+      updateLiveStatus("error");
       return;
     }
     stopLiveMode(false);
@@ -117,13 +117,19 @@ export function useLiveVoice({
     try {
       await ensureLivePlaybackContext();
     } catch {
+      if (!isCurrentLiveGeneration(generation)) return;
       onError("Audio playback is unavailable in this browser.");
-      setLiveStatus("error");
+      updateLiveStatus("error");
       return;
     }
-    setLiveStatus("connecting");
+    if (!isCurrentLiveGeneration(generation)) return;
+    updateLiveStatus("connecting");
     onStatus({ tone: "busy", text: "Connecting live voice" });
     const socket = new WebSocket(api.liveSessionURL(sessionId));
+    if (!isCurrentLiveGeneration(generation)) {
+      socket.close();
+      return;
+    }
     liveSocketRef.current = socket;
     socket.onmessage = (message) => {
       if (!isCurrentLiveSession(socket, generation)) return;
@@ -135,38 +141,41 @@ export function useLiveVoice({
     };
     socket.onerror = () => {
       if (!isCurrentLiveSession(socket, generation)) return;
-      setLiveStatus("error");
+      updateLiveStatus("error");
       onStatus({ tone: "error", text: "Live voice failed" });
     };
     socket.onclose = () => {
       if (!isCurrentLiveSession(socket, generation)) return;
       cleanupLiveAudio();
       liveSocketRef.current = null;
-      setLiveStatus("idle");
+      updateLiveStatus("idle");
       onStatus((current) => current.tone === "error" ? current : { tone: "idle", text: "Live voice stopped" });
     };
   }
 
   function stopLiveMode(sendEnd = true) {
     liveSessionGenerationRef.current += 1;
+    liveCaptureGenerationRef.current += 1;
+    setInputMode("text");
+    inputModeRef.current = "text";
     const socket = liveSocketRef.current;
     cleanupLiveAudio();
     liveSocketRef.current = null;
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      if (sendEnd) {
+    if (socket) {
+      if (sendEnd && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: "audio_end" }));
         socket.send(JSON.stringify({ type: "close" }));
       }
       socket.close();
     }
     liveStatusRef.current = "idle";
-    setLiveStatus("idle");
+    updateLiveStatus("idle");
     setLiveUserDraft("");
     onAssistantDraftChange("");
   }
 
   function switchToTextMode() {
-    if (inputMode === "text" && liveStatus === "idle") return;
+    if (inputModeRef.current === "text" && liveStatusRef.current === "idle") return;
     setInputMode("text");
     inputModeRef.current = "text";
     stopLiveMode();
@@ -176,13 +185,13 @@ export function useLiveVoice({
   function switchToLiveMode() {
     setInputMode("live");
     inputModeRef.current = "live";
-    if (liveStatus === "idle") {
+    if (liveStatusRef.current === "idle") {
       void startLiveMode();
     }
   }
 
   function toggleSpeakerMute() {
-    if (inputMode !== "live" || liveStatus === "idle") return;
+    if (inputModeRef.current !== "live" || liveStatusRef.current === "idle") return;
     setLiveMuted((current) => {
       if (current && speakerVolume <= 0) {
         setSpeakerVolumeState(lastLiveSpeakerVolumeRef.current || 1);
@@ -200,25 +209,25 @@ export function useLiveVoice({
   async function setMicVolume(value: number) {
     const next = clamp01(value);
     updateMicVolume(next);
-    if (inputMode !== "live" || liveStatus === "connecting" || liveStatus === "error") return;
+    if (inputModeRef.current !== "live" || liveStatusRef.current === "connecting" || liveStatusRef.current === "error") return;
     if (next <= 0) {
       stopLiveCapture();
-      if (liveStatus !== "idle") setLiveStatus("paused");
+      if (liveStatusRef.current !== "idle") updateLiveStatus("paused");
       onStatus({ tone: "idle", text: "Microphone muted" });
       return;
     }
-    if (liveStatus !== "listening") {
+    if (liveStatusRef.current !== "listening") {
       await toggleMicMute();
     }
   }
 
   async function toggleMicMute() {
-    if (inputMode !== "live" || liveStatus === "connecting") return;
+    if (inputModeRef.current !== "live" || liveStatusRef.current === "connecting") return;
     const socket = liveSocketRef.current;
-    if (liveStatus === "listening") {
+    if (liveStatusRef.current === "listening") {
       updateMicVolume(0);
       stopLiveCapture();
-      setLiveStatus("paused");
+      updateLiveStatus("paused");
       onStatus({ tone: "idle", text: "Microphone muted" });
       return;
     }
@@ -226,7 +235,7 @@ export function useLiveVoice({
       updateMicVolume(lastLiveMicVolumeRef.current || 1);
     }
     if (!socket || socket.readyState !== WebSocket.OPEN) {
-      if (liveStatus === "idle") {
+      if (liveStatusRef.current === "idle") {
         await startLiveMode();
       }
       return;
@@ -235,7 +244,7 @@ export function useLiveVoice({
       await startLiveCapture(socket, liveSessionGenerationRef.current);
     } catch (error) {
       onError(errorMessage(error));
-      setLiveStatus("error");
+      updateLiveStatus("error");
       onStatus({ tone: "error", text: "Microphone unavailable" });
     }
   }
@@ -252,7 +261,7 @@ export function useLiveVoice({
       } catch (error) {
         if (!isCurrentLiveSession(socket, generation)) return;
         onError(errorMessage(error));
-        setLiveStatus("error");
+        updateLiveStatus("error");
         onStatus({ tone: "error", text: "Microphone unavailable" });
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: "close" }));
@@ -321,15 +330,16 @@ export function useLiveVoice({
     if (!isCurrentLiveSession(socket, generation)) return;
     if (liveMicVolumeRef.current <= 0) {
       stopLiveCapture();
-      setLiveStatus("paused");
+      updateLiveStatus("paused");
       onStatus({ tone: "idle", text: "Microphone muted" });
       return;
     }
     if (liveMediaRef.current) return;
+    const captureGeneration = ++liveCaptureGenerationRef.current;
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
-    if (!isCurrentLiveSession(socket, generation) || liveMicVolumeRef.current <= 0) {
+    if (!isCurrentLiveCapture(socket, generation, captureGeneration) || liveMicVolumeRef.current <= 0) {
       stopMediaStream(stream);
       return;
     }
@@ -341,12 +351,6 @@ export function useLiveVoice({
     const audioContext = new AudioContextCtor();
     const source = audioContext.createMediaStreamSource(stream);
     const processor = audioContext.createScriptProcessor(liveVoiceProcessorBufferSize, 1, 1);
-    let activeSpeech = false;
-    let voicedFrames = 0;
-    let quietFrames = 0;
-    let noiseFloor = 0.004;
-    let noiseFrames = 0;
-    const prerollFrames: string[] = [];
     const sendAudioFrame = (data: string) => {
       socket.send(JSON.stringify({
         type: "audio",
@@ -360,55 +364,41 @@ export function useLiveVoice({
       const currentMicVolume = liveMicVolumeRef.current;
       if (currentMicVolume <= 0) return;
       const adjustedInput = scaleAudio(input, currentMicVolume);
-      const rms = audioRMS(adjustedInput);
       const pcm = downsampleToPCM16(adjustedInput, audioContext.sampleRate, 16000);
       if (!pcm.length) return;
-      const frame = bytesToBase64(pcm);
-      if (!activeSpeech && noiseFrames < liveVoiceNoiseFloorFrames) {
-        noiseFrames += 1;
-        noiseFloor += (rms - noiseFloor) / noiseFrames;
-      }
-      const startThreshold = Math.max(liveVoiceMinStartRmsThreshold, noiseFloor * 3.2);
-      const continueThreshold = Math.max(liveVoiceMinContinueRmsThreshold, noiseFloor * 2);
-      if (activeSpeech) {
-        sendAudioFrame(frame);
-        quietFrames = rms >= continueThreshold ? 0 : quietFrames + 1;
-        if (quietFrames >= liveVoiceHangoverFrames) {
-          activeSpeech = false;
-          voicedFrames = 0;
-          quietFrames = 0;
-        }
-        return;
-      }
-      prerollFrames.push(frame);
-      if (prerollFrames.length > liveVoicePrerollFrames) {
-        prerollFrames.shift();
-      }
-      voicedFrames = rms >= startThreshold ? voicedFrames + 1 : 0;
-      if (voicedFrames < liveVoiceStartFrames) return;
-      activeSpeech = true;
-      quietFrames = 0;
-      for (const bufferedFrame of prerollFrames) {
-        sendAudioFrame(bufferedFrame);
-      }
-      prerollFrames.length = 0;
+      sendAudioFrame(bytesToBase64(pcm));
     };
     source.connect(processor);
     processor.connect(audioContext.destination);
+    if (!isCurrentLiveCapture(socket, generation, captureGeneration) || liveMicVolumeRef.current <= 0) {
+      processor.onaudioprocess = null;
+      safeDisconnect(processor);
+      safeDisconnect(source);
+      stopMediaStream(stream);
+      void audioContext.close();
+      return;
+    }
     liveMediaRef.current = stream;
     liveAudioContextRef.current = audioContext;
     liveSourceRef.current = source;
     liveProcessorRef.current = processor;
-    liveStatusRef.current = "listening";
-    setLiveStatus("listening");
+    updateLiveStatus("listening");
     onStatus({ tone: "busy", text: "Listening" });
   }
 
   function stopLiveCapture() {
-    liveProcessorRef.current?.disconnect();
-    liveSourceRef.current?.disconnect();
-    liveMediaRef.current?.getTracks().forEach((track) => track.stop());
-    void liveAudioContextRef.current?.close();
+    liveCaptureGenerationRef.current += 1;
+    if (liveProcessorRef.current) {
+      liveProcessorRef.current.onaudioprocess = null;
+      safeDisconnect(liveProcessorRef.current);
+    }
+    if (liveSourceRef.current) {
+      safeDisconnect(liveSourceRef.current);
+    }
+    if (liveMediaRef.current) {
+      stopMediaStream(liveMediaRef.current);
+    }
+    void liveAudioContextRef.current?.close().catch(() => {});
     const socket = liveSocketRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: "audio_end" }));
@@ -421,6 +411,14 @@ export function useLiveVoice({
 
   function isCurrentLiveSession(socket: WebSocket, generation: number) {
     return liveSocketRef.current === socket && liveSessionGenerationRef.current === generation && inputModeRef.current === "live";
+  }
+
+  function isCurrentLiveGeneration(generation: number) {
+    return liveSessionGenerationRef.current === generation && inputModeRef.current === "live";
+  }
+
+  function isCurrentLiveCapture(socket: WebSocket, generation: number, captureGeneration: number) {
+    return isCurrentLiveSession(socket, generation) && liveCaptureGenerationRef.current === captureGeneration;
   }
 
   function updateMicVolume(next: number) {
@@ -543,16 +541,6 @@ function downsampleToPCM16(input: Float32Array, inputSampleRate: number, targetS
   return bytes;
 }
 
-function audioRMS(input: Float32Array): number {
-  if (!input.length) return 0;
-  let sum = 0;
-  for (let index = 0; index < input.length; index += 1) {
-    const sample = input[index] || 0;
-    sum += sample * sample;
-  }
-  return Math.sqrt(sum / input.length);
-}
-
 function scaleAudio(input: Float32Array, volume: number): Float32Array {
   const scale = clamp01(volume);
   if (scale >= 0.999) return input;
@@ -569,7 +557,18 @@ function clamp01(value: number): number {
 }
 
 function stopMediaStream(stream: MediaStream) {
-  stream.getTracks().forEach((track) => track.stop());
+  stream.getTracks().forEach((track) => {
+    track.enabled = false;
+    track.stop();
+  });
+}
+
+function safeDisconnect(node: AudioNode) {
+  try {
+    node.disconnect();
+  } catch {
+    // Already disconnected.
+  }
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

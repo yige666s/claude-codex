@@ -27,6 +27,7 @@ type WorkspaceResourceDialogProps = {
   uploadProgress: number;
   assetMemoryBusy: Record<string, boolean>;
   memoryDisabled: boolean;
+  resourceNotices: Record<RightPanelTab, boolean>;
   onOpenChange: (open: boolean) => void;
   onTabChange: (tab: RightPanelTab) => void;
   onSearchChange: (value: string) => void;
@@ -72,6 +73,7 @@ export function WorkspaceResourceDialog({
   uploadProgress,
   assetMemoryBusy,
   memoryDisabled,
+  resourceNotices,
   onOpenChange,
   onTabChange,
   onSearchChange,
@@ -118,14 +120,16 @@ export function WorkspaceResourceDialog({
           {resourceTabs.map((item) => (
             <Button
               key={item.tab}
-              className={`resource-modal-tab ${item.tab === activeTab ? "active" : ""}`}
+              className={`resource-modal-tab ${item.tab === activeTab ? "active" : ""} ${resourceNotices[item.tab] ? "has-new" : ""}`}
               variant="ghost"
               role="tab"
               aria-selected={item.tab === activeTab}
+              aria-label={resourceNotices[item.tab] ? `${item.label}, new item available` : item.label}
               onClick={() => onTabChange(item.tab)}
             >
               {item.icon}
               <span>{item.label}</span>
+              {resourceNotices[item.tab] && <span className="resource-new-indicator" aria-hidden="true" />}
             </Button>
           ))}
         </div>

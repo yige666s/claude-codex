@@ -104,7 +104,7 @@ export function MessageComposer({
           ref={composerInputRef as Ref<HTMLTextAreaElement>}
           value={draft}
           aria-label="Message"
-          placeholder={inputMode === "live" ? "Live mode is active" : "输入消息，或用 /skills 调用工作流"}
+          placeholder={inputMode === "live" ? "Live mode is active" : "Initiate a query or send a command to the AI..."}
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={handleKeyDown}
           disabled={!canUseText}

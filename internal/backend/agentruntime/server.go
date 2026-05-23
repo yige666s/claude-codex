@@ -381,6 +381,12 @@ func (s *Server) handlePublicAuth(w http.ResponseWriter, r *http.Request, path s
 	case r.Method == http.MethodPost && path == "v1/auth/login":
 		s.handleAuthLogin(w, r)
 		return true
+	case r.Method == http.MethodPost && path == "v1/auth/password-reset/request":
+		s.handleAuthPasswordResetRequest(w, r)
+		return true
+	case r.Method == http.MethodPost && path == "v1/auth/password-reset/confirm":
+		s.handleAuthPasswordResetConfirm(w, r)
+		return true
 	case r.Method == http.MethodPost && path == "v1/auth/refresh":
 		s.handleAuthRefresh(w, r)
 		return true
@@ -521,6 +527,63 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	s.logEvent("auth_login", map[string]any{"user_id": session.User.ID, "request_id": requestIDFromContext(r.Context())})
 	s.auditEvent(r, "auth_login", User{ID: session.User.ID}, map[string]any{"email": session.User.Email})
 	writeJSON(w, http.StatusOK, session)
+}
+
+func (s *Server) handleAuthPasswordResetRequest(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Email string `json:"email"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if s.authService == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user system is not configured"})
+		return
+	}
+	if err := s.authService.RequestPasswordReset(r.Context(), body.Email, r); err != nil {
+		s.recordRiskEvent(r, RiskEvent{
+			IPAddress:  clientIP(r),
+			Operation:  RiskOperationAuthLogin,
+			Reason:     "auth_password_reset_request_failed",
+			RiskLevel:  RiskLevelLow,
+			ScoreDelta: 3,
+			Metadata:   map[string]any{"email": body.Email, "error": err.Error()},
+		})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"sent": true})
+}
+
+func (s *Server) handleAuthPasswordResetConfirm(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if s.authService == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "user system is not configured"})
+		return
+	}
+	profile, err := s.authService.ResetPassword(r.Context(), body.Token, body.Password)
+	if err != nil {
+		s.recordRiskEvent(r, RiskEvent{
+			IPAddress:  clientIP(r),
+			Operation:  RiskOperationAuthLogin,
+			Reason:     "auth_password_reset_failed",
+			RiskLevel:  RiskLevelMedium,
+			ScoreDelta: 8,
+		})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.logEvent("auth_password_reset", map[string]any{"user_id": profile.ID, "request_id": requestIDFromContext(r.Context())})
+	s.auditEvent(r, "auth_password_reset", User{ID: profile.ID}, map[string]any{"email": profile.Email})
+	writeJSON(w, http.StatusOK, map[string]any{"user": profile, "reset": true})
 }
 
 func (s *Server) handleAuthRefresh(w http.ResponseWriter, r *http.Request) {

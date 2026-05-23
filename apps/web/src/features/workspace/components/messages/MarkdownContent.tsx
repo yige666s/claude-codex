@@ -103,7 +103,7 @@ function parseMarkdown(text: string): MarkdownBlock[] {
   }
 
   flushParagraph();
-  return blocks;
+  return mergeAdjacentLists(blocks);
 }
 
 function renderMarkdownBlock(block: MarkdownBlock, index: number): ReactNode {
@@ -158,6 +158,19 @@ function parseListItem(line: string): { ordered: boolean; text: string } | null 
   const bullet = line.match(/^[-*+]\s+(.+)$/);
   if (bullet) return { ordered: false, text: bullet[1] };
   return null;
+}
+
+function mergeAdjacentLists(blocks: MarkdownBlock[]): MarkdownBlock[] {
+  const merged: MarkdownBlock[] = [];
+  for (const block of blocks) {
+    const previous = merged[merged.length - 1];
+    if (block.type === "list" && previous?.type === "list" && previous.ordered === block.ordered) {
+      previous.items.push(...block.items);
+      continue;
+    }
+    merged.push(block);
+  }
+  return merged;
 }
 
 function isTableStart(lines: string[], index: number): boolean {

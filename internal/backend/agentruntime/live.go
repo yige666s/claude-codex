@@ -24,8 +24,8 @@ const (
 	defaultLiveVertexAPIVersion   = "v1beta1"
 	defaultLiveInputAudioMIMEType = "audio/pcm;rate=16000"
 	defaultLiveSessionTimeout     = 10 * time.Minute
-	defaultLiveVADPrefixPadding   = 40 * time.Millisecond
-	defaultLiveVADSilenceDuration = 180 * time.Millisecond
+	defaultLiveVADPrefixPadding   = 150 * time.Millisecond
+	defaultLiveVADSilenceDuration = 500 * time.Millisecond
 )
 
 type VertexLiveService struct {
@@ -199,11 +199,15 @@ func (s *VertexLiveService) connect(ctx context.Context, req LiveRequest) (*webs
 }
 
 func (s *VertexLiveService) setupMessage(ctx context.Context, req LiveRequest) map[string]any {
+	generationConfig := map[string]any{
+		"responseModalities": []string{"AUDIO"},
+	}
+	if thinkingConfig := liveThinkingConfig(s.config.Model); len(thinkingConfig) > 0 {
+		generationConfig["thinkingConfig"] = thinkingConfig
+	}
 	setup := map[string]any{
-		"model": liveVertexModelResource(s.config),
-		"generationConfig": map[string]any{
-			"responseModalities": []string{"AUDIO"},
-		},
+		"model":            liveVertexModelResource(s.config),
+		"generationConfig": generationConfig,
 		"realtimeInputConfig": map[string]any{
 			"automaticActivityDetection": map[string]any{
 				"startOfSpeechSensitivity": s.config.LiveVADStartSensitivity,
@@ -228,6 +232,18 @@ func (s *VertexLiveService) setupMessage(ctx context.Context, req LiveRequest) m
 		}
 	}
 	return map[string]any{"setup": setup}
+}
+
+func liveThinkingConfig(model string) map[string]any {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(normalized, "2.5"):
+		return map[string]any{"thinkingBudget": 0}
+	case strings.Contains(normalized, "3.1"):
+		return map[string]any{"thinkingLevel": "MINIMAL"}
+	default:
+		return nil
+	}
 }
 
 func (s *VertexLiveService) sendLoop(ctx context.Context, req LiveRequest, input LiveClientStream, conn *websocket.Conn, writeMu *sync.Mutex, sink EventSink) error {
