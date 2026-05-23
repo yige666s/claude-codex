@@ -44,4 +44,32 @@ describe("MarkdownContent", () => {
     expect(html).toContain("<ol start=\"3\">");
     expect(html).toContain("<ol start=\"4\">");
   });
+
+  it("renders common GFM structures without exposing raw HTML", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownContent
+        text={[
+          "## Roadmap",
+          "",
+          "- [x] Tables",
+          "- [ ] Links",
+          "",
+          "| Feature | Status |",
+          "| --- | --- |",
+          "| GFM | **ready** |",
+          "",
+          "> quoted",
+          "",
+          "Visit https://example.com and <script>alert(1)</script>."
+        ].join("\n")}
+      />
+    );
+
+    expect(html).toContain("<h3>Roadmap</h3>");
+    expect(html).toContain("<table>");
+    expect(html).toContain("type=\"checkbox\"");
+    expect(html).toContain("<blockquote>");
+    expect(html).toContain("href=\"https://example.com\"");
+    expect(html).not.toContain("<script>");
+  });
 });

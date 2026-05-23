@@ -1548,9 +1548,30 @@ label.composer-upload {
   margin: 0;
   padding-left: 22px;
 }
+.markdown-content ul ul,
+.markdown-content ul ol,
+.markdown-content ol ul,
+.markdown-content ol ol {
+  margin-top: 6px;
+}
 .markdown-content li {
   margin: 4px 0;
   padding-left: 2px;
+}
+.markdown-content li > p {
+  margin: 0;
+}
+.markdown-content .contains-task-list {
+  padding-left: 22px;
+}
+.markdown-content .task-list-item {
+  list-style: none;
+}
+.markdown-content .task-list-item input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0 8px 0 -20px;
+  vertical-align: -1px;
 }
 .markdown-content blockquote {
   margin: 2px 0;
