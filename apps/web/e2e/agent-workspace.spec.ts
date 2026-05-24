@@ -51,6 +51,9 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
 
   await expect(page.getByRole("heading", { name: /Hello E2E User/i })).toBeVisible();
   await expect(page.locator(".empty-state")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use image generation" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use web search" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use model thinking" })).toBeVisible();
   await page.getByRole("textbox", { name: "Message" }).fill("d".repeat(56) + "\n" + "d".repeat(10));
   const emptyPromptBox = await page.locator(".empty-state").boundingBox();
   const emptyComposerBox = await page.locator(".composer").boundingBox();
@@ -62,9 +65,14 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByRole("button", { name: "新聊天" }).click();
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
 
+  await page.getByRole("button", { name: "Use model thinking" }).click();
+  await expect(page.getByRole("button", { name: "Use model thinking" })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("textbox", { name: "Message" }).fill("hello from playwright");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Echo: hello from playwright")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use image generation" })).toBeHidden();
+  await expect(page.getByRole("button", { name: "Use web search" })).toBeHidden();
+  await expect(page.getByRole("button", { name: "Use model thinking" })).toBeHidden();
 
   await page.locator("input[type=file]").setInputFiles({
     name: "notes.md",
@@ -84,11 +92,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await expect(page.getByRole("dialog", { name: "notes.md" })).toBeHidden();
 
   await page.getByRole("dialog", { name: "Attachments" }).getByLabel("Close resources").click();
-  await page.getByRole("button", { name: "Use model thinking" }).click();
-  await expect(page.getByRole("button", { name: "Use model thinking" })).toHaveAttribute("aria-pressed", "true");
-  await page.getByRole("textbox", { name: "Message" }).fill("reason about memory hierarchy");
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Echo: reason about memory hierarchy")).toBeVisible();
+  await page.getByRole("button", { name: "新聊天" }).click();
 
   await expect(page.getByRole("button", { name: "Use image generation" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Use web search" })).toBeVisible();
@@ -138,7 +142,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   expect(actionsBox!.y).toBeGreaterThanOrEqual(textareaBox!.y + textareaBox!.height - 2);
 
   expect(api.sessions.some((session) => session.messages.some((message) => message.content?.includes("hello from playwright")))).toBe(true);
-  expect(api.chatPayloads.some((payload) => payload.content === "reason about memory hierarchy" && payload.thinking_mode === true)).toBe(true);
+  expect(api.chatPayloads.some((payload) => payload.content === "hello from playwright" && payload.thinking_mode === true)).toBe(true);
   expect(api.chatPayloads.some((payload) => payload.content.startsWith("/vertex-image-artifact") && payload.thinking_mode !== true)).toBe(true);
 });
 
@@ -189,13 +193,7 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean } = {}) {
     updated_at: now,
     messages: []
   };
-  const sessionB: Session = {
-    id: "20260509T120100Z-e2e",
-    working_dir: "/tmp",
-    started_at: now,
-    updated_at: now,
-    messages: []
-  };
+  let createdSessionCount = 0;
   const state = {
     sessions: [sessionA] as Session[],
     attachments: [] as Asset[],
@@ -236,8 +234,16 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean } = {}) {
 
   await page.route("**/v1/sessions", async (route) => {
     if (route.request().method() === "POST") {
-      if (!state.sessions.some((session) => session.id === sessionB.id)) state.sessions.unshift(sessionB);
-      return json(route, sessionB, 201);
+      createdSessionCount += 1;
+      const session: Session = {
+        id: `20260509T12010${createdSessionCount}Z-e2e`,
+        working_dir: "/tmp",
+        started_at: now,
+        updated_at: now,
+        messages: []
+      };
+      state.sessions.unshift(session);
+      return json(route, session, 201);
     }
     return json(route, state.sessions);
   });

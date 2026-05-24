@@ -427,6 +427,10 @@ export function AgentWorkspace() {
   }, [sessionId]);
 
   useEffect(() => {
+    if (messages.length > 0 && selectedComposerTool) setSelectedComposerTool("");
+  }, [messages.length, selectedComposerTool]);
+
+  useEffect(() => {
     trackResourceIds("skills", skills.map((skill) => `${skill.name}:${skill.version || ""}`));
   }, [skills]);
 
@@ -1049,6 +1053,7 @@ export function AgentWorkspace() {
     const displayContent = content || "Please analyze the attached file(s).";
     const thinkingMode = selectedComposerTool === "thinking";
     const requestContent = composerToolContent(selectedComposerTool, displayContent);
+    setSelectedComposerTool("");
     const sentMessage: Message = { role: "user", content: messageWithAttachmentNames(displayContent, pendingAttachments), created_at: new Date().toISOString() };
     setMessages((current) => appendRuntimeMessage(current, sentMessage));
     setSessions((current) => current.map((item) => {
@@ -1649,6 +1654,7 @@ export function AgentWorkspace() {
                 responseTiming={responseTiming?.sessionId === sessionId ? responseTiming : null}
                 pendingAttachments={pendingAttachments}
                 selectedToolId={selectedComposerTool}
+                showToolChips={messages.length === 0 && !assistantDraft && !liveUserDraft}
                 attachmentInputRef={attachmentInputRef}
                 composerInputRef={composerInputRef}
                 uploading={uploading}

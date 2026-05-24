@@ -18,6 +18,7 @@ type MessageComposerProps = {
   responseTiming: { ttftMs?: number; totalMs?: number } | null;
   pendingAttachments: Asset[];
   selectedToolId: ComposerToolID | "";
+  showToolChips: boolean;
   attachmentInputRef: RefObject<HTMLInputElement | null>;
   composerInputRef: RefObject<HTMLTextAreaElement | null>;
   uploading: boolean;
@@ -54,6 +55,7 @@ export function MessageComposer({
   responseTiming,
   pendingAttachments,
   selectedToolId,
+  showToolChips,
   attachmentInputRef,
   composerInputRef,
   uploading,
@@ -140,7 +142,7 @@ export function MessageComposer({
           <SendButton busyChat={busyChat} canSend={canSend} onSend={onSendMessage} onCancel={onCancelChat} />
         </div>
       </div>
-      <ComposerToolChips selectedToolId={selectedToolId} disabled={!canUseText || busyChat} onSelectTool={onSelectTool} />
+      {showToolChips && <ComposerToolChips selectedToolId={selectedToolId} disabled={!canUseText || busyChat} onSelectTool={onSelectTool} />}
     </footer>
   );
 }
