@@ -1361,6 +1361,7 @@ label.composer-upload {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
+  transition: grid-template-columns 260ms cubic-bezier(.2,.85,.25,1);
 }
 .workspace-stage.with-artifact-workspace {
   grid-template-columns: minmax(420px, 1fr) minmax(420px, 42vw);
@@ -2220,6 +2221,32 @@ label.composer-upload {
   background: rgba(248, 251, 252, 0.96);
   box-shadow: -20px 0 70px rgba(35, 43, 61, 0.055);
   overflow: hidden;
+  transform-origin: right center;
+  animation: artifactWorkspaceIn 280ms cubic-bezier(.2,.85,.25,1) both;
+  will-change: transform, opacity;
+}
+@keyframes artifactWorkspaceIn {
+  from {
+    opacity: 0;
+    transform: translateX(22px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+.artifact-workspace-preview {
+  animation: artifactPreviewSettle 340ms cubic-bezier(.2,.85,.25,1) 70ms both;
+}
+@keyframes artifactPreviewSettle {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 .artifact-workspace-head {
   min-height: 64px;
@@ -2386,6 +2413,15 @@ label.composer-upload {
   gap: 8px;
   color: var(--muted);
   text-align: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-stage {
+    transition: none;
+  }
+  .artifact-workspace,
+  .artifact-workspace-preview {
+    animation: none;
+  }
 }
 .upload-progress {
   height: 6px;
