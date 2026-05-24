@@ -343,7 +343,6 @@ func main() {
 	}
 
 	sessionStore, memoryService := buildStores(storeCfg)
-	projectStore := buildProjectStore(storeCfg)
 	auth := buildAuthenticator(authConfig{
 		mode:                *authMode,
 		userHeader:          *userHeader,
@@ -463,7 +462,6 @@ func main() {
 		skillCatalog,
 		engineFactory,
 	)
-	runtime.SetProjectStore(projectStore)
 	kafkaConfig := agentruntime.KafkaMessageEventConfig{
 		Brokers:        splitCSV(*messageEventsKafkaBrokers),
 		Topic:          *messageEventsKafkaTopic,
@@ -1241,23 +1239,6 @@ func buildStores(cfg storeConfig) (agentruntime.SessionStore, agentruntime.Memor
 		return sessionStore, memoryService
 	default:
 		return agentruntime.NewFileSessionStore(cfg.dataDir), agentruntime.NewFileMemoryService(cfg.dataDir)
-	}
-}
-
-func buildProjectStore(cfg storeConfig) agentruntime.ProjectStore {
-	switch strings.ToLower(strings.TrimSpace(cfg.backend)) {
-	case "sql":
-		db := openSQLDB(cfg)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		dialect := agentruntime.ParseSQLDialect(firstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
-		store := agentruntime.NewSQLProjectStoreWithDialect(db, dialect)
-		if err := store.Init(ctx); err != nil {
-			log.Fatalf("init sql project store: %v", err)
-		}
-		return store
-	default:
-		return agentruntime.NewFileProjectStore(cfg.dataDir)
 	}
 }
 

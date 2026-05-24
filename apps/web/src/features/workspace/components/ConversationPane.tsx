@@ -1,7 +1,7 @@
 import { ReactNode, RefObject } from "react";
 import { AlertCircle, Menu } from "lucide-react";
 import { Button } from "../../../components/ui/button";
-import type { Message, Project, Session } from "../../../types";
+import type { Message, Session } from "../../../types";
 import { sessionTitle } from "../../../lib/sessionTitle";
 import type { Status } from "../workspaceTypes";
 import { MessageList } from "./messages/MessageList";
@@ -13,7 +13,6 @@ type RecoveryBanner = {
 
 type ConversationPaneProps = {
   activeSession?: Session;
-  activeProject?: Project;
   status: Status;
   recoveryBanner: RecoveryBanner;
   online: boolean;
@@ -33,7 +32,6 @@ type ConversationPaneProps = {
 
 export function ConversationPane({
   activeSession,
-  activeProject,
   status,
   recoveryBanner,
   online,
@@ -58,7 +56,6 @@ export function ConversationPane({
         <Button className="icon mobile-only" onClick={onOpenMobileNav} title="Open navigation" aria-label="Open navigation"><Menu size={20} /></Button>
         <div>
           <h2>{title}</h2>
-          {activeProject && <small className="topbar-project-label">{activeProject.name}</small>}
           {statusLine(status)}
         </div>
       </header>

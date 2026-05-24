@@ -1,5 +1,5 @@
 import { ReactNode, Ref, RefObject } from "react";
-import { Briefcase, Database, FileUp, Folder, Image, LogOut, MessageSquarePlus, PanelLeft, Plus, Search, Settings, Sparkles, X } from "lucide-react";
+import { Briefcase, Database, FileUp, Image, LogOut, MessageSquarePlus, PanelLeft, Search, Settings, Sparkles, X } from "lucide-react";
 import { BrandLogo } from "../../../components/brand/BrandLogo";
 import { Button } from "../../../components/ui/button";
 import {
@@ -8,16 +8,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "../../../components/ui/dropdown-menu";
-import type { AuthSession, Project, Session } from "../../../types";
+import type { AuthSession, Session } from "../../../types";
 import type { RightPanelTab, ServiceStatus } from "../workspaceTypes";
 import { SessionList } from "./sidebar/SessionList";
 
 type WorkspaceSidebarProps = {
   authSession: AuthSession;
-  projects: Project[];
-  projectId: string;
   sessions: Session[];
-  allSessionCount: number;
   sessionId: string;
   mobileOpen: boolean;
   leftOpen: boolean;
@@ -31,9 +28,6 @@ type WorkspaceSidebarProps = {
   onCollapseLeft: () => void;
   onCloseMobile: () => void;
   onCreateSession: () => void;
-  onSelectProject: (id: string) => void;
-  onCreateProject: () => void;
-  onEditProject: (project: Project) => void;
   onOpenSearch: () => void;
   onOpenResource: (tab: RightPanelTab) => void;
   onSelectSession: (id: string) => void;
@@ -46,10 +40,7 @@ type WorkspaceSidebarProps = {
 
 export function WorkspaceSidebar({
   authSession,
-  projects,
-  projectId,
   sessions,
-  allSessionCount,
   sessionId,
   mobileOpen,
   leftOpen,
@@ -63,9 +54,6 @@ export function WorkspaceSidebar({
   onCollapseLeft,
   onCloseMobile,
   onCreateSession,
-  onSelectProject,
-  onCreateProject,
-  onEditProject,
   onOpenSearch,
   onOpenResource,
   onSelectSession,
@@ -115,32 +103,6 @@ export function WorkspaceSidebar({
           <span className="sidebar-action-label">搜索聊天</span>
         </Button>
       </div>
-      <nav className="sidebar-project-nav" aria-label="Projects">
-        <div className="sidebar-section-head">
-          <span>Projects</span>
-          <Button className="icon ghost" variant="ghost" size="icon" onClick={onCreateProject} title="New project" aria-label="New project">
-            <Plus size={15} />
-          </Button>
-        </div>
-        <ProjectButton
-          active={!projectId}
-          label="All chats"
-          count={allSessionCount}
-          color="#8a98a8"
-          onClick={() => onSelectProject("")}
-        />
-        {projects.map((project) => (
-          <ProjectButton
-            key={project.id}
-            active={project.id === projectId}
-            label={project.name}
-            count={project.session_count || 0}
-            color={project.color || "#159a85"}
-            onClick={() => onSelectProject(project.id)}
-            onEdit={() => onEditProject(project)}
-          />
-        ))}
-      </nav>
       <nav className="sidebar-resource-nav" aria-label="Workspace resources">
         <ResourceButton tab="skills" label="Skills" count={resourceCounts.skills} hasNew={resourceNotices.skills} icon={<Sparkles size={17} />} onOpen={onOpenResource} />
         <ResourceButton tab="jobs" label="Jobs" count={resourceCounts.jobs} hasNew={resourceNotices.jobs} icon={<Briefcase size={17} />} onOpen={onOpenResource} />
@@ -172,38 +134,6 @@ export function WorkspaceSidebar({
         </DropdownMenu>
       </div>
     </aside>
-  );
-}
-
-function ProjectButton({
-  active,
-  label,
-  count,
-  color,
-  onClick,
-  onEdit
-}: {
-  active: boolean;
-  label: string;
-  count: number;
-  color: string;
-  onClick: () => void;
-  onEdit?: () => void;
-}) {
-  return (
-    <div className={`sidebar-project-row ${active ? "active" : ""}`}>
-      <Button className="sidebar-project-button" variant="ghost" onClick={onClick} title={label} aria-label={label}>
-        <span className="project-color-dot" style={{ backgroundColor: color }} aria-hidden="true" />
-        <Folder size={16} />
-        <span className="sidebar-project-label">{label}</span>
-        <small>{count}</small>
-      </Button>
-      {onEdit && (
-        <Button className="icon sidebar-project-edit" variant="ghost" size="icon" onClick={onEdit} title="Edit project" aria-label={`Edit ${label}`}>
-          <Settings size={14} />
-        </Button>
-      )}
-    </div>
   );
 }
 

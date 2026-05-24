@@ -146,7 +146,6 @@ export type BrowserMemoryRequest = {
 
 export type Session = {
   id: string;
-  project_id?: string;
   title?: string;
   working_dir: string;
   started_at: string;
@@ -154,17 +153,6 @@ export type Session = {
   messages?: Message[];
   message_count?: number;
   description?: string;
-};
-
-export type Project = {
-  id: string;
-  name: string;
-  description?: string;
-  instructions?: string;
-  color?: string;
-  session_count?: number;
-  created_at: string;
-  updated_at: string;
 };
 
 export type Skill = {

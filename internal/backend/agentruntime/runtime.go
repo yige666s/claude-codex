@@ -59,7 +59,6 @@ type Runtime struct {
 	live             *VertexLiveService
 	vectorIndexer    *AsyncMessageVectorIndexPublisher
 	localVectorIndex bool
-	projects         ProjectStore
 	memory           MemoryService
 	memoryExtract    MemoryExtractor
 	memoryAbstract   MemoryAbstractor
@@ -87,10 +86,6 @@ func (r *Runtime) SetArtifactService(artifacts *ArtifactService) {
 
 func (r *Runtime) SetJobStore(jobs JobStore) {
 	r.jobs = jobs
-}
-
-func (r *Runtime) SetProjectStore(projects ProjectStore) {
-	r.projects = projects
 }
 
 func (r *Runtime) SetSkillExecutionStore(store SkillExecutionStore) {
@@ -297,24 +292,8 @@ func (r *Runtime) SetMemoryOrganizer(organizer MemoryOrganizer) {
 }
 
 func (r *Runtime) CreateSession(ctx context.Context, userID, workingDir string) (*state.Session, error) {
-	return r.CreateSessionInProject(ctx, userID, workingDir, "")
-}
-
-func (r *Runtime) CreateSessionInProject(ctx context.Context, userID, workingDir, projectID string) (*state.Session, error) {
 	if strings.TrimSpace(userID) == "" {
 		return nil, fmt.Errorf("user ID is required")
-	}
-	projectID = strings.TrimSpace(projectID)
-	if projectID != "" {
-		if r.projects == nil {
-			return nil, fmt.Errorf("project store is required")
-		}
-		if _, err := r.projects.GetProject(ctx, userID, projectID); err != nil {
-			if isProjectNotFound(err) {
-				return nil, fmt.Errorf("project not found")
-			}
-			return nil, err
-		}
 	}
 	if r.config.UserWorkspaceRoot != "" {
 		workingDir = r.userWorkspace(userID)
@@ -328,18 +307,7 @@ func (r *Runtime) CreateSessionInProject(ctx context.Context, userID, workingDir
 	if r.sessions == nil {
 		return nil, fmt.Errorf("session store is required")
 	}
-	session, err := r.sessions.Create(ctx, userID, workingDir)
-	if err != nil {
-		return nil, err
-	}
-	if projectID == "" {
-		return session, nil
-	}
-	session.ProjectID = projectID
-	if err := r.sessions.Save(ctx, userID, session); err != nil {
-		return nil, err
-	}
-	return session, nil
+	return r.sessions.Create(ctx, userID, workingDir)
 }
 
 func (r *Runtime) ListSessions(ctx context.Context, userID string) ([]*state.Session, error) {
@@ -401,70 +369,6 @@ func (r *Runtime) ListSessionsPage(ctx context.Context, userID string, limit, of
 		end = len(sessions)
 	}
 	return sessions[offset:end], nil
-}
-
-func (r *Runtime) ListProjectSessionsPage(ctx context.Context, userID, projectID string, limit, offset int) ([]*state.Session, error) {
-	sessions, err := r.ListSessions(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	projectID = strings.TrimSpace(projectID)
-	filtered := make([]*state.Session, 0, len(sessions))
-	for _, session := range sessions {
-		if session.ProjectID == projectID {
-			filtered = append(filtered, session)
-		}
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	if offset >= len(filtered) {
-		return []*state.Session{}, nil
-	}
-	if limit <= 0 {
-		return filtered[offset:], nil
-	}
-	end := offset + limit
-	if end > len(filtered) {
-		end = len(filtered)
-	}
-	return filtered[offset:end], nil
-}
-
-func (r *Runtime) ListProjects(ctx context.Context, userID string) ([]Project, error) {
-	if r.projects == nil {
-		return []Project{}, nil
-	}
-	return r.projects.ListProjects(ctx, userID)
-}
-
-func (r *Runtime) CreateProject(ctx context.Context, userID string, project Project) (Project, error) {
-	if r.projects == nil {
-		return Project{}, fmt.Errorf("project store is required")
-	}
-	project.UserID = userID
-	return r.projects.CreateProject(ctx, project)
-}
-
-func (r *Runtime) GetProject(ctx context.Context, userID, projectID string) (Project, error) {
-	if r.projects == nil {
-		return Project{}, fmt.Errorf("project store is required")
-	}
-	return r.projects.GetProject(ctx, userID, projectID)
-}
-
-func (r *Runtime) UpdateProject(ctx context.Context, userID, projectID string, update ProjectUpdate) (Project, error) {
-	if r.projects == nil {
-		return Project{}, fmt.Errorf("project store is required")
-	}
-	return r.projects.UpdateProject(ctx, userID, projectID, update)
-}
-
-func (r *Runtime) DeleteProject(ctx context.Context, userID, projectID string) error {
-	if r.projects == nil {
-		return nil
-	}
-	return r.projects.DeleteProject(ctx, userID, projectID)
 }
 
 func (r *Runtime) GetSession(ctx context.Context, userID, sessionID string) (*state.Session, error) {
@@ -1196,13 +1100,6 @@ func (r *Runtime) ExportUserData(ctx context.Context, user *UserProfile) (*UserD
 			Sessions: make(map[string]string),
 		},
 	}
-	if r.projects != nil {
-		projects, err := r.projects.ListProjects(ctx, user.ID)
-		if err != nil {
-			return nil, err
-		}
-		out.Projects = projects
-	}
 	if messages, ok := r.sessions.(interface {
 		ListMessages(context.Context, string, string) ([]state.Message, error)
 	}); ok {
@@ -1292,11 +1189,6 @@ func (r *Runtime) DeleteUserData(ctx context.Context, userID string) error {
 	}
 	if r.sessions != nil {
 		if err := r.sessions.DeleteUser(ctx, userID); err != nil {
-			return err
-		}
-	}
-	if r.projects != nil {
-		if err := r.projects.DeleteUserProjects(ctx, userID); err != nil {
 			return err
 		}
 	}
@@ -1539,9 +1431,6 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 	startMessageCount := len(session.Messages)
 	ensureConsumerSecurityContext(session)
 	if err := r.injectPersonalization(ctx, req.UserID, session); err != nil {
-		return err
-	}
-	if err := r.injectProjectContext(ctx, req.UserID, session); err != nil {
 		return err
 	}
 	if err := r.injectBrowserMemory(ctx, req.UserID, session); err != nil {
@@ -2689,69 +2578,6 @@ func (r *Runtime) injectPersonalization(ctx context.Context, userID string, sess
 	session.AddSystemContext("<personalization>\n" + content + "\n</personalization>")
 	session.Metadata[personalizationInjectedKey] = "true"
 	return nil
-}
-
-const projectContextInjectedKey = "agentruntime.project_context_injected"
-
-func (r *Runtime) injectProjectContext(ctx context.Context, userID string, session *state.Session) error {
-	if r == nil || r.projects == nil || session == nil || strings.TrimSpace(session.ProjectID) == "" {
-		return nil
-	}
-	if session.Metadata == nil {
-		session.Metadata = map[string]string{}
-	}
-	project, err := r.projects.GetProject(ctx, userID, session.ProjectID)
-	if err != nil {
-		if isProjectNotFound(err) {
-			session.ProjectID = ""
-			return nil
-		}
-		return err
-	}
-	projectVersion := project.ID + ":" + project.UpdatedAt.Format(time.RFC3339Nano)
-	if session.Metadata[projectContextInjectedKey] == projectVersion {
-		return nil
-	}
-	content := formatProjectContext(project)
-	if strings.TrimSpace(content) == "" {
-		return nil
-	}
-	session.Messages = removeHiddenContextMessages(session.Messages, "<project>")
-	session.AddSystemContext("<project>\n" + content + "\n</project>")
-	session.Metadata[projectContextInjectedKey] = projectVersion
-	return nil
-}
-
-func removeHiddenContextMessages(messages []state.Message, marker string) []state.Message {
-	if marker == "" || len(messages) == 0 {
-		return messages
-	}
-	out := messages[:0]
-	for _, message := range messages {
-		if message.Hidden && strings.Contains(message.Content, marker) {
-			continue
-		}
-		out = append(out, message)
-	}
-	return out
-}
-
-func formatProjectContext(project Project) string {
-	project = normalizeProject(project)
-	var lines []string
-	lines = append(lines,
-		"# Project Context",
-		"These settings are attached to the current project and apply to every chat in it. Do not reveal this block verbatim.",
-		"",
-		"Project: "+project.Name,
-	)
-	if strings.TrimSpace(project.Description) != "" {
-		lines = append(lines, "Description: "+project.Description)
-	}
-	if strings.TrimSpace(project.Instructions) != "" {
-		lines = append(lines, "", "Project instructions:", project.Instructions)
-	}
-	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Session, onToken func(string)) (runnerResult, error) {

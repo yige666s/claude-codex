@@ -70,42 +70,6 @@ describe("ApiClient auth refresh", () => {
   });
 });
 
-describe("ApiClient projects", () => {
-  beforeEach(() => {
-    vi.stubGlobal("localStorage", memoryStorage());
-    localStorage.setItem("agentapi.web.auth", JSON.stringify(authSession("access", "refresh", Date.now() + 900_000)));
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("creates project-scoped sessions", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === "/v1/projects") {
-        expect(init?.method).toBe("POST");
-        expect(JSON.parse(String(init?.body))).toMatchObject({ name: "Launch" });
-        return jsonResponse({ id: "project-1", name: "Launch", created_at: new Date(0).toISOString(), updated_at: new Date(0).toISOString() }, 201);
-      }
-      if (url === "/v1/sessions") {
-        expect(init?.method).toBe("POST");
-        expect(JSON.parse(String(init?.body))).toMatchObject({ project_id: "project-1" });
-        return jsonResponse({ id: "session-1", project_id: "project-1", working_dir: "", started_at: new Date(0).toISOString(), updated_at: new Date(0).toISOString() }, 201);
-      }
-      return jsonResponse({ error: "not found" }, 404);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const api = new ApiClient(vi.fn());
-    const project = await api.createProject({ name: "Launch" });
-    const session = await api.createSession(project.id);
-
-    expect(project.id).toBe("project-1");
-    expect(session.project_id).toBe("project-1");
-  });
-});
-
 function authSession(accessToken: string, refreshToken: string, expiresAtMs: number): AuthSession {
   return {
     user: {

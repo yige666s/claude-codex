@@ -105,7 +105,6 @@ type Session struct {
 	ID            string            `json:"id"`
 	UserID        string            `json:"user_id,omitempty"`
 	AgentID       string            `json:"agent_id,omitempty"`
-	ProjectID     string            `json:"project_id,omitempty"`
 	Title         string            `json:"title,omitempty"`
 	Status        int               `json:"status,omitempty"`
 	WorkingDir    string            `json:"working_dir"`

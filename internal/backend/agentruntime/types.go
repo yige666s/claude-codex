@@ -27,34 +27,6 @@ type SessionMetadataStore interface {
 	SaveSessionMetadata(ctx context.Context, userID string, session *state.Session) error
 }
 
-type Project struct {
-	ID           string    `json:"id"`
-	UserID       string    `json:"user_id,omitempty"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description,omitempty"`
-	Instructions string    `json:"instructions,omitempty"`
-	Color        string    `json:"color,omitempty"`
-	SessionCount int       `json:"session_count,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-}
-
-type ProjectUpdate struct {
-	Name         *string `json:"name,omitempty"`
-	Description  *string `json:"description,omitempty"`
-	Instructions *string `json:"instructions,omitempty"`
-	Color        *string `json:"color,omitempty"`
-}
-
-type ProjectStore interface {
-	CreateProject(ctx context.Context, project Project) (Project, error)
-	GetProject(ctx context.Context, userID, projectID string) (Project, error)
-	ListProjects(ctx context.Context, userID string) ([]Project, error)
-	UpdateProject(ctx context.Context, userID, projectID string, update ProjectUpdate) (Project, error)
-	DeleteProject(ctx context.Context, userID, projectID string) error
-	DeleteUserProjects(ctx context.Context, userID string) error
-}
-
 type MessageSearchResult struct {
 	MessageID    string    `json:"message_id,omitempty"`
 	SessionID    string    `json:"session_id"`
@@ -417,7 +389,6 @@ type JobStore interface {
 type UserDataExport struct {
 	ExportedAt      time.Time                  `json:"exported_at"`
 	User            *UserProfile               `json:"user,omitempty"`
-	Projects        []Project                  `json:"projects,omitempty"`
 	Sessions        []*state.Session           `json:"sessions"`
 	Messages        map[string][]state.Message `json:"messages,omitempty"`
 	Memory          MemoryExport               `json:"memory"`

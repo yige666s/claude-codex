@@ -322,16 +322,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleJobEvents(rec, r, user, parts[2])
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "v1" && parts[1] == "jobs" && parts[3] == "cancel":
 		s.handleCancelJob(rec, r, user, parts[2])
-	case r.Method == http.MethodGet && path == "v1/projects":
-		s.handleListProjects(rec, r, user)
-	case r.Method == http.MethodPost && path == "v1/projects":
-		s.handleCreateProject(rec, r, user)
-	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "v1" && parts[1] == "projects":
-		s.handleGetProject(rec, r, user, parts[2])
-	case r.Method == http.MethodPatch && len(parts) == 3 && parts[0] == "v1" && parts[1] == "projects":
-		s.handleUpdateProject(rec, r, user, parts[2])
-	case r.Method == http.MethodDelete && len(parts) == 3 && parts[0] == "v1" && parts[1] == "projects":
-		s.handleDeleteProject(rec, r, user, parts[2])
 	case r.Method == http.MethodPost && path == "v1/sessions":
 		s.handleCreateSession(rec, r, user)
 	case r.Method == http.MethodGet && path == "v1/sessions":
@@ -2310,37 +2300,25 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (User, boo
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request, user User) {
 	var body struct {
 		WorkingDir string `json:"working_dir"`
-		ProjectID  string `json:"project_id"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	session, err := s.runtime.CreateSessionInProject(r.Context(), user.ID, body.WorkingDir, body.ProjectID)
+	session, err := s.runtime.CreateSession(r.Context(), user.ID, body.WorkingDir)
 	if err != nil {
 		s.logf("create_session user=%s error=%v", user.ID, err)
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "project not found") {
-			status = http.StatusNotFound
-		}
-		writeJSON(w, status, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	s.auditEvent(r, "session_create", user, map[string]any{"session_id": session.ID, "project_id": session.ProjectID})
+	s.auditEvent(r, "session_create", user, map[string]any{"session_id": session.ID})
 	writeJSON(w, http.StatusCreated, publicSessionView(session))
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request, user User) {
 	limit := parseBoundedInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, 1000000)
-	projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
-	var sessions []*state.Session
-	var err error
-	if projectID != "" || r.URL.Query().Has("project_id") {
-		sessions, err = s.runtime.ListProjectSessionsPage(r.Context(), user.ID, projectID, limit, offset)
-	} else {
-		sessions, err = s.runtime.ListSessionsPage(r.Context(), user.ID, limit, offset)
-	}
+	sessions, err := s.runtime.ListSessionsPage(r.Context(), user.ID, limit, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -2355,14 +2333,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request, user
 func (s *Server) handleListSessionSummaries(w http.ResponseWriter, r *http.Request, user User) {
 	limit := parseBoundedInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, 1000000)
-	projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
-	var sessions []*state.Session
-	var err error
-	if projectID != "" || r.URL.Query().Has("project_id") {
-		sessions, err = s.runtime.ListProjectSessionsPage(r.Context(), user.ID, projectID, limit, offset)
-	} else {
-		sessions, err = s.runtime.ListSessionsPage(r.Context(), user.ID, limit, offset)
-	}
+	sessions, err := s.runtime.ListSessionsPage(r.Context(), user.ID, limit, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -2377,67 +2348,6 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, user U
 		return
 	}
 	writeJSON(w, http.StatusOK, publicSessionView(session))
-}
-
-func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request, user User) {
-	projects, err := s.runtime.ListProjects(r.Context(), user.ID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
-}
-
-func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request, user User) {
-	var body Project
-	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	project, err := s.runtime.CreateProject(r.Context(), user.ID, body)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	s.auditEvent(r, "project_create", user, map[string]any{"project_id": project.ID})
-	writeJSON(w, http.StatusCreated, project)
-}
-
-func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request, user User, projectID string) {
-	project, err := s.runtime.GetProject(r.Context(), user.ID, projectID)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
-		return
-	}
-	writeJSON(w, http.StatusOK, project)
-}
-
-func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request, user User, projectID string) {
-	var body ProjectUpdate
-	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	project, err := s.runtime.UpdateProject(r.Context(), user.ID, projectID, body)
-	if err != nil {
-		if isProjectNotFound(err) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	s.auditEvent(r, "project_update", user, map[string]any{"project_id": project.ID})
-	writeJSON(w, http.StatusOK, project)
-}
-
-func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request, user User, projectID string) {
-	if err := s.runtime.DeleteProject(r.Context(), user.ID, projectID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	s.auditEvent(r, "project_delete", user, map[string]any{"project_id": projectID})
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func publicSessionViews(sessions []*state.Session) []*state.Session {
