@@ -190,6 +190,17 @@ func main() {
 	messageEventsProcessedLockBackend := flag.String("message-events-processed-lock-backend", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_BACKEND"), "redis"), "message event processed lock backend: redis or none")
 	messageEventsProcessedLockRedisURL := flag.String("message-events-processed-lock-redis-url", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL"), os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")), "Redis URL for Kafka message event processed locks")
 	messageEventsProcessedLockTTL := flag.Duration("message-events-processed-lock-ttl", envDuration("AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL", 24*time.Hour), "message event processed lock TTL")
+	jobQueueRedisURL := flag.String("job-queue-redis-url", firstNonEmpty(os.Getenv("AGENT_API_JOB_QUEUE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")), "Redis URL for durable job execution queue")
+	jobQueueStream := flag.String("job-queue-stream", firstNonEmpty(os.Getenv("AGENT_API_JOB_QUEUE_STREAM"), agentruntime.DefaultJobQueueStream), "Redis stream name for durable job execution queue")
+	jobQueueConsumerGroup := flag.String("job-queue-consumer-group", firstNonEmpty(os.Getenv("AGENT_API_JOB_QUEUE_CONSUMER_GROUP"), agentruntime.DefaultJobQueueConsumerGroup), "Redis stream consumer group for job workers")
+	jobQueueConsumer := flag.String("job-queue-consumer", os.Getenv("AGENT_API_JOB_QUEUE_CONSUMER"), "Redis stream consumer name; default is hostname-pid")
+	jobQueueBlockTimeout := flag.Duration("job-queue-block-timeout", envDuration("AGENT_API_JOB_QUEUE_BLOCK_TIMEOUT", agentruntime.DefaultJobQueueBlockTimeout), "Redis job queue blocking read timeout")
+	jobQueueClaimIdle := flag.Duration("job-queue-claim-idle", envDuration("AGENT_API_JOB_QUEUE_CLAIM_IDLE", agentruntime.DefaultJobQueueClaimIdle), "pending job idle age before another worker can claim it")
+	jobQueueLockTTL := flag.Duration("job-queue-lock-ttl", envDuration("AGENT_API_JOB_QUEUE_LOCK_TTL", agentruntime.DefaultJobQueueLockTTL), "Redis job execution lock TTL")
+	jobWorkerEnabled := flag.Bool("job-worker-enabled", envBool("AGENT_API_JOB_WORKER_ENABLED", true), "run the built-in durable job worker")
+	jobEventFanoutEnabled := flag.Bool("job-event-fanout-enabled", envBool("AGENT_API_JOB_EVENT_FANOUT_ENABLED", true), "broadcast job events through Redis pub/sub for multi-instance realtime streams")
+	jobEventFanoutChannel := flag.String("job-event-fanout-channel", firstNonEmpty(os.Getenv("AGENT_API_JOB_EVENT_FANOUT_CHANNEL"), agentruntime.DefaultJobEventFanoutChannel), "Redis pub/sub channel for multi-instance job event fanout")
+	jobEventFanoutOrigin := flag.String("job-event-fanout-origin", os.Getenv("AGENT_API_JOB_EVENT_FANOUT_ORIGIN"), "job event fanout origin id; default is hostname-pid-random")
 	messageAttachmentWorkerEnabled := flag.Bool("message-attachment-worker-enabled", envBool("AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED", true), "enable async message attachment processing worker")
 	messageAttachmentWorkerBatchSize := flag.Int("message-attachment-worker-batch-size", envInt("AGENT_API_MESSAGE_ATTACHMENT_WORKER_BATCH_SIZE", 25), "message attachment worker batch size")
 	messageAttachmentWorkerPollInterval := flag.Duration("message-attachment-worker-poll-interval", envDuration("AGENT_API_MESSAGE_ATTACHMENT_WORKER_POLL_INTERVAL", 5*time.Second), "message attachment worker poll interval")
@@ -665,6 +676,50 @@ func main() {
 			log.Printf("record risk event: %v", err)
 		}
 	})
+	jobQueue, jobQueueRedisClient := buildRedisJobQueue(*jobQueueRedisURL, agentruntime.RedisJobQueueConfig{
+		Stream:       *jobQueueStream,
+		Group:        *jobQueueConsumerGroup,
+		Consumer:     *jobQueueConsumer,
+		BlockTimeout: *jobQueueBlockTimeout,
+		ClaimIdle:    *jobQueueClaimIdle,
+		LockTTL:      *jobQueueLockTTL,
+	})
+	runtime.SetJobQueue(jobQueue)
+	defer func() {
+		if err := jobQueueRedisClient.Close(); err != nil {
+			log.Printf("close job queue redis client: %v", err)
+		}
+	}()
+	jobEventFanoutStarted := false
+	if *jobEventFanoutEnabled {
+		fanout := agentruntime.NewRedisJobEventFanout(jobQueueRedisClient, agentruntime.RedisJobEventFanoutConfig{
+			Channel: *jobEventFanoutChannel,
+			Origin:  *jobEventFanoutOrigin,
+		}, log.Default())
+		runtime.SetJobEventFanout(fanout)
+		fanoutCtx, cancelFanout := context.WithCancel(context.Background())
+		defer cancelFanout()
+		go func() {
+			if err := fanout.Run(fanoutCtx, runtime.PublishRemoteJobEvent); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("job event fanout stopped: %v", err)
+			}
+		}()
+		jobEventFanoutStarted = true
+	}
+	jobWorkerStarted := false
+	var cancelJobWorker context.CancelFunc
+	if *jobWorkerEnabled {
+		worker := agentruntime.NewJobWorker(jobQueue, runtime, agentruntime.JobWorkerConfig{LockTTL: *jobQueueLockTTL}, log.Default())
+		var workerCtx context.Context
+		workerCtx, cancelJobWorker = context.WithCancel(context.Background())
+		defer cancelJobWorker()
+		go func() {
+			if err := worker.Run(workerCtx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("job worker stopped: %v", err)
+			}
+		}()
+		jobWorkerStarted = true
+	}
 	server := agentruntime.NewServer(
 		runtime,
 		auth,
@@ -741,6 +796,7 @@ func main() {
 	if strings.EqualFold(strings.TrimSpace(*messageSequenceBackend), "redis") && messageSequenceRedisClient != nil {
 		server.AddReadinessCheck("message_sequence", agentruntime.RedisClientReadinessCheck(messageSequenceRedisClient))
 	}
+	server.AddReadinessCheck("job_queue", agentruntime.RedisClientReadinessCheck(jobQueueRedisClient))
 	if publishKafkaEvents || *messageEventsKafkaConsumerEnabled {
 		server.AddReadinessCheck("kafka_message_events", agentruntime.KafkaBrokerReadinessCheck(kafkaConfig.Brokers))
 	}
@@ -789,6 +845,8 @@ func main() {
 	log.Printf("message context cache backend: %s ttl=%s", *messageContextCacheBackend, *messageContextCacheTTL)
 	log.Printf("session list cache backend: %s ttl=%s", *sessionListCacheBackend, *sessionListCacheTTL)
 	log.Printf("message events backend: %s kafka_consumer=%t topic=%s", *messageEventsBackend, *messageEventsKafkaConsumerEnabled, *messageEventsKafkaTopic)
+	log.Printf("job queue: redis stream=%s group=%s worker_enabled=%t worker_started=%t claim_idle=%s lock_ttl=%s", *jobQueueStream, *jobQueueConsumerGroup, *jobWorkerEnabled, jobWorkerStarted, *jobQueueClaimIdle, *jobQueueLockTTL)
+	log.Printf("job event fanout: enabled=%t started=%t channel=%s", *jobEventFanoutEnabled, jobEventFanoutStarted, *jobEventFanoutChannel)
 	log.Printf("message attachment worker: enabled=%t started=%t batch=%d interval=%s", *messageAttachmentWorkerEnabled, attachmentWorkerStarted, *messageAttachmentWorkerBatchSize, *messageAttachmentWorkerPollInterval)
 	log.Printf("message archive worker: enabled=%t started=%t after=%s batch=%d interval=%s prefix=%s clear_pg_payload=%t", *messageArchiveWorkerEnabled, archiveWorkerStarted, *messageArchiveAfter, *messageArchiveWorkerBatchSize, *messageArchiveWorkerPollInterval, *messageArchivePrefix, *messageArchiveClearPGPayload)
 	log.Printf("message search index manager: enabled=%t started=%t analyzer=%s search_analyzer=%s downgrade_after=%s close_after=%s interval=%s", *messageSearchIndexManagementEnabled, messageSearchIndexManagerStarted, *messageSearchIndexAnalyzer, *messageSearchIndexSearchAnalyzer, *messageSearchIndexDowngradeAfter, *messageSearchIndexCloseAfter, *messageSearchIndexMaintenanceInterval)
@@ -1599,6 +1657,20 @@ func buildMessageSequenceAllocator(backend, redisURL string) (agentruntime.Messa
 	default:
 		return nil, nil
 	}
+}
+
+func buildRedisJobQueue(redisURL string, config agentruntime.RedisJobQueueConfig) (*agentruntime.RedisJobQueue, redis.UniversalClient) {
+	client, err := agentruntime.NewRedisClientFromURL(redisURL)
+	if err != nil {
+		log.Fatalf("init redis job queue: %v", err)
+	}
+	queue := agentruntime.NewRedisJobQueue(client, config)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := queue.Ensure(ctx); err != nil {
+		log.Fatalf("init redis job queue stream: %v", err)
+	}
+	return queue, client
 }
 
 func messageEventsBackendMode(backend string) (publishKafka bool, localVectorIndexing bool) {

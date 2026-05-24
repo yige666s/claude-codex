@@ -483,6 +483,15 @@ the runtime routes long-running work to jobs internally.
 
 - Job state is stored in `agent_jobs` with `queued`, `running`, `succeeded`,
   `failed`, or `cancelled` status.
+- Job execution is dispatched through Redis Streams. `cmd/agentapi` writes
+  `job_id`/`user_id` work items to `-job-queue-stream` and the built-in worker
+  consumes them with `-job-queue-consumer-group`. Unacknowledged jobs stay in
+  the Redis pending list and can be claimed by another worker after
+  `-job-queue-claim-idle`, so API/worker restarts do not strand in-flight work.
+- Job event realtime fanout uses Redis Pub/Sub. Each instance persists events
+  to `agent_job_events`, publishes the record to `-job-event-fanout-channel`,
+  and every other instance injects the event into its local SSE broker. The
+  database replay path remains authoritative if Pub/Sub delivery is missed.
 - Job events are stored in `agent_job_events` and mirror the normal runtime
   event stream: `start`, `message`, `delta`, `error`, `done`, and `cancelled`.
 - Replay events with `GET /v1/jobs/{id}/events`.
@@ -497,6 +506,15 @@ the runtime routes long-running work to jobs internally.
 - User data export includes jobs and job events.
 - The embedded UI includes a Jobs drawer with job list, timeline replay, live
   updates, and cancellation controls.
+- Key job queue flags:
+  `-job-queue-redis-url redis://redis:6379/2`,
+  `-job-queue-stream agentapi:jobs`,
+  `-job-queue-consumer-group agentapi-job-workers`,
+  `-job-worker-enabled=true`, `-job-queue-claim-idle 1m`, and
+  `-job-queue-lock-ttl 2m`.
+- Key job event fanout flags:
+  `-job-event-fanout-enabled=true` and
+  `-job-event-fanout-channel agentapi:job-events`.
 - Skills can request durable execution through frontmatter metadata:
 
 ```yaml

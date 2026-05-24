@@ -1,22 +1,30 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const externalBaseURL = process.env.E2E_BASE_URL?.trim();
+const baseURL = externalBaseURL || "http://127.0.0.1:5173";
+
 export default defineConfig({
   testDir: "./e2e",
-  timeout: 30_000,
+  timeout: externalBaseURL ? 90_000 : 30_000,
   expect: {
     timeout: 5_000
   },
   reporter: [["list"]],
   use: {
-    baseURL: "http://127.0.0.1:5173",
-    trace: "retain-on-failure"
+    baseURL,
+    trace: "retain-on-failure",
+    launchOptions: {
+      args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"]
+    }
   },
-  webServer: {
-    command: "npm run dev -- --host 127.0.0.1",
-    url: "http://127.0.0.1:5173",
-    reuseExistingServer: !process.env.CI,
-    timeout: 60_000
-  },
+  webServer: externalBaseURL
+    ? undefined
+    : {
+        command: "npm run dev -- --host 127.0.0.1",
+        url: baseURL,
+        reuseExistingServer: !process.env.CI,
+        timeout: 60_000
+      },
   projects: [
     {
       name: "chromium",

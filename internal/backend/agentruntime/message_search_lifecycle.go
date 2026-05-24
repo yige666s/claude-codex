@@ -265,6 +265,7 @@ func (m *ElasticsearchMessageIndexManager) indexTemplate() map[string]any {
 				"index.lifecycle.name":           m.config.IndexLifecyclePolicy,
 				"index.lifecycle.rollover_alias": m.config.IndexWriteAlias,
 				"number_of_shards":               1,
+				"number_of_replicas":             0,
 			},
 			"mappings": map[string]any{
 				"dynamic": false,

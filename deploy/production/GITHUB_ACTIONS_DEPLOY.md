@@ -69,6 +69,15 @@ Run this on the server after `/opt/agentapi/.env` is configured:
 /opt/agentapi/deploy.sh
 ```
 
+Validate the production/test-server environment file before a rollout:
+
+```bash
+node /opt/agentapi/repo/deploy/production/check-env.mjs /opt/agentapi/.env
+```
+
+The check prints only variable names and categories; it does not echo secret
+values.
+
 To test the GHCR pull path manually:
 
 ```bash

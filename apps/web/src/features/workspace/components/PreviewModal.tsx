@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Download, FileUp, X } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../../components/ui/dialog";
+import { userFacingErrorMessage } from "../../../api/errorMessages";
 import type { Asset } from "../../../types";
 
 type BlobPreviewState = {
@@ -204,5 +205,5 @@ function downloadObjectURL(url: string, filename: string): void {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return error instanceof Error ? userFacingErrorMessage(error.message) : userFacingErrorMessage(String(error));
 }

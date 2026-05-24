@@ -202,6 +202,17 @@ services:
       AGENT_API_SESSION_LIST_CACHE_TTL: ${AGENT_API_SESSION_LIST_CACHE_TTL:-10m}
       AGENT_API_MESSAGE_SEQUENCE_BACKEND: ${AGENT_API_MESSAGE_SEQUENCE_BACKEND:-redis}
       AGENT_API_MESSAGE_SEQUENCE_REDIS_URL: ${AGENT_API_MESSAGE_SEQUENCE_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:seq}
+      AGENT_API_JOB_QUEUE_REDIS_URL: ${AGENT_API_JOB_QUEUE_REDIS_URL:-redis://redis:6379/2}
+      AGENT_API_JOB_QUEUE_STREAM: ${AGENT_API_JOB_QUEUE_STREAM:-agentapi:jobs}
+      AGENT_API_JOB_QUEUE_CONSUMER_GROUP: ${AGENT_API_JOB_QUEUE_CONSUMER_GROUP:-agentapi-job-workers}
+      AGENT_API_JOB_QUEUE_CONSUMER: ${AGENT_API_JOB_QUEUE_CONSUMER:-}
+      AGENT_API_JOB_QUEUE_BLOCK_TIMEOUT: ${AGENT_API_JOB_QUEUE_BLOCK_TIMEOUT:-2s}
+      AGENT_API_JOB_QUEUE_CLAIM_IDLE: ${AGENT_API_JOB_QUEUE_CLAIM_IDLE:-1m}
+      AGENT_API_JOB_QUEUE_LOCK_TTL: ${AGENT_API_JOB_QUEUE_LOCK_TTL:-2m}
+      AGENT_API_JOB_WORKER_ENABLED: ${AGENT_API_JOB_WORKER_ENABLED:-true}
+      AGENT_API_JOB_EVENT_FANOUT_ENABLED: ${AGENT_API_JOB_EVENT_FANOUT_ENABLED:-true}
+      AGENT_API_JOB_EVENT_FANOUT_CHANNEL: ${AGENT_API_JOB_EVENT_FANOUT_CHANNEL:-agentapi:job-events}
+      AGENT_API_JOB_EVENT_FANOUT_ORIGIN: ${AGENT_API_JOB_EVENT_FANOUT_ORIGIN:-}
       AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED: ${AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED:-true}
       AGENT_API_MESSAGE_ATTACHMENT_WORKER_BATCH_SIZE: ${AGENT_API_MESSAGE_ATTACHMENT_WORKER_BATCH_SIZE:-25}
       AGENT_API_MESSAGE_ATTACHMENT_WORKER_POLL_INTERVAL: ${AGENT_API_MESSAGE_ATTACHMENT_WORKER_POLL_INTERVAL:-5s}
@@ -328,6 +339,26 @@ services:
       - "${AGENT_API_MESSAGE_SEQUENCE_BACKEND:-redis}"
       - -message-sequence-redis-url
       - "${AGENT_API_MESSAGE_SEQUENCE_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:seq}"
+      - -job-queue-redis-url
+      - "${AGENT_API_JOB_QUEUE_REDIS_URL:-redis://redis:6379/2}"
+      - -job-queue-stream
+      - "${AGENT_API_JOB_QUEUE_STREAM:-agentapi:jobs}"
+      - -job-queue-consumer-group
+      - "${AGENT_API_JOB_QUEUE_CONSUMER_GROUP:-agentapi-job-workers}"
+      - -job-queue-consumer
+      - "${AGENT_API_JOB_QUEUE_CONSUMER:-}"
+      - -job-queue-block-timeout
+      - "${AGENT_API_JOB_QUEUE_BLOCK_TIMEOUT:-2s}"
+      - -job-queue-claim-idle
+      - "${AGENT_API_JOB_QUEUE_CLAIM_IDLE:-1m}"
+      - -job-queue-lock-ttl
+      - "${AGENT_API_JOB_QUEUE_LOCK_TTL:-2m}"
+      - "-job-worker-enabled=${AGENT_API_JOB_WORKER_ENABLED:-true}"
+      - "-job-event-fanout-enabled=${AGENT_API_JOB_EVENT_FANOUT_ENABLED:-true}"
+      - -job-event-fanout-channel
+      - "${AGENT_API_JOB_EVENT_FANOUT_CHANNEL:-agentapi:job-events}"
+      - -job-event-fanout-origin
+      - "${AGENT_API_JOB_EVENT_FANOUT_ORIGIN:-}"
       - "-message-attachment-worker-enabled=${AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED:-true}"
       - -message-attachment-worker-batch-size
       - "${AGENT_API_MESSAGE_ATTACHMENT_WORKER_BATCH_SIZE:-25}"

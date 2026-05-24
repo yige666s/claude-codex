@@ -9,6 +9,9 @@
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest run",
     "e2e": "playwright test",
+    "e2e:real": "REAL_E2E=1 playwright test e2e/real-environment.spec.ts",
+    "e2e:visual": "playwright test e2e/responsive-visual.spec.ts",
+    "e2e:live": "playwright test e2e/live-stability.spec.ts",
     "e2e:ui": "playwright test --ui"
   },
   "dependencies": {

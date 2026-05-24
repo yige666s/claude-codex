@@ -78,6 +78,9 @@ func TestElasticsearchMessageIndexManagerBootstrapCreatesILMTemplateAndAlias(t *
 	if got := settings["index.lifecycle.rollover_alias"]; got != "agent_messages" {
 		t.Fatalf("rollover alias = %v, want agent_messages", got)
 	}
+	if got := settings["number_of_replicas"]; got != float64(0) {
+		t.Fatalf("number_of_replicas = %v, want 0", got)
+	}
 }
 
 func TestElasticsearchMessageIndexManagerEnsureIntervalIsShorterThanMaintenance(t *testing.T) {

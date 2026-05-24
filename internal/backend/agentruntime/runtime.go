@@ -66,6 +66,8 @@ type Runtime struct {
 	memoryOrganizer  MemoryOrganizer
 	artifacts        *ArtifactService
 	jobs             JobStore
+	jobQueue         JobQueue
+	jobEventFanout   JobEventPublisher
 	jobEvents        *jobEventBroker
 	skills           SkillCatalog
 	skillExecutions  SkillExecutionStore
@@ -76,6 +78,7 @@ type Runtime struct {
 	mu                    sync.Mutex
 	wg                    sync.WaitGroup
 	running               map[string]context.CancelFunc
+	runningJobTurns       map[string]bool
 	runningJobs           map[string]context.CancelFunc
 	hiddenJobUserMessages map[string]bool
 	shuttingDown          bool
@@ -87,6 +90,14 @@ func (r *Runtime) SetArtifactService(artifacts *ArtifactService) {
 
 func (r *Runtime) SetJobStore(jobs JobStore) {
 	r.jobs = jobs
+}
+
+func (r *Runtime) SetJobQueue(queue JobQueue) {
+	r.jobQueue = queue
+}
+
+func (r *Runtime) SetJobEventFanout(fanout JobEventPublisher) {
+	r.jobEventFanout = fanout
 }
 
 func (r *Runtime) SetSkillExecutionStore(store SkillExecutionStore) {
@@ -126,6 +137,7 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		skills:                skills,
 		engineFactory:         engineFactory,
 		running:               make(map[string]context.CancelFunc),
+		runningJobTurns:       make(map[string]bool),
 		runningJobs:           make(map[string]context.CancelFunc),
 		hiddenJobUserMessages: make(map[string]bool),
 		jobEvents:             newJobEventBroker(128),
@@ -1443,7 +1455,7 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 
 	turnCtx, cancel := context.WithTimeout(ctx, r.config.TurnTimeout)
 	turnKey := sessionKey(req.UserID, session.ID)
-	if err := r.start(turnKey, cancel); err != nil {
+	if err := r.start(turnKey, cancel, jobIDFromContext(ctx) != ""); err != nil {
 		cancel()
 		return err
 	}
@@ -1653,7 +1665,7 @@ func (r *Runtime) ExecuteLiveSkillCommand(ctx context.Context, userID, sessionID
 
 	turnCtx, cancel := context.WithTimeout(ctx, r.config.TurnTimeout)
 	turnKey := sessionKey(userID, session.ID)
-	if err := r.start(turnKey, cancel); err != nil {
+	if err := r.start(turnKey, cancel, jobIDFromContext(ctx) != ""); err != nil {
 		cancel()
 		return true, err
 	}
@@ -2285,10 +2297,19 @@ func (r *Runtime) StartJob(ctx context.Context, job *Job) error {
 	if _, err := r.jobs.GetJob(ctx, job.UserID, job.ID); err != nil {
 		return err
 	}
+	hideUserMessage := r.consumeJobUserMessageHidden(job.ID)
+	if r.jobQueue != nil {
+		return r.jobQueue.EnqueueJob(ctx, JobQueueItem{
+			JobID:           job.ID,
+			UserID:          job.UserID,
+			RequestID:       requestIDFromContext(ctx),
+			HideUserMessage: hideUserMessage,
+		})
+	}
 	workerCtx, cancel := context.WithCancel(context.Background())
 	workerCtx = withRequestID(workerCtx, requestIDFromContext(ctx))
 	workerCtx = WithJobID(workerCtx, job.ID)
-	if r.consumeJobUserMessageHidden(job.ID) {
+	if hideUserMessage {
 		workerCtx = withHiddenUserMessage(workerCtx)
 	}
 	if err := r.startJob(job.ID, cancel); err != nil {
@@ -2297,6 +2318,35 @@ func (r *Runtime) StartJob(ctx context.Context, job *Job) error {
 	}
 	go r.runJob(workerCtx, job)
 	return nil
+}
+
+func (r *Runtime) RunQueuedJob(ctx context.Context, item JobQueueItem) error {
+	if r.jobs == nil {
+		return fmt.Errorf("job store is not configured")
+	}
+	jobID := strings.TrimSpace(item.JobID)
+	userID := strings.TrimSpace(item.UserID)
+	if jobID == "" || userID == "" {
+		return fmt.Errorf("job id and user id are required")
+	}
+	job, err := r.jobs.GetJob(ctx, userID, jobID)
+	if err != nil {
+		return err
+	}
+	if isTerminalJobStatus(job.Status) {
+		return nil
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	workerCtx = withRequestID(workerCtx, item.RequestID)
+	workerCtx = WithJobID(workerCtx, job.ID)
+	if item.HideUserMessage {
+		workerCtx = withHiddenUserMessage(workerCtx)
+	}
+	if err := r.startJob(job.ID, cancel); err != nil {
+		cancel()
+		return err
+	}
+	return r.runJob(workerCtx, job)
 }
 
 func withHiddenUserMessage(ctx context.Context) context.Context {
@@ -2335,27 +2385,32 @@ func (r *Runtime) consumeJobUserMessageHidden(jobID string) bool {
 	return true
 }
 
-func (r *Runtime) runJob(ctx context.Context, job *Job) {
+func (r *Runtime) runJob(ctx context.Context, job *Job) error {
 	defer r.finishJob(job.ID)
 	now := time.Now().UTC()
 	if err := r.jobs.UpdateJobStatus(ctx, job.UserID, job.ID, JobStatusRunning, "", now); err != nil {
-		return
+		return err
 	}
-	sink := &jobEventSink{store: r.jobs, broker: r.jobEvents, job: job}
+	sink := &jobEventSink{store: r.jobs, broker: r.jobEvents, fanout: r.jobEventFanout, job: job}
 	ctx = withJobEventEmitter(ctx, sink.Send)
 	err := r.Chat(ctx, ChatRequest{UserID: job.UserID, SessionID: job.SessionID, Content: job.Content, AttachmentIDs: job.AttachmentIDs, AttachmentURLs: job.AttachmentURLs}, sink)
 	finishedAt := time.Now().UTC()
+	if current, loadErr := r.jobs.GetJob(context.Background(), job.UserID, job.ID); loadErr == nil && current.Status == JobStatusCancelled {
+		return nil
+	}
 	switch {
 	case err == nil:
-		_ = r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusSucceeded, "", finishedAt)
+		return r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusSucceeded, "", finishedAt)
 	case errors.Is(err, context.Canceled) || errors.Is(err, ErrRuntimeShuttingDown):
-		_ = r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusCancelled, err.Error(), finishedAt)
-		_ = sink.Send(context.Background(), Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
+		updateErr := r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusCancelled, err.Error(), finishedAt)
+		sendErr := sink.Send(context.Background(), Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
+		return errors.Join(updateErr, sendErr)
 	default:
-		_ = r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusFailed, err.Error(), finishedAt)
+		updateErr := r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusFailed, err.Error(), finishedAt)
 		if !strings.HasPrefix(strings.TrimSpace(job.Content), "/") {
 			r.recordExecutionDenialRisk(ctx, job.UserID, job.SessionID, "", err, map[string]any{"phase": "job", "job_type": job.Type})
 		}
+		return updateErr
 	}
 }
 
@@ -2430,7 +2485,7 @@ func (r *Runtime) CancelJob(ctx context.Context, userID, jobID string) error {
 	if err := r.jobs.UpdateJobStatus(ctx, userID, jobID, JobStatusCancelled, "cancelled before execution", now); err != nil {
 		return err
 	}
-	return (&jobEventSink{store: r.jobs, broker: r.jobEvents, job: job}).Send(ctx, Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
+	return (&jobEventSink{store: r.jobs, broker: r.jobEvents, fanout: r.jobEventFanout, job: job}).Send(ctx, Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
 }
 
 func (r *Runtime) Cancel(userID, sessionID string) bool {
@@ -2451,11 +2506,16 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	r.mu.Lock()
 	r.shuttingDown = true
 	cancels := make([]context.CancelFunc, 0, len(r.running)+len(r.runningJobs))
-	for _, cancel := range r.running {
+	for key, cancel := range r.running {
+		if r.jobQueue != nil && r.runningJobTurns[key] {
+			continue
+		}
 		cancels = append(cancels, cancel)
 	}
-	for _, cancel := range r.runningJobs {
-		cancels = append(cancels, cancel)
+	if r.jobQueue == nil {
+		for _, cancel := range r.runningJobs {
+			cancels = append(cancels, cancel)
+		}
 	}
 	r.mu.Unlock()
 	for _, cancel := range cancels {
@@ -3600,13 +3660,16 @@ func (r *Runtime) userWorkspace(userID string) string {
 	return filepath.Join(filepath.Clean(r.config.UserWorkspaceRoot), hex.EncodeToString(sum[:])[:32])
 }
 
-func (r *Runtime) start(key string, cancel context.CancelFunc) error {
+func (r *Runtime) start(key string, cancel context.CancelFunc, jobScoped bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.shuttingDown {
 		return ErrRuntimeShuttingDown
 	}
 	r.running[key] = cancel
+	if jobScoped {
+		r.runningJobTurns[key] = true
+	}
 	r.wg.Add(1)
 	return nil
 }
@@ -3614,6 +3677,7 @@ func (r *Runtime) start(key string, cancel context.CancelFunc) error {
 func (r *Runtime) finish(key string) {
 	r.mu.Lock()
 	delete(r.running, key)
+	delete(r.runningJobTurns, key)
 	r.mu.Unlock()
 	r.wg.Done()
 }
@@ -3645,6 +3709,13 @@ func (r *Runtime) subscribeJobEvents(jobID string) (<-chan *JobEvent, func()) {
 	return r.jobEvents.Subscribe(jobID)
 }
 
+func (r *Runtime) PublishRemoteJobEvent(event *JobEvent) {
+	if r == nil || r.jobEvents == nil || event == nil {
+		return
+	}
+	r.jobEvents.Publish(event)
+}
+
 func (r *Runtime) runningSessionIDs(userID string) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -3668,6 +3739,7 @@ type runnerResult struct {
 type jobEventSink struct {
 	store  JobStore
 	broker *jobEventBroker
+	fanout JobEventPublisher
 	job    *Job
 }
 
@@ -3692,6 +3764,11 @@ func (s *jobEventSink) Send(ctx context.Context, event Event) error {
 		return err
 	}
 	s.broker.Publish(record)
+	if s.fanout != nil {
+		if err := s.fanout.PublishJobEvent(ctx, record); err != nil {
+			log.Printf("publish job event fanout failed: job=%s event=%s: %v", record.JobID, record.ID, err)
+		}
+	}
 	return nil
 }
 

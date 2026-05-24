@@ -1,0 +1,201 @@
+import { expect, test, type Page, type Route } from "@playwright/test";
+
+const now = "2026-05-09T12:00:00.000Z";
+
+test("Live mode releases microphone capture when rapidly switching back to text", async ({ page }) => {
+  await installLiveBrowserFakes(page);
+  await mockLiveAPI(page);
+  await page.goto("/");
+  await login(page);
+
+  await page.getByRole("button", { name: "Choose mode" }).click();
+  await page.getByRole("menuitem", { name: "Live" }).click();
+  await expect(page.getByRole("button", { name: "Mute microphone" })).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Choose mode" }).click();
+  await page.getByRole("menuitem", { name: "Chat" }).click();
+
+  await expect.poll(() => page.evaluate(() => window.__liveTest.stoppedTracks)).toBeGreaterThan(0);
+  const sentFrames = await page.evaluate(() => window.__liveTest.sentFrames.join("\n"));
+  expect(sentFrames).toContain("audio_end");
+  await expect(page.getByRole("textbox", { name: "Message" })).not.toHaveAttribute("placeholder", "Live mode is active");
+});
+
+test("Live microphone volume can recover after mute", async ({ page }) => {
+  await installLiveBrowserFakes(page);
+  await mockLiveAPI(page);
+  await page.goto("/");
+  await login(page);
+
+  await page.getByRole("button", { name: "Choose mode" }).click();
+  await page.getByRole("menuitem", { name: "Live" }).click();
+  await expect(page.getByRole("button", { name: "Mute microphone" })).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Mute microphone" }).click();
+  await expect(page.getByRole("button", { name: "Unmute microphone" })).toBeVisible();
+  await page.getByRole("button", { name: "Unmute microphone" }).click();
+  await expect(page.getByRole("button", { name: "Mute microphone" })).toBeVisible();
+});
+
+test("Live permission denial is shown without internal details", async ({ page }) => {
+  await installLiveBrowserFakes(page, { denyMicrophone: true });
+  await mockLiveAPI(page);
+  await page.goto("/");
+  await login(page);
+
+  await page.getByRole("button", { name: "Choose mode" }).click();
+  await page.getByRole("menuitem", { name: "Live" }).click();
+  await expect(page.getByText("Microphone unavailable")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/\/run\/agentapi|GOOGLE_APPLICATION_CREDENTIALS|VERTEX_ACCESS_TOKEN|vertex-service-account/i)).toHaveCount(0);
+});
+
+test("Live credential errors are converted to user-safe copy", async ({ page }) => {
+  await installLiveBrowserFakes(page, {
+    firstFrame: {
+      type: "error",
+      error: "live vertex access token is required: read GOOGLE_APPLICATION_CREDENTIALS: open /run/agentapi/secrets/vertex-service-account.json: no such file or directory"
+    }
+  });
+  await mockLiveAPI(page);
+  await page.goto("/");
+  await login(page);
+
+  await page.getByRole("button", { name: "Choose mode" }).click();
+  await page.getByRole("menuitem", { name: "Live" }).click();
+  await expect(page.getByText("Live mode is not configured for this environment. Ask an administrator to finish voice setup.")).toBeVisible();
+  await expect(page.getByText(/\/run\/agentapi|GOOGLE_APPLICATION_CREDENTIALS|VERTEX_ACCESS_TOKEN|vertex-service-account/i)).toHaveCount(0);
+});
+
+async function login(page: Page) {
+  await page.getByLabel("Email").fill("live@example.com");
+  await page.getByLabel("Password").fill("password123");
+  await page.getByRole("button", { name: "Login" }).last().click();
+  await expect(page.getByRole("heading", { name: /Hello Live User/i })).toBeVisible();
+  await page.getByRole("button", { name: "新聊天" }).click();
+}
+
+async function mockLiveAPI(page: Page) {
+  const session = {
+    id: "live-session",
+    working_dir: "/tmp",
+    started_at: now,
+    updated_at: now,
+    messages: []
+  };
+  await page.route("**/readyz?**", (route) => json(route, { status: "ok", checks: [] }));
+  await page.route("**/v1/auth/login", (route) => json(route, authSession()));
+  await page.route("**/v1/auth/refresh", (route) => json(route, authSession()));
+  await page.route("**/v1/auth/me", (route) => json(route, { user: authSession().user }));
+  await page.route("**/v1/memory/settings", (route) => json(route, { enabled: true, capture_enabled: true, context_enabled: true }));
+  await page.route("**/v1/personalization", (route) => json(route, { profile: {}, style: {}, traits: {}, custom_instructions: "", feature_flags: {} }));
+  await page.route("**/v1/memory?**", (route) => json(route, { items: [] }));
+  await page.route("**/v1/memory/maintenance", (route) => json(route, { actions: [] }));
+  await page.route("**/v1/skills", (route) => json(route, { skills: [] }));
+  await page.route("**/v1/sessions?**", (route) => json(route, [session]));
+  await page.route("**/v1/sessions", (route) => route.request().method() === "POST" ? json(route, session, 201) : json(route, [session]));
+  await page.route(/.*\/v1\/sessions\/[^/]+$/, (route) => json(route, session));
+  await page.route("**/v1/attachments?**", (route) => json(route, { attachments: [] }));
+  await page.route("**/v1/artifacts?**", (route) => json(route, { artifacts: [] }));
+  await page.route("**/v1/jobs?**", (route) => json(route, { jobs: [] }));
+}
+
+async function installLiveBrowserFakes(page: Page, options: { denyMicrophone?: boolean; firstFrame?: Record<string, unknown> } = {}) {
+  await page.addInitScript((config) => {
+    window.__liveTest = { stoppedTracks: 0, sentFrames: [] };
+    class FakeWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 3;
+      readyState = FakeWebSocket.CONNECTING;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor() {
+        setTimeout(() => {
+          this.readyState = FakeWebSocket.OPEN;
+          const frame = config.firstFrame || { type: "live_setup_complete" };
+          this.onmessage?.({ data: JSON.stringify(frame) } as MessageEvent);
+        }, 20);
+      }
+      send(frame: string) {
+        window.__liveTest.sentFrames.push(frame);
+      }
+      close() {
+        this.readyState = FakeWebSocket.CLOSED;
+        this.onclose?.();
+      }
+    }
+    window.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+      getUserMedia: async () => {
+        if (config.denyMicrophone) throw new DOMException("Permission denied", "NotAllowedError");
+        return {
+          getTracks: () => [{
+            enabled: true,
+            stop: () => {
+              window.__liveTest.stoppedTracks += 1;
+            }
+          }]
+        } as unknown as MediaStream;
+      }
+      } as MediaDevices
+    });
+    class FakeAudioContext {
+      sampleRate = 48000;
+      currentTime = 0;
+      state: AudioContextState = "running";
+      destination = {};
+      createMediaStreamSource() {
+        return { connect() {}, disconnect() {} };
+      }
+      createScriptProcessor() {
+        return { onaudioprocess: null, connect() {}, disconnect() {} };
+      }
+      createGain() {
+        return { gain: { value: 1 }, connect() {}, disconnect() {} };
+      }
+      createBuffer() {
+        return { duration: 0.01, getChannelData: () => new Float32Array(1) };
+      }
+      createBufferSource() {
+        return { buffer: null, connect() {}, start() {}, stop() {}, onended: null };
+      }
+      resume() {
+        return Promise.resolve();
+      }
+      close() {
+        return Promise.resolve();
+      }
+    }
+    window.AudioContext = FakeAudioContext as unknown as typeof AudioContext;
+  }, options);
+}
+
+function authSession() {
+  return {
+    user: {
+      id: "live-user",
+      email: "live@example.com",
+      display_name: "Live User",
+      status: "active",
+      created_at: now
+    },
+    access_token: "access-token",
+    refresh_token: "refresh-token",
+    csrf_token: "csrf-token",
+    expires_at: "2099-01-01T00:00:00.000Z"
+  };
+}
+
+function json(route: Route, body: unknown, status = 200) {
+  return route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+}
+
+declare global {
+  interface Window {
+    __liveTest: {
+      stoppedTracks: number;
+      sentFrames: string[];
+    };
+  }
+}

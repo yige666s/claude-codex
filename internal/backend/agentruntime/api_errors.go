@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -21,9 +22,9 @@ func normalizeAPIResponse(w http.ResponseWriter, status int, value any) any {
 		return value
 	}
 	return APIError{
-		Error:     message,
+		Error:     sanitizeAPIErrorMessage(message),
 		Code:      errorCodeForStatus(status, message),
-		Message:   message,
+		Message:   sanitizeAPIErrorMessage(message),
 		RequestID: w.Header().Get("X-Request-ID"),
 	}
 }
@@ -70,3 +71,46 @@ func errorCodeForStatus(status int, message string) string {
 	}
 	return "request_error"
 }
+
+func sanitizeAPIErrorMessage(message string) string {
+	text := strings.TrimSpace(message)
+	if text == "" {
+		return "Request failed."
+	}
+	if isCredentialErrorMessage(text) {
+		return "A service credential is missing or unavailable. Ask an administrator to verify the provider setup."
+	}
+	if isSandboxErrorMessage(text) {
+		return "The tool sandbox could not start. Ask an administrator to check the sandbox configuration."
+	}
+	if internalPathPattern.MatchString(text) || stackLikePattern.MatchString(text) {
+		return "The request failed because of an internal service configuration issue."
+	}
+	return text
+}
+
+func isCredentialErrorMessage(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "google_application_credentials") ||
+		strings.Contains(lower, "vertex_access_token") ||
+		strings.Contains(lower, "vertex_service_account") ||
+		strings.Contains(lower, "service account") ||
+		strings.Contains(lower, "vertex-service-account") ||
+		strings.Contains(lower, "access token is required") ||
+		strings.Contains(lower, "credential")
+}
+
+func isSandboxErrorMessage(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "sandbox") ||
+		strings.Contains(lower, "oci runtime") ||
+		strings.Contains(lower, "docker:") ||
+		strings.Contains(lower, "operation not permitted") ||
+		strings.Contains(lower, "seccomp") ||
+		strings.Contains(lower, "apparmor")
+}
+
+var (
+	internalPathPattern = regexp.MustCompile(`(?i)(^|\s)(/run/agentapi|/opt/agentapi|/var/lib/agentapi|/workspace|/tmp|secrets/)\S*`)
+	stackLikePattern    = regexp.MustCompile(`(?i)(\n\s*at\s+\S+\s*\(|goroutine \d+ \[|\.go:\d+|\.ts:\d+|\.tsx:\d+)`)
+)

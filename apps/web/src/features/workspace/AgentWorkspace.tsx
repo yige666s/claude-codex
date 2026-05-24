@@ -8,6 +8,7 @@ import {
   X
 } from "lucide-react";
 import { ApiClient, ApiError } from "../../api/client";
+import { userFacingErrorMessage } from "../../api/errorMessages";
 import type { Asset, AuthSession, Job, JobEvent, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill } from "../../types";
 import { readSSEStream } from "../../lib/sse";
 import { sessionTitle } from "../../lib/sessionTitle";
@@ -2039,10 +2040,10 @@ function StatusLine({ status }: { status: Status }) {
 
 function errorMessage(error: unknown): string {
   return error instanceof ApiError && error.requestId
-    ? `${error.message} (${error.requestId})`
+    ? `${userFacingErrorMessage(error.message)} (${error.requestId})`
     : error instanceof Error
-      ? error.message
-      : String(error);
+      ? userFacingErrorMessage(error.message)
+      : userFacingErrorMessage(String(error));
 }
 
 function ServiceStatusPill({ status }: { status: ServiceStatus }) {

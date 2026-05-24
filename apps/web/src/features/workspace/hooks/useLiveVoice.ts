@@ -1,5 +1,6 @@
 import { Dispatch, SetStateAction, useEffect, useRef, useState } from "react";
 import { ApiClient, ApiError } from "../../../api/client";
+import { userFacingErrorMessage } from "../../../api/errorMessages";
 import type { RuntimeEvent } from "../../../types";
 import type { Status } from "../workspaceTypes";
 
@@ -634,14 +635,14 @@ function errorMessage(error: unknown): string {
   return error instanceof ApiError && error.requestId
     ? `${error.message} (${error.requestId})`
     : error instanceof Error
-      ? error.message
-      : String(error);
+      ? userFacingErrorMessage(error.message)
+      : userFacingErrorMessage(String(error));
 }
 
 function liveErrorMessage(message: string): string {
   const text = message.trim();
   if (/live vertex access token is required|GOOGLE_APPLICATION_CREDENTIALS|VERTEX_ACCESS_TOKEN|vertex-service-account/i.test(text)) {
-    return "Live mode is not configured in this environment. Set VERTEX_ACCESS_TOKEN or GOOGLE_APPLICATION_CREDENTIALS_JSON, or mount the Vertex service account secret.";
+    return "Live mode is not configured for this environment. Ask an administrator to finish voice setup.";
   }
-  return text || "Live voice failed.";
+  return userFacingErrorMessage(text || "Live voice failed.");
 }

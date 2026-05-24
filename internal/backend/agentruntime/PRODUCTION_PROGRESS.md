@@ -74,9 +74,11 @@ Delivered:
 
 Known follow-ups:
 
-- Split the in-process worker loop into an external queue and worker service when horizontal scaling starts.
-- Browser refresh, network reconnect, and multi-window viewing are recoverable through durable job/event replay, but `agentapi` process restart cannot resume an already-running in-process job. Existing job/events remain queryable after restart, but true execution recovery requires the external queue/worker phase.
-- Move fanout from process memory to Redis/NATS/pub-sub when multiple API instances must share live event delivery.
+- Job execution now uses Redis Streams with a built-in worker. API restarts,
+  worker restarts, and multi-instance deployments can recover unacknowledged
+  jobs through the stream pending list and claim idle work from failed workers.
+- Job event realtime delivery now uses Redis Pub/Sub fanout across API
+  instances, with durable database replay as the authoritative fallback.
 
 ### 3. Observability Completion
 

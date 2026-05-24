@@ -1,4 +1,5 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
+import { userFacingErrorMessage } from "./errorMessages";
 import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
@@ -995,9 +996,9 @@ async function toApiError(response: Response): Promise<ApiError> {
   const text = await response.text();
   try {
     const payload = JSON.parse(text || "{}") as { error?: string; message?: string; code?: string; request_id?: string };
-    return new ApiError(payload.message || payload.error || response.statusText, response.status, payload.code, payload.request_id || requestId);
+    return new ApiError(userFacingErrorMessage(payload.message || payload.error || response.statusText), response.status, payload.code, payload.request_id || requestId);
   } catch {
-    return new ApiError(text || response.statusText, response.status, undefined, requestId);
+    return new ApiError(userFacingErrorMessage(text || response.statusText), response.status, undefined, requestId);
   }
 }
 
