@@ -49,18 +49,18 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByLabel("Repeat secret").fill("password123");
   await page.getByRole("button", { name: "Create Account" }).click();
 
-  await expect(page.getByRole("heading", { name: "20260509T120000Z-e2e" })).toBeVisible();
-  await expect(page.locator(".empty-prompt-card")).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Hello E2E User/i })).toBeVisible();
+  await expect(page.locator(".empty-state")).toBeVisible();
   await page.getByRole("textbox", { name: "Message" }).fill("d".repeat(56) + "\n" + "d".repeat(10));
-  const emptyPromptBox = await page.locator(".empty-prompt-card").boundingBox();
+  const emptyPromptBox = await page.locator(".empty-state").boundingBox();
   const emptyComposerBox = await page.locator(".composer").boundingBox();
   expect(emptyPromptBox).not.toBeNull();
   expect(emptyComposerBox).not.toBeNull();
-  expect(emptyComposerBox!.y).toBeLessThan(emptyPromptBox!.y + emptyPromptBox!.height);
+  expect(emptyComposerBox!.y).toBeGreaterThan(emptyPromptBox!.y);
   await page.getByRole("textbox", { name: "Message" }).fill("");
 
   await page.getByRole("button", { name: "新聊天" }).click();
-  await expect(page.getByRole("heading", { name: "20260509T120100Z-e2e" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
 
   await page.getByRole("textbox", { name: "Message" }).fill("hello from playwright");
   await page.getByRole("button", { name: "Send" }).click();
@@ -91,11 +91,15 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByRole("button", { name: "Send" }).click();
 
   await page.getByRole("button", { name: "Artifacts" }).click();
-  await page.getByRole("button", { name: "Preview result.txt" }).click();
-  await expect(page.getByRole("dialog", { name: "result.txt" })).toBeVisible();
-  await expect(page.getByText("generated artifact body")).toBeVisible();
+  const artifactWorkspace = page.getByRole("complementary", { name: "Artifact workspace" });
+  await expect(artifactWorkspace).toBeVisible();
+  await expect(artifactWorkspace.getByText("generated artifact body")).toBeVisible();
+  await page.getByRole("button", { name: "Open preview for result.txt" }).click();
+  const artifactPreview = page.getByRole("dialog", { name: "result.txt" });
+  await expect(artifactPreview).toBeVisible();
+  await expect(artifactPreview.getByText("generated artifact body")).toBeVisible();
   await page.getByRole("button", { name: "Close preview" }).click();
-  await page.getByRole("dialog", { name: "Artifacts" }).getByLabel("Close resources").click();
+  await page.getByLabel("Close artifact workspace").click();
 
   await page.getByRole("button", { name: "搜索聊天" }).click();
   await page.getByRole("textbox", { name: "Search across all sessions" }).fill("playwright");
@@ -139,7 +143,7 @@ test("keeps sent chat text visible when the stream fails", async ({ page }) => {
   await page.getByRole("textbox", { name: "Message" }).fill("this should stay visible");
   await page.getByRole("button", { name: "Send" }).click();
 
-  await expect(page.getByText("this should stay visible")).toBeVisible();
+  await expect(page.locator(".message.user .message-text", { hasText: "this should stay visible" })).toBeVisible();
   await expect(page.getByText(/Message delivery failed/).first()).toBeVisible();
 });
 
@@ -150,7 +154,7 @@ test("covers admin console smoke after the panel split", async ({ page }) => {
   await page.getByLabel("Email").fill("admin@example.com");
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Login" }).last().click();
-  await expect(page.getByRole("heading", { name: "20260509T120000Z-e2e" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Hello E2E User/i })).toBeVisible();
 
   await page.goto("/admin");
   await expect(page.getByRole("heading", { name: "Skills" })).toBeVisible();

@@ -25,6 +25,7 @@ import {
 import { Input } from "../../components/ui/input";
 import { Textarea } from "../../components/ui/textarea";
 import { ConversationPane } from "./components/ConversationPane";
+import { ArtifactWorkspace } from "./components/ArtifactWorkspace";
 import { MemoryModal } from "./components/MemoryModal";
 import { MessageBubble } from "./components/MessageBubble";
 import { PreviewModal } from "./components/PreviewModal";
@@ -157,6 +158,8 @@ export function AgentWorkspace() {
   const [jobEvents, setJobEvents] = useState<JobEvent[]>([]);
   const [attachments, setAttachments] = useState<Asset[]>([]);
   const [artifacts, setArtifacts] = useState<Asset[]>([]);
+  const [artifactWorkspaceOpen, setArtifactWorkspaceOpen] = useState(false);
+  const [artifactWorkspaceAssetId, setArtifactWorkspaceAssetId] = useState("");
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
   const [globalSearchResults, setGlobalSearchResults] = useState<MessageSearchResult[]>([]);
@@ -211,6 +214,7 @@ export function AgentWorkspace() {
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const selectedSessionIdRef = useRef("");
   const resourceDialogTabRef = useRef<RightPanelTab | null>(null);
+  const artifactWorkspaceOpenRef = useRef(false);
   const resourceIdsRef = useRef<Record<RightPanelTab, Set<string>>>(emptyResourceIdSets());
   const resourceBaselineReadyRef = useRef<Record<RightPanelTab, boolean>>(emptyResourceNotices());
   const accountRef = useRef<HTMLDivElement | null>(null);
@@ -225,6 +229,7 @@ export function AgentWorkspace() {
   const activeResourceTab = resourceDialogTab || "skills";
   const activeResourceSearch = resourceSearch[activeResourceTab];
   const activeResourceVisibleCount = resourceVisibleCount[activeResourceTab];
+  const selectedWorkspaceArtifact = artifacts.find((asset) => asset.id === artifactWorkspaceAssetId) || artifacts[0] || null;
   const {
     inputMode,
     liveStatus,
@@ -390,6 +395,20 @@ export function AgentWorkspace() {
   }, [resourceDialogTab]);
 
   useEffect(() => {
+    artifactWorkspaceOpenRef.current = artifactWorkspaceOpen;
+    if (artifactWorkspaceOpen) markResourceViewed("artifacts");
+  }, [artifactWorkspaceOpen]);
+
+  useEffect(() => {
+    if (!artifacts.length) {
+      setArtifactWorkspaceAssetId("");
+      return;
+    }
+    if (artifactWorkspaceAssetId && artifacts.some((asset) => asset.id === artifactWorkspaceAssetId)) return;
+    if (artifactWorkspaceOpen) setArtifactWorkspaceAssetId(artifacts[0].id);
+  }, [artifactWorkspaceAssetId, artifactWorkspaceOpen, artifacts]);
+
+  useEffect(() => {
     resetSessionResourceNotices();
   }, [sessionId]);
 
@@ -536,7 +555,12 @@ export function AgentWorkspace() {
     setAttachments(attachmentList);
     artifactsRef.current = artifactList;
     setArtifacts(artifactList);
-    if (options.revealNewArtifacts && artifactList.some((asset) => !previousArtifactIds.has(asset.id))) {
+    const newArtifact = artifactList.find((asset) => !previousArtifactIds.has(asset.id));
+    if (options.revealNewArtifacts && newArtifact) {
+      setArtifactWorkspaceAssetId(newArtifact.id);
+      setArtifactWorkspaceOpen(true);
+      setResourceDialogTab(null);
+      markResourceViewed("artifacts");
       setStatus({ tone: "ok", text: "New artifact available" });
       return;
     }
@@ -554,9 +578,21 @@ export function AgentWorkspace() {
   }
 
   function openResourceDialog(tab: RightPanelTab) {
+    if (tab === "artifacts") {
+      openArtifactWorkspace();
+      return;
+    }
     markResourceViewed(tab);
     setResourceDialogTab(tab);
     setResourceVisibleCount((current) => ({ ...current, [tab]: resourcePageSize }));
+    setMobileNav(false);
+  }
+
+  function openArtifactWorkspace(asset?: Asset) {
+    markResourceViewed("artifacts");
+    setResourceDialogTab(null);
+    setArtifactWorkspaceAssetId(asset?.id || artifactWorkspaceAssetId || artifacts[0]?.id || "");
+    setArtifactWorkspaceOpen(true);
     setMobileNav(false);
   }
 
@@ -1401,6 +1437,10 @@ export function AgentWorkspace() {
   }
 
   function changeResourceTab(tab: RightPanelTab) {
+    if (tab === "artifacts") {
+      openArtifactWorkspace();
+      return;
+    }
     markResourceViewed(tab);
     setResourceDialogTab(tab);
     setResourceVisibleCount((current) => ({ ...current, [tab]: resourcePageSize }));
@@ -1419,7 +1459,7 @@ export function AgentWorkspace() {
     resourceIdsRef.current[tab] = nextIds;
     resourceBaselineReadyRef.current[tab] = true;
     if (!hasNewItem) return;
-    if (resourceDialogTabRef.current === tab) {
+    if (resourceDialogTabRef.current === tab || (tab === "artifacts" && artifactWorkspaceOpenRef.current)) {
       markResourceViewed(tab);
       return;
     }
@@ -1542,56 +1582,76 @@ export function AgentWorkspace() {
         />
       )}
       workspace={(
-        <ConversationPane
-          activeSession={activeSession}
-          status={status}
-          recoveryBanner={recoveryBanner}
-          online={online}
-          selectedJobId={selectedJobId}
-          userLabel={authSession.user.display_name || authSession.user.email}
-          messages={messages}
-          liveUserDraft={liveUserDraft}
-          assistantDraft={assistantDraft}
-          highlightedMessageIndex={highlightedMessageIndex}
-          messagesRef={messagesRef}
-          statusLine={(nextStatus) => <StatusLine status={nextStatus} />}
-          messageBubble={(props) => <MessageBubble {...props} />}
-          onOpenMobileNav={() => setMobileNav(true)}
-          onReconnectJob={reconnectSelectedJob}
-          composer={(
-            <MessageComposer
-              runtimeError={runtimeError}
-              uploadError={uploadError}
-              responseTiming={responseTiming?.sessionId === sessionId ? responseTiming : null}
-              pendingAttachments={pendingAttachments}
-              attachmentInputRef={attachmentInputRef}
-              composerInputRef={composerInputRef}
-              uploading={uploading}
-              inputMode={inputMode}
-              liveStatus={liveStatus}
-              liveMuted={liveMuted}
-              liveSpeakerVolume={liveSpeakerVolume}
-              liveMicVolume={liveMicVolume}
-              busyChat={busyChat}
-              sessionId={sessionId}
-              draft={draft}
-              onClearRuntimeError={() => setRuntimeError("")}
-              onClearUploadError={() => setUploadError("")}
-              onRemovePendingAttachment={(id) => setPendingAttachments((current) => current.filter((item) => item.id !== id))}
-              onUploadAttachment={uploadAttachment}
-              onDraftChange={setDraft}
-              onSendMessage={sendMessage}
-              onCancelChat={cancelChat}
-              onSwitchToText={switchToTextMode}
-              onSwitchToLive={switchToLiveMode}
-              onToggleLiveMute={toggleSpeakerMute}
-              onToggleLiveCapture={() => void toggleMicMute()}
-              onLiveSpeakerVolumeChange={changeLiveSpeakerVolume}
-              onLiveMicVolumeChange={(value) => void changeLiveMicVolume(value)}
-              formatNumber={formatNumber}
+        <div className={`workspace-stage ${artifactWorkspaceOpen ? "with-artifact-workspace" : ""}`}>
+          <ConversationPane
+            activeSession={activeSession}
+            status={status}
+            recoveryBanner={recoveryBanner}
+            online={online}
+            selectedJobId={selectedJobId}
+            userLabel={authSession.user.display_name || authSession.user.email}
+            messages={messages}
+            liveUserDraft={liveUserDraft}
+            assistantDraft={assistantDraft}
+            highlightedMessageIndex={highlightedMessageIndex}
+            messagesRef={messagesRef}
+            statusLine={(nextStatus) => <StatusLine status={nextStatus} />}
+            messageBubble={(props) => <MessageBubble {...props} />}
+            onOpenMobileNav={() => setMobileNav(true)}
+            onReconnectJob={reconnectSelectedJob}
+            composer={(
+              <MessageComposer
+                runtimeError={runtimeError}
+                uploadError={uploadError}
+                responseTiming={responseTiming?.sessionId === sessionId ? responseTiming : null}
+                pendingAttachments={pendingAttachments}
+                attachmentInputRef={attachmentInputRef}
+                composerInputRef={composerInputRef}
+                uploading={uploading}
+                inputMode={inputMode}
+                liveStatus={liveStatus}
+                liveMuted={liveMuted}
+                liveSpeakerVolume={liveSpeakerVolume}
+                liveMicVolume={liveMicVolume}
+                busyChat={busyChat}
+                sessionId={sessionId}
+                draft={draft}
+                onClearRuntimeError={() => setRuntimeError("")}
+                onClearUploadError={() => setUploadError("")}
+                onRemovePendingAttachment={(id) => setPendingAttachments((current) => current.filter((item) => item.id !== id))}
+                onUploadAttachment={uploadAttachment}
+                onDraftChange={setDraft}
+                onSendMessage={sendMessage}
+                onCancelChat={cancelChat}
+                onSwitchToText={switchToTextMode}
+                onSwitchToLive={switchToLiveMode}
+                onToggleLiveMute={toggleSpeakerMute}
+                onToggleLiveCapture={() => void toggleMicMute()}
+                onLiveSpeakerVolumeChange={changeLiveSpeakerVolume}
+                onLiveMicVolumeChange={(value) => void changeLiveMicVolume(value)}
+                formatNumber={formatNumber}
+              />
+            )}
+          />
+          {artifactWorkspaceOpen && (
+            <ArtifactWorkspace
+              artifacts={artifacts}
+              selectedArtifactId={selectedWorkspaceArtifact?.id || ""}
+              memoryBusy={assetMemoryBusy}
+              memoryDisabled={!memorySettings.capture_enabled}
+              onSelectArtifact={setArtifactWorkspaceAssetId}
+              onClose={() => setArtifactWorkspaceOpen(false)}
+              onOpenPreview={previewArtifact}
+              onDownload={(id) => { void downloadArtifact(id); }}
+              onDelete={(id) => deleteAsset("artifact", id)}
+              onExtractMemory={extractAssetMemory}
+              loadArtifact={(asset) => api.artifactBlob(asset.id)}
+              loadPreview={(asset) => api.artifactPreviewBlob(asset.id)}
+              formatBytes={formatBytes}
+              formatTime={formatTime}
             />
           )}
-        />
+        </div>
       )}
       modals={(
         <>
