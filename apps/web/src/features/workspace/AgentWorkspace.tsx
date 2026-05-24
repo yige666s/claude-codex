@@ -37,7 +37,7 @@ import { WorkspaceResourceDialog } from "./components/WorkspaceResourceDialog";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { SkillGlyph } from "./components/right-panel/SkillPanel";
 import { useLiveVoice } from "./hooks/useLiveVoice";
-import type { ConfirmDialog, JobStreamStatus, RightPanelSearch, RightPanelTab, ServiceStatus, Status } from "./workspaceTypes";
+import type { ComposerToolID, ConfirmDialog, JobStreamStatus, RightPanelSearch, RightPanelTab, ServiceStatus, Status } from "./workspaceTypes";
 
 const AdminConsole = lazy(() => import("../../admin/AdminConsole"));
 
@@ -147,7 +147,7 @@ export function AgentWorkspace() {
   const [runtimeError, setRuntimeError] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skillDetail, setSkillDetail] = useState<Skill | null>(null);
-  const [selectedSkillName, setSelectedSkillName] = useState("");
+  const [selectedComposerTool, setSelectedComposerTool] = useState<ComposerToolID | "">("");
   const [recentSkillNames, setRecentSkillNames] = useState<string[]>(readRecentSkills);
   const [adminToken, setAdminToken] = useState(readAdminToken);
   const [adminView, setAdminView] = useState(isAdminPath);
@@ -1035,7 +1035,6 @@ export function AgentWorkspace() {
     const content = draft.trim();
     if ((!content && pendingAttachments.length === 0) || !sessionId || busyChat) return;
     const requestSessionId = sessionId;
-    const selectedSkill = skills.find((skill) => skill.name === selectedSkillName);
     const attachmentIds = pendingAttachments.map((asset) => asset.id);
     const abort = new AbortController();
     let routedToJob = false;
@@ -1048,7 +1047,7 @@ export function AgentWorkspace() {
     setResponseTiming(null);
     setRuntimeError("");
     const displayContent = content || "Please analyze the attached file(s).";
-    const requestContent = selectedSkill ? skillCommandContent(selectedSkill, displayContent) : displayContent;
+    const requestContent = composerToolContent(selectedComposerTool, displayContent);
     const sentMessage: Message = { role: "user", content: messageWithAttachmentNames(displayContent, pendingAttachments), created_at: new Date().toISOString() };
     setMessages((current) => appendRuntimeMessage(current, sentMessage));
     setSessions((current) => current.map((item) => {
@@ -1204,7 +1203,13 @@ export function AgentWorkspace() {
   }
 
   function insertSkill(skill: Skill) {
-    selectSkillMode(skill);
+    const command = `/${skill.name} `;
+    setDraft(command);
+    setSelectedComposerTool("");
+    switchToTextMode();
+    rememberRecentSkill(skill);
+    setStatus({ tone: "ok", text: `Inserted /${skill.name}` });
+    composerInputRef.current?.focus();
     setSkillDetail(null);
     setResourceDialogTab(null);
   }
@@ -1218,22 +1223,22 @@ export function AgentWorkspace() {
   }
 
   function selectChatMode() {
-    setSelectedSkillName("");
+    setSelectedComposerTool("");
     switchToTextMode();
     setStatus({ tone: "idle", text: "Chat mode" });
     composerInputRef.current?.focus();
   }
 
-  function selectSkillMode(skill: Skill) {
-    setSelectedSkillName(skill.name);
+  function selectComposerTool(toolId: ComposerToolID) {
+    const nextTool = selectedComposerTool === toolId ? "" : toolId;
+    setSelectedComposerTool(nextTool);
     switchToTextMode();
-    rememberRecentSkill(skill);
-    setStatus({ tone: "ok", text: `Using /${skill.name}` });
+    setStatus({ tone: nextTool ? "ok" : "idle", text: nextTool ? composerToolStatus(nextTool) : "Chat mode" });
     composerInputRef.current?.focus();
   }
 
   function selectLiveMode() {
-    setSelectedSkillName("");
+    setSelectedComposerTool("");
     switchToLiveMode();
   }
 
@@ -1642,9 +1647,7 @@ export function AgentWorkspace() {
                 uploadError={uploadError}
                 responseTiming={responseTiming?.sessionId === sessionId ? responseTiming : null}
                 pendingAttachments={pendingAttachments}
-                skills={skills}
-                recentSkillNames={recentSkillNames}
-                selectedSkillName={selectedSkillName}
+                selectedToolId={selectedComposerTool}
                 attachmentInputRef={attachmentInputRef}
                 composerInputRef={composerInputRef}
                 uploading={uploading}
@@ -1665,7 +1668,7 @@ export function AgentWorkspace() {
                 onCancelChat={cancelChat}
                 onSelectChatMode={selectChatMode}
                 onSwitchToLive={selectLiveMode}
-                onSelectSkillMode={selectSkillMode}
+                onSelectTool={selectComposerTool}
                 onToggleLiveMute={toggleSpeakerMute}
                 onToggleLiveCapture={() => void toggleMicMute()}
                 onLiveSpeakerVolumeChange={changeLiveSpeakerVolume}
@@ -1957,10 +1960,19 @@ function isSlashSkillCommand(content: string): boolean {
   return /^\/[A-Za-z0-9_.:-]+(?:\s|$)/.test(content.trim());
 }
 
-function skillCommandContent(skill: Skill, content: string): string {
+function composerToolContent(toolId: ComposerToolID | "", content: string): string {
   const trimmed = content.trim();
-  if (isSlashSkillCommand(trimmed)) return trimmed;
-  return [`/${skill.name}`, trimmed].filter(Boolean).join(" ");
+  if (!toolId || isSlashSkillCommand(trimmed)) return trimmed;
+  if (toolId === "image") return ["/vertex-image-artifact", trimmed].filter(Boolean).join(" ");
+  if (toolId === "web-search") return `请使用网页搜索查找最新资料，并基于可靠来源回答：${trimmed}`;
+  if (toolId === "thinking") return `请先深入思考并检查推理，再回答：${trimmed}`;
+  return trimmed;
+}
+
+function composerToolStatus(toolId: ComposerToolID): string {
+  if (toolId === "image") return "Image generation ready";
+  if (toolId === "web-search") return "Web search ready";
+  return "Thinking mode ready";
 }
 
 function appendJobEvent(events: JobEvent[], event: JobEvent): JobEvent[] {

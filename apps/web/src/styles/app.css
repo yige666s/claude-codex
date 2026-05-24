@@ -1812,6 +1812,52 @@ label.composer-upload {
   align-items: center;
   gap: 8px;
 }
+.composer-tool-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 0 4px 2px;
+  scrollbar-width: none;
+}
+.composer-tool-row::-webkit-scrollbar {
+  display: none;
+}
+.composer-tool-chip {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(224, 229, 237, 0.96);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 760;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms ease;
+}
+.composer-tool-chip:hover {
+  border-color: rgba(10, 128, 116, 0.48);
+  background: rgba(236, 250, 247, 0.92);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+.composer-tool-chip.active {
+  border-color: rgba(10, 128, 116, 0.72);
+  background: var(--active-bg);
+  color: var(--accent);
+  box-shadow: 0 10px 28px rgba(10, 128, 116, 0.12);
+}
+.composer-tool-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  transform: none;
+}
 .tool-mode-trigger {
   height: var(--composer-control-size);
   padding: 3px;
@@ -1833,17 +1879,13 @@ label.composer-upload {
   white-space: nowrap;
 }
 .tool-mode-trigger.chat,
-.tool-mode-trigger.skill {
+.tool-mode-trigger.live {
   color: var(--accent);
   background: var(--active-bg);
 }
-.tool-mode-trigger.live {
-  color: var(--blue);
-  background: #eff6ff;
-}
 .tool-mode-menu {
-  width: min(320px, calc(100vw - 28px));
-  max-height: min(420px, calc(100vh - 120px));
+  width: min(180px, calc(100vw - 28px));
+  max-height: min(240px, calc(100vh - 120px));
   overflow: auto;
 }
 .tool-mode-menu .ui-dropdown-item {
@@ -1866,10 +1908,6 @@ label.composer-upload {
 .tool-mode-menu .ui-dropdown-item small {
   color: var(--muted);
   font-size: 12px;
-}
-.tool-mode-skill-list {
-  display: grid;
-  gap: 2px;
 }
 .tool-mode-check {
   color: var(--accent);
@@ -4226,6 +4264,13 @@ label.composer-upload {
   .composer-actions {
     grid-column: 1 / -1;
     justify-content: flex-end;
+  }
+  .composer-tool-row {
+    justify-content: flex-start;
+    padding-inline: 0;
+  }
+  .composer-tool-chip {
+    flex: 0 0 auto;
   }
   .composer-expanded .composer-actions {
     grid-column: 2;

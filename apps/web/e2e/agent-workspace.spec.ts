@@ -84,10 +84,11 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await expect(page.getByRole("dialog", { name: "notes.md" })).toBeHidden();
 
   await page.getByRole("dialog", { name: "Attachments" }).getByLabel("Close resources").click();
-  await page.getByRole("button", { name: "Skills" }).click();
-  await page.getByRole("button", { name: /vertex-image-artifact/i }).click();
-  await page.getByRole("button", { name: /Apply \/vertex-image-artifact/i }).click();
-  await expect(page.getByRole("button", { name: "Choose mode or tool" })).toContainText("vertex-image-artifact");
+  await expect(page.getByRole("button", { name: "Use image generation" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use web search" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use model thinking" })).toBeVisible();
+  await page.getByRole("button", { name: "Use image generation" }).click();
+  await expect(page.getByRole("button", { name: "Use image generation" })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("textbox", { name: "Message" }).fill("draw a blue square");
   await page.getByRole("button", { name: "Send" }).click();
 

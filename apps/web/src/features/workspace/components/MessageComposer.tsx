@@ -1,7 +1,9 @@
 import { KeyboardEvent, Ref, RefObject } from "react";
 import { Textarea } from "../../../components/ui/textarea";
-import type { Asset, Skill } from "../../../types";
+import type { Asset } from "../../../types";
 import type { InputMode, LiveStatus } from "../hooks/useLiveVoice";
+import type { ComposerToolID } from "../workspaceTypes";
+import { ComposerToolChips } from "./composer/ComposerToolChips";
 import { ComposerUploadButton } from "./composer/ComposerUploadButton";
 import { LiveVoiceControls } from "./composer/LiveVoiceControls";
 import { PendingAttachments } from "./composer/PendingAttachments";
@@ -15,9 +17,7 @@ type MessageComposerProps = {
   uploadError: string;
   responseTiming: { ttftMs?: number; totalMs?: number } | null;
   pendingAttachments: Asset[];
-  skills: Skill[];
-  recentSkillNames: string[];
-  selectedSkillName: string;
+  selectedToolId: ComposerToolID | "";
   attachmentInputRef: RefObject<HTMLInputElement | null>;
   composerInputRef: RefObject<HTMLTextAreaElement | null>;
   uploading: boolean;
@@ -38,7 +38,7 @@ type MessageComposerProps = {
   onCancelChat: () => void;
   onSelectChatMode: () => void;
   onSwitchToLive: () => void;
-  onSelectSkillMode: (skill: Skill) => void;
+  onSelectTool: (toolId: ComposerToolID) => void;
   onToggleLiveMute: () => void;
   onToggleLiveCapture: () => void;
   onLiveSpeakerVolumeChange: (value: number) => void;
@@ -53,9 +53,7 @@ export function MessageComposer({
   uploadError,
   responseTiming,
   pendingAttachments,
-  skills,
-  recentSkillNames,
-  selectedSkillName,
+  selectedToolId,
   attachmentInputRef,
   composerInputRef,
   uploading,
@@ -76,7 +74,7 @@ export function MessageComposer({
   onCancelChat,
   onSelectChatMode,
   onSwitchToLive,
-  onSelectSkillMode,
+  onSelectTool,
   onToggleLiveMute,
   onToggleLiveCapture,
   onLiveSpeakerVolumeChange,
@@ -86,7 +84,6 @@ export function MessageComposer({
   const canUseText = inputMode === "text" && liveStatus === "idle";
   const canSend = canUseText && (!!draft.trim() || pendingAttachments.length > 0) && !!sessionId;
   const expandedComposer = draft.length > 80 || draft.includes("\n");
-  const selectedSkill = skills.find((skill) => skill.name === selectedSkillName);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -113,7 +110,7 @@ export function MessageComposer({
           ref={composerInputRef as Ref<HTMLTextAreaElement>}
           value={draft}
           aria-label="Message"
-          placeholder={inputMode === "live" ? "Live mode is active" : selectedSkill ? `Describe what /${selectedSkill.name} should do...` : "Initiate a query or send a command to the AI..."}
+          placeholder={inputMode === "live" ? "Live mode is active" : placeholderForTool(selectedToolId)}
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={handleKeyDown}
           disabled={!canUseText}
@@ -122,14 +119,10 @@ export function MessageComposer({
         <div className="composer-actions">
           <ToolModeSelector
             inputMode={inputMode}
-            skills={skills}
-            recentSkillNames={recentSkillNames}
-            selectedSkillName={selectedSkillName}
             busyChat={busyChat}
             sessionId={sessionId}
             onSelectChat={onSelectChatMode}
             onSelectLive={onSwitchToLive}
-            onSelectSkill={onSelectSkillMode}
           />
           <LiveVoiceControls
             inputMode={inputMode}
@@ -147,6 +140,14 @@ export function MessageComposer({
           <SendButton busyChat={busyChat} canSend={canSend} onSend={onSendMessage} onCancel={onCancelChat} />
         </div>
       </div>
+      <ComposerToolChips selectedToolId={selectedToolId} disabled={!canUseText || busyChat} onSelectTool={onSelectTool} />
     </footer>
   );
+}
+
+function placeholderForTool(toolId: ComposerToolID | ""): string {
+  if (toolId === "image") return "Describe the image you want to generate...";
+  if (toolId === "web-search") return "Ask what you want to look up...";
+  if (toolId === "thinking") return "Ask a question that needs deeper reasoning...";
+  return "Initiate a query or send a command to the AI...";
 }
