@@ -12,6 +12,7 @@ type BlobPreviewState = {
 };
 
 type ArtifactWorkspaceProps = {
+  className?: string;
   artifacts: Asset[];
   selectedArtifactId: string;
   memoryBusy: Record<string, boolean>;
@@ -29,6 +30,7 @@ type ArtifactWorkspaceProps = {
 };
 
 export function ArtifactWorkspace({
+  className = "",
   artifacts,
   selectedArtifactId,
   memoryBusy,
@@ -53,7 +55,7 @@ export function ArtifactWorkspace({
   }, [artifacts, query]);
 
   return (
-    <aside className="artifact-workspace" aria-label="Artifact workspace">
+    <aside className={`artifact-workspace ${className}`.trim()} aria-label="Artifact workspace">
       <header className="artifact-workspace-head">
         <div>
           <strong>Artifacts</strong>

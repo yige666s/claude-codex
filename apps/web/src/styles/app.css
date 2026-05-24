@@ -2221,32 +2221,27 @@ label.composer-upload {
   background: rgba(248, 251, 252, 0.96);
   box-shadow: -20px 0 70px rgba(35, 43, 61, 0.055);
   overflow: hidden;
-  transform-origin: right center;
-  animation: artifactWorkspaceIn 280ms cubic-bezier(.2,.85,.25,1) both;
+  opacity: 0;
+  transform: translateX(100%);
+  transition:
+    transform 360ms cubic-bezier(.2,.85,.25,1),
+    opacity 220ms ease;
   will-change: transform, opacity;
 }
-@keyframes artifactWorkspaceIn {
-  from {
-    opacity: 0;
-    transform: translateX(22px) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0) scale(1);
-  }
+.artifact-workspace.visible {
+  opacity: 1;
+  transform: translateX(0);
 }
 .artifact-workspace-preview {
-  animation: artifactPreviewSettle 340ms cubic-bezier(.2,.85,.25,1) 70ms both;
+  opacity: 0;
+  transform: translateX(14px);
+  transition:
+    transform 320ms cubic-bezier(.2,.85,.25,1) 90ms,
+    opacity 220ms ease 90ms;
 }
-@keyframes artifactPreviewSettle {
-  from {
-    opacity: 0;
-    transform: translateX(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+.artifact-workspace.visible .artifact-workspace-preview {
+  opacity: 1;
+  transform: translateX(0);
 }
 .artifact-workspace-head {
   min-height: 64px;
@@ -2420,7 +2415,7 @@ label.composer-upload {
   }
   .artifact-workspace,
   .artifact-workspace-preview {
-    animation: none;
+    transition: none;
   }
 }
 .upload-progress {

@@ -159,6 +159,8 @@ export function AgentWorkspace() {
   const [attachments, setAttachments] = useState<Asset[]>([]);
   const [artifacts, setArtifacts] = useState<Asset[]>([]);
   const [artifactWorkspaceOpen, setArtifactWorkspaceOpen] = useState(false);
+  const [artifactWorkspaceMounted, setArtifactWorkspaceMounted] = useState(false);
+  const [artifactWorkspaceVisible, setArtifactWorkspaceVisible] = useState(false);
   const [artifactWorkspaceAssetId, setArtifactWorkspaceAssetId] = useState("");
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
@@ -397,6 +399,17 @@ export function AgentWorkspace() {
   useEffect(() => {
     artifactWorkspaceOpenRef.current = artifactWorkspaceOpen;
     if (artifactWorkspaceOpen) markResourceViewed("artifacts");
+  }, [artifactWorkspaceOpen]);
+
+  useEffect(() => {
+    if (artifactWorkspaceOpen) {
+      setArtifactWorkspaceMounted(true);
+      const frame = window.requestAnimationFrame(() => setArtifactWorkspaceVisible(true));
+      return () => window.cancelAnimationFrame(frame);
+    }
+    setArtifactWorkspaceVisible(false);
+    const timeout = window.setTimeout(() => setArtifactWorkspaceMounted(false), 380);
+    return () => window.clearTimeout(timeout);
   }, [artifactWorkspaceOpen]);
 
   useEffect(() => {
@@ -1582,7 +1595,7 @@ export function AgentWorkspace() {
         />
       )}
       workspace={(
-        <div className={`workspace-stage ${artifactWorkspaceOpen ? "with-artifact-workspace" : ""}`}>
+        <div className={`workspace-stage ${artifactWorkspaceMounted ? "with-artifact-workspace" : ""}`}>
           <ConversationPane
             activeSession={activeSession}
             status={status}
@@ -1633,8 +1646,9 @@ export function AgentWorkspace() {
               />
             )}
           />
-          {artifactWorkspaceOpen && (
+          {artifactWorkspaceMounted && (
             <ArtifactWorkspace
+              className={artifactWorkspaceVisible ? "visible" : ""}
               artifacts={artifacts}
               selectedArtifactId={selectedWorkspaceArtifact?.id || ""}
               memoryBusy={assetMemoryBusy}
