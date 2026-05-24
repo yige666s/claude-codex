@@ -1812,7 +1812,7 @@ label.composer-upload {
   align-items: center;
   gap: 8px;
 }
-.input-mode-toggle {
+.tool-mode-trigger {
   height: var(--composer-control-size);
   padding: 3px;
   border: 1px solid rgba(224, 229, 237, 0.96);
@@ -1822,27 +1822,57 @@ label.composer-upload {
   align-items: center;
   gap: 3px;
 }
-.input-mode-toggle button {
-  height: 30px;
-  padding: 0 9px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
+.tool-mode-trigger {
+  width: auto;
+  min-width: 92px;
+  padding: 0 10px;
+  justify-content: center;
+  gap: 7px;
   color: var(--muted);
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  cursor: pointer;
+  font-weight: 760;
+  white-space: nowrap;
 }
-.input-mode-toggle button:hover:not(:disabled),
-.input-mode-toggle button.active {
-  border-color: var(--accent);
+.tool-mode-trigger.chat,
+.tool-mode-trigger.skill {
   color: var(--accent);
   background: var(--active-bg);
 }
-.input-mode-toggle button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
+.tool-mode-trigger.live {
+  color: var(--blue);
+  background: #eff6ff;
+}
+.tool-mode-menu {
+  width: min(320px, calc(100vw - 28px));
+  max-height: min(420px, calc(100vh - 120px));
+  overflow: auto;
+}
+.tool-mode-menu .ui-dropdown-item {
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 9px;
+}
+.tool-mode-menu .ui-dropdown-item > span {
+  min-width: 0;
+}
+.tool-mode-menu .ui-dropdown-item strong,
+.tool-mode-menu .ui-dropdown-item small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-mode-menu .ui-dropdown-item small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.tool-mode-skill-list {
+  display: grid;
+  gap: 2px;
+}
+.tool-mode-check {
+  color: var(--accent);
 }
 .composer .send,
 .composer .stop-generation,

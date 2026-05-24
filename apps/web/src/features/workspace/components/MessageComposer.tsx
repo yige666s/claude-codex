@@ -1,20 +1,23 @@
 import { KeyboardEvent, Ref, RefObject } from "react";
 import { Textarea } from "../../../components/ui/textarea";
-import type { Asset } from "../../../types";
+import type { Asset, Skill } from "../../../types";
 import type { InputMode, LiveStatus } from "../hooks/useLiveVoice";
 import { ComposerUploadButton } from "./composer/ComposerUploadButton";
-import { InputModeSegmentedControl } from "./composer/InputModeSegmentedControl";
 import { LiveVoiceControls } from "./composer/LiveVoiceControls";
 import { PendingAttachments } from "./composer/PendingAttachments";
 import { ResponseTimingBadges } from "./composer/ResponseTimingBadges";
 import { RuntimeErrorBanner } from "./composer/RuntimeErrorBanner";
 import { SendButton } from "./composer/SendButton";
+import { ToolModeSelector } from "./composer/ToolModeSelector";
 
 type MessageComposerProps = {
   runtimeError: string;
   uploadError: string;
   responseTiming: { ttftMs?: number; totalMs?: number } | null;
   pendingAttachments: Asset[];
+  skills: Skill[];
+  recentSkillNames: string[];
+  selectedSkillName: string;
   attachmentInputRef: RefObject<HTMLInputElement | null>;
   composerInputRef: RefObject<HTMLTextAreaElement | null>;
   uploading: boolean;
@@ -33,8 +36,9 @@ type MessageComposerProps = {
   onDraftChange: (value: string) => void;
   onSendMessage: () => void;
   onCancelChat: () => void;
-  onSwitchToText: () => void;
+  onSelectChatMode: () => void;
   onSwitchToLive: () => void;
+  onSelectSkillMode: (skill: Skill) => void;
   onToggleLiveMute: () => void;
   onToggleLiveCapture: () => void;
   onLiveSpeakerVolumeChange: (value: number) => void;
@@ -49,6 +53,9 @@ export function MessageComposer({
   uploadError,
   responseTiming,
   pendingAttachments,
+  skills,
+  recentSkillNames,
+  selectedSkillName,
   attachmentInputRef,
   composerInputRef,
   uploading,
@@ -67,8 +74,9 @@ export function MessageComposer({
   onDraftChange,
   onSendMessage,
   onCancelChat,
-  onSwitchToText,
+  onSelectChatMode,
   onSwitchToLive,
+  onSelectSkillMode,
   onToggleLiveMute,
   onToggleLiveCapture,
   onLiveSpeakerVolumeChange,
@@ -78,6 +86,7 @@ export function MessageComposer({
   const canUseText = inputMode === "text" && liveStatus === "idle";
   const canSend = canUseText && (!!draft.trim() || pendingAttachments.length > 0) && !!sessionId;
   const expandedComposer = draft.length > 80 || draft.includes("\n");
+  const selectedSkill = skills.find((skill) => skill.name === selectedSkillName);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -104,19 +113,23 @@ export function MessageComposer({
           ref={composerInputRef as Ref<HTMLTextAreaElement>}
           value={draft}
           aria-label="Message"
-          placeholder={inputMode === "live" ? "Live mode is active" : "Initiate a query or send a command to the AI..."}
+          placeholder={inputMode === "live" ? "Live mode is active" : selectedSkill ? `Describe what /${selectedSkill.name} should do...` : "Initiate a query or send a command to the AI..."}
           onChange={(event) => onDraftChange(event.target.value)}
           onKeyDown={handleKeyDown}
           disabled={!canUseText}
           rows={1}
         />
         <div className="composer-actions">
-          <InputModeSegmentedControl
+          <ToolModeSelector
             inputMode={inputMode}
+            skills={skills}
+            recentSkillNames={recentSkillNames}
+            selectedSkillName={selectedSkillName}
             busyChat={busyChat}
             sessionId={sessionId}
-            onSwitchToText={onSwitchToText}
-            onSwitchToLive={onSwitchToLive}
+            onSelectChat={onSelectChatMode}
+            onSelectLive={onSwitchToLive}
+            onSelectSkill={onSelectSkillMode}
           />
           <LiveVoiceControls
             inputMode={inputMode}

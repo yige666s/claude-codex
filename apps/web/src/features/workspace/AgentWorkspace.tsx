@@ -147,6 +147,7 @@ export function AgentWorkspace() {
   const [runtimeError, setRuntimeError] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skillDetail, setSkillDetail] = useState<Skill | null>(null);
+  const [selectedSkillName, setSelectedSkillName] = useState("");
   const [recentSkillNames, setRecentSkillNames] = useState<string[]>(readRecentSkills);
   const [adminToken, setAdminToken] = useState(readAdminToken);
   const [adminView, setAdminView] = useState(isAdminPath);
@@ -1034,6 +1035,7 @@ export function AgentWorkspace() {
     const content = draft.trim();
     if ((!content && pendingAttachments.length === 0) || !sessionId || busyChat) return;
     const requestSessionId = sessionId;
+    const selectedSkill = skills.find((skill) => skill.name === selectedSkillName);
     const attachmentIds = pendingAttachments.map((asset) => asset.id);
     const abort = new AbortController();
     let routedToJob = false;
@@ -1046,6 +1048,7 @@ export function AgentWorkspace() {
     setResponseTiming(null);
     setRuntimeError("");
     const displayContent = content || "Please analyze the attached file(s).";
+    const requestContent = selectedSkill ? skillCommandContent(selectedSkill, displayContent) : displayContent;
     const sentMessage: Message = { role: "user", content: messageWithAttachmentNames(displayContent, pendingAttachments), created_at: new Date().toISOString() };
     setMessages((current) => appendRuntimeMessage(current, sentMessage));
     setSessions((current) => current.map((item) => {
@@ -1055,7 +1058,7 @@ export function AgentWorkspace() {
     setBusyChat(true);
     setStatus({ tone: "busy", text: "Generating" });
     try {
-      const response = await api.chatResponse(requestSessionId, displayContent, attachmentIds, abort.signal);
+      const response = await api.chatResponse(requestSessionId, requestContent, attachmentIds, abort.signal);
       await readSSEStream(response, ({ data }) => {
         if (data.type === "job") routedToJob = true;
         if (data.type === "error") sawRuntimeError = true;
@@ -1201,16 +1204,37 @@ export function AgentWorkspace() {
   }
 
   function insertSkill(skill: Skill) {
-    const nextDraft = `/${skill.name} `;
-    setDraft(nextDraft);
+    selectSkillMode(skill);
     setSkillDetail(null);
     setResourceDialogTab(null);
+  }
+
+  function rememberRecentSkill(skill: Skill) {
     setRecentSkillNames((current) => {
       const next = [skill.name, ...current.filter((name) => name !== skill.name)].slice(0, 6);
       writeRecentSkills(next);
       return next;
     });
-    setStatus({ tone: "ok", text: `Applied /${skill.name}` });
+  }
+
+  function selectChatMode() {
+    setSelectedSkillName("");
+    switchToTextMode();
+    setStatus({ tone: "idle", text: "Chat mode" });
+    composerInputRef.current?.focus();
+  }
+
+  function selectSkillMode(skill: Skill) {
+    setSelectedSkillName(skill.name);
+    switchToTextMode();
+    rememberRecentSkill(skill);
+    setStatus({ tone: "ok", text: `Using /${skill.name}` });
+    composerInputRef.current?.focus();
+  }
+
+  function selectLiveMode() {
+    setSelectedSkillName("");
+    switchToLiveMode();
   }
 
   async function deleteAsset(kind: "attachment" | "artifact", id: string) {
@@ -1618,6 +1642,9 @@ export function AgentWorkspace() {
                 uploadError={uploadError}
                 responseTiming={responseTiming?.sessionId === sessionId ? responseTiming : null}
                 pendingAttachments={pendingAttachments}
+                skills={skills}
+                recentSkillNames={recentSkillNames}
+                selectedSkillName={selectedSkillName}
                 attachmentInputRef={attachmentInputRef}
                 composerInputRef={composerInputRef}
                 uploading={uploading}
@@ -1636,8 +1663,9 @@ export function AgentWorkspace() {
                 onDraftChange={setDraft}
                 onSendMessage={sendMessage}
                 onCancelChat={cancelChat}
-                onSwitchToText={switchToTextMode}
-                onSwitchToLive={switchToLiveMode}
+                onSelectChatMode={selectChatMode}
+                onSwitchToLive={selectLiveMode}
+                onSelectSkillMode={selectSkillMode}
                 onToggleLiveMute={toggleSpeakerMute}
                 onToggleLiveCapture={() => void toggleMicMute()}
                 onLiveSpeakerVolumeChange={changeLiveSpeakerVolume}
@@ -1927,6 +1955,12 @@ function lastVisibleConversationalMessage(messages: Message[]): Message | undefi
 
 function isSlashSkillCommand(content: string): boolean {
   return /^\/[A-Za-z0-9_.:-]+(?:\s|$)/.test(content.trim());
+}
+
+function skillCommandContent(skill: Skill, content: string): string {
+  const trimmed = content.trim();
+  if (isSlashSkillCommand(trimmed)) return trimmed;
+  return [`/${skill.name}`, trimmed].filter(Boolean).join(" ");
 }
 
 function appendJobEvent(events: JobEvent[], event: JobEvent): JobEvent[] {

@@ -87,7 +87,8 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByRole("button", { name: "Skills" }).click();
   await page.getByRole("button", { name: /vertex-image-artifact/i }).click();
   await page.getByRole("button", { name: /Apply \/vertex-image-artifact/i }).click();
-  await page.getByRole("textbox", { name: "Message" }).fill("/vertex-image-artifact draw a blue square");
+  await expect(page.getByRole("button", { name: "Choose mode or tool" })).toContainText("vertex-image-artifact");
+  await page.getByRole("textbox", { name: "Message" }).fill("draw a blue square");
   await page.getByRole("button", { name: "Send" }).click();
 
   await page.getByRole("button", { name: "Artifacts" }).click();
