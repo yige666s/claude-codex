@@ -84,9 +84,15 @@ type geminiFileData struct {
 }
 
 type geminiGenerationConfig struct {
-	Temperature     float64 `json:"temperature,omitempty"`
-	TopP            float64 `json:"topP,omitempty"`
-	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
+	Temperature     float64               `json:"temperature,omitempty"`
+	TopP            float64               `json:"topP,omitempty"`
+	MaxOutputTokens int                   `json:"maxOutputTokens,omitempty"`
+	ThinkingConfig  *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+type geminiThinkingConfig struct {
+	ThinkingBudget *int   `json:"thinkingBudget,omitempty"`
+	ThinkingLevel  string `json:"thinkingLevel,omitempty"`
 }
 
 type geminiSafetySetting struct {
@@ -114,6 +120,29 @@ type geminiFunctionResponse struct {
 	Response map[string]interface{} `json:"response"`
 }
 
+func geminiThinkingConfigForRequest(request MessageRequest) *geminiThinkingConfig {
+	if request.ThinkingConfig == nil || !request.ThinkingConfig.Enabled {
+		return nil
+	}
+	model := strings.ToLower(strings.TrimSpace(request.Model))
+	switch {
+	case strings.Contains(model, "gemini-3"):
+		level := strings.ToUpper(strings.TrimSpace(request.ThinkingConfig.Level))
+		if level == "" {
+			level = "HIGH"
+		}
+		return &geminiThinkingConfig{ThinkingLevel: level}
+	case strings.Contains(model, "gemini-2.5"):
+		budget := request.ThinkingConfig.BudgetTokens
+		if budget == 0 {
+			budget = -1
+		}
+		return &geminiThinkingConfig{ThinkingBudget: &budget}
+	default:
+		return nil
+	}
+}
+
 func (p *GeminiProvider) StreamMessage(ctx context.Context, request MessageRequest, onChunk func(string)) (*MessageResponse, error) {
 	geminiReq := geminiRequest{
 		Contents: make([]geminiContent, 0, len(request.Messages)+1),
@@ -121,6 +150,7 @@ func (p *GeminiProvider) StreamMessage(ctx context.Context, request MessageReque
 			Temperature:     request.Temperature,
 			TopP:            request.TopP,
 			MaxOutputTokens: request.MaxTokens,
+			ThinkingConfig:  geminiThinkingConfigForRequest(request),
 		},
 	}
 	if request.System != "" {
@@ -191,6 +221,7 @@ func (p *GeminiProvider) CreateMessage(ctx context.Context, request MessageReque
 			Temperature:     request.Temperature,
 			TopP:            request.TopP,
 			MaxOutputTokens: request.MaxTokens,
+			ThinkingConfig:  geminiThinkingConfigForRequest(request),
 		},
 	}
 

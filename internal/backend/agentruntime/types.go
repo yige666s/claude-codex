@@ -325,6 +325,7 @@ type ChatRequest struct {
 	Content        string
 	AttachmentIDs  []string
 	AttachmentURLs []ChatAttachmentURL
+	ThinkingMode   bool
 }
 
 type ChatAttachmentURL struct {

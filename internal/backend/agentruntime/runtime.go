@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"claude-codex/internal/harness/engine"
+	providerbackend "claude-codex/internal/harness/provider"
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 	skilltool "claude-codex/internal/harness/tools/skill"
@@ -2595,6 +2596,13 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	ensureConsumerSecurityContext(session)
 	if strings.HasPrefix(strings.TrimSpace(content), "/") {
 		return r.runSkillCommand(ctx, req, userID, session, content, onToken)
+	}
+	if req.ThinkingMode {
+		ctx = providerbackend.WithThinkingConfig(ctx, &providerbackend.ThinkingConfig{
+			Enabled:      true,
+			BudgetTokens: -1,
+			Level:        "HIGH",
+		})
 	}
 	prompt, err := r.chatPrompt(ctx, req, content)
 	if err != nil {

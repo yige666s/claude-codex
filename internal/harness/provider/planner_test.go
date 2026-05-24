@@ -136,6 +136,31 @@ func TestPlannerStreamsProviderChunksImmediately(t *testing.T) {
 	}
 }
 
+func TestPlannerPassesThinkingConfigFromContext(t *testing.T) {
+	provider := &fakeProvider{
+		response: &MessageResponse{
+			Model:      "fake",
+			Role:       "assistant",
+			Content:    []ContentBlock{{Type: "text", Text: "ok"}},
+			StopReason: "end_turn",
+		},
+	}
+	planner := NewPlanner(provider, "fake")
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("think harder")
+	ctx := WithThinkingConfig(context.Background(), &ThinkingConfig{Enabled: true, BudgetTokens: -1, Level: "HIGH"})
+
+	if _, err := planner.Next(ctx, session, nil); err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if provider.request == nil || provider.request.ThinkingConfig == nil {
+		t.Fatalf("thinking config was not forwarded: %#v", provider.request)
+	}
+	if provider.request.ThinkingConfig.BudgetTokens != -1 || provider.request.ThinkingConfig.Level != "HIGH" {
+		t.Fatalf("thinking config = %#v", provider.request.ThinkingConfig)
+	}
+}
+
 func TestPlannerPreservesUserContentBlocks(t *testing.T) {
 	provider := &fakeProvider{
 		response: &MessageResponse{

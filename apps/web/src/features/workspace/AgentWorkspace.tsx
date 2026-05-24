@@ -1047,6 +1047,7 @@ export function AgentWorkspace() {
     setResponseTiming(null);
     setRuntimeError("");
     const displayContent = content || "Please analyze the attached file(s).";
+    const thinkingMode = selectedComposerTool === "thinking";
     const requestContent = composerToolContent(selectedComposerTool, displayContent);
     const sentMessage: Message = { role: "user", content: messageWithAttachmentNames(displayContent, pendingAttachments), created_at: new Date().toISOString() };
     setMessages((current) => appendRuntimeMessage(current, sentMessage));
@@ -1057,7 +1058,7 @@ export function AgentWorkspace() {
     setBusyChat(true);
     setStatus({ tone: "busy", text: "Generating" });
     try {
-      const response = await api.chatResponse(requestSessionId, requestContent, attachmentIds, abort.signal);
+      const response = await api.chatResponse(requestSessionId, requestContent, attachmentIds, abort.signal, { thinkingMode });
       await readSSEStream(response, ({ data }) => {
         if (data.type === "job") routedToJob = true;
         if (data.type === "error") sawRuntimeError = true;
@@ -1965,7 +1966,6 @@ function composerToolContent(toolId: ComposerToolID | "", content: string): stri
   if (!toolId || isSlashSkillCommand(trimmed)) return trimmed;
   if (toolId === "image") return ["/vertex-image-artifact", trimmed].filter(Boolean).join(" ");
   if (toolId === "web-search") return `请使用网页搜索查找最新资料，并基于可靠来源回答：${trimmed}`;
-  if (toolId === "thinking") return `请先深入思考并检查推理，再回答：${trimmed}`;
   return trimmed;
 }
 

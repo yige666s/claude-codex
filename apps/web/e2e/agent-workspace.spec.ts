@@ -84,6 +84,12 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await expect(page.getByRole("dialog", { name: "notes.md" })).toBeHidden();
 
   await page.getByRole("dialog", { name: "Attachments" }).getByLabel("Close resources").click();
+  await page.getByRole("button", { name: "Use model thinking" }).click();
+  await expect(page.getByRole("button", { name: "Use model thinking" })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("textbox", { name: "Message" }).fill("reason about memory hierarchy");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Echo: reason about memory hierarchy")).toBeVisible();
+
   await expect(page.getByRole("button", { name: "Use image generation" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Use web search" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Use model thinking" })).toBeVisible();
@@ -132,6 +138,8 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   expect(actionsBox!.y).toBeGreaterThanOrEqual(textareaBox!.y + textareaBox!.height - 2);
 
   expect(api.sessions.some((session) => session.messages.some((message) => message.content?.includes("hello from playwright")))).toBe(true);
+  expect(api.chatPayloads.some((payload) => payload.content === "reason about memory hierarchy" && payload.thinking_mode === true)).toBe(true);
+  expect(api.chatPayloads.some((payload) => payload.content.startsWith("/vertex-image-artifact") && payload.thinking_mode !== true)).toBe(true);
 });
 
 test("keeps sent chat text visible when the stream fails", async ({ page }) => {
@@ -192,7 +200,8 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean } = {}) {
     sessions: [sessionA] as Session[],
     attachments: [] as Asset[],
     artifacts: [] as Asset[],
-    jobs: [] as Job[]
+    jobs: [] as Job[],
+    chatPayloads: [] as Array<{ content: string; attachment_ids?: string[]; thinking_mode?: boolean }>
   };
 
   await page.route("**/readyz?**", (route) => json(route, { status: "ok", checks: [] }));
@@ -242,7 +251,8 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean } = {}) {
     if (options.failChat) return route.abort("failed");
     const sessionID = decodeURIComponent(route.request().url().split("/v1/sessions/")[1].split("/messages")[0]);
     const session = state.sessions.find((item) => item.id === sessionID) || state.sessions[0];
-    const payload = await route.request().postDataJSON() as { content: string; attachment_ids?: string[] };
+    const payload = await route.request().postDataJSON() as { content: string; attachment_ids?: string[]; thinking_mode?: boolean };
+    state.chatPayloads.push(payload);
     const userMessage = { role: "user", content: payload.content, created_at: now, message_index: session.messages.length };
     session.messages.push(userMessage);
 

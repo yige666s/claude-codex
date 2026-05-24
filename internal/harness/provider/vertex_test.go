@@ -63,6 +63,88 @@ func TestVertexProviderGenerateContent(t *testing.T) {
 	}
 }
 
+func TestVertexProviderAddsGemini25ThinkingConfig(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{"content":{"role":"model","parts":[{"text":"thoughtful"}]},"finishReason":"STOP"}]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "gemini-2.5-flash",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	_, err = provider.CreateMessage(context.Background(), MessageRequest{
+		Model:          "gemini-2.5-flash",
+		Messages:       []Message{{Role: "user", Content: "think"}},
+		ThinkingConfig: &ThinkingConfig{Enabled: true},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	generationConfig := body["generationConfig"].(map[string]interface{})
+	thinkingConfig := generationConfig["thinkingConfig"].(map[string]interface{})
+	if thinkingConfig["thinkingBudget"] != float64(-1) {
+		t.Fatalf("thinkingConfig = %#v", thinkingConfig)
+	}
+}
+
+func TestVertexProviderAddsGemini3ThinkingConfig(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "global")
+
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{"content":{"role":"model","parts":[{"text":"deep"}]},"finishReason":"STOP"}]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "gemini-3.1-flash-lite",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	_, err = provider.CreateMessage(context.Background(), MessageRequest{
+		Model:          "gemini-3.1-flash-lite",
+		Messages:       []Message{{Role: "user", Content: "think"}},
+		ThinkingConfig: &ThinkingConfig{Enabled: true, Level: "high"},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	generationConfig := body["generationConfig"].(map[string]interface{})
+	thinkingConfig := generationConfig["thinkingConfig"].(map[string]interface{})
+	if thinkingConfig["thinkingLevel"] != "HIGH" {
+		t.Fatalf("thinkingConfig = %#v", thinkingConfig)
+	}
+}
+
 func TestVertexProviderStreamsGenerateContent(t *testing.T) {
 	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
 	t.Setenv("VERTEX_LOCATION", "us-central1")

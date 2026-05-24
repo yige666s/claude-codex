@@ -353,6 +353,7 @@ func vertexGeminiRequest(request MessageRequest) geminiRequest {
 			Temperature:     request.Temperature,
 			TopP:            request.TopP,
 			MaxOutputTokens: request.MaxTokens,
+			ThinkingConfig:  geminiThinkingConfigForRequest(request),
 		},
 	}
 	if request.System != "" {

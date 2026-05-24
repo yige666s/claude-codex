@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 )
 
+type thinkingConfigContextKey struct{}
+
 // Provider defines the interface for LLM providers
 type Provider interface {
 	// CreateMessage sends a message request and returns the response
@@ -26,14 +28,34 @@ type StreamingProvider interface {
 
 // MessageRequest represents a unified message request across providers
 type MessageRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Temperature float64   `json:"temperature,omitempty"`
-	TopP        float64   `json:"top_p,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
-	Tools       []Tool    `json:"tools,omitempty"`
-	System      string    `json:"system,omitempty"`
+	Model          string          `json:"model"`
+	Messages       []Message       `json:"messages"`
+	MaxTokens      int             `json:"max_tokens,omitempty"`
+	Temperature    float64         `json:"temperature,omitempty"`
+	TopP           float64         `json:"top_p,omitempty"`
+	Stream         bool            `json:"stream,omitempty"`
+	Tools          []Tool          `json:"tools,omitempty"`
+	System         string          `json:"system,omitempty"`
+	ThinkingConfig *ThinkingConfig `json:"thinking_config,omitempty"`
+}
+
+// ThinkingConfig requests provider-native thinking/reasoning controls when a model supports them.
+type ThinkingConfig struct {
+	Enabled      bool   `json:"enabled"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	Level        string `json:"level,omitempty"`
+}
+
+func WithThinkingConfig(ctx context.Context, config *ThinkingConfig) context.Context {
+	if config == nil || !config.Enabled {
+		return ctx
+	}
+	return context.WithValue(ctx, thinkingConfigContextKey{}, config)
+}
+
+func ThinkingConfigFromContext(ctx context.Context) *ThinkingConfig {
+	config, _ := ctx.Value(thinkingConfigContextKey{}).(*ThinkingConfig)
+	return config
 }
 
 // Message represents a single message in the conversation

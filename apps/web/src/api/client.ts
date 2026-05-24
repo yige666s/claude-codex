@@ -762,17 +762,17 @@ export class ApiClient {
     return url.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
   }
 
-  async chatResponse(sessionId: string, content: string, attachmentIds: string[] = [], signal?: AbortSignal, retry = true): Promise<Response> {
+  async chatResponse(sessionId: string, content: string, attachmentIds: string[] = [], signal?: AbortSignal, options: { thinkingMode?: boolean } = {}, retry = true): Promise<Response> {
     await this.ensureFreshAccess();
     const response = await fetch(this.apiURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {
       method: "POST",
       credentials: "include",
       headers: this.headers({ "Content-Type": "application/json" }),
       signal,
-      body: JSON.stringify({ content, attachment_ids: attachmentIds })
+      body: JSON.stringify({ content, attachment_ids: attachmentIds, thinking_mode: options.thinkingMode || undefined })
     });
     if (response.status === 401 && retry && await this.refresh({ clearOnFailure: true })) {
-      return this.chatResponse(sessionId, content, attachmentIds, signal, false);
+      return this.chatResponse(sessionId, content, attachmentIds, signal, options, false);
     }
     if (!response.ok) throw await toApiError(response);
     return response;
