@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"net/http"
 	"strings"
 )
@@ -77,20 +78,36 @@ func ValidateAuthToken(r *http.Request, authToken string) bool {
 		return true
 	}
 
-	// Check query parameter
-	token := r.URL.Query().Get("token")
-	if token == authToken {
-		return true
-	}
-
 	// Check Authorization header
 	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
-		token = strings.TrimPrefix(authHeader, "Bearer ")
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		return token == authToken
+	}
+
+	if token := webSocketProtocolBearerToken(r); token != "" {
 		return token == authToken
 	}
 
 	return false
+}
+
+func webSocketProtocolBearerToken(r *http.Request) string {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return ""
+	}
+	protocols := strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ",")
+	for i, protocol := range protocols {
+		if strings.TrimSpace(protocol) != "agentapi.bearer" || i+1 >= len(protocols) {
+			continue
+		}
+		token, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(protocols[i+1]))
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(token))
+	}
+	return ""
 }
 
 // GetClientIP extracts the client IP from the request

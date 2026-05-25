@@ -2042,7 +2042,7 @@ func TestJWTAuthenticatorRejectsQueryTokenForAttachmentDownload(t *testing.T) {
 	}
 }
 
-func TestJWTAuthenticatorAllowsQueryTokenForBrowserStreams(t *testing.T) {
+func TestJWTAuthenticatorRejectsQueryTokenForBrowserStreams(t *testing.T) {
 	token := signTestJWT(t, "secret", map[string]any{
 		"sub": "alice",
 		"exp": time.Now().Add(time.Hour).Unix(),
@@ -2054,13 +2054,27 @@ func TestJWTAuthenticatorAllowsQueryTokenForBrowserStreams(t *testing.T) {
 		"/v1/sessions/session-1/live/ws?token=" + url.QueryEscape(token),
 	} {
 		req := httptest.NewRequest(http.MethodGet, target, nil)
-		user, err := authenticator.Authenticate(req)
-		if err != nil {
-			t.Fatalf("authenticate %s: %v", target, err)
+		if _, err := authenticator.Authenticate(req); err == nil {
+			t.Fatalf("expected query token to be rejected for %s", target)
 		}
-		if user.ID != "alice" {
-			t.Fatalf("user ID for %s = %q, want alice", target, user.ID)
-		}
+	}
+}
+
+func TestJWTAuthenticatorAcceptsWebSocketProtocolBearer(t *testing.T) {
+	token := signTestJWT(t, "secret", map[string]any{
+		"sub": "alice",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/session-1/live/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Protocol", "agentapi.bearer, "+base64.RawURLEncoding.EncodeToString([]byte(token)))
+
+	user, err := (JWTAuthenticator{Secret: "secret"}).Authenticate(req)
+	if err != nil {
+		t.Fatalf("authenticate websocket protocol bearer: %v", err)
+	}
+	if user.ID != "alice" {
+		t.Fatalf("user ID = %q, want alice", user.ID)
 	}
 }
 

@@ -68,6 +68,29 @@ describe("ApiClient auth refresh", () => {
     await expect(api.sessions()).resolves.toEqual([]);
     expect(api.session()?.refresh_token).toBe("fresh-refresh");
   });
+
+  it("does not put access tokens in browser stream URLs", () => {
+    localStorage.setItem("agentapi.web.auth", JSON.stringify(authSession("access-token", "refresh", Date.now() + 900_000)));
+
+    const api = new ApiClient(vi.fn());
+
+    expect(api.jobStreamURL("job-1", "event-1")).toBe("/v1/jobs/job-1/events?stream=1&after_id=event-1");
+    expect(api.liveSessionURL("session-1")).toBe("/v1/sessions/session-1/live/ws");
+    expect(api.webSocketProtocols()[0]).toBe("agentapi.bearer");
+  });
+
+  it("authenticates job streams with headers instead of query tokens", async () => {
+    localStorage.setItem("agentapi.web.auth", JSON.stringify(authSession("access-token", "refresh", Date.now() + 900_000)));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(_input)).toBe("/v1/jobs/job-1/events?stream=1");
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer access-token");
+      return new Response("", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const api = new ApiClient(vi.fn());
+    await expect(api.jobStreamResponse("job-1")).resolves.toBeInstanceOf(Response);
+  });
 });
 
 function authSession(accessToken: string, refreshToken: string, expiresAtMs: number): AuthSession {

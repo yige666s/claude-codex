@@ -650,6 +650,12 @@ const appHTML = `<!doctype html>
       return document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith(name + "="))?.slice(name.length + 1) || "";
     }
 
+    function websocketAuthProtocols() {
+      if (!state.accessToken) return [];
+      const encoded = btoa(state.accessToken).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      return ["agentapi.bearer", encoded];
+    }
+
     function setStatus(kind, text) {
       $("statusDot").className = "dot " + (kind || "");
       $("statusText").textContent = text;
@@ -881,7 +887,7 @@ const appHTML = `<!doctype html>
 
     async function openWithFreshToken(path) {
       await ensureFreshAccess();
-      window.open(path + "?token=" + encodeURIComponent(state.accessToken), "_blank");
+      window.open(path, "_blank");
     }
 
     async function loadMe() {
@@ -1258,8 +1264,8 @@ const appHTML = `<!doctype html>
             return;
           }
           const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-          const url = protocol + "//" + location.host + "/v1/sessions/" + encodeURIComponent(state.sessionId) + "/ws?user_id=" + encodeURIComponent(state.userId) + "&token=" + encodeURIComponent(state.accessToken);
-          const ws = new WebSocket(url);
+          const url = protocol + "//" + location.host + "/v1/sessions/" + encodeURIComponent(state.sessionId) + "/ws?user_id=" + encodeURIComponent(state.userId);
+          const ws = new WebSocket(url, websocketAuthProtocols());
           state.ws = ws;
           ws.onopen = () => ws.send(JSON.stringify({ type: "chat", content }));
           ws.onerror = () => reject(new Error("websocket error"));
@@ -1327,7 +1333,6 @@ const appHTML = `<!doctype html>
         return;
       }
       const params = new URLSearchParams({ stream: "1" });
-      if (state.accessToken) params.set("token", state.accessToken);
       if (state.jobLastEventId) params.set("after_id", state.jobLastEventId);
       const source = new EventSource("/v1/jobs/" + encodeURIComponent(jobId) + "/events?" + params.toString(), { withCredentials: true });
       state.jobSource = source;

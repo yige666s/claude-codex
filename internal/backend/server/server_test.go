@@ -1,6 +1,9 @@
 package server
 
 import (
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -51,6 +54,22 @@ func TestScrollbackBuffer(t *testing.T) {
 			t.Errorf("Expected size 0 after clear, got %d", buf.Size())
 		}
 	})
+}
+
+func TestValidateAuthTokenRejectsQueryToken(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/ws?token=secret", nil)
+	if ValidateAuthToken(req, "secret") {
+		t.Fatal("expected query token to be rejected")
+	}
+}
+
+func TestValidateAuthTokenAcceptsWebSocketProtocolBearer(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Protocol", "agentapi.bearer, "+base64.RawURLEncoding.EncodeToString([]byte("secret")))
+	if !ValidateAuthToken(req, "secret") {
+		t.Fatal("expected websocket protocol bearer token to be accepted")
+	}
 }
 
 func TestSessionStore(t *testing.T) {

@@ -157,7 +157,7 @@ export function useLiveVoice({
     if (!isCurrentLiveGeneration(generation)) return;
     updateLiveStatus("connecting");
     onStatus({ tone: "busy", text: "Connecting live voice" });
-    const socket = new WebSocket(api.liveSessionURL(sessionId));
+    const socket = new WebSocket(api.liveSessionURL(sessionId), api.webSocketProtocols());
     if (!isCurrentLiveGeneration(generation)) {
       socket.close();
       return;

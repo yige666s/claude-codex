@@ -222,21 +222,30 @@ func bearerToken(r *http.Request) string {
 	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
 		return strings.TrimSpace(auth[len("bearer "):])
 	}
+	if token := webSocketProtocolBearerToken(r); token != "" {
+		return token
+	}
 	return ""
 }
 
 func queryToken(r *http.Request) string {
-	if !allowsQueryToken(r) {
-		return ""
-	}
-	return strings.TrimSpace(r.URL.Query().Get("token"))
+	return ""
 }
 
-func allowsQueryToken(r *http.Request) bool {
-	path := strings.Trim(r.URL.Path, "/")
-	parts := strings.Split(path, "/")
-	if r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "v1" && parts[1] == "jobs" && parts[3] == "events" {
-		return r.URL.Query().Get("stream") == "1"
+func webSocketProtocolBearerToken(r *http.Request) string {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return ""
 	}
-	return r.Method == http.MethodGet && len(parts) == 5 && parts[0] == "v1" && parts[1] == "sessions" && parts[3] == "live" && parts[4] == "ws"
+	protocols := strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ",")
+	for i, protocol := range protocols {
+		if strings.TrimSpace(protocol) != "agentapi.bearer" || i+1 >= len(protocols) {
+			continue
+		}
+		token, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(protocols[i+1]))
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(token))
+	}
+	return ""
 }

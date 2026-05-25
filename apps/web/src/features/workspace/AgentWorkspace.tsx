@@ -210,7 +210,7 @@ export function AgentWorkspace() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
-  const jobSourceRef = useRef<EventSource | null>(null);
+  const jobStreamAbortRef = useRef<AbortController | null>(null);
   const jobReconnectTimerRef = useRef<number | null>(null);
   const jobReconnectAttemptRef = useRef(0);
   const jobStreamClosedRef = useRef(false);
@@ -1374,47 +1374,40 @@ export function AgentWorkspace() {
       scheduleJobReconnect(jobId);
       return;
     }
-    if (typeof EventSource === "undefined") {
-      setJobStreamStatus("failed");
-      setJobStreamNotice("Live job updates are unavailable in this browser.");
-      return;
-    }
-    const source = new EventSource(api.jobStreamURL(jobId, lastJobEventRef.current), { withCredentials: true });
-    jobSourceRef.current = source;
-    source.onopen = () => {
-      if (activeJobStreamIdRef.current !== jobId) return;
+    const abort = new AbortController();
+    jobStreamAbortRef.current = abort;
+    try {
+      const response = await api.jobStreamResponse(jobId, lastJobEventRef.current, abort.signal);
+      if (activeJobStreamIdRef.current !== jobId || jobStreamClosedRef.current) return;
       jobReconnectAttemptRef.current = 0;
       setJobStreamStatus("live");
       setJobStreamNotice("");
-    };
-    const handle = (message: MessageEvent) => {
-      try {
-        const event = JSON.parse(message.data) as RuntimeEvent;
-        const id = message.lastEventId || "";
+      await readSSEStream(response, ({ id, data: event }) => {
+        if (activeJobStreamIdRef.current !== jobId || jobStreamClosedRef.current) return;
         if (id) lastJobEventRef.current = id;
         setJobEvents((current) => appendJobEvent(current, { id: id || `${Date.now()}`, job_id: jobId, type: event.type, event, created_at: new Date().toISOString() }));
         if (terminalRuntimeEvents.has(event.type)) {
           finishJobStream(jobId, event);
         }
-      } catch {
-        // Ignore malformed stream frames.
-      }
-    };
-    ["start", "message", "delta", "done", "error", "cancelled"].forEach((type) => source.addEventListener(type, handle));
-    source.onerror = () => {
-      source.close();
-      jobSourceRef.current = null;
+      });
+      if (jobStreamAbortRef.current === abort) jobStreamAbortRef.current = null;
       if (jobStreamClosedRef.current || activeJobStreamIdRef.current !== jobId) return;
       setJobStreamStatus("reconnecting");
       setJobStreamNotice("Job stream disconnected. Reconnecting...");
       scheduleJobReconnect(jobId);
-    };
+    } catch (error) {
+      if (jobStreamAbortRef.current === abort) jobStreamAbortRef.current = null;
+      if (abort.signal.aborted || jobStreamClosedRef.current || activeJobStreamIdRef.current !== jobId) return;
+      setJobStreamStatus("reconnecting");
+      setJobStreamNotice(errorMessage(error));
+      scheduleJobReconnect(jobId);
+    }
   }
 
   function finishJobStream(jobId: string, event: RuntimeEvent) {
     jobStreamClosedRef.current = true;
-    jobSourceRef.current?.close();
-    jobSourceRef.current = null;
+    jobStreamAbortRef.current?.abort();
+    jobStreamAbortRef.current = null;
     clearJobReconnectTimer();
     setJobStreamStatus("idle");
     setJobStreamNotice("");
@@ -1450,8 +1443,8 @@ export function AgentWorkspace() {
   function closeJobStream() {
     jobStreamClosedRef.current = true;
     clearJobReconnectTimer();
-    jobSourceRef.current?.close();
-    jobSourceRef.current = null;
+    jobStreamAbortRef.current?.abort();
+    jobStreamAbortRef.current = null;
   }
 
   function reconnectSelectedJob() {

@@ -750,17 +750,34 @@ export class ApiClient {
 
   jobStreamURL(jobId: string, afterId?: string): string {
     const params = new URLSearchParams({ stream: "1" });
-    if (this.auth?.access_token) params.set("token", this.auth.access_token);
     if (afterId) params.set("after_id", afterId);
     return this.apiURL(`/v1/jobs/${encodeURIComponent(jobId)}/events?${params.toString()}`);
   }
 
+  async jobStreamResponse(jobId: string, afterId?: string, signal?: AbortSignal, retry = true): Promise<Response> {
+    await this.ensureFreshAccess();
+    const response = await fetch(this.jobStreamURL(jobId, afterId), {
+      credentials: "include",
+      headers: this.headers(),
+      signal
+    });
+    if (response.status === 401 && retry && this.auth?.refresh_token) {
+      if (await this.refresh({ clearOnFailure: true })) return this.jobStreamResponse(jobId, afterId, signal, false);
+    }
+    if (!response.ok) throw await toApiError(response);
+    return response;
+  }
+
   liveSessionURL(sessionId: string): string {
-    const params = new URLSearchParams();
-    if (this.auth?.access_token) params.set("token", this.auth.access_token);
     const path = `/v1/sessions/${encodeURIComponent(sessionId)}/live/ws`;
-    const url = this.apiURL(params.size ? `${path}?${params.toString()}` : path);
+    const url = this.apiURL(path);
     return url.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+  }
+
+  webSocketProtocols(): string[] {
+    if (!this.auth?.access_token || typeof btoa === "undefined") return [];
+    const encoded = btoa(this.auth.access_token).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return ["agentapi.bearer", encoded];
   }
 
   async chatResponse(sessionId: string, content: string, attachmentIds: string[] = [], signal?: AbortSignal, options: { thinkingMode?: boolean } = {}, retry = true): Promise<Response> {
