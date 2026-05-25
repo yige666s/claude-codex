@@ -5,7 +5,7 @@ import type { RuntimeEvent } from "../../../types";
 import type { Status } from "../workspaceTypes";
 
 export type InputMode = "text" | "live";
-export type LiveStatus = "idle" | "connecting" | "listening" | "paused" | "error";
+export type LiveStatus = "idle" | "connecting" | "listening" | "speaking" | "thinking" | "paused" | "reconnecting" | "error";
 
 type UseLiveVoiceOptions = {
   api: ApiClient;
@@ -18,6 +18,20 @@ type UseLiveVoiceOptions = {
 };
 
 const liveVoiceProcessorBufferSize = 1024;
+const liveTargetSampleRate = 16000;
+const liveModeSwitchCooldownMs = 450;
+const liveSocketBackpressureBytes = 512 * 1024;
+const livePreSpeechFrameLimit = 4;
+const liveEndOfSpeechMs = 650;
+const liveCalibrationFrameCount = 36;
+const liveReconnectDelayMs = 700;
+const liveMaxReconnectAttempts = 2;
+const liveAudioConstraints: MediaTrackConstraints = {
+  channelCount: 1,
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true
+};
 
 export function useLiveVoice({
   api,
@@ -55,7 +69,18 @@ export function useLiveVoice({
   const lastLiveSpeakerVolumeRef = useRef(1);
   const lastLiveMicVolumeRef = useRef(1);
   const liveAudioChunkCountRef = useRef(0);
+  const liveAudioBytesSentRef = useRef(0);
   const livePlaybackQueueRef = useRef(Promise.resolve());
+  const liveManualStopRef = useRef(false);
+  const liveExpectedCloseRef = useRef(false);
+  const liveReconnectAttemptsRef = useRef(0);
+  const liveReconnectTimerRef = useRef<number | null>(null);
+  const liveSwitchLockedUntilRef = useRef(0);
+  const liveSessionStartedAtRef = useRef(0);
+  const liveSetupAtRef = useRef(0);
+  const liveFirstInputTranscriptAtRef = useRef(0);
+  const liveFirstOutputTranscriptAtRef = useRef(0);
+  const liveFirstAudioAtRef = useRef(0);
 
   useEffect(() => {
     inputModeRef.current = inputMode;
@@ -64,6 +89,32 @@ export function useLiveVoice({
   useEffect(() => {
     liveStatusRef.current = liveStatus;
   }, [liveStatus]);
+
+  useEffect(() => {
+    if (!navigator.mediaDevices?.addEventListener) return;
+    const handleDeviceChange = () => {
+      if (inputModeRef.current !== "live") return;
+      onStatus({ tone: "busy", text: "Audio device changed; checking microphone" });
+      const socket = liveSocketRef.current;
+      const generation = liveSessionGenerationRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN || liveStatusRef.current === "connecting" || liveStatusRef.current === "reconnecting") return;
+      stopLiveCapture();
+      window.setTimeout(() => {
+        if (isCurrentLiveSession(socket, generation) && liveMicVolumeRef.current > 0) {
+          void startLiveCapture(socket, generation);
+        }
+      }, 160);
+    };
+    navigator.mediaDevices.addEventListener("devicechange", handleDeviceChange);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", handleDeviceChange);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearLiveReconnectTimer();
+      stopLiveMode(false);
+    };
+  }, []);
 
   function updateLiveStatus(next: LiveStatus) {
     liveStatusRef.current = next;
@@ -99,14 +150,30 @@ export function useLiveVoice({
   }, [micVolume]);
 
   async function startLiveMode() {
+    if (performance.now() < liveSwitchLockedUntilRef.current) return;
     if (!sessionId || liveStatusRef.current !== "idle") return;
     if (typeof WebSocket === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       onError("Live voice is unavailable in this browser.");
       updateLiveStatus("error");
       return;
     }
+    const permission = await microphonePermissionState();
+    if (permission === "denied") {
+      onError("Microphone permission is blocked. Allow microphone access in the browser and try Live again.");
+      updateLiveStatus("error");
+      onStatus({ tone: "error", text: "Microphone permission blocked" });
+      return;
+    }
     stopLiveMode(false);
     const generation = ++liveSessionGenerationRef.current;
+    liveManualStopRef.current = false;
+    liveExpectedCloseRef.current = false;
+    liveReconnectAttemptsRef.current = 0;
+    liveSessionStartedAtRef.current = performance.now();
+    liveSetupAtRef.current = 0;
+    liveFirstInputTranscriptAtRef.current = 0;
+    liveFirstOutputTranscriptAtRef.current = 0;
+    liveFirstAudioAtRef.current = 0;
     setInputMode("live");
     inputModeRef.current = "live";
     onError("");
@@ -114,6 +181,7 @@ export function useLiveVoice({
     setLiveUserDraft("");
     setLiveMuted(false);
     liveAudioChunkCountRef.current = 0;
+    liveAudioBytesSentRef.current = 0;
     stopLivePlayback();
     try {
       await ensureLivePlaybackContext();
@@ -142,21 +210,26 @@ export function useLiveVoice({
     };
     socket.onerror = () => {
       if (!isCurrentLiveSession(socket, generation)) return;
-      updateLiveStatus("error");
-      setInputMode("text");
-      inputModeRef.current = "text";
-      onStatus({ tone: "error", text: "Live voice failed" });
+      onStatus({ tone: "error", text: "Live voice connection interrupted" });
     };
     socket.onclose = () => {
       if (!isCurrentLiveSession(socket, generation)) return;
       cleanupLiveAudio();
       liveSocketRef.current = null;
+      if (!liveManualStopRef.current && !liveExpectedCloseRef.current && inputModeRef.current === "live") {
+        void scheduleLiveReconnect(generation);
+        return;
+      }
       updateLiveStatus("idle");
       onStatus((current) => current.tone === "error" ? current : { tone: "idle", text: "Live voice stopped" });
     };
   }
 
   function stopLiveMode(sendEnd = true) {
+    liveSwitchLockedUntilRef.current = performance.now() + liveModeSwitchCooldownMs;
+    liveManualStopRef.current = true;
+    liveExpectedCloseRef.current = true;
+    clearLiveReconnectTimer();
     liveSessionGenerationRef.current += 1;
     liveCaptureGenerationRef.current += 1;
     setInputMode("text");
@@ -175,6 +248,7 @@ export function useLiveVoice({
     updateLiveStatus("idle");
     setLiveUserDraft("");
     onAssistantDraftChange("");
+    verifyLiveCaptureReleased();
   }
 
   function switchToTextMode() {
@@ -186,6 +260,7 @@ export function useLiveVoice({
   }
 
   function switchToLiveMode() {
+    if (performance.now() < liveSwitchLockedUntilRef.current) return;
     setInputMode("live");
     inputModeRef.current = "live";
     if (liveStatusRef.current === "error") {
@@ -262,6 +337,7 @@ export function useLiveVoice({
       return;
     }
     if (event.type === "live_setup_complete") {
+      liveSetupAtRef.current = performance.now();
       try {
         await startLiveCapture(socket, generation);
       } catch (error) {
@@ -277,15 +353,31 @@ export function useLiveVoice({
       return;
     }
     if (event.type === "live_transcript" && event.role === "user") {
-      setLiveUserDraft((current) => current + (event.content || ""));
+      if (!liveFirstInputTranscriptAtRef.current) {
+        liveFirstInputTranscriptAtRef.current = performance.now();
+        const setupAt = liveSetupAtRef.current || liveSessionStartedAtRef.current;
+        onStatus({ tone: "busy", text: `First transcript ${Math.max(0, Math.round(liveFirstInputTranscriptAtRef.current - setupAt))} ms` });
+      }
+      const content = event.content || "";
+      if (isNoisyLiveTranscript(content)) return;
+      setLiveUserDraft((current) => appendLiveTranscript(current, content));
       return;
     }
     if (event.type === "live_transcript" && event.role === "assistant") {
-      onAssistantDraftChange((current) => current + (event.content || ""));
+      if (!liveFirstOutputTranscriptAtRef.current) {
+        liveFirstOutputTranscriptAtRef.current = performance.now();
+      }
+      onAssistantDraftChange((current) => appendLiveTranscript(current, event.content || ""));
+      updateLiveStatus("thinking");
       return;
     }
     if (event.type === "live_audio") {
       liveAudioChunkCountRef.current += 1;
+      if (!liveFirstAudioAtRef.current) {
+        liveFirstAudioAtRef.current = performance.now();
+        const setupAt = liveSetupAtRef.current || liveSessionStartedAtRef.current;
+        onStatus({ tone: "busy", text: `First voice ${Math.max(0, Math.round(liveFirstAudioAtRef.current - setupAt))} ms` });
+      }
       if (liveMutedRef.current) {
         onStatus({ tone: "busy", text: "Voice muted" });
       } else {
@@ -315,17 +407,23 @@ export function useLiveVoice({
       return;
     }
     if (event.type === "error") {
-      const message = liveErrorMessage(event.error || event.content || "Live voice failed.");
+      const message = liveErrorMessage(event.error || event.content || "Live voice failed.", event.data);
       onError(message);
-      onStatus({ tone: "error", text: "Live voice failed" });
+      onStatus({ tone: "error", text: liveErrorStatus(event.data) });
       setInputMode("text");
       inputModeRef.current = "text";
+      liveExpectedCloseRef.current = true;
       updateLiveStatus("error");
       cleanupLiveAudio();
       liveSocketRef.current = null;
       if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
         socket.close();
       }
+      return;
+    }
+    if (event.type === "done") {
+      liveExpectedCloseRef.current = true;
+      onStatus({ tone: "idle", text: "Live voice stopped" });
       return;
     }
     if (event.type === "message" && event.role === "assistant" && isLiveSkillEvent(event)) {
@@ -337,10 +435,11 @@ export function useLiveVoice({
       setLiveUserDraft("");
     }
     if (event.type === "message" && event.role === "assistant") {
+      const total = liveSessionStartedAtRef.current ? Math.max(0, Math.round(performance.now() - liveSessionStartedAtRef.current)) : 0;
       onStatus(liveMutedRef.current
         ? { tone: "ok", text: "Voice response muted" }
         : liveAudioChunkCountRef.current > 0
-          ? { tone: "ok", text: "Voice response played" }
+          ? { tone: "ok", text: total ? `Voice response played in ${total} ms` : "Voice response played" }
           : { tone: "ok", text: "Voice transcript received" });
     }
   }
@@ -356,12 +455,15 @@ export function useLiveVoice({
     }
     if (liveMediaRef.current) return;
     const captureGeneration = ++liveCaptureGenerationRef.current;
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-    });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: liveAudioConstraints });
     if (!isCurrentLiveCapture(socket, generation, captureGeneration) || liveMicVolumeRef.current <= 0) {
       stopMediaStream(stream);
       return;
+    }
+    const track = stream.getAudioTracks()[0];
+    if (!track) {
+      stopMediaStream(stream);
+      throw new Error("No microphone input device was found.");
     }
     const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextCtor) {
@@ -369,24 +471,108 @@ export function useLiveVoice({
       throw new Error("AudioContext is unavailable.");
     }
     const audioContext = new AudioContextCtor();
+    const trackSettings = track.getSettings?.() || {};
+    const deviceSummary = liveDeviceSummary(track, trackSettings, audioContext.sampleRate);
+    socket.send(JSON.stringify({ type: "client_trace", content: JSON.stringify(deviceSummary) }));
+    if (audioContext.sampleRate < 8000 || audioContext.sampleRate > 96000) {
+      onStatus({ tone: "error", text: `Unexpected microphone sample rate ${Math.round(audioContext.sampleRate)} Hz` });
+    }
+    track.onended = () => {
+      if (!isCurrentLiveCapture(socket, generation, captureGeneration)) return;
+      stopLiveCapture();
+      if (inputModeRef.current === "live") {
+        updateLiveStatus("paused");
+        onStatus({ tone: "error", text: "Microphone device disconnected" });
+      }
+    };
+    track.onmute = () => {
+      if (isCurrentLiveCapture(socket, generation, captureGeneration)) {
+        onStatus({ tone: "busy", text: "Microphone is muted by the device" });
+      }
+    };
+    track.onunmute = () => {
+      if (isCurrentLiveCapture(socket, generation, captureGeneration)) {
+        onStatus({ tone: "busy", text: "Microphone listening" });
+      }
+    };
     const source = audioContext.createMediaStreamSource(stream);
     const processor = audioContext.createScriptProcessor(liveVoiceProcessorBufferSize, 1, 1);
+    let speechActive = false;
+    let lastSpeechAt = 0;
+    let calibrationFrames = 0;
+    let calibrationRMS = 0;
+    let noiseFloor = 0.006;
+    let calibrationNoticeSent = false;
+    const preSpeechFrames: Uint8Array[] = [];
     const sendAudioFrame = (data: string) => {
+      if (socket.bufferedAmount > liveSocketBackpressureBytes) return;
+      liveAudioBytesSentRef.current += Math.ceil(data.length * 0.75);
       socket.send(JSON.stringify({
         type: "audio",
-        mime_type: "audio/pcm;rate=16000",
+        mime_type: `audio/pcm;rate=${liveTargetSampleRate}`,
         data
       }));
+    };
+    const sendActivity = (type: "activity_start" | "activity_end") => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      socket.send(JSON.stringify({ type }));
     };
     processor.onaudioprocess = (event) => {
       if (!isCurrentLiveSession(socket, generation) || socket.readyState !== WebSocket.OPEN) return;
       const input = event.inputBuffer.getChannelData(0);
       const currentMicVolume = liveMicVolumeRef.current;
       if (currentMicVolume <= 0) return;
+      const metrics = audioFrameMetrics(input);
+      const now = performance.now();
+      if (calibrationFrames < liveCalibrationFrameCount) {
+        calibrationFrames += 1;
+        calibrationRMS += metrics.rms;
+        noiseFloor = Math.max(0.003, calibrationRMS / calibrationFrames);
+        if (calibrationFrames === liveCalibrationFrameCount && !calibrationNoticeSent) {
+          calibrationNoticeSent = true;
+          const averageRMS = calibrationRMS / calibrationFrames;
+          if (averageRMS < 0.0035) {
+            onStatus({ tone: "busy", text: "Microphone input is very quiet" });
+          } else if (metrics.peak > 0.94 || averageRMS > 0.32) {
+            onStatus({ tone: "busy", text: "Microphone input is very loud" });
+          }
+        }
+      } else if (!speechActive) {
+        noiseFloor = noiseFloor * 0.96 + metrics.rms * 0.04;
+      }
       const adjustedInput = scaleAudio(input, currentMicVolume);
-      const pcm = downsampleToPCM16(adjustedInput, audioContext.sampleRate, 16000);
+      const pcm = downsampleToPCM16(adjustedInput, audioContext.sampleRate, liveTargetSampleRate);
       if (!pcm.length) return;
-      sendAudioFrame(bytesToBase64(pcm));
+      const speechThreshold = Math.max(0.012, Math.min(0.08, noiseFloor * 3.4 + 0.004));
+      const peakThreshold = Math.max(0.08, speechThreshold * 4);
+      const hasSpeech = metrics.rms >= speechThreshold || metrics.peak >= peakThreshold;
+      if (hasSpeech) {
+        lastSpeechAt = now;
+        if (!speechActive) {
+          speechActive = true;
+          sendActivity("activity_start");
+          updateLiveStatus("speaking");
+          onStatus({ tone: "busy", text: "Detected speech" });
+          for (const frame of preSpeechFrames.splice(0)) {
+            sendAudioFrame(bytesToBase64(frame));
+          }
+        }
+      }
+      if (speechActive) {
+        sendAudioFrame(bytesToBase64(pcm));
+        if (!hasSpeech && now - lastSpeechAt > liveEndOfSpeechMs) {
+          speechActive = false;
+          preSpeechFrames.length = 0;
+          sendActivity("activity_end");
+          updateLiveStatus("thinking");
+          onStatus({ tone: "busy", text: "Processing voice" });
+        }
+        return;
+      }
+      preSpeechFrames.push(pcm);
+      if (preSpeechFrames.length > livePreSpeechFrameLimit) {
+        preSpeechFrames.shift();
+      }
     };
     source.connect(processor);
     processor.connect(audioContext.destination);
@@ -403,7 +589,7 @@ export function useLiveVoice({
     liveSourceRef.current = source;
     liveProcessorRef.current = processor;
     updateLiveStatus("listening");
-    onStatus({ tone: "busy", text: "Listening" });
+    onStatus({ tone: "busy", text: deviceSummary.label ? `Listening on ${deviceSummary.label}` : "Listening" });
   }
 
   function stopLiveCapture() {
@@ -456,6 +642,45 @@ export function useLiveVoice({
     void livePlaybackContextRef.current?.close();
     livePlaybackGainRef.current = null;
     livePlaybackContextRef.current = null;
+  }
+
+  function clearLiveReconnectTimer() {
+    if (liveReconnectTimerRef.current !== null) {
+      window.clearTimeout(liveReconnectTimerRef.current);
+      liveReconnectTimerRef.current = null;
+    }
+  }
+
+  async function scheduleLiveReconnect(generation: number) {
+    if (!isCurrentLiveGeneration(generation)) return;
+    if (liveReconnectAttemptsRef.current >= liveMaxReconnectAttempts) {
+      updateLiveStatus("error");
+      setInputMode("text");
+      inputModeRef.current = "text";
+      onError("Live voice disconnected. Check your network and try again.");
+      onStatus({ tone: "error", text: "Live voice disconnected" });
+      return;
+    }
+    liveReconnectAttemptsRef.current += 1;
+    updateLiveStatus("reconnecting");
+    onStatus({ tone: "busy", text: "Reconnecting live voice" });
+    clearLiveReconnectTimer();
+    liveReconnectTimerRef.current = window.setTimeout(() => {
+      liveReconnectTimerRef.current = null;
+      if (inputModeRef.current !== "live" || liveManualStopRef.current) return;
+      liveStatusRef.current = "idle";
+      setLiveStatus("idle");
+      void startLiveMode();
+    }, liveReconnectDelayMs);
+  }
+
+  function verifyLiveCaptureReleased() {
+    window.setTimeout(() => {
+      const stream = liveMediaRef.current;
+      if (!stream) return;
+      stopMediaStream(stream);
+      liveMediaRef.current = null;
+    }, 250);
   }
 
   function stopLivePlayback() {
@@ -571,6 +796,63 @@ function scaleAudio(input: Float32Array, volume: number): Float32Array {
   return output;
 }
 
+function audioFrameMetrics(input: Float32Array): { rms: number; peak: number } {
+  if (!input.length) return { rms: 0, peak: 0 };
+  let sum = 0;
+  let peak = 0;
+  for (let index = 0; index < input.length; index += 1) {
+    const value = Math.abs(input[index] || 0);
+    sum += value * value;
+    if (value > peak) peak = value;
+  }
+  return { rms: Math.sqrt(sum / input.length), peak };
+}
+
+async function microphonePermissionState(): Promise<PermissionState | "unknown"> {
+  const permissions = navigator.permissions as (Permissions & { query?: (descriptor: PermissionDescriptor | { name: "microphone" }) => Promise<PermissionStatus> }) | undefined;
+  if (!permissions?.query) return "unknown";
+  try {
+    const status = await permissions.query({ name: "microphone" });
+    return status.state;
+  } catch {
+    return "unknown";
+  }
+}
+
+function liveDeviceSummary(track: MediaStreamTrack, settings: MediaTrackSettings, contextSampleRate: number) {
+  return {
+    kind: "input_device",
+    label: track.label || "",
+    device_id: settings.deviceId || "",
+    group_id: settings.groupId || "",
+    channel_count: settings.channelCount || 0,
+    sample_rate: settings.sampleRate || contextSampleRate || 0,
+    context_sample_rate: contextSampleRate || 0,
+    echo_cancellation: settings.echoCancellation ?? true,
+    noise_suppression: settings.noiseSuppression ?? true,
+    auto_gain_control: settings.autoGainControl ?? true
+  };
+}
+
+function appendLiveTranscript(current: string, next: string): string {
+  const text = next.trim();
+  if (!text) return current;
+  if (!current) return text;
+  if (/^[，。！？,.!?;；:：]/.test(text)) return `${current}${text}`;
+  return `${current}${/[\s\n]$/.test(current) ? "" : " "}${text}`;
+}
+
+function isNoisyLiveTranscript(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return true;
+  const compact = normalized.replace(/\s+/g, "");
+  if (Array.from(compact).length <= 1) return true;
+  if (/^(嗯+|啊+|呃+|额+|唔+|alo+|hello+|喂+)$/.test(compact)) return true;
+  if (/^([\p{L}\p{Script=Han}])\1{3,}$/u.test(compact)) return true;
+  if (compact.length <= 8 && /(调){3,}|孤独/.test(compact)) return true;
+  return false;
+}
+
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
@@ -639,10 +921,43 @@ function errorMessage(error: unknown): string {
       : userFacingErrorMessage(String(error));
 }
 
-function liveErrorMessage(message: string): string {
+function liveErrorMessage(message: string, data?: unknown): string {
+  const payload = liveErrorPayload(data);
+  if (payload.message) {
+    return payload.message;
+  }
   const text = message.trim();
   if (/live vertex access token is required|GOOGLE_APPLICATION_CREDENTIALS|VERTEX_ACCESS_TOKEN|vertex-service-account/i.test(text)) {
     return "Live mode is not configured for this environment. Ask an administrator to finish voice setup.";
   }
   return userFacingErrorMessage(text || "Live voice failed.");
+}
+
+function liveErrorStatus(data?: unknown): string {
+  const { code } = liveErrorPayload(data);
+  if (code === "live_credentials_missing" || code === "live_project_missing") return "Live setup required";
+  if (code === "live_timeout") return "Live voice timed out";
+  if (code === "live_provider_connection") return "Live provider unavailable";
+  if (code === "live_audio_invalid" || code === "live_client_protocol") return "Live audio failed";
+  return "Live voice failed";
+}
+
+function liveErrorPayload(data?: unknown): { code?: string; message?: string } {
+  if (!data) return {};
+  if (typeof data === "string") {
+    try {
+      const parsed = JSON.parse(data) as { code?: unknown; message?: unknown };
+      return {
+        code: typeof parsed.code === "string" ? parsed.code : undefined,
+        message: typeof parsed.message === "string" ? parsed.message : undefined
+      };
+    } catch {
+      return {};
+    }
+  }
+  const payload = data as { code?: unknown; message?: unknown };
+  return {
+    code: typeof payload.code === "string" ? payload.code : undefined,
+    message: typeof payload.message === "string" ? payload.message : undefined
+  };
 }

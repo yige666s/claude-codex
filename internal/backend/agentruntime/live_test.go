@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,39 @@ func TestLiveClientAudioEventToVertexPayload(t *testing.T) {
 	audio := realtime["audio"].(map[string]any)
 	if audio["mimeType"] != "audio/pcm;rate=16000" || audio["data"] != "AAEC" {
 		t.Fatalf("unexpected audio payload: %#v", payload)
+	}
+}
+
+func TestLiveClientTraceEventIsIgnoredUpstream(t *testing.T) {
+	payload, err := liveClientEventToVertexPayload(LiveClientEvent{Type: "client_trace", Content: `{"sample_rate":48000}`}, "audio/pcm;rate=16000")
+	if err != nil {
+		t.Fatalf("liveClientEventToVertexPayload: %v", err)
+	}
+	if payload != nil {
+		t.Fatalf("client trace should not be forwarded to Vertex, got %#v", payload)
+	}
+}
+
+func TestLiveInputNoiseFilterKeepsShortChinese(t *testing.T) {
+	if liveIsNoisyInputTranscript("你好") {
+		t.Fatal("short Chinese greeting should not be treated as noise")
+	}
+	if !liveIsNoisyInputTranscript("调调调调") {
+		t.Fatal("repeated ASR noise should be filtered")
+	}
+}
+
+func TestLiveErrorEventClassifiesCredentialFailures(t *testing.T) {
+	event := liveErrorEvent("session-1", fmt.Errorf("live vertex access token is required: read GOOGLE_APPLICATION_CREDENTIALS: missing"))
+	if event.Type != "error" || event.SessionID != "session-1" {
+		t.Fatalf("unexpected event: %#v", event)
+	}
+	var data map[string]string
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		t.Fatalf("decode error data: %v", err)
+	}
+	if data["code"] != "live_credentials_missing" {
+		t.Fatalf("code = %q", data["code"])
 	}
 }
 

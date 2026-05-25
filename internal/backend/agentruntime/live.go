@@ -139,7 +139,7 @@ func (s *VertexLiveService) Run(ctx context.Context, req LiveRequest, input Live
 
 	conn, err := s.connect(ctx, req)
 	if err != nil {
-		_ = sink.Send(ctx, Event{Type: "error", SessionID: req.SessionID, Error: err.Error()})
+		_ = sink.Send(ctx, liveErrorEvent(req.SessionID, err))
 		return err
 	}
 	defer conn.Close()
@@ -161,7 +161,7 @@ func (s *VertexLiveService) Run(ctx context.Context, req LiveRequest, input Live
 	err = <-errCh
 	cancel()
 	if err != nil && !isExpectedWebSocketClose(err) {
-		_ = sink.Send(context.Background(), Event{Type: "error", SessionID: req.SessionID, Error: err.Error()})
+		_ = sink.Send(context.Background(), liveErrorEvent(req.SessionID, err))
 		return err
 	}
 	_ = sink.Send(context.Background(), Event{Type: "done", SessionID: req.SessionID})
@@ -254,11 +254,14 @@ func (s *VertexLiveService) sendLoop(ctx context.Context, req LiveRequest, input
 		}
 		payload, err := liveClientEventToVertexPayload(event, s.config.InputAudioMIMEType)
 		if err != nil {
-			_ = sink.Send(ctx, Event{Type: "error", SessionID: req.SessionID, Error: err.Error()})
+			_ = sink.Send(ctx, liveErrorEvent(req.SessionID, err))
 			continue
 		}
 		if payload == nil {
-			return nil
+			if strings.EqualFold(strings.TrimSpace(event.Type), "close") {
+				return nil
+			}
+			continue
 		}
 		writeMu.Lock()
 		err = conn.WriteJSON(payload)
@@ -297,6 +300,8 @@ func liveClientEventToVertexPayload(event LiveClientEvent, defaultMIME string) (
 			return nil, fmt.Errorf("live text event requires content")
 		}
 		return map[string]any{"realtimeInput": map[string]any{"text": text}}, nil
+	case "client_trace":
+		return nil, nil
 	case "close":
 		return nil, nil
 	default:
@@ -397,14 +402,14 @@ func (a *liveTurnAccumulator) consume(message map[string]any, outputMIME string)
 		a.outputSuppressed = true
 		events = append(events, Event{Type: "live_interrupted"})
 	}
-	if input := liveTranscriptionText(content, "inputTranscription"); input != "" {
+	if input := liveTranscriptionText(content, "inputTranscription"); input != "" && !liveIsNoisyInputTranscript(input) {
 		a.input.WriteString(input)
-		events = append(events, Event{Type: "live_transcript", Role: state.MessageRoleUser, Content: input, Data: liveJSON(map[string]any{"source": "input"})})
+		events = append(events, Event{Type: "live_transcript", Role: state.MessageRoleUser, Content: input, Data: liveJSON(map[string]any{"source": "input", "final": false})})
 	}
 	if !a.outputSuppressed {
 		if output := liveTranscriptionText(content, "outputTranscription"); output != "" {
 			a.output.WriteString(output)
-			events = append(events, Event{Type: "live_transcript", Role: state.MessageRoleAssistant, Content: output, Data: liveJSON(map[string]any{"source": "output"})})
+			events = append(events, Event{Type: "live_transcript", Role: state.MessageRoleAssistant, Content: output, Data: liveJSON(map[string]any{"source": "output", "final": false})})
 		}
 		for _, audio := range liveOutputAudioParts(content, outputMIME) {
 			events = append(events, Event{Type: "live_audio", Role: state.MessageRoleAssistant, Data: liveJSON(audio)})
@@ -442,6 +447,31 @@ func liveTranscriptionText(content map[string]any, key string) string {
 	transcription, _ := content[key].(map[string]any)
 	text, _ := transcription["text"].(string)
 	return text
+}
+
+func liveIsNoisyInputTranscript(text string) bool {
+	compact := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), ""))
+	if compact == "" || len([]rune(compact)) <= 1 {
+		return true
+	}
+	switch compact {
+	case "嗯", "嗯嗯", "啊", "啊啊", "呃", "额", "喂", "alo", "hello":
+		return true
+	}
+	runes := []rune(compact)
+	if len(runes) >= 4 {
+		same := true
+		for _, r := range runes[1:] {
+			if r != runes[0] {
+				same = false
+				break
+			}
+		}
+		if same {
+			return true
+		}
+	}
+	return len(runes) <= 8 && (strings.Contains(compact, "调调调") || strings.Contains(compact, "孤独"))
 }
 
 func liveOutputAudioParts(content map[string]any, fallbackMIME string) []map[string]any {
@@ -550,6 +580,56 @@ func isExpectedWebSocketClose(err error) bool {
 	return websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) ||
 		strings.Contains(err.Error(), "use of closed network connection") ||
 		strings.Contains(err.Error(), context.Canceled.Error())
+}
+
+func liveErrorEvent(sessionID string, err error) Event {
+	if err == nil {
+		err = fmt.Errorf("live voice failed")
+	}
+	return Event{
+		Type:      "error",
+		SessionID: sessionID,
+		Error:     err.Error(),
+		Data:      liveJSON(map[string]any{"code": liveErrorCode(err), "message": livePublicErrorMessage(err)}),
+	}
+}
+
+func liveErrorCode(err error) string {
+	if err == nil {
+		return "live_unknown"
+	}
+	text := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(text, "access token") || strings.Contains(text, "google_application_credentials") || strings.Contains(text, "vertex-service-account"):
+		return "live_credentials_missing"
+	case strings.Contains(text, "project id"):
+		return "live_project_missing"
+	case strings.Contains(text, "websocket") || strings.Contains(text, "connection refused") || strings.Contains(text, "i/o timeout"):
+		return "live_provider_connection"
+	case strings.Contains(text, context.DeadlineExceeded.Error()) || strings.Contains(text, "timeout"):
+		return "live_timeout"
+	case strings.Contains(text, "unknown live client event"):
+		return "live_client_protocol"
+	case strings.Contains(text, "audio event"):
+		return "live_audio_invalid"
+	default:
+		return "live_provider_error"
+	}
+}
+
+func livePublicErrorMessage(err error) string {
+	switch liveErrorCode(err) {
+	case "live_credentials_missing", "live_project_missing":
+		return "Live mode is not configured for this environment."
+	case "live_provider_connection":
+		return "Live voice could not connect to the provider."
+	case "live_timeout":
+		return "Live voice timed out."
+	case "live_client_protocol", "live_audio_invalid":
+		return "Live voice received invalid audio data."
+	default:
+		return "Live voice failed."
+	}
 }
 
 func liveJSON(value any) json.RawMessage {

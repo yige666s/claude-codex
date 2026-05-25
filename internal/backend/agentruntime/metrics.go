@@ -25,6 +25,19 @@ type MetricsRegistry struct {
 	personalizationUpdatesTotal       int64
 	personalizationChangesTotal       int64
 	personalizationBrowserMemoryTotal int64
+	liveActiveSessions                int64
+	liveSessionsTotal                 int64
+	liveSuccessfulSessions            int64
+	liveFailedSessions                int64
+	liveDisconnectedSessions          int64
+	liveAudioChunksTotal              int64
+	liveAudioBytesTotal               int64
+	liveDurationTotalMS               int64
+	liveFirstTranscriptTotalMS        int64
+	liveFirstTranscriptCount          int64
+	liveFirstAudioTotalMS             int64
+	liveFirstAudioCount               int64
+	liveErrorsByCode                  map[string]int64
 }
 
 func NewMetricsRegistry() *MetricsRegistry {
@@ -34,7 +47,40 @@ func NewMetricsRegistry() *MetricsRegistry {
 		governanceEvents:             make(map[string]int64),
 		personalizationEnabled:       make(map[string]int64),
 		personalizationFieldCoverage: make(map[string]int64),
+		liveErrorsByCode:             make(map[string]int64),
 	}
+}
+
+type LiveMetricsRecord struct {
+	DurationMS        int64
+	FirstTranscriptMS int64
+	FirstAudioMS      int64
+	AudioChunks       int64
+	AudioBytes        int64
+	ErrorCode         string
+	Disconnected      bool
+	Success           bool
+}
+
+type LiveHealthSnapshot struct {
+	ActiveSessions           int64        `json:"active_sessions"`
+	Sessions                 int64        `json:"sessions"`
+	Succeeded                int64        `json:"succeeded"`
+	Failed                   int64        `json:"failed"`
+	Disconnected             int64        `json:"disconnected"`
+	AudioChunks              int64        `json:"audio_chunks"`
+	AudioBytes               int64        `json:"audio_bytes"`
+	AverageDurationMS        int64        `json:"average_duration_ms"`
+	AverageFirstTranscriptMS int64        `json:"average_first_transcript_ms"`
+	AverageFirstAudioMS      int64        `json:"average_first_audio_ms"`
+	TranscriptionSuccessRate float64      `json:"transcription_success_rate"`
+	ErrorRate                float64      `json:"error_rate"`
+	ErrorsByCode             []MetricPair `json:"errors_by_code"`
+}
+
+type MetricPair struct {
+	Key   string `json:"key"`
+	Count int64  `json:"count"`
 }
 
 func (m *MetricsRegistry) RecordRequest(method, path string, status int, duration time.Duration) {
@@ -118,6 +164,83 @@ func (m *MetricsRegistry) IncPersonalizationBrowserMemory() {
 	m.mu.Unlock()
 }
 
+func (m *MetricsRegistry) IncLiveActive() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.liveActiveSessions++
+	m.mu.Unlock()
+}
+
+func (m *MetricsRegistry) DecLiveActive() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.liveActiveSessions > 0 {
+		m.liveActiveSessions--
+	}
+	m.mu.Unlock()
+}
+
+func (m *MetricsRegistry) RecordLiveSession(record LiveMetricsRecord) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.liveSessionsTotal++
+	if record.Success {
+		m.liveSuccessfulSessions++
+	} else {
+		m.liveFailedSessions++
+	}
+	if record.Disconnected {
+		m.liveDisconnectedSessions++
+	}
+	m.liveDurationTotalMS += maxInt64Value(record.DurationMS, 0)
+	m.liveAudioChunksTotal += maxInt64Value(record.AudioChunks, 0)
+	m.liveAudioBytesTotal += maxInt64Value(record.AudioBytes, 0)
+	if record.FirstTranscriptMS > 0 {
+		m.liveFirstTranscriptTotalMS += record.FirstTranscriptMS
+		m.liveFirstTranscriptCount++
+	}
+	if record.FirstAudioMS > 0 {
+		m.liveFirstAudioTotalMS += record.FirstAudioMS
+		m.liveFirstAudioCount++
+	}
+	if code := strings.TrimSpace(record.ErrorCode); code != "" {
+		m.liveErrorsByCode[code]++
+	}
+}
+
+func (m *MetricsRegistry) LiveHealthSnapshot() LiveHealthSnapshot {
+	if m == nil {
+		return LiveHealthSnapshot{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	snapshot := LiveHealthSnapshot{
+		ActiveSessions:           m.liveActiveSessions,
+		Sessions:                 m.liveSessionsTotal,
+		Succeeded:                m.liveSuccessfulSessions,
+		Failed:                   m.liveFailedSessions,
+		Disconnected:             m.liveDisconnectedSessions,
+		AudioChunks:              m.liveAudioChunksTotal,
+		AudioBytes:               m.liveAudioBytesTotal,
+		AverageDurationMS:        averageInt64(m.liveDurationTotalMS, m.liveSessionsTotal),
+		AverageFirstTranscriptMS: averageInt64(m.liveFirstTranscriptTotalMS, m.liveFirstTranscriptCount),
+		AverageFirstAudioMS:      averageInt64(m.liveFirstAudioTotalMS, m.liveFirstAudioCount),
+		ErrorsByCode:             metricPairs(m.liveErrorsByCode),
+	}
+	if m.liveSessionsTotal > 0 {
+		snapshot.ErrorRate = float64(m.liveFailedSessions) / float64(m.liveSessionsTotal)
+		snapshot.TranscriptionSuccessRate = float64(m.liveFirstTranscriptCount) / float64(m.liveSessionsTotal)
+	}
+	return snapshot
+}
+
 func (m *MetricsRegistry) WritePrometheus(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	if m == nil {
@@ -153,6 +276,22 @@ func (m *MetricsRegistry) WritePrometheus(w http.ResponseWriter) {
 	_, _ = fmt.Fprintln(w, "# HELP agentapi_personalization_browser_memory_total Total browser memory submissions accepted.")
 	_, _ = fmt.Fprintln(w, "# TYPE agentapi_personalization_browser_memory_total counter")
 	_, _ = fmt.Fprintf(w, "agentapi_personalization_browser_memory_total %d\n", m.personalizationBrowserMemoryTotal)
+	_, _ = fmt.Fprintln(w, "# HELP agentapi_live_sessions_total Total Live websocket sessions.")
+	_, _ = fmt.Fprintln(w, "# TYPE agentapi_live_sessions_total counter")
+	_, _ = fmt.Fprintf(w, "agentapi_live_sessions_total %d\n", m.liveSessionsTotal)
+	_, _ = fmt.Fprintf(w, "agentapi_live_sessions_active %d\n", m.liveActiveSessions)
+	_, _ = fmt.Fprintf(w, "agentapi_live_sessions_failed_total %d\n", m.liveFailedSessions)
+	_, _ = fmt.Fprintf(w, "agentapi_live_sessions_disconnected_total %d\n", m.liveDisconnectedSessions)
+	_, _ = fmt.Fprintf(w, "agentapi_live_audio_chunks_total %d\n", m.liveAudioChunksTotal)
+	_, _ = fmt.Fprintf(w, "agentapi_live_audio_bytes_total %d\n", m.liveAudioBytesTotal)
+	liveErrorCodes := make([]string, 0, len(m.liveErrorsByCode))
+	for code := range m.liveErrorsByCode {
+		liveErrorCodes = append(liveErrorCodes, code)
+	}
+	sort.Strings(liveErrorCodes)
+	for _, code := range liveErrorCodes {
+		_, _ = fmt.Fprintf(w, "agentapi_live_errors_total{code=%q} %d\n", code, m.liveErrorsByCode[code])
+	}
 
 	statuses := make([]int, 0, len(m.requestsByStatus))
 	for status := range m.requestsByStatus {
@@ -205,6 +344,33 @@ func (m *MetricsRegistry) WritePrometheus(w http.ResponseWriter) {
 		}
 		_, _ = fmt.Fprintf(w, "agentapi_personalization_field_coverage_total{field=%q,present=%q} %d\n", field, present, m.personalizationFieldCoverage[key])
 	}
+}
+
+func averageInt64(total, count int64) int64 {
+	if count <= 0 {
+		return 0
+	}
+	return total / count
+}
+
+func metricPairs(values map[string]int64) []MetricPair {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]MetricPair, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, MetricPair{Key: key, Count: values[key]})
+	}
+	return out
+}
+
+func maxInt64Value(value, fallback int64) int64 {
+	if value < fallback {
+		return fallback
+	}
+	return value
 }
 
 func routeLabel(path string) string {

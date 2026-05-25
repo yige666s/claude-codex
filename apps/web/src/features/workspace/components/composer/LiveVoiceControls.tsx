@@ -34,6 +34,9 @@ export function LiveVoiceControls({
   onMicVolumeChange
 }: LiveVoiceControlsProps) {
   if (inputMode !== "live") return null;
+  const micCapturing = liveStatus === "listening" || liveStatus === "speaking" || liveStatus === "thinking";
+  const micDisabled = !sessionId || busyChat || liveStatus === "connecting" || liveStatus === "reconnecting" || liveStatus === "error";
+  const micTooltip = micCapturing ? "Mute microphone" : liveStatus === "reconnecting" ? "Reconnecting microphone" : "Unmute microphone";
   return (
     <>
       <VolumePopoverControl
@@ -52,15 +55,15 @@ export function LiveVoiceControls({
       <VolumePopoverControl
         className="mic"
         label="Microphone volume"
-        tooltip={liveStatus === "listening" ? "Mute microphone" : "Unmute microphone"}
-        buttonClassName={`live-control ${liveStatus === "listening" ? "active" : ""}`}
-        buttonVariant={liveStatus === "listening" ? "destructive" : "outline"}
-        disabled={!sessionId || busyChat || liveStatus === "connecting" || liveStatus === "error"}
-        pressed={liveStatus === "listening"}
-        value={liveStatus === "listening" ? micVolume : 0}
+        tooltip={micTooltip}
+        buttonClassName={`live-control ${micCapturing ? "active" : ""}`}
+        buttonVariant={micCapturing ? "destructive" : "outline"}
+        disabled={micDisabled}
+        pressed={micCapturing}
+        value={micCapturing ? micVolume : 0}
         onValueChange={onMicVolumeChange}
         onToggle={onToggleMicMute}
-        icon={liveStatus === "listening" ? <Mic size={18} /> : <MicOff size={18} />}
+        icon={micCapturing ? <Mic size={18} /> : <MicOff size={18} />}
       />
     </>
   );

@@ -54,14 +54,16 @@ export function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; admi
   const [configBusy, setConfigBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [healthTab, setHealthTab] = useState<"runtime" | "governance" | "usage" | "quota">("runtime");
+  const [healthTab, setHealthTab] = useState<"runtime" | "live" | "governance" | "usage" | "quota">("runtime");
   const token = adminToken.trim();
   const cleanUserID = userID.trim();
   const readiness = health?.readiness;
   const llm = health?.llm;
+  const live = health?.live;
   const healthyBackends = (llm?.backends || []).filter((backend) => backend.healthy).length;
   const healthTabs: Array<AdminTabOption<typeof healthTab>> = [
     { id: "runtime", label: "Runtime", icon: <Activity size={15} />, count: readiness?.checks?.length ?? 0 },
+    { id: "live", label: "Live", icon: <MessageCircle size={15} />, count: live?.active_sessions ?? 0 },
     { id: "governance", label: "Governance", icon: <Settings size={15} /> },
     { id: "usage", label: "Usage", icon: <Database size={15} />, count: usage?.requests ?? 0 },
     { id: "quota", label: "Quota", icon: <ShieldCheck size={15} />, count: quota?.recent_adjustments?.length ?? 0 }
@@ -246,6 +248,42 @@ export function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; admi
                 </div>
               ))}
               {!llm?.backends?.length && <p className="muted-text">No LLM backend status loaded.</p>}
+            </div>
+          </section>}
+          {healthTab === "live" && <section className="admin-card wide">
+            <div className="admin-card-head">
+              <h3>Live voice health</h3>
+              <StatusBadge value={(live?.active_sessions || 0) > 0 ? "active" : "idle"} />
+            </div>
+            <div className="admin-metrics compact">
+              <AdminMetric label="Sessions" value={String(live?.sessions ?? 0)} />
+              <AdminMetric label="Active" value={String(live?.active_sessions ?? 0)} />
+              <AdminMetric label="Error rate" value={formatPercent(live?.error_rate ?? 0)} />
+              <AdminMetric label="Transcription" value={formatPercent(live?.transcription_success_rate ?? 0)} />
+              <AdminMetric label="First transcript" value={`${Math.round(live?.average_first_transcript_ms ?? 0)} ms`} />
+              <AdminMetric label="First voice" value={`${Math.round(live?.average_first_audio_ms ?? 0)} ms`} />
+            </div>
+            <div className="admin-table">
+              <div className="admin-table-row">
+                <StatusBadge value="audio" />
+                <span>Audio sent</span>
+                <small>{formatNumber(live?.audio_chunks ?? 0)} chunks</small>
+                <em>{formatBytes(live?.audio_bytes ?? 0)}</em>
+              </div>
+              <div className="admin-table-row">
+                <StatusBadge value="disconnects" />
+                <span>Disconnects</span>
+                <small>{formatNumber(live?.disconnected ?? 0)}</small>
+                <em>{formatNumber(live?.failed ?? 0)} failed sessions</em>
+              </div>
+              {(live?.errors_by_code || []).map((item) => (
+                <div key={item.key} className="admin-table-row">
+                  <StatusBadge value="error" />
+                  <span>{item.key}</span>
+                  <small>{formatNumber(item.count)}</small>
+                </div>
+              ))}
+              {!live?.sessions && <p className="muted-text">No Live sessions have been observed by this API instance yet.</p>}
             </div>
           </section>}
           {healthTab === "governance" && <section className="admin-card wide">

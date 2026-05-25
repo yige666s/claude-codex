@@ -1538,6 +1538,7 @@ func (r *Runtime) LiveSystemInstruction(ctx context.Context, userID, sessionID s
 		return consumerSecuritySystemContext
 	}
 	parts = append(parts, consumerSecuritySystemContext)
+	parts = append(parts, "Live voice language policy: preserve the user's spoken language; if the utterance is ambiguous, prefer Chinese for this product unless recent conversation context is clearly in another language. Treat short repeated fillers, obvious ASR noise, and accidental wake words as non-actionable. Never trigger artifact-producing skills from vague live speech; require an explicit slash command or a clear confirmation-quality request.")
 	if skillContext := r.liveSkillContext(); strings.TrimSpace(skillContext) != "" {
 		parts = append(parts, "<skills>\n"+skillContext+"\n</skills>")
 	}

@@ -376,9 +376,31 @@ export type LLMQuotaAdminSummary = {
   recent_adjustments: LLMQuotaAdjustment[];
 };
 
+export type MetricPair = {
+  key: string;
+  count: number;
+};
+
+export type LiveHealthStatus = {
+  active_sessions: number;
+  sessions: number;
+  succeeded: number;
+  failed: number;
+  disconnected: number;
+  audio_chunks: number;
+  audio_bytes: number;
+  average_duration_ms: number;
+  average_first_transcript_ms: number;
+  average_first_audio_ms: number;
+  transcription_success_rate: number;
+  error_rate: number;
+  errors_by_code: MetricPair[];
+};
+
 export type AdminHealthStatus = {
   readiness: ReadinessStatus;
   llm: LLMGovernanceStatus;
+  live?: LiveHealthStatus;
 };
 
 export type AuditLogRecord = {

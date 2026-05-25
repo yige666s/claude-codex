@@ -961,7 +961,8 @@ func (s *Server) handleAdminOpsHealth(w http.ResponseWriter, r *http.Request) {
 			"status": readinessStatus,
 			"checks": readinessChecks,
 		},
-		"llm": llmStatus,
+		"llm":  llmStatus,
+		"live": s.metrics.LiveHealthSnapshot(),
 	})
 }
 
@@ -2578,9 +2579,18 @@ func (s *Server) handleLiveWebSocket(w http.ResponseWriter, r *http.Request, use
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	sink := &websocketEventSink{conn: conn}
-	stream := &websocketLiveClientStream{conn: conn}
-	if err := s.runtime.Live(ctx, LiveRequest{UserID: user.ID, SessionID: sessionID}, stream, sink); err != nil {
+	stats := newLiveSessionStats()
+	if s.metrics != nil {
+		s.metrics.IncLiveActive()
+		defer s.metrics.DecLiveActive()
+	}
+	sink := &observedLiveEventSink{sink: &websocketEventSink{conn: conn}, stats: stats}
+	stream := &observedLiveClientStream{stream: &websocketLiveClientStream{conn: conn}, stats: stats}
+	err = s.runtime.Live(ctx, LiveRequest{UserID: user.ID, SessionID: sessionID}, stream, sink)
+	if s.metrics != nil {
+		s.metrics.RecordLiveSession(stats.metrics(err))
+	}
+	if err != nil {
 		s.logf("live_ws_error user=%s session=%s error=%v", user.ID, sessionID, err)
 	}
 }
@@ -2606,6 +2616,130 @@ func (s *websocketLiveClientStream) ReceiveLiveClientEvent(ctx context.Context) 
 	case result := <-ch:
 		return result.event, result.err
 	}
+}
+
+type liveSessionStats struct {
+	startedAt         time.Time
+	firstTranscriptAt time.Time
+	firstAudioAt      time.Time
+	audioChunks       int64
+	audioBytes        int64
+	clientDevice      string
+	errorCode         string
+	receivedDone      bool
+}
+
+func newLiveSessionStats() *liveSessionStats {
+	return &liveSessionStats{startedAt: time.Now().UTC()}
+}
+
+func (s *liveSessionStats) metrics(err error) LiveMetricsRecord {
+	if s == nil {
+		return LiveMetricsRecord{}
+	}
+	now := time.Now().UTC()
+	code := s.errorCode
+	if code == "" && err != nil && !isExpectedWebSocketClose(err) {
+		code = liveErrorCode(err)
+	}
+	return LiveMetricsRecord{
+		DurationMS:        now.Sub(s.startedAt).Milliseconds(),
+		FirstTranscriptMS: durationSinceMillis(s.startedAt, s.firstTranscriptAt),
+		FirstAudioMS:      durationSinceMillis(s.startedAt, s.firstAudioAt),
+		AudioChunks:       s.audioChunks,
+		AudioBytes:        s.audioBytes,
+		ErrorCode:         code,
+		Disconnected:      err != nil && !isExpectedWebSocketClose(err) && !s.receivedDone,
+		Success:           code == "" && (err == nil || isExpectedWebSocketClose(err)),
+	}
+}
+
+type observedLiveClientStream struct {
+	stream LiveClientStream
+	stats  *liveSessionStats
+}
+
+func (s *observedLiveClientStream) ReceiveLiveClientEvent(ctx context.Context) (LiveClientEvent, error) {
+	event, err := s.stream.ReceiveLiveClientEvent(ctx)
+	if err != nil || s.stats == nil {
+		return event, err
+	}
+	switch strings.ToLower(strings.TrimSpace(event.Type)) {
+	case "audio":
+		s.stats.audioChunks++
+		s.stats.audioBytes += int64(base64DecodedSize(event.Data))
+	case "client_trace":
+		s.stats.clientDevice = event.Content
+	case "close":
+		s.stats.receivedDone = true
+	}
+	return event, nil
+}
+
+type observedLiveEventSink struct {
+	sink  EventSink
+	stats *liveSessionStats
+}
+
+func (s *observedLiveEventSink) Send(ctx context.Context, event Event) error {
+	if s.stats != nil {
+		now := time.Now().UTC()
+		switch event.Type {
+		case "live_transcript":
+			if s.stats.firstTranscriptAt.IsZero() {
+				s.stats.firstTranscriptAt = now
+			}
+		case "live_audio":
+			if s.stats.firstAudioAt.IsZero() {
+				s.stats.firstAudioAt = now
+			}
+		case "error":
+			s.stats.errorCode = eventDataString(event.Data, "code")
+			if s.stats.errorCode == "" {
+				s.stats.errorCode = liveErrorCode(errors.New(event.Error))
+			}
+		case "done":
+			s.stats.receivedDone = true
+		}
+	}
+	return s.sink.Send(ctx, event)
+}
+
+func durationSinceMillis(start, finish time.Time) int64 {
+	if start.IsZero() || finish.IsZero() || finish.Before(start) {
+		return 0
+	}
+	return finish.Sub(start).Milliseconds()
+}
+
+func base64DecodedSize(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	padding := 0
+	if strings.HasSuffix(value, "==") {
+		padding = 2
+	} else if strings.HasSuffix(value, "=") {
+		padding = 1
+	}
+	size := len(value)*3/4 - padding
+	if size < 0 {
+		return 0
+	}
+	return size
+}
+
+func eventDataString(data json.RawMessage, key string) string {
+	if len(data) == 0 || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return ""
+	}
+	value, _ := payload[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (User, bool) {
