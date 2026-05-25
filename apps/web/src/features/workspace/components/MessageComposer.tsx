@@ -86,6 +86,11 @@ export function MessageComposer({
   const canUseText = inputMode === "text" && liveStatus === "idle";
   const canSend = canUseText && (!!draft.trim() || pendingAttachments.length > 0) && !!sessionId;
   const expandedComposer = draft.length > 80 || draft.includes("\n");
+  const composerClassName = [
+    "composer",
+    expandedComposer ? "composer-expanded" : "",
+    showToolChips ? "composer-with-tools" : ""
+  ].filter(Boolean).join(" ");
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -95,51 +100,53 @@ export function MessageComposer({
   };
 
   return (
-    <footer className={`composer ${expandedComposer ? "composer-expanded" : ""}`}>
-      <RuntimeErrorBanner message={runtimeError} onDismiss={onClearRuntimeError} />
-      <RuntimeErrorBanner message={uploadError} upload onDismiss={onClearUploadError} />
-      <ResponseTimingBadges timing={responseTiming} formatNumber={formatNumber} />
-      <PendingAttachments attachments={pendingAttachments} onRemove={onRemovePendingAttachment} />
-      <div className="composer-row">
-        <ComposerUploadButton
-          inputRef={attachmentInputRef}
-          uploading={uploading}
-          disabled={!canUseText}
-          accept={acceptedAttachmentTypes}
-          onUpload={onUploadAttachment}
-        />
-        <Textarea
-          ref={composerInputRef as Ref<HTMLTextAreaElement>}
-          value={draft}
-          aria-label="Message"
-          placeholder={inputMode === "live" ? "Live mode is active" : placeholderForTool(selectedToolId)}
-          onChange={(event) => onDraftChange(event.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={!canUseText}
-          rows={1}
-        />
-        <div className="composer-actions">
-          <ToolModeSelector
-            inputMode={inputMode}
-            busyChat={busyChat}
-            sessionId={sessionId}
-            onSelectChat={onSelectChatMode}
-            onSelectLive={onSwitchToLive}
+    <footer className={composerClassName}>
+      <div className="composer-surface">
+        <RuntimeErrorBanner message={runtimeError} onDismiss={onClearRuntimeError} />
+        <RuntimeErrorBanner message={uploadError} upload onDismiss={onClearUploadError} />
+        <ResponseTimingBadges timing={responseTiming} formatNumber={formatNumber} />
+        <PendingAttachments attachments={pendingAttachments} onRemove={onRemovePendingAttachment} />
+        <div className="composer-row">
+          <ComposerUploadButton
+            inputRef={attachmentInputRef}
+            uploading={uploading}
+            disabled={!canUseText}
+            accept={acceptedAttachmentTypes}
+            onUpload={onUploadAttachment}
           />
-          <LiveVoiceControls
-            inputMode={inputMode}
-            liveStatus={liveStatus}
-            liveMuted={liveMuted}
-            speakerVolume={liveSpeakerVolume}
-            micVolume={liveMicVolume}
-            busyChat={busyChat}
-            sessionId={sessionId}
-            onToggleSpeakerMute={onToggleLiveMute}
-            onToggleMicMute={onToggleLiveCapture}
-            onSpeakerVolumeChange={onLiveSpeakerVolumeChange}
-            onMicVolumeChange={onLiveMicVolumeChange}
+          <Textarea
+            ref={composerInputRef as Ref<HTMLTextAreaElement>}
+            value={draft}
+            aria-label="Message"
+            placeholder={inputMode === "live" ? "Live mode is active" : placeholderForTool(selectedToolId)}
+            onChange={(event) => onDraftChange(event.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={!canUseText}
+            rows={1}
           />
-          <SendButton busyChat={busyChat} canSend={canSend} onSend={onSendMessage} onCancel={onCancelChat} />
+          <div className="composer-actions">
+            <ToolModeSelector
+              inputMode={inputMode}
+              busyChat={busyChat}
+              sessionId={sessionId}
+              onSelectChat={onSelectChatMode}
+              onSelectLive={onSwitchToLive}
+            />
+            <LiveVoiceControls
+              inputMode={inputMode}
+              liveStatus={liveStatus}
+              liveMuted={liveMuted}
+              speakerVolume={liveSpeakerVolume}
+              micVolume={liveMicVolume}
+              busyChat={busyChat}
+              sessionId={sessionId}
+              onToggleSpeakerMute={onToggleLiveMute}
+              onToggleMicMute={onToggleLiveCapture}
+              onSpeakerVolumeChange={onLiveSpeakerVolumeChange}
+              onMicVolumeChange={onLiveMicVolumeChange}
+            />
+            <SendButton busyChat={busyChat} canSend={canSend} onSend={onSendMessage} onCancel={onCancelChat} />
+          </div>
         </div>
       </div>
       {showToolChips && <ComposerToolChips selectedToolId={selectedToolId} disabled={!canUseText || busyChat} onSelectTool={onSelectTool} />}

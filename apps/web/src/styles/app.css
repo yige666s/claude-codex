@@ -1720,6 +1720,11 @@ label.composer-upload {
   gap: 8px;
   backdrop-filter: blur(16px);
 }
+.composer-surface {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
 .empty-workspace .composer {
   width: min(720px, calc(100% - 64px));
   grid-row: 1 / -1;
@@ -1735,6 +1740,25 @@ label.composer-upload {
     linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.76)),
     radial-gradient(circle at 88% 120%, rgba(113, 232, 216, 0.18), transparent 38%);
   box-shadow: 0 34px 80px rgba(79, 87, 110, 0.15);
+}
+.empty-workspace .composer.composer-with-tools {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  gap: 12px;
+}
+.empty-workspace .composer.composer-with-tools .composer-surface {
+  padding: 12px 18px 10px;
+  border: 1px solid rgba(222, 228, 238, 0.95);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.76)),
+    radial-gradient(circle at 88% 120%, rgba(113, 232, 216, 0.18), transparent 38%);
+  box-shadow: 0 34px 80px rgba(79, 87, 110, 0.15);
+  backdrop-filter: blur(16px);
 }
 .composer-row {
   display: grid;
@@ -4268,6 +4292,9 @@ label.composer-upload {
   .composer-tool-row {
     justify-content: flex-start;
     padding-inline: 0;
+  }
+  .empty-workspace .composer-with-tools .composer-tool-row {
+    justify-content: center;
   }
   .composer-tool-chip {
     flex: 0 0 auto;
