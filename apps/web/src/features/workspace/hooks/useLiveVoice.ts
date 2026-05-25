@@ -44,9 +44,6 @@ export function useLiveVoice({
 }: UseLiveVoiceOptions) {
   const [inputMode, setInputMode] = useState<InputMode>("text");
   const [liveStatus, setLiveStatus] = useState<LiveStatus>("idle");
-  const [liveMuted, setLiveMuted] = useState(false);
-  const [speakerVolume, setSpeakerVolumeState] = useState(1);
-  const [micVolume, setMicVolumeState] = useState(1);
   const [liveUserDraft, setLiveUserDraft] = useState("");
 
   const liveSocketRef = useRef<WebSocket | null>(null);
@@ -59,15 +56,10 @@ export function useLiveVoice({
   const livePlaybackTimeRef = useRef(0);
   const livePlaybackGenerationRef = useRef(0);
   const livePlaybackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const liveMutedRef = useRef(liveMuted);
-  const liveSpeakerVolumeRef = useRef(speakerVolume);
-  const liveMicVolumeRef = useRef(micVolume);
   const liveStatusRef = useRef(liveStatus);
   const inputModeRef = useRef(inputMode);
   const liveSessionGenerationRef = useRef(0);
   const liveCaptureGenerationRef = useRef(0);
-  const lastLiveSpeakerVolumeRef = useRef(1);
-  const lastLiveMicVolumeRef = useRef(1);
   const liveAudioChunkCountRef = useRef(0);
   const liveAudioBytesSentRef = useRef(0);
   const livePlaybackQueueRef = useRef(Promise.resolve());
@@ -100,7 +92,7 @@ export function useLiveVoice({
       if (!socket || socket.readyState !== WebSocket.OPEN || liveStatusRef.current === "connecting" || liveStatusRef.current === "reconnecting") return;
       stopLiveCapture();
       window.setTimeout(() => {
-        if (isCurrentLiveSession(socket, generation) && liveMicVolumeRef.current > 0) {
+        if (isCurrentLiveSession(socket, generation)) {
           void startLiveCapture(socket, generation);
         }
       }, 160);
@@ -120,34 +112,6 @@ export function useLiveVoice({
     liveStatusRef.current = next;
     setLiveStatus(next);
   }
-
-  useEffect(() => {
-    liveMutedRef.current = liveMuted;
-    if (liveMuted) {
-      stopLivePlayback();
-    }
-  }, [liveMuted]);
-
-  useEffect(() => {
-    liveSpeakerVolumeRef.current = liveMuted ? 0 : speakerVolume;
-    if (speakerVolume > 0) {
-      lastLiveSpeakerVolumeRef.current = speakerVolume;
-    }
-    if (livePlaybackGainRef.current) {
-      livePlaybackGainRef.current.gain.value = liveMuted ? 0 : speakerVolume;
-    }
-  }, [liveMuted, speakerVolume]);
-
-  useEffect(() => {
-    liveMicVolumeRef.current = micVolume;
-    if (micVolume > 0) {
-      lastLiveMicVolumeRef.current = micVolume;
-      return;
-    }
-    if (liveMediaRef.current) {
-      stopLiveCapture();
-    }
-  }, [micVolume]);
 
   async function startLiveMode() {
     if (performance.now() < liveSwitchLockedUntilRef.current) return;
@@ -179,7 +143,6 @@ export function useLiveVoice({
     onError("");
     onAssistantDraftChange("");
     setLiveUserDraft("");
-    setLiveMuted(false);
     liveAudioChunkCountRef.current = 0;
     liveAudioBytesSentRef.current = 0;
     stopLivePlayback();
@@ -271,63 +234,13 @@ export function useLiveVoice({
     }
   }
 
-  function toggleSpeakerMute() {
-    if (inputModeRef.current !== "live" || liveStatusRef.current === "idle") return;
-    setLiveMuted((current) => {
-      if (current && speakerVolume <= 0) {
-        setSpeakerVolumeState(lastLiveSpeakerVolumeRef.current || 1);
-      }
-      return !current;
-    });
-  }
-
-  function setSpeakerVolume(value: number) {
-    const next = clamp01(value);
-    setSpeakerVolumeState(next);
-    setLiveMuted(next <= 0);
-  }
-
-  async function setMicVolume(value: number) {
-    const next = clamp01(value);
-    updateMicVolume(next);
-    if (inputModeRef.current !== "live" || liveStatusRef.current === "connecting" || liveStatusRef.current === "error") return;
-    if (next <= 0) {
-      stopLiveCapture();
-      if (liveStatusRef.current !== "idle") updateLiveStatus("paused");
-      onStatus({ tone: "idle", text: "Microphone muted" });
+  function toggleLiveMode() {
+    const liveActive = inputModeRef.current === "live" && liveStatusRef.current !== "idle" && liveStatusRef.current !== "error";
+    if (liveActive) {
+      switchToTextMode();
       return;
     }
-    if (liveStatusRef.current !== "listening") {
-      await toggleMicMute();
-    }
-  }
-
-  async function toggleMicMute() {
-    if (inputModeRef.current !== "live" || liveStatusRef.current === "connecting") return;
-    const socket = liveSocketRef.current;
-    if (liveStatusRef.current === "listening") {
-      updateMicVolume(0);
-      stopLiveCapture();
-      updateLiveStatus("paused");
-      onStatus({ tone: "idle", text: "Microphone muted" });
-      return;
-    }
-    if (micVolume <= 0) {
-      updateMicVolume(lastLiveMicVolumeRef.current || 1);
-    }
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      if (liveStatusRef.current === "idle") {
-        await startLiveMode();
-      }
-      return;
-    }
-    try {
-      await startLiveCapture(socket, liveSessionGenerationRef.current);
-    } catch (error) {
-      onError(errorMessage(error));
-      updateLiveStatus("error");
-      onStatus({ tone: "error", text: "Microphone unavailable" });
-    }
+    switchToLiveMode();
   }
 
   async function handleLiveRuntimeEvent(event: RuntimeEvent, socket: WebSocket, generation: number) {
@@ -378,12 +291,8 @@ export function useLiveVoice({
         const setupAt = liveSetupAtRef.current || liveSessionStartedAtRef.current;
         onStatus({ tone: "busy", text: `First voice ${Math.max(0, Math.round(liveFirstAudioAtRef.current - setupAt))} ms` });
       }
-      if (liveMutedRef.current) {
-        onStatus({ tone: "busy", text: "Voice muted" });
-      } else {
-        onStatus({ tone: "busy", text: "Playing voice" });
-        await queueLiveAudio(event.data);
-      }
+      onStatus({ tone: "busy", text: "Playing voice" });
+      await queueLiveAudio(event.data);
       return;
     }
     if (event.type === "live_interrupted") {
@@ -436,27 +345,19 @@ export function useLiveVoice({
     }
     if (event.type === "message" && event.role === "assistant") {
       const total = liveSessionStartedAtRef.current ? Math.max(0, Math.round(performance.now() - liveSessionStartedAtRef.current)) : 0;
-      onStatus(liveMutedRef.current
-        ? { tone: "ok", text: "Voice response muted" }
-        : liveAudioChunkCountRef.current > 0
-          ? { tone: "ok", text: total ? `Voice response played in ${total} ms` : "Voice response played" }
-          : { tone: "ok", text: "Voice transcript received" });
+      onStatus(liveAudioChunkCountRef.current > 0
+        ? { tone: "ok", text: total ? `Voice response played in ${total} ms` : "Voice response played" }
+        : { tone: "ok", text: "Voice transcript received" });
     }
   }
 
   async function startLiveCapture(socket: WebSocket, generation: number) {
     if (socket.readyState !== WebSocket.OPEN) throw new Error("Live voice connection is not ready.");
     if (!isCurrentLiveSession(socket, generation)) return;
-    if (liveMicVolumeRef.current <= 0) {
-      stopLiveCapture();
-      updateLiveStatus("paused");
-      onStatus({ tone: "idle", text: "Microphone muted" });
-      return;
-    }
     if (liveMediaRef.current) return;
     const captureGeneration = ++liveCaptureGenerationRef.current;
     const stream = await navigator.mediaDevices.getUserMedia({ audio: liveAudioConstraints });
-    if (!isCurrentLiveCapture(socket, generation, captureGeneration) || liveMicVolumeRef.current <= 0) {
+    if (!isCurrentLiveCapture(socket, generation, captureGeneration)) {
       stopMediaStream(stream);
       return;
     }
@@ -520,8 +421,6 @@ export function useLiveVoice({
     processor.onaudioprocess = (event) => {
       if (!isCurrentLiveSession(socket, generation) || socket.readyState !== WebSocket.OPEN) return;
       const input = event.inputBuffer.getChannelData(0);
-      const currentMicVolume = liveMicVolumeRef.current;
-      if (currentMicVolume <= 0) return;
       const metrics = audioFrameMetrics(input);
       const now = performance.now();
       if (calibrationFrames < liveCalibrationFrameCount) {
@@ -540,8 +439,7 @@ export function useLiveVoice({
       } else if (!speechActive) {
         noiseFloor = noiseFloor * 0.96 + metrics.rms * 0.04;
       }
-      const adjustedInput = scaleAudio(input, currentMicVolume);
-      const pcm = downsampleToPCM16(adjustedInput, audioContext.sampleRate, liveTargetSampleRate);
+      const pcm = downsampleToPCM16(input, audioContext.sampleRate, liveTargetSampleRate);
       if (!pcm.length) return;
       const speechThreshold = Math.max(0.012, Math.min(0.08, noiseFloor * 3.4 + 0.004));
       const peakThreshold = Math.max(0.08, speechThreshold * 4);
@@ -576,7 +474,7 @@ export function useLiveVoice({
     };
     source.connect(processor);
     processor.connect(audioContext.destination);
-    if (!isCurrentLiveCapture(socket, generation, captureGeneration) || liveMicVolumeRef.current <= 0) {
+    if (!isCurrentLiveCapture(socket, generation, captureGeneration)) {
       processor.onaudioprocess = null;
       safeDisconnect(processor);
       safeDisconnect(source);
@@ -625,14 +523,6 @@ export function useLiveVoice({
 
   function isCurrentLiveCapture(socket: WebSocket, generation: number, captureGeneration: number) {
     return isCurrentLiveSession(socket, generation) && liveCaptureGenerationRef.current === captureGeneration;
-  }
-
-  function updateMicVolume(next: number) {
-    liveMicVolumeRef.current = next;
-    if (next > 0) {
-      lastLiveMicVolumeRef.current = next;
-    }
-    setMicVolumeState(next);
   }
 
   function cleanupLiveAudio() {
@@ -704,7 +594,7 @@ export function useLiveVoice({
     livePlaybackContextRef.current = context;
     if (!livePlaybackGainRef.current) {
       const gain = context.createGain();
-      gain.gain.value = liveMutedRef.current ? 0 : liveSpeakerVolumeRef.current;
+      gain.gain.value = 1;
       gain.connect(context.destination);
       livePlaybackGainRef.current = gain;
     }
@@ -749,20 +639,13 @@ export function useLiveVoice({
   }
 
   return {
-    inputMode,
     liveStatus,
-    liveMuted,
-    speakerVolume,
-    micVolume,
     liveUserDraft,
     startLiveMode,
     stopLiveMode,
     switchToTextMode,
     switchToLiveMode,
-    toggleSpeakerMute,
-    toggleMicMute,
-    setSpeakerVolume,
-    setMicVolume
+    toggleLiveMode
   };
 }
 
@@ -784,16 +667,6 @@ function downsampleToPCM16(input: Float32Array, inputSampleRate: number, targetS
     view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
   }
   return bytes;
-}
-
-function scaleAudio(input: Float32Array, volume: number): Float32Array {
-  const scale = clamp01(volume);
-  if (scale >= 0.999) return input;
-  const output = new Float32Array(input.length);
-  for (let index = 0; index < input.length; index += 1) {
-    output[index] = (input[index] || 0) * scale;
-  }
-  return output;
 }
 
 function audioFrameMetrics(input: Float32Array): { rms: number; peak: number } {
@@ -851,11 +724,6 @@ function isNoisyLiveTranscript(text: string): boolean {
   if (/^([\p{L}\p{Script=Han}])\1{3,}$/u.test(compact)) return true;
   if (compact.length <= 8 && /(调){3,}|孤独/.test(compact)) return true;
   return false;
-}
-
-function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(1, value));
 }
 
 function stopMediaStream(stream: MediaStream) {

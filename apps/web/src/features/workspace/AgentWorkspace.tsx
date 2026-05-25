@@ -235,19 +235,11 @@ export function AgentWorkspace() {
   const activeResourceVisibleCount = resourceVisibleCount[activeResourceTab];
   const selectedWorkspaceArtifact = artifacts.find((asset) => asset.id === artifactWorkspaceAssetId) || artifacts[0] || null;
   const {
-    inputMode,
     liveStatus,
-    liveMuted,
-    speakerVolume: liveSpeakerVolume,
-    micVolume: liveMicVolume,
     liveUserDraft,
     stopLiveMode,
     switchToTextMode,
-    switchToLiveMode,
-    toggleSpeakerMute,
-    toggleMicMute,
-    setSpeakerVolume: changeLiveSpeakerVolume,
-    setMicVolume: changeLiveMicVolume
+    toggleLiveMode
   } = useLiveVoice({
     api,
     sessionId,
@@ -1229,13 +1221,6 @@ export function AgentWorkspace() {
     });
   }
 
-  function selectChatMode() {
-    setSelectedComposerTool("");
-    switchToTextMode();
-    setStatus({ tone: "idle", text: "Chat mode" });
-    composerInputRef.current?.focus();
-  }
-
   function selectComposerTool(toolId: ComposerToolID) {
     const nextTool = selectedComposerTool === toolId ? "" : toolId;
     setSelectedComposerTool(nextTool);
@@ -1244,9 +1229,10 @@ export function AgentWorkspace() {
     composerInputRef.current?.focus();
   }
 
-  function selectLiveMode() {
+  function toggleLiveVoice() {
     setSelectedComposerTool("");
-    switchToLiveMode();
+    toggleLiveMode();
+    composerInputRef.current?.focus();
   }
 
   async function deleteAsset(kind: "attachment" | "artifact", id: string) {
@@ -1659,11 +1645,7 @@ export function AgentWorkspace() {
                 attachmentInputRef={attachmentInputRef}
                 composerInputRef={composerInputRef}
                 uploading={uploading}
-                inputMode={inputMode}
                 liveStatus={liveStatus}
-                liveMuted={liveMuted}
-                liveSpeakerVolume={liveSpeakerVolume}
-                liveMicVolume={liveMicVolume}
                 busyChat={busyChat}
                 sessionId={sessionId}
                 draft={draft}
@@ -1674,13 +1656,8 @@ export function AgentWorkspace() {
                 onDraftChange={setDraft}
                 onSendMessage={sendMessage}
                 onCancelChat={cancelChat}
-                onSelectChatMode={selectChatMode}
-                onSwitchToLive={selectLiveMode}
                 onSelectTool={selectComposerTool}
-                onToggleLiveMute={toggleSpeakerMute}
-                onToggleLiveCapture={() => void toggleMicMute()}
-                onLiveSpeakerVolumeChange={changeLiveSpeakerVolume}
-                onLiveMicVolumeChange={(value) => void changeLiveMicVolume(value)}
+                onToggleLive={toggleLiveVoice}
                 formatNumber={formatNumber}
               />
             )}

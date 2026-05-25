@@ -1882,70 +1882,14 @@ label.composer-upload {
   opacity: 0.58;
   transform: none;
 }
-.tool-mode-trigger {
-  height: var(--composer-control-size);
-  padding: 3px;
-  border: 1px solid rgba(224, 229, 237, 0.96);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.7);
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-.tool-mode-trigger {
-  width: auto;
-  min-width: 92px;
-  padding: 0 10px;
-  justify-content: center;
-  gap: 7px;
-  color: var(--muted);
-  font-weight: 760;
-  white-space: nowrap;
-}
-.tool-mode-trigger.chat,
-.tool-mode-trigger.live {
-  color: var(--accent);
-  background: var(--active-bg);
-}
-.tool-mode-menu {
-  width: min(180px, calc(100vw - 28px));
-  max-height: min(240px, calc(100vh - 120px));
-  overflow: auto;
-}
-.tool-mode-menu .ui-dropdown-item {
-  min-height: 38px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 9px;
-}
-.tool-mode-menu .ui-dropdown-item > span {
-  min-width: 0;
-}
-.tool-mode-menu .ui-dropdown-item strong,
-.tool-mode-menu .ui-dropdown-item small {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tool-mode-menu .ui-dropdown-item small {
-  color: var(--muted);
-  font-size: 12px;
-}
-.tool-mode-check {
-  color: var(--accent);
-}
 .composer .send,
 .composer .stop-generation,
-.composer .voice-output-toggle,
 .composer .live-control {
   width: var(--composer-control-size);
   height: var(--composer-control-size);
   min-width: var(--composer-control-size);
   min-height: var(--composer-control-size);
 }
-.composer .voice-output-toggle,
 .composer .live-control {
   padding: 0;
   border: 1px solid rgba(224, 229, 237, 0.96);
@@ -1956,62 +1900,19 @@ label.composer-upload {
   place-items: center;
   cursor: pointer;
 }
-.composer .voice-output-toggle:hover:not(:disabled),
 .composer .live-control:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--active-bg);
-}
-.composer .voice-output-toggle:not(:disabled):not(.muted) {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--active-bg);
-}
-.composer .voice-output-toggle.muted {
-  border-color: var(--danger);
-  color: var(--danger);
-  background: var(--danger-soft);
 }
 .composer .live-control.active {
   border-color: var(--danger);
   color: var(--danger);
   background: var(--danger-soft);
 }
-.composer .voice-output-toggle:disabled,
 .composer .live-control:disabled {
   cursor: not-allowed;
   opacity: 0.55;
-}
-.live-volume-control {
-  position: relative;
-  display: inline-grid;
-  place-items: center;
-}
-.live-volume-popover {
-  width: 38px;
-  height: 132px;
-  min-width: 38px;
-  padding: 10px 7px;
-  display: grid;
-  place-items: center;
-}
-.live-volume-popover::after {
-  width: 10px;
-  height: 10px;
-  border-right: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  content: "";
-  position: absolute;
-  left: calc(50% - 5px);
-  bottom: -6px;
-  background: var(--panel-raised);
-  transform: rotate(45deg);
-}
-.live-volume-popover .ui-slider-vertical {
-  min-height: 96px;
-}
-.live-volume-popover .ui-slider-track {
-  background: #cddcdf;
 }
 .composer-error {
   min-height: 34px;

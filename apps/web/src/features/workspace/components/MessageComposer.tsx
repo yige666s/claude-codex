@@ -1,7 +1,7 @@
 import { KeyboardEvent, Ref, RefObject } from "react";
 import { Textarea } from "../../../components/ui/textarea";
 import type { Asset } from "../../../types";
-import type { InputMode, LiveStatus } from "../hooks/useLiveVoice";
+import type { LiveStatus } from "../hooks/useLiveVoice";
 import type { ComposerToolID } from "../workspaceTypes";
 import { ComposerToolChips } from "./composer/ComposerToolChips";
 import { ComposerUploadButton } from "./composer/ComposerUploadButton";
@@ -10,7 +10,6 @@ import { PendingAttachments } from "./composer/PendingAttachments";
 import { ResponseTimingBadges } from "./composer/ResponseTimingBadges";
 import { RuntimeErrorBanner } from "./composer/RuntimeErrorBanner";
 import { SendButton } from "./composer/SendButton";
-import { ToolModeSelector } from "./composer/ToolModeSelector";
 
 type MessageComposerProps = {
   runtimeError: string;
@@ -22,11 +21,7 @@ type MessageComposerProps = {
   attachmentInputRef: RefObject<HTMLInputElement | null>;
   composerInputRef: RefObject<HTMLTextAreaElement | null>;
   uploading: boolean;
-  inputMode: InputMode;
   liveStatus: LiveStatus;
-  liveMuted: boolean;
-  liveSpeakerVolume: number;
-  liveMicVolume: number;
   busyChat: boolean;
   sessionId: string;
   draft: string;
@@ -37,13 +32,8 @@ type MessageComposerProps = {
   onDraftChange: (value: string) => void;
   onSendMessage: () => void;
   onCancelChat: () => void;
-  onSelectChatMode: () => void;
-  onSwitchToLive: () => void;
   onSelectTool: (toolId: ComposerToolID) => void;
-  onToggleLiveMute: () => void;
-  onToggleLiveCapture: () => void;
-  onLiveSpeakerVolumeChange: (value: number) => void;
-  onLiveMicVolumeChange: (value: number) => void;
+  onToggleLive: () => void;
   formatNumber: (value: number) => string;
 };
 
@@ -59,11 +49,7 @@ export function MessageComposer({
   attachmentInputRef,
   composerInputRef,
   uploading,
-  inputMode,
   liveStatus,
-  liveMuted,
-  liveSpeakerVolume,
-  liveMicVolume,
   busyChat,
   sessionId,
   draft,
@@ -74,16 +60,11 @@ export function MessageComposer({
   onDraftChange,
   onSendMessage,
   onCancelChat,
-  onSelectChatMode,
-  onSwitchToLive,
   onSelectTool,
-  onToggleLiveMute,
-  onToggleLiveCapture,
-  onLiveSpeakerVolumeChange,
-  onLiveMicVolumeChange,
+  onToggleLive,
   formatNumber
 }: MessageComposerProps) {
-  const canUseText = inputMode === "text" && liveStatus === "idle";
+  const canUseText = true;
   const canSend = canUseText && (!!draft.trim() || pendingAttachments.length > 0) && !!sessionId;
   const expandedComposer = draft.length > 80 || draft.includes("\n");
   const composerClassName = [
@@ -118,32 +99,18 @@ export function MessageComposer({
             ref={composerInputRef as Ref<HTMLTextAreaElement>}
             value={draft}
             aria-label="Message"
-            placeholder={inputMode === "live" ? "Live mode is active" : placeholderForTool(selectedToolId)}
+            placeholder={placeholderForTool(selectedToolId)}
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={handleKeyDown}
             disabled={!canUseText}
             rows={1}
           />
           <div className="composer-actions">
-            <ToolModeSelector
-              inputMode={inputMode}
-              busyChat={busyChat}
-              sessionId={sessionId}
-              onSelectChat={onSelectChatMode}
-              onSelectLive={onSwitchToLive}
-            />
             <LiveVoiceControls
-              inputMode={inputMode}
               liveStatus={liveStatus}
-              liveMuted={liveMuted}
-              speakerVolume={liveSpeakerVolume}
-              micVolume={liveMicVolume}
               busyChat={busyChat}
               sessionId={sessionId}
-              onToggleSpeakerMute={onToggleLiveMute}
-              onToggleMicMute={onToggleLiveCapture}
-              onSpeakerVolumeChange={onLiveSpeakerVolumeChange}
-              onMicVolumeChange={onLiveMicVolumeChange}
+              onToggleLive={onToggleLive}
             />
             <SendButton busyChat={busyChat} canSend={canSend} onSend={onSendMessage} onCancel={onCancelChat} />
           </div>
