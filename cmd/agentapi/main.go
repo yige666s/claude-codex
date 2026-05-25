@@ -87,6 +87,23 @@ func main() {
 	messageSearchEmbeddingIndexTaskType := flag.String("message-search-embedding-index-task-type", firstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_INDEX_TASK_TYPE"), "RETRIEVAL_DOCUMENT"), "Vertex AI embedding task_type for indexed message documents")
 	messageSearchEmbeddingAutoTruncate := flag.Bool("message-search-embedding-auto-truncate", envBool("AGENT_API_MESSAGE_SEARCH_EMBEDDING_AUTO_TRUNCATE", true), "allow Vertex AI embedding input auto truncation")
 	messageSearchRRFK := flag.Int("message-search-rrf-k", envInt("AGENT_API_MESSAGE_SEARCH_RRF_K", 60), "RRF k constant for hybrid message search ranking")
+	memoryVectorEnabled := flag.Bool("memory-vector-enabled", envBool("AGENT_API_MEMORY_VECTOR_ENABLED", true), "enable Qdrant vector indexing and retrieval for saved memory when embeddings are configured")
+	memoryVectorQdrantEndpoint := flag.String("memory-vector-qdrant-endpoint", firstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_QDRANT_ENDPOINT"), os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_ENDPOINT"), os.Getenv("AGENT_API_QDRANT_ENDPOINT")), "Qdrant endpoint for saved memory vector retrieval")
+	memoryVectorQdrantCollection := flag.String("memory-vector-qdrant-collection", firstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_QDRANT_COLLECTION"), "agent_memories"), "Qdrant collection for saved memory vectors")
+	memoryVectorQdrantAPIKey := flag.String("memory-vector-qdrant-api-key", firstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_QDRANT_API_KEY"), os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_API_KEY"), os.Getenv("AGENT_API_QDRANT_API_KEY")), "Qdrant API key for saved memory vectors")
+	memoryVectorQdrantScoreThreshold := flag.Float64("memory-vector-qdrant-score-threshold", envFloat64("AGENT_API_MEMORY_VECTOR_QDRANT_SCORE_THRESHOLD", envFloat64("AGENT_API_MESSAGE_SEARCH_QDRANT_SCORE_THRESHOLD", 0)), "minimum Qdrant saved memory vector search score; 0 disables")
+	memoryVectorEmbeddingProvider := flag.String("memory-vector-embedding-provider", firstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_PROVIDER"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER"), os.Getenv("AGENT_API_EMBEDDING_PROVIDER")), "embedding provider for saved memory vector retrieval: openai or vertex")
+	memoryVectorEmbeddingEndpoint := flag.String("memory-vector-embedding-endpoint", firstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_ENDPOINT"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT"), os.Getenv("AGENT_API_EMBEDDING_ENDPOINT")), "embedding endpoint for saved memory vector retrieval")
+	memoryVectorEmbeddingAPIKey := flag.String("memory-vector-embedding-api-key", firstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"), os.Getenv("OPENAI_API_KEY")), "embedding API key for OpenAI-compatible saved memory vector retrieval")
+	memoryVectorEmbeddingAccessToken := flag.String("memory-vector-embedding-token", firstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_TOKEN"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_TOKEN"), os.Getenv("VERTEX_ACCESS_TOKEN"), os.Getenv("GOOGLE_OAUTH_ACCESS_TOKEN"), os.Getenv("GOOGLE_ACCESS_TOKEN")), "OAuth access token for Vertex AI saved memory vector retrieval; service account env or gcloud are used when empty")
+	memoryVectorEmbeddingModel := flag.String("memory-vector-embedding-model", firstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_MODEL"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL")), "embedding model for saved memory vector retrieval")
+	memoryVectorEmbeddingDimensions := flag.Int("memory-vector-embedding-dimensions", envInt("AGENT_API_MEMORY_VECTOR_EMBEDDING_DIMENSIONS", envInt("AGENT_API_MESSAGE_SEARCH_EMBEDDING_DIMENSIONS", 0)), "embedding vector dimensions for saved memory; 0 uses provider default")
+	memoryVectorEmbeddingProjectID := flag.String("memory-vector-embedding-project-id", firstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_PROJECT_ID"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID"), os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")), "Google Cloud project ID for Vertex AI saved memory embeddings")
+	memoryVectorEmbeddingLocation := flag.String("memory-vector-embedding-location", firstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_LOCATION"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION"), os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "global"), "Vertex AI location for saved memory embeddings")
+	memoryVectorEmbeddingTaskType := flag.String("memory-vector-embedding-task-type", firstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_TASK_TYPE"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_TASK_TYPE"), "RETRIEVAL_QUERY"), "Vertex AI embedding task_type for saved memory retrieval queries")
+	memoryVectorEmbeddingIndexTaskType := flag.String("memory-vector-embedding-index-task-type", firstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_INDEX_TASK_TYPE"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_INDEX_TASK_TYPE"), "RETRIEVAL_DOCUMENT"), "Vertex AI embedding task_type for indexed saved memory documents")
+	memoryVectorEmbeddingAutoTruncate := flag.Bool("memory-vector-embedding-auto-truncate", envBool("AGENT_API_MEMORY_VECTOR_EMBEDDING_AUTO_TRUNCATE", envBool("AGENT_API_MESSAGE_SEARCH_EMBEDDING_AUTO_TRUNCATE", true)), "allow Vertex AI saved memory embedding input auto truncation")
+	memoryVectorRRFK := flag.Int("memory-vector-rrf-k", envInt("AGENT_API_MEMORY_VECTOR_RRF_K", envInt("AGENT_API_MESSAGE_SEARCH_RRF_K", 60)), "RRF k constant for saved memory hybrid retrieval")
 	workspace := flag.String("workspace", mustWorkingDir(), "default working directory")
 	userWorkspaceRoot := flag.String("user-workspace-root", os.Getenv("AGENT_API_USER_WORKSPACE_ROOT"), "root directory for per-user sandboxed workspaces")
 	allowCustomWorkingDir := flag.Bool("allow-custom-working-dir", envBool("AGENT_API_ALLOW_CUSTOM_WORKING_DIR", false), "allow request-provided working_dir when no user workspace root is configured")
@@ -445,6 +462,27 @@ func main() {
 			EmbeddingIndexTaskType:     *messageSearchEmbeddingIndexTaskType,
 			EmbeddingAutoTruncate:      *messageSearchEmbeddingAutoTruncate,
 			RRFK:                       *messageSearchRRFK,
+		},
+		MemoryVector: agentruntime.MemoryVectorConfig{
+			Enabled:                *memoryVectorEnabled,
+			QdrantEndpoint:         *memoryVectorQdrantEndpoint,
+			QdrantCollection:       *memoryVectorQdrantCollection,
+			QdrantAPIKey:           *memoryVectorQdrantAPIKey,
+			QdrantScoreThreshold:   *memoryVectorQdrantScoreThreshold,
+			EmbeddingProvider:      *memoryVectorEmbeddingProvider,
+			EmbeddingEndpoint:      *memoryVectorEmbeddingEndpoint,
+			EmbeddingAPIKey:        *memoryVectorEmbeddingAPIKey,
+			EmbeddingAccessToken:   *memoryVectorEmbeddingAccessToken,
+			EmbeddingModel:         *memoryVectorEmbeddingModel,
+			EmbeddingDimensions:    *memoryVectorEmbeddingDimensions,
+			EmbeddingTimeout:       *messageSearchTimeout,
+			EmbeddingProjectID:     *memoryVectorEmbeddingProjectID,
+			EmbeddingLocation:      *memoryVectorEmbeddingLocation,
+			EmbeddingTaskType:      *memoryVectorEmbeddingTaskType,
+			EmbeddingIndexTaskType: *memoryVectorEmbeddingIndexTaskType,
+			EmbeddingAutoTruncate:  *memoryVectorEmbeddingAutoTruncate,
+			Timeout:                *messageSearchTimeout,
+			RRFK:                   *memoryVectorRRFK,
 		},
 		Live: agentruntime.LiveConfig{
 			Enabled:                    *liveEnabled,

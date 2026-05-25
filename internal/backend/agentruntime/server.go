@@ -675,16 +675,26 @@ func (s *Server) handleAdminSkills(w http.ResponseWriter, r *http.Request, user 
 	switch {
 	case r.Method == http.MethodGet && len(parts) == 3:
 		s.handleAdminListSkills(w, r)
+	case r.Method == http.MethodPost && len(parts) == 3:
+		s.handleAdminImportSkill(w, r, user)
 	case r.Method == http.MethodPatch && len(parts) == 4:
 		s.handleAdminUpdateSkill(w, r, user, parts[3])
 	case r.Method == http.MethodGet && len(parts) == 5 && parts[4] == "versions":
 		s.handleAdminListSkillVersions(w, r, parts[3])
+	case r.Method == http.MethodGet && len(parts) == 5 && parts[4] == "releases":
+		s.handleAdminListSkillReleases(w, r, parts[3])
 	case r.Method == http.MethodPost && len(parts) == 5 && parts[4] == "review":
 		s.handleAdminReviewSkill(w, r, parts[3])
+	case r.Method == http.MethodPost && len(parts) == 5 && parts[4] == "submit-review":
+		s.handleAdminSubmitSkillReview(w, r, user, parts[3])
+	case r.Method == http.MethodPost && len(parts) == 5 && parts[4] == "rollback":
+		s.handleAdminRollbackSkill(w, r, user, parts[3])
 	case r.Method == http.MethodGet && len(parts) == 5 && parts[4] == "executions":
 		s.handleAdminListSkillExecutions(w, r, parts[3])
 	case r.Method == http.MethodGet && len(parts) == 5 && parts[4] == "analytics":
 		s.handleAdminSkillAnalytics(w, r, parts[3])
+	case r.Method == http.MethodGet && len(parts) == 6 && parts[4] == "versions" && parts[5] == "diff":
+		s.handleAdminSkillVersionDiff(w, r, parts[3])
 	case r.Method == http.MethodPost && len(parts) == 5:
 		s.handleAdminSetSkillStatus(w, r, user, parts[3], parts[4])
 	default:
@@ -1488,6 +1498,55 @@ func adminUserFilterFromRequest(r *http.Request) AdminUserFilter {
 	}
 }
 
+func (s *Server) handleAdminImportSkill(w http.ResponseWriter, r *http.Request, user User) {
+	var body struct {
+		Skill     SkillRegistryRecord `json:"skill"`
+		Changelog string              `json:"changelog"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	record := body.Skill
+	if record.Name == "" {
+		record = SkillRegistryRecord{
+			Name:        strings.TrimSpace(skillMetadataValueString(body.Skill.Metadata["name"])),
+			DisplayName: body.Skill.DisplayName,
+			Description: body.Skill.Description,
+			Category:    body.Skill.Category,
+			Icon:        body.Skill.Icon,
+			Status:      body.Skill.Status,
+			Version:     body.Skill.Version,
+			Source:      body.Skill.Source,
+			SkillRoot:   body.Skill.SkillRoot,
+			Metadata:    body.Skill.Metadata,
+			ContentHash: body.Skill.ContentHash,
+		}
+	}
+	if record.Status == SkillStatusPublished {
+		review := ReviewSkillForPublication(record)
+		if !review.Passed {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "skill review failed", "review": review})
+			return
+		}
+	}
+	updated, err := s.skillRegistry.ImportSkill(r.Context(), record, body.Changelog)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if updated.Status == SkillStatusPublished {
+		if err := s.skillRegistry.RecordSkillRelease(r.Context(), updated, body.Changelog, user.ID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	s.refreshSkillCatalog(r.Context())
+	s.recordGovernanceEvent("skill_import")
+	s.auditEvent(r, "skill_import", user, map[string]any{"skill_name": updated.Name, "status": updated.Status})
+	writeJSON(w, http.StatusCreated, map[string]any{"skill": updated})
+}
+
 func (s *Server) handleAdminUpdateSkill(w http.ResponseWriter, r *http.Request, user User, name string) {
 	var body struct {
 		DisplayName *string        `json:"display_name"`
@@ -1570,6 +1629,15 @@ func (s *Server) handleAdminUpdateSkill(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 	}
+	if body.Status != nil {
+		nextStatus := normalizeSkillStatus(*body.Status)
+		if nextStatus == SkillStatusPublished || nextStatus == SkillStatusArchived {
+			if err := s.skillRegistry.RecordSkillRelease(r.Context(), updated, stringValue(body.Changelog), user.ID); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+	}
 	s.refreshSkillCatalog(r.Context())
 	s.recordGovernanceEvent("skill_update")
 	s.auditEvent(r, "skill_update", user, map[string]any{"skill_name": updated.Name, "status": updated.Status})
@@ -1620,9 +1688,15 @@ func (s *Server) handleAdminSetSkillStatus(w http.ResponseWriter, r *http.Reques
 	case "unpublish":
 		status = SkillStatusUnpublished
 		event = "skill_unpublish"
+	case "submit-review", "review-pending", "review_pending":
+		status = SkillStatusReviewPending
+		event = "skill_review_pending"
 	case "disable":
 		status = SkillStatusDisabled
 		event = "skill_disable"
+	case "archive":
+		status = SkillStatusArchived
+		event = "skill_archive"
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
@@ -1658,6 +1732,12 @@ func (s *Server) handleAdminSetSkillStatus(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
+	if status == SkillStatusPublished || status == SkillStatusArchived {
+		if err := s.skillRegistry.RecordSkillRelease(r.Context(), updated, body.Changelog, user.ID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	s.refreshSkillCatalog(r.Context())
 	s.recordGovernanceEvent(event)
 	s.auditEvent(r, event, user, map[string]any{"skill_name": updated.Name, "status": updated.Status})
@@ -1684,6 +1764,147 @@ func (s *Server) handleAdminReviewSkill(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"review": ReviewSkillForPublication(record)})
+}
+
+func (s *Server) handleAdminSubmitSkillReview(w http.ResponseWriter, r *http.Request, user User, name string) {
+	var body struct {
+		Changelog string `json:"changelog"`
+	}
+	if err := readOptionalJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	record, err := s.skillRegistry.GetSkill(r.Context(), name)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": "skill not found"})
+		return
+	}
+	review := ReviewSkillForPublication(record)
+	if !review.Passed {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "skill review failed", "review": review})
+		return
+	}
+	updated, err := s.skillRegistry.SetSkillStatus(r.Context(), name, SkillStatusReviewPending)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := s.skillRegistry.RecordSkillVersion(r.Context(), updated, firstNonEmptyString(body.Changelog, "Submitted for review")); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.refreshSkillCatalog(r.Context())
+	s.recordGovernanceEvent("skill_review_pending")
+	s.auditEvent(r, "skill_review_pending", user, map[string]any{"skill_name": updated.Name, "status": updated.Status})
+	writeJSON(w, http.StatusOK, map[string]any{"skill": updated, "review": review})
+}
+
+func (s *Server) handleAdminListSkillReleases(w http.ResponseWriter, r *http.Request, name string) {
+	releases, err := s.skillRegistry.ListSkillReleases(r.Context(), name)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"releases": releases})
+}
+
+func (s *Server) handleAdminRollbackSkill(w http.ResponseWriter, r *http.Request, user User, name string) {
+	var body struct {
+		Version     string `json:"version"`
+		ContentHash string `json:"content_hash"`
+		Status      string `json:"status"`
+		Changelog   string `json:"changelog"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	current, err := s.skillRegistry.GetSkill(r.Context(), name)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": "skill not found"})
+		return
+	}
+	versions, err := s.skillRegistry.ListSkillVersions(r.Context(), name)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	version, ok := findSkillVersion(versions, body.Version, body.ContentHash)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "skill version not found"})
+		return
+	}
+	rolled := skillRegistryRecordFromVersion(current, version)
+	if body.Status != "" {
+		if !validSkillStatus(body.Status) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid skill status"})
+			return
+		}
+		rolled.Status = normalizeSkillStatus(body.Status)
+	}
+	if rolled.Status == SkillStatusPublished {
+		review := ReviewSkillForPublication(rolled)
+		if !review.Passed {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "skill review failed", "review": review})
+			return
+		}
+	}
+	updated, err := s.skillRegistry.UpdateSkill(r.Context(), rolled)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	changelog := firstNonEmptyString(body.Changelog, "Rolled back to version "+version.Version)
+	if err := s.skillRegistry.RecordSkillVersion(r.Context(), updated, changelog); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if updated.Status == SkillStatusPublished {
+		if err := s.skillRegistry.RecordSkillRelease(r.Context(), updated, changelog, user.ID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	s.refreshSkillCatalog(r.Context())
+	s.recordGovernanceEvent("skill_rollback")
+	s.auditEvent(r, "skill_rollback", user, map[string]any{"skill_name": updated.Name, "version": updated.Version, "content_hash": updated.ContentHash})
+	writeJSON(w, http.StatusOK, map[string]any{"skill": updated, "rolled_back_from": current})
+}
+
+func (s *Server) handleAdminSkillVersionDiff(w http.ResponseWriter, r *http.Request, name string) {
+	current, err := s.skillRegistry.GetSkill(r.Context(), name)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": "skill not found"})
+		return
+	}
+	versions, err := s.skillRegistry.ListSkillVersions(r.Context(), name)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	from, ok := resolveSkillDiffRecord(current, versions, r.URL.Query().Get("from_version"), r.URL.Query().Get("from_hash"), r.URL.Query().Get("from"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "from skill version not found"})
+		return
+	}
+	to, ok := resolveSkillDiffRecord(current, versions, r.URL.Query().Get("to_version"), r.URL.Query().Get("to_hash"), r.URL.Query().Get("to"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "to skill version not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"diff": diffSkillRegistryRecords(from, to), "from": from, "to": to})
 }
 
 func (s *Server) handleAdminListSkillExecutions(w http.ResponseWriter, r *http.Request, name string) {
@@ -1754,11 +1975,117 @@ func stringValue(value *string) string {
 func validSkillStatus(status string) bool {
 	status = strings.ToLower(strings.TrimSpace(status))
 	switch status {
-	case SkillStatusDraft, SkillStatusPublished, SkillStatusUnpublished, SkillStatusDisabled, SkillStatusArchived:
+	case SkillStatusDraft, SkillStatusReviewPending, "review-pending", "review", SkillStatusPublished, SkillStatusUnpublished, SkillStatusDisabled, SkillStatusArchived:
 		return true
 	default:
 		return false
 	}
+}
+
+func findSkillVersion(versions []SkillVersionRecord, version, contentHash string) (SkillVersionRecord, bool) {
+	version = strings.TrimSpace(version)
+	contentHash = strings.TrimSpace(contentHash)
+	for _, record := range versions {
+		if version != "" && record.Version != version {
+			continue
+		}
+		if contentHash != "" && record.ContentHash != contentHash {
+			continue
+		}
+		if version == "" && contentHash == "" {
+			continue
+		}
+		return record, true
+	}
+	return SkillVersionRecord{}, false
+}
+
+func skillRegistryRecordFromVersion(current SkillRegistryRecord, version SkillVersionRecord) SkillRegistryRecord {
+	record := current
+	record.Version = strings.TrimSpace(version.Version)
+	record.ContentHash = strings.TrimSpace(version.ContentHash)
+	if value := skillMetadataValueString(version.Metadata["display_name"]); value != "" {
+		record.DisplayName = value
+	}
+	if value := skillMetadataValueString(version.Metadata["description"]); value != "" {
+		record.Description = value
+	}
+	if value := skillMetadataValueString(version.Metadata["category"]); value != "" {
+		record.Category = value
+	}
+	if value := skillMetadataValueString(version.Metadata["icon"]); value != "" {
+		record.Icon = value
+	}
+	if value := skillMetadataValueString(version.Metadata["status"]); value != "" {
+		record.Status = normalizeSkillStatus(value)
+	}
+	if value := skillMetadataValueString(version.Metadata["source"]); value != "" {
+		record.Source = value
+	}
+	if value := skillMetadataValueString(version.Metadata["skill_root"]); value != "" {
+		record.SkillRoot = value
+	}
+	if metadata, ok := version.Metadata["metadata"].(map[string]any); ok {
+		record.Metadata = copySkillMetadata(metadata)
+	}
+	return normalizeSkillRegistryRecord(record)
+}
+
+func resolveSkillDiffRecord(current SkillRegistryRecord, versions []SkillVersionRecord, version, hash, alias string) (SkillRegistryRecord, bool) {
+	alias = strings.ToLower(strings.TrimSpace(alias))
+	if alias == "current" || (alias == "" && strings.TrimSpace(version) == "" && strings.TrimSpace(hash) == "") {
+		return normalizeSkillRegistryRecord(current), true
+	}
+	if alias != "" && alias != "current" {
+		version = alias
+	}
+	found, ok := findSkillVersion(versions, version, hash)
+	if !ok {
+		return SkillRegistryRecord{}, false
+	}
+	return skillRegistryRecordFromVersion(current, found), true
+}
+
+func diffSkillRegistryRecords(from, to SkillRegistryRecord) []map[string]any {
+	fields := []struct {
+		name string
+		a    any
+		b    any
+	}{
+		{"display_name", from.DisplayName, to.DisplayName},
+		{"description", from.Description, to.Description},
+		{"category", from.Category, to.Category},
+		{"icon", from.Icon, to.Icon},
+		{"status", from.Status, to.Status},
+		{"version", from.Version, to.Version},
+		{"source", from.Source, to.Source},
+		{"skill_root", from.SkillRoot, to.SkillRoot},
+		{"content_hash", from.ContentHash, to.ContentHash},
+		{"metadata", stableJSONMap(from.Metadata), stableJSONMap(to.Metadata)},
+	}
+	out := make([]map[string]any, 0)
+	for _, field := range fields {
+		if fmt.Sprint(field.a) == fmt.Sprint(field.b) {
+			continue
+		}
+		out = append(out, map[string]any{
+			"field": field.name,
+			"from":  field.a,
+			"to":    field.b,
+		})
+	}
+	return out
+}
+
+func stableJSONMap(value map[string]any) string {
+	if len(value) == 0 {
+		return "{}"
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return string(data)
 }
 
 func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, user User) {

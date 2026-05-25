@@ -414,6 +414,7 @@ type RuntimeConfig struct {
 	SkillShellTimeout     time.Duration
 	SkillShellSandbox     SkillShellSandboxConfig
 	MessageSearch         MessageSearchConfig
+	MemoryVector          MemoryVectorConfig
 	Live                  LiveConfig
 }
 
@@ -476,6 +477,31 @@ type MessageSearchConfig struct {
 	EmbeddingAutoTruncate  bool
 
 	RRFK int
+}
+
+type MemoryVectorConfig struct {
+	Enabled bool
+
+	QdrantEndpoint       string
+	QdrantCollection     string
+	QdrantAPIKey         string
+	QdrantScoreThreshold float64
+
+	EmbeddingProvider      string
+	EmbeddingEndpoint      string
+	EmbeddingAPIKey        string
+	EmbeddingAccessToken   string
+	EmbeddingModel         string
+	EmbeddingDimensions    int
+	EmbeddingTimeout       time.Duration
+	EmbeddingProjectID     string
+	EmbeddingLocation      string
+	EmbeddingTaskType      string
+	EmbeddingIndexTaskType string
+	EmbeddingAutoTruncate  bool
+
+	Timeout time.Duration
+	RRFK    int
 }
 
 type ToolPolicy struct {

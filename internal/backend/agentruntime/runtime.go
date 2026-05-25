@@ -143,6 +143,9 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		jobEvents:             newJobEventBroker(128),
 		localVectorIndex:      true,
 	}
+	if memory != nil {
+		runtime.memory = NewMemoryVectorService(memory, config.MemoryVector, nil)
+	}
 	if _, ok := sessions.(MessageRepository); ok {
 		if metaStore, ok := sessions.(MessageEmbeddingMetaStore); ok && messageVectorIndexingEnabled(config.MessageSearch) {
 			indexer := NewQdrantMessageVectorIndexer(config.MessageSearch, metaStore)

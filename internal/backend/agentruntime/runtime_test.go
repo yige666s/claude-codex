@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -946,6 +947,42 @@ func TestRuntimeExtractsMemoryFromTextAsset(t *testing.T) {
 	}
 	if len(matches) != 1 {
 		t.Fatalf("expected source-ref filtered memory, got %#v", matches)
+	}
+}
+
+func TestRuntimeDoesNotCreateGenericMemoryForUnrecognizedImageAsset(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	memory := NewFileMemoryService(root)
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(root),
+		memory,
+		nil,
+		func(Scope) Runner { return echoRunner{} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	attachment, err := runtime.CreateAttachment(ctx, "alice", session.ID, "photo.png", "image/png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+	items, err := runtime.ExtractMemoryFromAsset(ctx, "alice", AssetKindAttachment, attachment.ID, MemoryAssetExtractionOptions{})
+	if err != nil {
+		t.Fatalf("extract memory: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("image without vision memory should not create generic filename memory: %#v", items)
+	}
+	matches, err := memory.ListMemoryItems(ctx, "alice", MemoryItemFilter{SourceKind: AssetKindAttachment, SourceID: attachment.ID})
+	if err != nil {
+		t.Fatalf("list memory: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no generic image memory, got %#v", matches)
 	}
 }
 
@@ -4297,6 +4334,97 @@ func TestAdminSkillRegistryRoutesRefreshPublishedSkills(t *testing.T) {
 	}
 }
 
+func TestAdminSkillProductizationLifecycleRoutes(t *testing.T) {
+	registry := newFakeSkillRegistry([]SkillRegistryRecord{
+		{Name: "docx", DisplayName: "Docx", Description: "Create and edit docx files", Status: SkillStatusUnpublished, Version: "1.0.0", ContentHash: "hash-v1", Metadata: map[string]any{"user_invocable": true}},
+	})
+	if err := registry.RecordSkillVersion(context.Background(), registry.records["docx"], "initial"); err != nil {
+		t.Fatalf("seed version: %v", err)
+	}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: t.TempDir(), TurnTimeout: time.Minute},
+		NewFileSessionStore(t.TempDir()),
+		NewFileMemoryService(t.TempDir()),
+		NewRegistrySkillCatalog(fakeSkillCatalog{}, registry.recordsSlice()),
+		func(Scope) Runner { return echoRunner{} },
+	)
+	server := NewServer(runtime, HeaderAuthenticator{UserHeader: "X-User-ID"}, NoopRateLimiter{}, nil)
+	server.SetAdminToken("secret")
+	server.SetSkillRegistry(registry)
+
+	admin := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("X-User-ID", "admin")
+		req.Header.Set("X-Admin-Token", "secret")
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+
+	importRec := admin(http.MethodPost, "/v1/admin/skills", `{"skill":{"name":"imported","display_name":"Imported","description":"Imported skill ready for review","status":"review_pending","version":"0.1.0","content_hash":"hash-import","metadata":{"user_invocable":true}},"changelog":"imported"}`)
+	if importRec.Code != http.StatusCreated {
+		t.Fatalf("import status = %d body=%s", importRec.Code, importRec.Body.String())
+	}
+	if imported, err := registry.GetSkill(context.Background(), "imported"); err != nil || imported.Status != SkillStatusReviewPending {
+		t.Fatalf("imported skill = %#v err=%v", imported, err)
+	}
+
+	patchRec := admin(http.MethodPatch, "/v1/admin/skills/docx", `{"description":"Create, edit, and review docx files","version":"2.0.0","metadata":{"category":"documents"},"changelog":"major update"}`)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch status = %d body=%s", patchRec.Code, patchRec.Body.String())
+	}
+	diffRec := admin(http.MethodGet, "/v1/admin/skills/docx/versions/diff?from_version=1.0.0&to=current", "")
+	if diffRec.Code != http.StatusOK {
+		t.Fatalf("diff status = %d body=%s", diffRec.Code, diffRec.Body.String())
+	}
+	if !strings.Contains(diffRec.Body.String(), "description") || !strings.Contains(diffRec.Body.String(), "2.0.0") {
+		t.Fatalf("diff missing expected changes: %s", diffRec.Body.String())
+	}
+
+	reviewRec := admin(http.MethodPost, "/v1/admin/skills/docx/submit-review", `{"changelog":"ready"}`)
+	if reviewRec.Code != http.StatusOK {
+		t.Fatalf("submit review status = %d body=%s", reviewRec.Code, reviewRec.Body.String())
+	}
+	reviewed, _ := registry.GetSkill(context.Background(), "docx")
+	if reviewed.Status != SkillStatusReviewPending {
+		t.Fatalf("expected review pending, got %#v", reviewed)
+	}
+
+	publishRec := admin(http.MethodPost, "/v1/admin/skills/docx/publish", `{"changelog":"release 2"}`)
+	if publishRec.Code != http.StatusOK {
+		t.Fatalf("publish status = %d body=%s", publishRec.Code, publishRec.Body.String())
+	}
+	releasesRec := admin(http.MethodGet, "/v1/admin/skills/docx/releases", "")
+	if releasesRec.Code != http.StatusOK {
+		t.Fatalf("releases status = %d body=%s", releasesRec.Code, releasesRec.Body.String())
+	}
+	var releasesBody struct {
+		Releases []SkillReleaseRecord `json:"releases"`
+	}
+	if err := json.Unmarshal(releasesRec.Body.Bytes(), &releasesBody); err != nil {
+		t.Fatalf("decode releases: %v", err)
+	}
+	if len(releasesBody.Releases) != 1 || releasesBody.Releases[0].Status != SkillStatusPublished {
+		t.Fatalf("unexpected releases: %#v", releasesBody.Releases)
+	}
+
+	archiveRec := admin(http.MethodPost, "/v1/admin/skills/docx/archive", `{"changelog":"retired"}`)
+	if archiveRec.Code != http.StatusOK {
+		t.Fatalf("archive status = %d body=%s", archiveRec.Code, archiveRec.Body.String())
+	}
+	rollbackRec := admin(http.MethodPost, "/v1/admin/skills/docx/rollback", `{"version":"1.0.0","status":"unpublished","changelog":"rollback"}`)
+	if rollbackRec.Code != http.StatusOK {
+		t.Fatalf("rollback status = %d body=%s", rollbackRec.Code, rollbackRec.Body.String())
+	}
+	rolled, _ := registry.GetSkill(context.Background(), "docx")
+	if rolled.Version != "1.0.0" || rolled.ContentHash != "hash-v1" || !strings.Contains(rolled.Description, "Create and edit") || rolled.Status != SkillStatusUnpublished {
+		t.Fatalf("unexpected rolled back skill: %#v", rolled)
+	}
+}
+
 func TestAdminOpsTroubleshootingRoutes(t *testing.T) {
 	runtime := testRuntime(t)
 	runtime.SetJobStore(NewMemoryJobStore())
@@ -4942,6 +5070,7 @@ type fakeSkillRegistry struct {
 	mu       sync.Mutex
 	records  map[string]SkillRegistryRecord
 	versions []SkillVersionRecord
+	releases []SkillReleaseRecord
 }
 
 func newFakeSkillRegistry(records []SkillRegistryRecord) *fakeSkillRegistry {
@@ -4988,6 +5117,18 @@ func (r *fakeSkillRegistry) UpdateSkill(_ context.Context, record SkillRegistryR
 	return record, nil
 }
 
+func (r *fakeSkillRegistry) ImportSkill(_ context.Context, record SkillRegistryRecord, changelog string) (SkillRegistryRecord, error) {
+	record = normalizeSkillRegistryRecord(record)
+	if record.Name == "" {
+		return SkillRegistryRecord{}, fmt.Errorf("skill name is required")
+	}
+	r.mu.Lock()
+	r.records[record.Name] = record
+	r.mu.Unlock()
+	_ = r.RecordSkillVersion(context.Background(), record, changelog)
+	return record, nil
+}
+
 func (r *fakeSkillRegistry) SetSkillStatus(ctx context.Context, name string, status string) (SkillRegistryRecord, error) {
 	record, err := r.GetSkill(ctx, name)
 	if err != nil {
@@ -5020,6 +5161,26 @@ func (r *fakeSkillRegistry) RecordSkillVersion(_ context.Context, record SkillRe
 		}
 	}
 	r.versions = append(r.versions, version)
+	return nil
+}
+
+func (r *fakeSkillRegistry) ListSkillReleases(_ context.Context, name string) ([]SkillReleaseRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]SkillReleaseRecord, 0, len(r.releases))
+	for _, release := range r.releases {
+		if release.SkillName == strings.TrimSpace(name) {
+			out = append(out, release)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeSkillRegistry) RecordSkillRelease(_ context.Context, record SkillRegistryRecord, changelog, actor string) error {
+	release := normalizeSkillReleaseRecord(record, changelog, actor)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.releases = append(r.releases, release)
 	return nil
 }
 

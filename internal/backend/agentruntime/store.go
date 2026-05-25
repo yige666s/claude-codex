@@ -481,6 +481,10 @@ func (m *FileMemoryService) PruneBefore(ctx context.Context, cutoff time.Time) (
 	return changed + pruned, err
 }
 
+func (m *FileMemoryService) ListAllMemoryItems(ctx context.Context) ([]MemoryItem, error) {
+	return m.listAllMemoryItems(ctx)
+}
+
 func (m *FileMemoryService) userMemoryPath(userID string) string {
 	return filepath.Join(m.root, "users", userPathID(userID), "memory", "user.md")
 }

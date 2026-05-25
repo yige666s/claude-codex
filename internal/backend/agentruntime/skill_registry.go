@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,11 +15,12 @@ import (
 )
 
 const (
-	SkillStatusDraft       = "draft"
-	SkillStatusPublished   = "published"
-	SkillStatusUnpublished = "unpublished"
-	SkillStatusDisabled    = "disabled"
-	SkillStatusArchived    = "archived"
+	SkillStatusDraft         = "draft"
+	SkillStatusReviewPending = "review_pending"
+	SkillStatusPublished     = "published"
+	SkillStatusUnpublished   = "unpublished"
+	SkillStatusDisabled      = "disabled"
+	SkillStatusArchived      = "archived"
 )
 
 type SkillRegistryRecord struct {
@@ -48,13 +50,28 @@ type SkillVersionRecord struct {
 	PublishedAt *time.Time     `json:"published_at,omitempty"`
 }
 
+type SkillReleaseRecord struct {
+	ID          string         `json:"id"`
+	SkillName   string         `json:"skill_name"`
+	Version     string         `json:"version,omitempty"`
+	ContentHash string         `json:"content_hash,omitempty"`
+	Status      string         `json:"status"`
+	Changelog   string         `json:"changelog,omitempty"`
+	Actor       string         `json:"actor,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
+}
+
 type SkillRegistryAdminStore interface {
 	ListSkills(ctx context.Context) ([]SkillRegistryRecord, error)
 	GetSkill(ctx context.Context, name string) (SkillRegistryRecord, error)
 	UpdateSkill(ctx context.Context, record SkillRegistryRecord) (SkillRegistryRecord, error)
+	ImportSkill(ctx context.Context, record SkillRegistryRecord, changelog string) (SkillRegistryRecord, error)
 	SetSkillStatus(ctx context.Context, name string, status string) (SkillRegistryRecord, error)
 	ListSkillVersions(ctx context.Context, name string) ([]SkillVersionRecord, error)
 	RecordSkillVersion(ctx context.Context, record SkillRegistryRecord, changelog string) error
+	ListSkillReleases(ctx context.Context, name string) ([]SkillReleaseRecord, error)
+	RecordSkillRelease(ctx context.Context, record SkillRegistryRecord, changelog, actor string) error
 }
 
 type SQLSkillRegistry struct {
@@ -104,6 +121,18 @@ func (s *SQLSkillRegistry) Init(ctx context.Context) error {
 	PRIMARY KEY (skill_name, version, content_hash)
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_skill_versions_skill_created ON agent_skill_versions (skill_name, created_at)`,
+		`CREATE TABLE IF NOT EXISTS agent_skill_releases (
+	id TEXT PRIMARY KEY,
+	skill_name TEXT NOT NULL,
+	version TEXT NOT NULL DEFAULT '',
+	content_hash TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT '',
+	changelog TEXT NOT NULL DEFAULT '',
+	actor TEXT NOT NULL DEFAULT '',
+	metadata TEXT NOT NULL DEFAULT '{}',
+	created_at ` + s.dialect.TimeType() + ` NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_skill_releases_skill_created ON agent_skill_releases (skill_name, created_at)`,
 	} {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return err
@@ -115,7 +144,10 @@ func (s *SQLSkillRegistry) Init(ctx context.Context) error {
 	if err := s.ensureLifecycleConstraints(ctx); err != nil {
 		return err
 	}
-	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skill_versions", "created_at", "published_at")
+	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skill_versions", "created_at", "published_at"); err != nil {
+		return err
+	}
+	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skill_releases", "created_at")
 }
 
 func (s *SQLSkillRegistry) ensureLifecycleConstraints(ctx context.Context) error {
@@ -128,6 +160,9 @@ func (s *SQLSkillRegistry) ensureLifecycleConstraints(ctx context.Context) error
 		)`,
 		postgresAddForeignKeyIfMissing("fk_agent_skill_versions_skill",
 			"agent_skill_versions",
+			"FOREIGN KEY (skill_name) REFERENCES agent_skills(name) ON DELETE CASCADE"),
+		postgresAddForeignKeyIfMissing("fk_agent_skill_releases_skill",
+			"agent_skill_releases",
 			"FOREIGN KEY (skill_name) REFERENCES agent_skills(name) ON DELETE CASCADE"),
 	} {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -238,6 +273,50 @@ ON CONFLICT(name) DO UPDATE SET
 	return err
 }
 
+func (s *SQLSkillRegistry) ImportSkill(ctx context.Context, record SkillRegistryRecord, changelog string) (SkillRegistryRecord, error) {
+	record = normalizeSkillRegistryRecord(record)
+	if record.Name == "" {
+		return SkillRegistryRecord{}, fmt.Errorf("skill name is required")
+	}
+	now := time.Now().UTC()
+	exists := false
+	if existing, err := s.GetSkill(ctx, record.Name); err == nil {
+		exists = true
+		if record.CreatedAt.IsZero() {
+			record.CreatedAt = existing.CreatedAt
+		}
+		if record.PublishedAt == nil && existing.PublishedAt != nil && record.Status == SkillStatusPublished {
+			record.PublishedAt = existing.PublishedAt
+		}
+	} else if errors.Is(err, sql.ErrNoRows) {
+		record.CreatedAt = now
+	} else {
+		return SkillRegistryRecord{}, err
+	}
+	record.UpdatedAt = now
+	if record.Status == SkillStatusPublished && record.PublishedAt == nil {
+		publishedAt := now
+		record.PublishedAt = &publishedAt
+	}
+	var updated SkillRegistryRecord
+	var err error
+	if exists {
+		updated, err = s.UpdateSkill(ctx, record)
+	} else {
+		err = s.UpsertSkill(ctx, record)
+		if err == nil {
+			updated, err = s.GetSkill(ctx, record.Name)
+		}
+	}
+	if err != nil {
+		return SkillRegistryRecord{}, err
+	}
+	if err := s.RecordSkillVersion(ctx, updated, changelog); err != nil {
+		return SkillRegistryRecord{}, err
+	}
+	return updated, nil
+}
+
 func (s *SQLSkillRegistry) UpdateSkill(ctx context.Context, record SkillRegistryRecord) (SkillRegistryRecord, error) {
 	record = normalizeSkillRegistryRecord(record)
 	record.UpdatedAt = time.Now().UTC()
@@ -341,8 +420,66 @@ ON CONFLICT(skill_name, version, content_hash) DO UPDATE SET
 	return err
 }
 
+func (s *SQLSkillRegistry) ListSkillReleases(ctx context.Context, name string) ([]SkillReleaseRecord, error) {
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`SELECT id, skill_name, version, content_hash, status, changelog, actor, metadata, created_at FROM agent_skill_releases WHERE skill_name = ? ORDER BY created_at DESC`), strings.TrimSpace(name))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var releases []SkillReleaseRecord
+	for rows.Next() {
+		record, err := scanSkillReleaseRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		releases = append(releases, record)
+	}
+	return releases, rows.Err()
+}
+
+func (s *SQLSkillRegistry) RecordSkillRelease(ctx context.Context, record SkillRegistryRecord, changelog, actor string) error {
+	release := normalizeSkillReleaseRecord(record, changelog, actor)
+	metadata, err := json.Marshal(release.Metadata)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
+INSERT INTO agent_skill_releases (id, skill_name, version, content_hash, status, changelog, actor, metadata, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+	status = excluded.status,
+	changelog = excluded.changelog,
+	actor = excluded.actor,
+	metadata = excluded.metadata`),
+		release.ID,
+		release.SkillName,
+		release.Version,
+		release.ContentHash,
+		release.Status,
+		release.Changelog,
+		release.Actor,
+		string(metadata),
+		sqlTimeValue(release.CreatedAt, s.dialect))
+	return err
+}
+
 type skillRegistryScanner interface {
 	Scan(dest ...any) error
+}
+
+func scanSkillReleaseRecord(row skillRegistryScanner) (SkillReleaseRecord, error) {
+	var record SkillReleaseRecord
+	var metadata string
+	var createdAt any
+	if err := row.Scan(&record.ID, &record.SkillName, &record.Version, &record.ContentHash, &record.Status, &record.Changelog, &record.Actor, &metadata, &createdAt); err != nil {
+		return SkillReleaseRecord{}, err
+	}
+	_ = json.Unmarshal([]byte(metadata), &record.Metadata)
+	var err error
+	if record.CreatedAt, err = parseSQLTime(createdAt); err != nil {
+		return SkillReleaseRecord{}, err
+	}
+	return record, nil
 }
 
 func scanSkillVersionRecord(row skillRegistryScanner) (SkillVersionRecord, error) {
@@ -493,14 +630,41 @@ func normalizeSkillVersionRecord(record SkillRegistryRecord, changelog string) S
 		Changelog:   strings.TrimSpace(changelog),
 		Metadata: map[string]any{
 			"display_name": record.DisplayName,
+			"description":  record.Description,
 			"category":     record.Category,
 			"icon":         record.Icon,
 			"status":       record.Status,
 			"source":       record.Source,
 			"skill_root":   record.SkillRoot,
+			"metadata":     record.Metadata,
 		},
 		CreatedAt:   now,
 		PublishedAt: record.PublishedAt,
+	}
+}
+
+func normalizeSkillReleaseRecord(record SkillRegistryRecord, changelog, actor string) SkillReleaseRecord {
+	record = normalizeSkillRegistryRecord(record)
+	now := time.Now().UTC()
+	idSource := strings.Join([]string{record.Name, record.Version, record.ContentHash, record.Status, strings.TrimSpace(actor), fmt.Sprintf("%d", now.UnixNano())}, "\x1f")
+	sum := sha256.Sum256([]byte(idSource))
+	return SkillReleaseRecord{
+		ID:          hex.EncodeToString(sum[:]),
+		SkillName:   record.Name,
+		Version:     record.Version,
+		ContentHash: record.ContentHash,
+		Status:      record.Status,
+		Changelog:   strings.TrimSpace(changelog),
+		Actor:       strings.TrimSpace(actor),
+		Metadata: map[string]any{
+			"display_name": record.DisplayName,
+			"description":  record.Description,
+			"category":     record.Category,
+			"icon":         record.Icon,
+			"source":       record.Source,
+			"skill_root":   record.SkillRoot,
+		},
+		CreatedAt: now,
 	}
 }
 
@@ -508,6 +672,8 @@ func normalizeSkillStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case SkillStatusDraft:
 		return SkillStatusDraft
+	case SkillStatusReviewPending, "review-pending", "review":
+		return SkillStatusReviewPending
 	case SkillStatusPublished:
 		return SkillStatusPublished
 	case SkillStatusUnpublished:

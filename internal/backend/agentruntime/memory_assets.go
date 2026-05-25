@@ -42,9 +42,6 @@ func (r *Runtime) ExtractMemoryFromAsset(ctx context.Context, userID, kind, asse
 	if err != nil {
 		return nil, err
 	}
-	if len(candidates) == 0 {
-		candidates = fallbackAssetMemoryCandidates(asset)
-	}
 	sourceRef := memorySourceRefForAsset(asset)
 	for i := range candidates {
 		candidates[i].Namespace = namespace
