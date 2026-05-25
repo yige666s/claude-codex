@@ -27,7 +27,7 @@ export function MessageList({
         <div className="empty-state">
           <div className="empty-orb" aria-hidden="true" />
           <h1>
-            Hello {userLabel}
+            Hi {userLabel}
             <span>How Can I Assist You Today?</span>
           </h1>
         </div>
