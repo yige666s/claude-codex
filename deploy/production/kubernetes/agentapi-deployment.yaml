@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentapi
+  labels:
+    app.kubernetes.io/name: agentapi
+    app.kubernetes.io/component: api
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentapi
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentapi
+        app.kubernetes.io/component: api
+    spec:
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: agentapi
+          image: ghcr.io/yige666s/claude-codex/agentapi:REPLACE_WITH_COMMIT_SHA
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: agentapi-prod-config
+            - secretRef:
+                name: agentapi-prod-secrets
+          env:
+            - name: AGENT_API_JOB_WORKER_ENABLED
+              value: "false"
+            - name: AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED
+              value: "false"
+            - name: AGENT_API_MESSAGE_ARCHIVE_WORKER_ENABLED
+              value: "false"
+            - name: AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_ENABLED
+              value: "false"
+          args:
+            - -addr
+            - :8081
+            - -store-backend
+            - sql
+            - -sql-driver
+            - pgx
+            - -sql-dialect
+            - postgres
+            - -data-dir
+            - /var/lib/agentapi
+            - -workspace
+            - /workspace
+            - -user-workspace-root
+            - /var/lib/agentapi/workspaces
+            - -enable-user-system
+            - -auth-mode
+            - jwt
+            - -artifact-store
+            - s3
+            - "-allow-dangerous-tools=false"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentapi
+  labels:
+    app.kubernetes.io/name: agentapi
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: agentapi
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agentapi
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentapi
+      app.kubernetes.io/component: api
+

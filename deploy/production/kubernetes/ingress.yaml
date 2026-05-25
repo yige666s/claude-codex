@@ -1,0 +1,56 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agentapi
+  annotations:
+    # Names differ by ingress controller. Keep WebSocket/SSE timeouts longer
+    # than AGENT_API_LIVE_SESSION_TIMEOUT.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "900"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "900"
+    nginx.ingress.kubernetes.io/proxy-body-size: "64m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - app.example.com
+      secretName: agentapi-prod-tls
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: agentapi
+                port:
+                  number: 8081
+          - path: /healthz
+            pathType: Exact
+            backend:
+              service:
+                name: agentapi
+                port:
+                  number: 8081
+          - path: /readyz
+            pathType: Exact
+            backend:
+              service:
+                name: agentapi
+                port:
+                  number: 8081
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: agentapi
+                port:
+                  number: 8081
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: agentweb
+                port:
+                  number: 80
+

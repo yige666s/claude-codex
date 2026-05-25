@@ -214,7 +214,7 @@ The service account needs enough permission to call Vertex AI, for example
 
 ## Deployment
 
-The current deployment model is Docker Compose on a server:
+The current test-server deployment model is Docker Compose on a server:
 
 ```bash
 cd /opt/agentapi/repo
@@ -233,6 +233,11 @@ Frontend production options:
   and configure CORS on AgentAPI.
 
 See [deploy/production/FRONTEND.md](deploy/production/FRONTEND.md).
+
+For a multi-instance production deployment, use the production deployment
+blueprint in [deploy/production/README.md](deploy/production/README.md). It
+covers API/worker separation, managed Postgres/Redis/object storage, Kubernetes
+reference manifests, release flow, operations, and go-live checks.
 
 ## Operations
 
@@ -291,6 +296,10 @@ make run-tui
 - [apps/web/README.md](apps/web/README.md)
 - [deploy/local/README.md](deploy/local/README.md)
 - [deploy/production/.env.example](deploy/production/.env.example)
+- [deploy/production/README.md](deploy/production/README.md)
+- [deploy/production/ARCHITECTURE.md](deploy/production/ARCHITECTURE.md)
+- [deploy/production/RELEASE_FLOW.md](deploy/production/RELEASE_FLOW.md)
+- [deploy/production/SIZING.md](deploy/production/SIZING.md)
 - [deploy/production/FRONTEND.md](deploy/production/FRONTEND.md)
 - [deploy/production/BACKUP_RESTORE.md](deploy/production/BACKUP_RESTORE.md)
 - [internal/backend/agentruntime/README.md](internal/backend/agentruntime/README.md)
