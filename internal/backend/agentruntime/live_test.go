@@ -35,7 +35,7 @@ func TestNormalizeLiveConfigUsesLowLatencyVADDefaults(t *testing.T) {
 	if config.LiveVADPrefixPadding != 150*time.Millisecond {
 		t.Fatalf("prefix padding = %s", config.LiveVADPrefixPadding)
 	}
-	if config.LiveVADSilenceDuration != 500*time.Millisecond {
+	if config.LiveVADSilenceDuration != 350*time.Millisecond {
 		t.Fatalf("silence duration = %s", config.LiveVADSilenceDuration)
 	}
 }

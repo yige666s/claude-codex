@@ -333,7 +333,7 @@ func Default() Config {
 		LiveVADStartSensitivity:                 FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VAD_START_SENSITIVITY"), "START_SENSITIVITY_HIGH"),
 		LiveVADEndSensitivity:                   FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VAD_END_SENSITIVITY"), "END_SENSITIVITY_HIGH"),
 		LiveVADPrefixPadding:                    EnvDuration("AGENT_API_LIVE_VAD_PREFIX_PADDING", 150*time.Millisecond),
-		LiveVADSilenceDuration:                  EnvDuration("AGENT_API_LIVE_VAD_SILENCE_DURATION", 500*time.Millisecond),
+		LiveVADSilenceDuration:                  EnvDuration("AGENT_API_LIVE_VAD_SILENCE_DURATION", 350*time.Millisecond),
 		LiveSessionTimeout:                      EnvDuration("AGENT_API_LIVE_SESSION_TIMEOUT", 10*time.Minute),
 		AuthMode:                                FirstNonEmpty(os.Getenv("AGENT_API_AUTH_MODE"), "auto"),
 		AuthToken:                               os.Getenv("AGENT_API_AUTH_TOKEN"),

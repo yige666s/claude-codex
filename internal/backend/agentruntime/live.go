@@ -25,7 +25,7 @@ const (
 	defaultLiveInputAudioMIMEType = "audio/pcm;rate=16000"
 	defaultLiveSessionTimeout     = 10 * time.Minute
 	defaultLiveVADPrefixPadding   = 150 * time.Millisecond
-	defaultLiveVADSilenceDuration = 500 * time.Millisecond
+	defaultLiveVADSilenceDuration = 350 * time.Millisecond
 )
 
 type VertexLiveService struct {
