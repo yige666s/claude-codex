@@ -70,7 +70,8 @@ func NewServerWithLogger(runtime *Runtime, auth Authenticator, limiter RateLimit
 		logger:  componentLogger(logger, "http_server"),
 		metrics: NewMetricsRegistry(),
 		upgrader: websocket.Upgrader{
-			CheckOrigin: sameHostOrigin,
+			CheckOrigin:  sameHostOrigin,
+			Subprotocols: []string{"agentapi.bearer"},
 		},
 		readyChecks: make(map[string]readinessCheck),
 		shutdownCh:  make(chan struct{}),

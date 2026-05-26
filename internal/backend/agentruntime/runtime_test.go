@@ -2078,6 +2078,47 @@ func TestJWTAuthenticatorAcceptsWebSocketProtocolBearer(t *testing.T) {
 	}
 }
 
+func TestServerEchoesBearerWebSocketSubprotocol(t *testing.T) {
+	token := signTestJWT(t, "secret", map[string]any{
+		"sub": "alice",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	server := httptest.NewServer(NewServer(testRuntime(t), JWTAuthenticator{Secret: "secret"}, NoopRateLimiter{}, nil))
+	defer server.Close()
+
+	createReq, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/sessions", strings.NewReader(`{}`))
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create status = %d body=%s", resp.StatusCode, string(data))
+	}
+	var created state.Session
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created session: %v", err)
+	}
+
+	wsURL, _ := url.Parse(server.URL)
+	wsURL.Scheme = "ws"
+	wsURL.Path = "/v1/sessions/" + created.ID + "/ws"
+	dialer := websocket.Dialer{Subprotocols: []string{
+		"agentapi.bearer",
+		base64.RawURLEncoding.EncodeToString([]byte(token)),
+	}}
+	conn, _, err := dialer.Dial(wsURL.String(), nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+	if got := conn.Subprotocol(); got != "agentapi.bearer" {
+		t.Fatalf("websocket subprotocol = %q, want agentapi.bearer", got)
+	}
+}
+
 func TestJWTAuthenticatorRejectsInvalidSignature(t *testing.T) {
 	token := signTestJWT(t, "secret", map[string]any{"sub": "alice"})
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
