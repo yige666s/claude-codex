@@ -8,7 +8,9 @@ import (
 )
 
 func main() {
-	if err := agentapirun.NewCommand().Execute(); err != nil {
+	command := agentapirun.NewCommand()
+	command.SetArgs(agentapirun.NormalizeLegacyFlagArgs(os.Args[1:], command))
+	if err := command.Execute(); err != nil {
 		slog.Default().With("component", "agentapi").Error(err.Error())
 		os.Exit(1)
 	}

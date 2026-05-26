@@ -1,6 +1,8 @@
 package run
 
 import (
+	"os"
+
 	"github.com/spf13/cobra"
 
 	startupconfig "claude-codex/internal/backend/agentapi/config"
@@ -27,7 +29,9 @@ func NewCommand() *cobra.Command {
 }
 
 func Main() {
-	if err := NewCommand().Execute(); err != nil {
+	command := NewCommand()
+	command.SetArgs(NormalizeLegacyFlagArgs(os.Args[1:], command))
+	if err := command.Execute(); err != nil {
 		logFatal(err)
 	}
 }

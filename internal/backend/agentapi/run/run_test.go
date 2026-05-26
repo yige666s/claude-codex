@@ -33,6 +33,27 @@ func TestBuildLLMConfigOpenAIAndCustom(t *testing.T) {
 	}
 }
 
+func TestNormalizeLegacyFlagArgsAcceptsSingleDashLongFlags(t *testing.T) {
+	command := NewCommand()
+	got := NormalizeLegacyFlagArgs([]string{
+		"-addr", ":9090",
+		"-store-backend=sql",
+		"--data-dir", "/tmp/agentapi",
+		"-h",
+		"-unknown-long",
+	}, command)
+	want := []string{
+		"--addr", ":9090",
+		"--store-backend=sql",
+		"--data-dir", "/tmp/agentapi",
+		"-h",
+		"-unknown-long",
+	}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("NormalizeLegacyFlagArgs() = %#v, want %#v", got, want)
+	}
+}
+
 func TestBuildLLMConfigVertexUsesTokenEnv(t *testing.T) {
 	t.Setenv("VERTEX_ACCESS_TOKEN", "vertex-token")
 	cfg, err := bootstrap.BuildLLMConfig("vertex", "gemini-1.5-flash", "", "", "", 30)
