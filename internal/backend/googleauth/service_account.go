@@ -1,7 +1,6 @@
 package googleauth
 
 import (
-	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -12,7 +11,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"claude-codex/internal/backend/httpclient"
 )
 
 const (
@@ -146,22 +146,21 @@ func (s *ServiceAccountTokenSource) refreshLocked(ctx context.Context) (string, 
 	form := url.Values{}
 	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
 	form.Set("assertion", assertion)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.credentials.TokenURI, strings.NewReader(form.Encode()))
+	status, body, _, err := httpclient.New(
+		httpclient.WithHTTPClient(s.httpClient),
+		httpclient.WithComponent("google_service_account"),
+	).Data(ctx, http.MethodPost, s.credentials.TokenURI, []byte(form.Encode()),
+		httpclient.WithHeader("Content-Type", "application/x-www-form-urlencoded"),
+		httpclient.WithAnyStatus(),
+	)
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode >= http.StatusBadRequest {
-		return "", time.Time{}, fmt.Errorf("service account token request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	if status >= http.StatusBadRequest {
+		return "", time.Time{}, fmt.Errorf("service account token request failed: status %d: %s", status, strings.TrimSpace(string(body)))
 	}
 	var parsed tokenResponse
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&parsed); err != nil {
+	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", time.Time{}, fmt.Errorf("parse service account token response: %w", err)
 	}
 	parsed.AccessToken = strings.TrimSpace(parsed.AccessToken)

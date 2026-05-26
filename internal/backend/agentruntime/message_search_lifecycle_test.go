@@ -111,6 +111,24 @@ func TestElasticsearchMessageIndexManagerEnsureIntervalHonorsShortMaintenance(t 
 	}
 }
 
+func TestElasticsearchMessageIndexManagerBootstrapRetryPolicyHonorsShortMaintenance(t *testing.T) {
+	manager := NewElasticsearchMessageIndexManager(MessageSearchConfig{
+		Backend:                  messageSearchBackendElasticsearch,
+		Endpoint:                 "http://localhost:9200",
+		Index:                    "agent_messages",
+		IndexMaintenanceInterval: 10 * time.Second,
+		Timeout:                  time.Second,
+	}, nil)
+
+	policy := manager.bootstrapRetryPolicy()
+	if got := policy.Delay(1, nil); got != 10*time.Second {
+		t.Fatalf("bootstrap retry delay = %s, want 10s", got)
+	}
+	if got := policy.Delay(3, nil); got != 10*time.Second {
+		t.Fatalf("bootstrap retry max delay = %s, want 10s", got)
+	}
+}
+
 func TestElasticsearchMessageIndexManagerMaintainDowngradesAndClosesOldIndices(t *testing.T) {
 	now := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
 	type action struct {

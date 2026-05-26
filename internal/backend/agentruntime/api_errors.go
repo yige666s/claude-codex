@@ -1,9 +1,12 @@
 package agentruntime
 
 import (
+	"errors"
 	"net/http"
 	"regexp"
 	"strings"
+
+	"claude-codex/internal/backend/httpjson"
 )
 
 type APIError struct {
@@ -27,6 +30,25 @@ func normalizeAPIResponse(w http.ResponseWriter, status int, value any) any {
 		Message:   sanitizeAPIErrorMessage(message),
 		RequestID: w.Header().Get("X-Request-ID"),
 	}
+}
+
+func writeJSONError(w http.ResponseWriter, err error) {
+	if err == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request failed"})
+		return
+	}
+	var jsonErr *httpjson.Error
+	if errors.As(err, &jsonErr) {
+		message := sanitizeAPIErrorMessage(jsonErr.Error())
+		writeJSON(w, jsonErr.Status, APIError{
+			Error:     message,
+			Code:      firstNonEmptyString(jsonErr.Code, errorCodeForStatus(jsonErr.Status, message)),
+			Message:   message,
+			RequestID: w.Header().Get("X-Request-ID"),
+		})
+		return
+	}
+	writeJSON(w, httpjson.Status(err), map[string]string{"error": err.Error()})
 }
 
 func legacyErrorMessage(value any) (string, bool) {

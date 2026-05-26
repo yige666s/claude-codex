@@ -77,6 +77,93 @@ func TestBridgeAPIClientPollForWorkEmptyBodyReturnsNil(t *testing.T) {
 	}
 }
 
+func TestBridgeAPIClientRetriesBridgePost(t *testing.T) {
+	attempts := 0
+	client := NewBridgeAPIClient(
+		"https://bridge.test",
+		func(context.Context) (string, error) { return "oauth-token", nil },
+		nil,
+	)
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts == 1 {
+				return &http.Response{
+					StatusCode: http.StatusServiceUnavailable,
+					Body:       io.NopCloser(strings.NewReader("try again")),
+					Header:     make(http.Header),
+				}, nil
+			}
+			body, _ := json.Marshal(BridgeEnvironmentRegistration{
+				EnvironmentID:     "env-1",
+				EnvironmentSecret: "secret-1",
+			})
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(string(body))),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	result, err := client.RegisterBridgeEnvironment(context.Background(), BridgeEnvironmentConfig{
+		MachineName: "host",
+		Directory:   "/tmp/project",
+	})
+	if err != nil {
+		t.Fatalf("RegisterBridgeEnvironment: %v", err)
+	}
+	if result.EnvironmentID != "env-1" || attempts != 2 {
+		t.Fatalf("unexpected result/attempts: %+v attempts=%d", result, attempts)
+	}
+}
+
+func TestBridgeAPIClientRefreshesBearerOnUnauthorized(t *testing.T) {
+	tokens := []string{"old-token", "fresh-token"}
+	sourceCalls := 0
+	requests := make([]string, 0, 2)
+	client := NewBridgeAPIClient(
+		"https://bridge.test",
+		func(context.Context) (string, error) {
+			token := tokens[sourceCalls]
+			sourceCalls++
+			return token, nil
+		},
+		nil,
+	)
+	client.httpClient = &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requests = append(requests, r.Header.Get("Authorization"))
+			if len(requests) == 1 {
+				return &http.Response{
+					StatusCode: http.StatusUnauthorized,
+					Body:       io.NopCloser(strings.NewReader("expired")),
+					Header:     make(http.Header),
+				}, nil
+			}
+			body, _ := json.Marshal(BridgeEnvironmentRegistration{
+				EnvironmentID:     "env-1",
+				EnvironmentSecret: "secret-1",
+			})
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(string(body))),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	if _, err := client.RegisterBridgeEnvironment(context.Background(), BridgeEnvironmentConfig{MachineName: "host"}); err != nil {
+		t.Fatalf("RegisterBridgeEnvironment: %v", err)
+	}
+	if sourceCalls != 2 {
+		t.Fatalf("expected access token source to be called twice, got %d", sourceCalls)
+	}
+	if strings.Join(requests, ",") != "Bearer old-token,Bearer fresh-token" {
+		t.Fatalf("unexpected authorization headers: %v", requests)
+	}
+}
+
 func TestNewAuthenticatedBridgeAPIClient(t *testing.T) {
 	store := &fakeAuthStore{data: securestorage.Data{
 		"claudeAiOauth":      map[string]any{"access_token": "oauth-token", "refresh_token": "refresh", "expires_at": 4102444800, "scopes": []string{"user:profile"}},

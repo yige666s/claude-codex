@@ -1,11 +1,10 @@
 package agentruntime
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"claude-codex/internal/backend/httpclient"
 	"claude-codex/internal/harness/state"
 )
 
@@ -26,10 +26,10 @@ type MemoryVectorService struct {
 	base    MemoryService
 	items   MemoryItemService
 	indexer *QdrantMemoryVectorIndex
-	logger  *log.Logger
+	logger  *slog.Logger
 }
 
-func NewMemoryVectorService(base MemoryService, config MemoryVectorConfig, logger *log.Logger) MemoryService {
+func NewMemoryVectorService(base MemoryService, config MemoryVectorConfig, logger any) MemoryService {
 	if base == nil {
 		return base
 	}
@@ -41,7 +41,7 @@ func NewMemoryVectorService(base MemoryService, config MemoryVectorConfig, logge
 	if indexer == nil {
 		return base
 	}
-	return &MemoryVectorService{base: base, items: items, indexer: indexer, logger: logger}
+	return &MemoryVectorService{base: base, items: items, indexer: indexer, logger: componentLogger(structuredLogger(logger), "memory_vector")}
 }
 
 func (s *MemoryVectorService) LoadContext(ctx context.Context, userID string, session *state.Session) (string, error) {
@@ -64,7 +64,7 @@ func (s *MemoryVectorService) LoadContext(ctx context.Context, userID string, se
 	selected := mergeMemoryRetrievalResults(vectorItems, keywordItems, query, session.ID, defaultMemoryVectorLimit, s.indexer.config.RRFK)
 	if len(selected) == 0 {
 		if vectorErr != nil {
-			s.logf("memory vector retrieval failed: user=%s session=%s: %v", userID, session.ID, vectorErr)
+			s.logError(ctx, "memory vector retrieval failed", vectorErr, userID, session.ID, "")
 		}
 		return s.base.LoadContext(ctx, userID, session)
 	}
@@ -250,7 +250,7 @@ func (s *MemoryVectorService) syncMemoryVector(ctx context.Context, userID strin
 	}
 	indexedAt := time.Now().UTC()
 	if err := s.indexer.IndexMemory(ctx, item); err != nil {
-		s.logf("memory vector index failed: user=%s memory=%s: %v", userID, item.ID, err)
+		s.logError(ctx, "memory vector index failed", err, userID, item.SessionID, item.ID)
 		item = annotateMemoryEmbedding(item, "error", s.indexer.modelVersion, memoryVectorID(item.UserID, item.ID), indexedAt, err)
 		updated, updateErr := s.items.UpdateMemoryItem(ctx, userID, item)
 		if updateErr == nil {
@@ -271,7 +271,7 @@ func (s *MemoryVectorService) deleteMemoryVector(ctx context.Context, item Memor
 		return
 	}
 	if err := s.indexer.DeleteMemory(ctx, item.UserID, item.ID); err != nil {
-		s.logf("memory vector delete failed: user=%s memory=%s: %v", item.UserID, item.ID, err)
+		s.logError(ctx, "memory vector delete failed", err, item.UserID, item.SessionID, item.ID)
 	}
 }
 
@@ -280,7 +280,7 @@ func (s *MemoryVectorService) deleteSessionVectors(ctx context.Context, userID, 
 		return
 	}
 	if err := s.indexer.DeleteSession(ctx, userID, sessionID); err != nil {
-		s.logf("memory vector session delete failed: user=%s session=%s: %v", userID, sessionID, err)
+		s.logError(ctx, "memory vector session delete failed", err, userID, sessionID, "")
 	}
 }
 
@@ -289,16 +289,20 @@ func (s *MemoryVectorService) deleteUserVectors(ctx context.Context, userID stri
 		return
 	}
 	if err := s.indexer.DeleteUser(ctx, userID); err != nil {
-		s.logf("memory vector user delete failed: user=%s: %v", userID, err)
+		s.logError(ctx, "memory vector user delete failed", err, userID, "", "")
 	}
 }
 
-func (s *MemoryVectorService) logf(format string, args ...any) {
-	if s != nil && s.logger != nil {
-		s.logger.Printf(format, args...)
-		return
+func (s *MemoryVectorService) logError(ctx context.Context, message string, err error, userID, sessionID, memoryID string) {
+	logger := (*slog.Logger)(nil)
+	if s != nil {
+		logger = s.logger
 	}
-	log.Printf(format, args...)
+	attrs := contextLogAttrs(ctx, userID, sessionID, "")
+	if memoryID = strings.TrimSpace(memoryID); memoryID != "" {
+		attrs = append(attrs, slog.String("memory_id", memoryID))
+	}
+	logError(ctx, logger, message, err, attrs...)
 }
 
 type QdrantMemoryVectorIndex struct {
@@ -451,28 +455,26 @@ func (i *QdrantMemoryVectorIndex) ensureCollection(ctx context.Context, vectorSi
 	if i.collectionReady {
 		return nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, joinEndpointPath(i.endpoint, "collections", i.collection), nil)
-	if err != nil {
-		return err
-	}
+	headers := make(http.Header)
 	if i.apiKey != "" {
-		req.Header.Set("api-key", i.apiKey)
+		headers.Set("api-key", i.apiKey)
 	}
-	resp, err := i.client.Do(req)
+	status, bodyBytes, _, err := httpclient.New(
+		httpclient.WithHTTPClient(i.client),
+		httpclient.WithComponent("qdrant_memory_vector"),
+	).Bytes(ctx, http.MethodGet, joinEndpointPath(i.endpoint, "collections", i.collection), nil,
+		httpclient.WithHeaders(headers),
+		httpclient.WithOKStatuses(http.StatusOK, http.StatusNotFound),
+	)
 	if err != nil {
 		return err
 	}
-	body := ""
-	if resp.StatusCode >= http.StatusBadRequest && resp.Body != nil {
-		body = readSmallResponse(resp.Body)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if status >= 200 && status < 300 {
 		i.collectionReady = true
 		return nil
 	}
-	if resp.StatusCode != http.StatusNotFound {
-		return fmt.Errorf("qdrant memory collection check failed: %s: %s", resp.Status, body)
+	if status != http.StatusNotFound {
+		return fmt.Errorf("qdrant memory collection check failed: status %d: %s", status, strings.TrimSpace(string(bodyBytes)))
 	}
 	createBody := map[string]any{
 		"vectors": map[string]any{
@@ -509,28 +511,20 @@ func (i *QdrantMemoryVectorIndex) postJSONOut(ctx context.Context, url string, p
 }
 
 func (i *QdrantMemoryVectorIndex) writeJSON(ctx context.Context, method, url string, payload any, out any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	headers := make(http.Header)
 	if i.apiKey != "" {
-		req.Header.Set("api-key", i.apiKey)
+		headers.Set("api-key", i.apiKey)
 	}
-	resp, err := i.client.Do(req)
+	err := httpclient.New(
+		httpclient.WithHTTPClient(i.client),
+		httpclient.WithComponent("qdrant_memory_vector"),
+	).JSON(ctx, method, url, payload, out, httpclient.WithHeaders(headers))
 	if err != nil {
+		var statusErr *httpclient.StatusError
+		if errors.As(err, &statusErr) {
+			return fmt.Errorf("qdrant memory vector request failed: %s: %s", statusErr.Status, strings.TrimSpace(statusErr.Body))
+		}
 		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("qdrant memory vector request failed: %s: %s", resp.Status, readSmallResponse(resp.Body))
-	}
-	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
 	}
 	return nil
 }

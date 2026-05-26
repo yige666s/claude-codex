@@ -3,39 +3,46 @@ package agentruntime
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
-	"time"
+
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 type contextKey string
 
 const requestIDContextKey contextKey = "request_id"
+const requestLogContextKey contextKey = "request_log"
+
+type requestLogState struct {
+	userID string
+}
+
+func init() {
+	middleware.RequestIDHeader = "X-Request-ID"
+}
 
 func requestIDFromContext(ctx context.Context) string {
+	if id := middleware.GetReqID(ctx); id != "" {
+		return id
+	}
 	id, _ := ctx.Value(requestIDContextKey).(string)
 	return id
 }
 
 func withRequestID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, requestIDContextKey, id)
+	ctx = context.WithValue(ctx, requestIDContextKey, id)
+	return context.WithValue(ctx, middleware.RequestIDKey, id)
 }
 
-func requestID(r *http.Request) string {
-	id := strings.TrimSpace(r.Header.Get("X-Request-ID"))
-	if id != "" {
-		return id
+func setRequestLogUserID(ctx context.Context, userID string) {
+	state, _ := ctx.Value(requestLogContextKey).(*requestLogState)
+	if state != nil {
+		state.userID = strings.TrimSpace(userID)
 	}
-	var data [16]byte
-	if _, err := rand.Read(data[:]); err != nil {
-		return time.Now().UTC().Format("20060102T150405.000000000")
-	}
-	return hex.EncodeToString(data[:])
 }
 
 type statusRecorder struct {
@@ -74,15 +81,98 @@ func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return hijacker.Hijack()
 }
 
-func logJSON(logger *log.Logger, fields map[string]any) {
+func newStructuredLogger(logger *log.Logger) *slog.Logger {
+	if logger == nil {
+		return slog.Default()
+	}
+	return slog.New(slog.NewJSONHandler(logger.Writer(), &slog.HandlerOptions{
+		ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
+			if attr.Key == slog.TimeKey {
+				attr.Key = "ts"
+			}
+			return attr
+		},
+	}))
+}
+
+func structuredLogger(logger any) *slog.Logger {
+	switch typed := logger.(type) {
+	case nil:
+		return slog.Default()
+	case *slog.Logger:
+		if typed == nil {
+			return slog.Default()
+		}
+		return typed
+	case *log.Logger:
+		return newStructuredLogger(typed)
+	default:
+		return slog.Default()
+	}
+}
+
+func componentLogger(logger *slog.Logger, component string) *slog.Logger {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	component = strings.TrimSpace(component)
+	if component == "" {
+		return logger
+	}
+	return logger.With(slog.String("component", component))
+}
+
+func contextLogAttrs(ctx context.Context, userID, sessionID, jobID string) []slog.Attr {
+	attrs := make([]slog.Attr, 0, 4)
+	if requestID := strings.TrimSpace(requestIDFromContext(ctx)); requestID != "" {
+		attrs = append(attrs, slog.String("request_id", requestID))
+	}
+	if userID = strings.TrimSpace(userID); userID != "" {
+		attrs = append(attrs, slog.String("user_id", userID))
+	}
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+		attrs = append(attrs, slog.String("session_id", sessionID))
+	}
+	if jobID = strings.TrimSpace(firstNonEmptyString(jobID, jobIDFromContext(ctx))); jobID != "" {
+		attrs = append(attrs, slog.String("job_id", jobID))
+	}
+	return attrs
+}
+
+func logWarn(ctx context.Context, logger *slog.Logger, message string, attrs ...slog.Attr) {
+	logWithLevel(ctx, logger, slog.LevelWarn, message, attrs...)
+}
+
+func logError(ctx context.Context, logger *slog.Logger, message string, err error, attrs ...slog.Attr) {
+	if err != nil {
+		attrs = append(attrs, slog.Any("error", err))
+	}
+	logWithLevel(ctx, logger, slog.LevelError, message, attrs...)
+}
+
+func logWithLevel(ctx context.Context, logger *slog.Logger, level slog.Level, message string, attrs ...slog.Attr) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger.LogAttrs(ctx, level, message, attrs...)
+}
+
+func logFields(logger *slog.Logger, fields map[string]any) {
 	if logger == nil {
 		return
 	}
-	fields["ts"] = time.Now().UTC().Format(time.RFC3339Nano)
-	data, err := json.Marshal(fields)
-	if err != nil {
-		logger.Printf("log_marshal_error error=%v", err)
-		return
+	attrs := make([]slog.Attr, 0, len(fields))
+	message := "event"
+	for key, value := range fields {
+		if key == "event" {
+			if event, ok := value.(string); ok && strings.TrimSpace(event) != "" {
+				message = event
+			}
+		}
+		attrs = append(attrs, slog.Any(key, value))
 	}
-	logger.Print(string(data))
+	logger.LogAttrs(context.Background(), slog.LevelInfo, message, attrs...)
 }

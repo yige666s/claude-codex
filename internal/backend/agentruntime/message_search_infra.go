@@ -3,7 +3,9 @@ package agentruntime
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"claude-codex/internal/backend/googleauth"
+	"claude-codex/internal/backend/httpclient"
 	"claude-codex/internal/harness/state"
 )
 
@@ -117,43 +120,36 @@ func (i *HTTPMessageFullTextIndexer) DeleteAttachmentText(ctx context.Context, a
 }
 
 func (i *HTTPMessageFullTextIndexer) putJSON(ctx context.Context, url string, payload any) error {
-	data, err := json.Marshal(payload)
+	err := httpclient.New(
+		httpclient.WithHTTPClient(i.client),
+		httpclient.WithComponent("message_fulltext_indexer"),
+	).JSON(ctx, http.MethodPut, url, payload, nil, httpclient.WithHeaders(i.authHeaders()))
 	if err != nil {
+		var statusErr *httpclient.StatusError
+		if errors.As(err, &statusErr) {
+			return fmt.Errorf("message full-text index write failed: %s: %s", statusErr.Status, strings.TrimSpace(statusErr.Body))
+		}
 		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	i.applyAuth(req)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := i.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("message full-text index write failed: %s: %s", resp.Status, readSmallResponse(resp.Body))
 	}
 	return nil
 }
 
 func (i *HTTPMessageFullTextIndexer) deleteMessage(ctx context.Context, messageID string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, i.documentURL(messageID), nil)
+	status, body, _, err := httpclient.New(
+		httpclient.WithHTTPClient(i.client),
+		httpclient.WithComponent("message_fulltext_indexer"),
+	).Bytes(ctx, http.MethodDelete, i.documentURL(messageID), nil,
+		httpclient.WithHeaders(i.authHeaders()),
+		httpclient.WithOKStatuses(http.StatusOK, http.StatusAccepted, http.StatusNoContent, http.StatusNotFound),
+	)
 	if err != nil {
 		return err
 	}
-	i.applyAuth(req)
-	resp, err := i.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+	if status == http.StatusNotFound {
 		return nil
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("message full-text index delete failed: %s: %s", resp.Status, readSmallResponse(resp.Body))
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("message full-text index delete failed: status %d: %s", status, strings.TrimSpace(string(body)))
 	}
 	return nil
 }
@@ -179,34 +175,29 @@ func (i *HTTPMessageFullTextIndexer) deleteAttachmentsByMessage(ctx context.Cont
 }
 
 func (i *HTTPMessageFullTextIndexer) postJSONNoDecode(ctx context.Context, url string, payload any) error {
-	data, err := json.Marshal(payload)
+	err := httpclient.New(
+		httpclient.WithHTTPClient(i.client),
+		httpclient.WithComponent("message_fulltext_indexer"),
+	).JSON(ctx, http.MethodPost, url, payload, nil, httpclient.WithHeaders(i.authHeaders()))
 	if err != nil {
+		var statusErr *httpclient.StatusError
+		if errors.As(err, &statusErr) {
+			return fmt.Errorf("message full-text index delete failed: %s: %s", statusErr.Status, strings.TrimSpace(statusErr.Body))
+		}
 		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	i.applyAuth(req)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := i.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("message full-text index delete failed: %s: %s", resp.Status, readSmallResponse(resp.Body))
 	}
 	return nil
 }
 
-func (i *HTTPMessageFullTextIndexer) applyAuth(req *http.Request) {
+func (i *HTTPMessageFullTextIndexer) authHeaders() http.Header {
+	headers := make(http.Header)
 	if strings.TrimSpace(i.apiKey) != "" {
-		req.Header.Set("Authorization", "ApiKey "+strings.TrimSpace(i.apiKey))
+		headers.Set("Authorization", "ApiKey "+strings.TrimSpace(i.apiKey))
 	}
 	if strings.TrimSpace(i.username) != "" || strings.TrimSpace(i.password) != "" {
-		req.SetBasicAuth(i.username, i.password)
+		headers.Set("Authorization", basicAuthHeader(i.username, i.password))
 	}
+	return headers
 }
 
 func (i *HTTPMessageFullTextIndexer) documentURL(messageID string) string {
@@ -295,30 +286,29 @@ func (s *HTTPMessageFullTextSearcher) SearchMessages(ctx context.Context, userID
 }
 
 func (s *HTTPMessageFullTextSearcher) postJSON(ctx context.Context, url string, payload any, out any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	headers := make(http.Header)
 	if strings.TrimSpace(s.apiKey) != "" {
-		req.Header.Set("Authorization", "ApiKey "+strings.TrimSpace(s.apiKey))
+		headers.Set("Authorization", "ApiKey "+strings.TrimSpace(s.apiKey))
 	}
 	if strings.TrimSpace(s.username) != "" || strings.TrimSpace(s.password) != "" {
-		req.SetBasicAuth(s.username, s.password)
+		headers.Set("Authorization", basicAuthHeader(s.username, s.password))
 	}
-	resp, err := s.client.Do(req)
+	err := httpclient.New(
+		httpclient.WithHTTPClient(s.client),
+		httpclient.WithComponent("message_fulltext_searcher"),
+	).JSON(ctx, http.MethodPost, url, payload, out, httpclient.WithHeaders(headers))
 	if err != nil {
+		var statusErr *httpclient.StatusError
+		if errors.As(err, &statusErr) {
+			return fmt.Errorf("message full-text search failed: %s: %s", statusErr.Status, strings.TrimSpace(statusErr.Body))
+		}
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("message full-text search failed: %s: %s", resp.Status, readSmallResponse(resp.Body))
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return nil
+}
+
+func basicAuthHeader(username, password string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
 }
 
 func (s *HTTPMessageFullTextSearcher) searchURL() string {
@@ -373,32 +363,24 @@ func (s *OpenAIEmbeddingService) EmbedQuery(ctx context.Context, query string) (
 	if s.dimensions > 0 {
 		body["dimensions"] = s.dimensions
 	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpoint, bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	headers := make(http.Header)
 	if s.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+s.apiKey)
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("message embedding failed: %s: %s", resp.Status, readSmallResponse(resp.Body))
+		headers.Set("Authorization", "Bearer "+s.apiKey)
 	}
 	var parsed struct {
 		Data []struct {
 			Embedding []float64 `json:"embedding"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	err := httpclient.New(
+		httpclient.WithHTTPClient(s.client),
+		httpclient.WithComponent("openai_embedding"),
+	).JSON(ctx, http.MethodPost, s.endpoint, body, &parsed, httpclient.WithHeaders(headers))
+	if err != nil {
+		var statusErr *httpclient.StatusError
+		if errors.As(err, &statusErr) {
+			return nil, fmt.Errorf("message embedding failed: %s: %s", statusErr.Status, strings.TrimSpace(statusErr.Body))
+		}
 		return nil, err
 	}
 	if len(parsed.Data) == 0 || len(parsed.Data[0].Embedding) == 0 {
@@ -550,37 +532,32 @@ func (s *VertexAIEmbeddingService) refreshToken(ctx context.Context) (string, er
 }
 
 func (s *VertexAIEmbeddingService) postEmbedding(ctx context.Context, token string, payload any) ([]float32, int, string, []byte, error) {
-	data, err := json.Marshal(payload)
+	status, data, _, err := httpclient.New(
+		httpclient.WithHTTPClient(s.client),
+		httpclient.WithComponent("vertex_embedding"),
+	).Bytes(ctx, http.MethodPost, s.endpoint, payload,
+		httpclient.WithBearer(token),
+		httpclient.WithAnyStatus(),
+	)
 	if err != nil {
 		return nil, 0, "", nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpoint, bytes.NewReader(data))
-	if err != nil {
-		return nil, 0, "", nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, 0, "", nil, err
-	}
-	defer resp.Body.Close()
-	data, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, resp.StatusCode, resp.Status, data, nil
+	statusText := fmt.Sprintf("%d %s", status, http.StatusText(status))
+	if status < 200 || status >= 300 {
+		return nil, status, statusText, data, nil
 	}
 	values, err := s.parseEmbeddingResponse(data)
 	if err != nil {
-		return nil, resp.StatusCode, resp.Status, nil, err
+		return nil, status, statusText, nil, err
 	}
 	if len(values) == 0 {
-		return nil, resp.StatusCode, resp.Status, data, nil
+		return nil, status, statusText, data, nil
 	}
 	vector := make([]float32, len(values))
 	for i, value := range values {
 		vector[i] = float32(value)
 	}
-	return vector, resp.StatusCode, resp.Status, nil, nil
+	return vector, status, statusText, nil, nil
 }
 
 func (s *VertexAIEmbeddingService) parseEmbeddingResponse(data []byte) ([]float64, error) {
@@ -725,27 +702,22 @@ func (s *QdrantSemanticMessageSearcher) SearchSemanticMessages(ctx context.Conte
 }
 
 func (s *QdrantSemanticMessageSearcher) postJSON(ctx context.Context, url string, payload any, out any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	headers := make(http.Header)
 	if s.apiKey != "" {
-		req.Header.Set("api-key", s.apiKey)
+		headers.Set("api-key", s.apiKey)
 	}
-	resp, err := s.client.Do(req)
+	err := httpclient.New(
+		httpclient.WithHTTPClient(s.client),
+		httpclient.WithComponent("qdrant_semantic_search"),
+	).JSON(ctx, http.MethodPost, url, payload, out, httpclient.WithHeaders(headers))
 	if err != nil {
+		var statusErr *httpclient.StatusError
+		if errors.As(err, &statusErr) {
+			return fmt.Errorf("message semantic search failed: %s: %s", statusErr.Status, strings.TrimSpace(statusErr.Body))
+		}
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("message semantic search failed: %s: %s", resp.Status, readSmallResponse(resp.Body))
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return nil
 }
 
 func (s *QdrantSemanticMessageSearcher) searchURL() string {

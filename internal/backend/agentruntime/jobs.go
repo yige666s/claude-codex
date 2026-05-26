@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"claude-codex/internal/backend/agentruntime/dbsqlc"
 )
 
 type jobContextKey struct{}
@@ -49,73 +51,6 @@ func NewJobID() string {
 
 func NewJobEventID() string {
 	return "evt-" + newSortableID()
-}
-
-type jobEventBroker struct {
-	mu          sync.Mutex
-	bufferDepth int
-	subscribers map[string]map[chan *JobEvent]struct{}
-}
-
-func newJobEventBroker(bufferDepth int) *jobEventBroker {
-	if bufferDepth <= 0 {
-		bufferDepth = 128
-	}
-	return &jobEventBroker{
-		bufferDepth: bufferDepth,
-		subscribers: make(map[string]map[chan *JobEvent]struct{}),
-	}
-}
-
-func (b *jobEventBroker) Subscribe(jobID string) (<-chan *JobEvent, func()) {
-	if b == nil || strings.TrimSpace(jobID) == "" {
-		ch := make(chan *JobEvent)
-		close(ch)
-		return ch, func() {}
-	}
-	ch := make(chan *JobEvent, b.bufferDepth)
-	b.mu.Lock()
-	if b.subscribers[jobID] == nil {
-		b.subscribers[jobID] = make(map[chan *JobEvent]struct{})
-	}
-	b.subscribers[jobID][ch] = struct{}{}
-	b.mu.Unlock()
-	cancel := func() {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		subscribers := b.subscribers[jobID]
-		if subscribers == nil {
-			return
-		}
-		if _, ok := subscribers[ch]; ok {
-			delete(subscribers, ch)
-			close(ch)
-		}
-		if len(subscribers) == 0 {
-			delete(b.subscribers, jobID)
-		}
-	}
-	return ch, cancel
-}
-
-func (b *jobEventBroker) Publish(event *JobEvent) {
-	if b == nil || event == nil || strings.TrimSpace(event.JobID) == "" {
-		return
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	subscribers := b.subscribers[event.JobID]
-	for ch := range subscribers {
-		select {
-		case ch <- cloneJobEvent(event):
-		default:
-			delete(subscribers, ch)
-			close(ch)
-		}
-	}
-	if len(subscribers) == 0 {
-		delete(b.subscribers, event.JobID)
-	}
 }
 
 func newSortableID() string {
@@ -269,76 +204,26 @@ func (s *MemoryJobStore) PruneBefore(_ context.Context, cutoff time.Time) (int, 
 type SQLJobStore struct {
 	db      *sql.DB
 	dialect SQLDialect
+	queries *dbsqlc.Queries
 }
 
 func NewSQLJobStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLJobStore {
 	if dialect == "" {
 		dialect = SQLDialectQuestion
 	}
-	return &SQLJobStore{db: db, dialect: dialect}
+	return &SQLJobStore{db: db, dialect: dialect, queries: dbsqlc.New(db)}
 }
 
 func (s *SQLJobStore) Init(ctx context.Context) error {
-	timeType := s.dialect.TimeType()
-	for _, stmt := range []string{
-		`CREATE TABLE IF NOT EXISTS agent_jobs (
-	job_id TEXT PRIMARY KEY,
-	user_id TEXT NOT NULL,
-	session_id TEXT NOT NULL,
-	type TEXT NOT NULL,
-	status TEXT NOT NULL,
-	content TEXT,
-	attachments TEXT NOT NULL DEFAULT '',
-	error TEXT,
-	created_at ` + timeType + ` NOT NULL,
-	updated_at ` + timeType + ` NOT NULL,
-	started_at ` + timeType + `,
-	finished_at ` + timeType + `
-)`,
-		`ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS attachments TEXT NOT NULL DEFAULT ''`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_jobs_user_updated ON agent_jobs (user_id, updated_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_jobs_session_updated ON agent_jobs (session_id, updated_at)`,
-		`CREATE TABLE IF NOT EXISTS agent_job_events (
-	event_id TEXT PRIMARY KEY,
-	job_id TEXT NOT NULL,
-	user_id TEXT NOT NULL,
-	session_id TEXT NOT NULL,
-	type TEXT NOT NULL,
-	payload TEXT NOT NULL,
-	created_at ` + timeType + ` NOT NULL
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_job_events_job_created ON agent_job_events (job_id, created_at)`,
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_jobs", "created_at", "updated_at", "started_at", "finished_at"); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_jobs",
+		"job_id", "user_id", "session_id", "type", "status", "content", "attachments", "error",
+		"created_at", "updated_at", "started_at", "finished_at",
+	); err != nil {
 		return err
 	}
-	if err := s.ensureLifecycleConstraints(ctx); err != nil {
-		return err
-	}
-	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_job_events", "created_at")
-}
-
-func (s *SQLJobStore) ensureLifecycleConstraints(ctx context.Context) error {
-	if s.dialect != SQLDialectPostgres {
-		return nil
-	}
-	for _, stmt := range []string{
-		`DELETE FROM agent_job_events e WHERE NOT EXISTS (
-			SELECT 1 FROM agent_jobs j WHERE j.job_id = e.job_id
-		)`,
-		postgresAddForeignKeyIfMissing("fk_agent_job_events_job",
-			"agent_job_events",
-			"FOREIGN KEY (job_id) REFERENCES agent_jobs(job_id) ON DELETE CASCADE"),
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	return nil
+	return requireSQLColumns(ctx, s.db, "agent_job_events",
+		"event_id", "job_id", "user_id", "session_id", "type", "payload", "created_at",
+	)
 }
 
 func (s *SQLJobStore) CreateJob(ctx context.Context, job *Job) error {
@@ -349,6 +234,22 @@ func (s *SQLJobStore) CreateJob(ctx context.Context, job *Job) error {
 	if err != nil {
 		return err
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.InsertJob(ctx, dbsqlc.InsertJobParams{
+			JobID:       job.ID,
+			UserID:      job.UserID,
+			SessionID:   job.SessionID,
+			Type:        job.Type,
+			Status:      job.Status,
+			Content:     sql.NullString{String: job.Content, Valid: true},
+			Attachments: string(attachments),
+			Error:       sql.NullString{String: job.Error, Valid: true},
+			CreatedAt:   job.CreatedAt.UTC(),
+			UpdatedAt:   job.UpdatedAt.UTC(),
+			StartedAt:   sqlNullTime(job.StartedAt),
+			FinishedAt:  sqlNullTime(job.FinishedAt),
+		})
+	}
 	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_jobs (job_id, user_id, session_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
@@ -358,12 +259,26 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 }
 
 func (s *SQLJobStore) GetJob(ctx context.Context, userID, jobID string) (*Job, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		job, err := s.queries.GetJob(ctx, dbsqlc.GetJobParams{UserID: userID, JobID: jobID})
+		if err != nil {
+			return nil, err
+		}
+		return jobFromSQLC(job), nil
+	}
 	return s.scanJob(s.db.QueryRowContext(ctx, s.dialect.Bind(`
 SELECT job_id, user_id, session_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at
 FROM agent_jobs WHERE user_id = ? AND job_id = ?`), userID, jobID))
 }
 
 func (s *SQLJobStore) ListJobs(ctx context.Context, userID, sessionID string) ([]*Job, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.ListJobs(ctx, dbsqlc.ListJobsParams{UserID: userID, SessionID: strings.TrimSpace(sessionID)})
+		if err != nil {
+			return nil, err
+		}
+		return jobsFromSQLC(rows), nil
+	}
 	query := `SELECT job_id, user_id, session_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at FROM agent_jobs WHERE user_id = ?`
 	args := []any{userID}
 	if strings.TrimSpace(sessionID) != "" {
@@ -388,6 +303,25 @@ func (s *SQLJobStore) ListJobs(ctx context.Context, userID, sessionID string) ([
 }
 
 func (s *SQLJobStore) UpdateJobStatus(ctx context.Context, userID, jobID, status, errorText string, at time.Time) error {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		var startedAt sql.NullTime
+		if status == JobStatusRunning {
+			startedAt = sqlNullTime(&at)
+		}
+		var finishedAt sql.NullTime
+		if isTerminalJobStatus(status) {
+			finishedAt = sqlNullTime(&at)
+		}
+		return s.queries.UpdateJobStatus(ctx, dbsqlc.UpdateJobStatusParams{
+			Status:     status,
+			Error:      sql.NullString{String: errorText, Valid: true},
+			UpdatedAt:  at.UTC(),
+			StartedAt:  startedAt,
+			FinishedAt: finishedAt,
+			UserID:     userID,
+			JobID:      jobID,
+		})
+	}
 	var startedAt any
 	if status == JobStatusRunning {
 		startedAt = sqlTimeValue(at, s.dialect)
@@ -411,6 +345,17 @@ func (s *SQLJobStore) AddJobEvent(ctx context.Context, event *JobEvent) error {
 	if err != nil {
 		return err
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.InsertJobEvent(ctx, dbsqlc.InsertJobEventParams{
+			EventID:   event.ID,
+			JobID:     event.JobID,
+			UserID:    event.UserID,
+			SessionID: event.SessionID,
+			Type:      event.Type,
+			Payload:   string(payload),
+			CreatedAt: event.CreatedAt.UTC(),
+		})
+	}
 	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_job_events (event_id, job_id, user_id, session_id, type, payload, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)`),
@@ -421,6 +366,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`),
 func (s *SQLJobStore) ListJobEvents(ctx context.Context, userID, jobID, afterID string, limit int) ([]*JobEvent, error) {
 	if _, err := s.GetJob(ctx, userID, jobID); err != nil {
 		return nil, err
+	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		if limit < 0 {
+			limit = 0
+		}
+		rows, err := s.queries.ListJobEvents(ctx, dbsqlc.ListJobEventsParams{
+			UserID:     userID,
+			JobID:      jobID,
+			AfterID:    strings.TrimSpace(afterID),
+			LimitCount: int32(limit),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return jobEventsFromSQLC(rows), nil
 	}
 	query := `SELECT event_id, job_id, user_id, session_id, type, payload, created_at FROM agent_job_events WHERE user_id = ? AND job_id = ?`
 	args := []any{userID, jobID}
@@ -450,6 +410,9 @@ func (s *SQLJobStore) ListJobEvents(ctx context.Context, userID, jobID, afterID 
 }
 
 func (s *SQLJobStore) DeleteSession(ctx context.Context, userID, sessionID string) error {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.DeleteSessionJobs(ctx, dbsqlc.DeleteSessionJobsParams{UserID: userID, SessionID: sessionID})
+	}
 	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`SELECT job_id FROM agent_jobs WHERE user_id = ? AND session_id = ?`), userID, sessionID)
 	if err != nil {
 		return err
@@ -476,6 +439,9 @@ func (s *SQLJobStore) DeleteSession(ctx context.Context, userID, sessionID strin
 }
 
 func (s *SQLJobStore) DeleteUser(ctx context.Context, userID string) error {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.DeleteUserJobs(ctx, userID)
+	}
 	if _, err := s.db.ExecContext(ctx, s.dialect.Bind(`DELETE FROM agent_job_events WHERE user_id = ?`), userID); err != nil {
 		return err
 	}
@@ -484,6 +450,15 @@ func (s *SQLJobStore) DeleteUser(ctx context.Context, userID string) error {
 }
 
 func (s *SQLJobStore) PruneBefore(ctx context.Context, cutoff time.Time) (int, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.PruneTerminalJobsBefore(ctx, dbsqlc.PruneTerminalJobsBeforeParams{
+			UpdatedAt: cutoff.UTC(),
+			Status:    JobStatusSucceeded,
+			Status_2:  JobStatusFailed,
+			Status_3:  JobStatusCancelled,
+		})
+		return int(rows), err
+	}
 	cutoffValue := sqlTimeValue(cutoff, s.dialect)
 	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`SELECT job_id, user_id FROM agent_jobs WHERE updated_at < ? AND status IN (?, ?, ?)`), cutoffValue, JobStatusSucceeded, JobStatusFailed, JobStatusCancelled)
 	if err != nil {
@@ -558,6 +533,38 @@ func scanJobRows(row jobScanner) (*Job, error) {
 	return &job, nil
 }
 
+func jobFromSQLC(row dbsqlc.AgentJob) *Job {
+	job := &Job{
+		ID:         row.JobID,
+		UserID:     row.UserID,
+		SessionID:  row.SessionID,
+		Type:       row.Type,
+		Status:     row.Status,
+		Content:    row.Content.String,
+		Error:      row.Error.String,
+		CreatedAt:  row.CreatedAt.UTC(),
+		UpdatedAt:  row.UpdatedAt.UTC(),
+		StartedAt:  timeFromNull(row.StartedAt),
+		FinishedAt: timeFromNull(row.FinishedAt),
+	}
+	if strings.TrimSpace(row.Attachments) != "" {
+		var parsed jobAttachments
+		if err := json.Unmarshal([]byte(row.Attachments), &parsed); err == nil {
+			job.AttachmentIDs = parsed.IDs
+			job.AttachmentURLs = parsed.URLs
+		}
+	}
+	return job
+}
+
+func jobsFromSQLC(rows []dbsqlc.AgentJob) []*Job {
+	out := make([]*Job, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, jobFromSQLC(row))
+	}
+	return out
+}
+
 func scanJobEventRows(row jobScanner) (*JobEvent, error) {
 	var event JobEvent
 	var payload string
@@ -571,6 +578,27 @@ func scanJobEventRows(row jobScanner) (*JobEvent, error) {
 		return nil, err
 	}
 	return &event, nil
+}
+
+func jobEventFromSQLC(row dbsqlc.AgentJobEvent) *JobEvent {
+	event := &JobEvent{
+		ID:        row.EventID,
+		JobID:     row.JobID,
+		UserID:    row.UserID,
+		SessionID: row.SessionID,
+		Type:      row.Type,
+		CreatedAt: row.CreatedAt.UTC(),
+	}
+	_ = json.Unmarshal([]byte(row.Payload), &event.Event)
+	return event
+}
+
+func jobEventsFromSQLC(rows []dbsqlc.AgentJobEvent) []*JobEvent {
+	out := make([]*JobEvent, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, jobEventFromSQLC(row))
+	}
+	return out
 }
 
 func cloneJob(job *Job) *Job {

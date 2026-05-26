@@ -1,14 +1,14 @@
 package agentruntime
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"claude-codex/internal/backend/httpclient"
 )
 
 type Mailer interface {
@@ -61,28 +61,23 @@ func (m ResendMailer) Send(ctx context.Context, message EmailMessage) error {
 	if strings.TrimSpace(message.Text) != "" {
 		payload["text"] = message.Text
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/emails", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
 	client := m.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
-	resp, err := client.Do(req)
+	err := httpclient.New(
+		httpclient.WithHTTPClient(client),
+		httpclient.WithComponent("resend_mailer"),
+		httpclient.WithMaxBodyBytes(4096),
+	).JSON(ctx, http.MethodPost, baseURL+"/emails", payload, nil,
+		httpclient.WithBearer(apiKey),
+	)
 	if err != nil {
+		var statusErr *httpclient.StatusError
+		if errors.As(err, &statusErr) {
+			return fmt.Errorf("resend email failed: status %d: %s", statusErr.StatusCode, strings.TrimSpace(statusErr.Body))
+		}
 		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("resend email failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	return nil
 }

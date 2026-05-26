@@ -1,18 +1,19 @@
 package bridge
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	appauth "claude-codex/internal/app/auth"
 	"claude-codex/internal/app/config"
 	"claude-codex/internal/app/securestorage"
+	"claude-codex/internal/backend/httpclient"
 )
 
 type AccessTokenSource func(context.Context) (string, error)
@@ -79,6 +80,28 @@ func NewBridgeAPIClient(baseURL string, accessTokenSource AccessTokenSource, tru
 		accessTokenSource:  accessTokenSource,
 		trustedDeviceToken: trustedDeviceTokenSource,
 		runnerVersion:      "claude-codex",
+	}
+}
+
+func BridgeRetryPolicy() httpclient.RetryPolicy {
+	return httpclient.RetryPolicy{
+		MaxAttempts: 3,
+		BaseDelay:   250 * time.Millisecond,
+		MaxDelay:    2 * time.Second,
+		Jitter:      0.2,
+		Methods: map[string]bool{
+			http.MethodGet:    true,
+			http.MethodPost:   true,
+			http.MethodDelete: true,
+		},
+		Statuses: map[int]bool{
+			http.StatusRequestTimeout:      true,
+			http.StatusTooManyRequests:     true,
+			http.StatusInternalServerError: true,
+			http.StatusBadGateway:          true,
+			http.StatusServiceUnavailable:  true,
+			http.StatusGatewayTimeout:      true,
+		},
 	}
 }
 
@@ -160,41 +183,40 @@ func (c *BridgeAPIClient) doJSON(ctx context.Context, method, path string, body 
 	if err != nil {
 		return err
 	}
-	return c.doJSONWithBearer(ctx, method, path, accessToken, body, target)
+	status, payload, err := c.doJSONBytes(ctx, method, path, accessToken, body)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusUnauthorized {
+		accessToken, err = c.accessTokenSource(ctx)
+		if err != nil {
+			return err
+		}
+		status, payload, err = c.doJSONBytes(ctx, method, path, accessToken, body)
+		if err != nil {
+			return err
+		}
+	}
+	return decodeBridgeAPIResponse(method, path, status, payload, target)
 }
 
 func (c *BridgeAPIClient) doJSONWithBearer(ctx context.Context, method, path, bearer string, body any, target any) error {
-	req, err := c.newRequest(ctx, method, path, bearer, body)
+	status, payload, err := c.doJSONBytes(ctx, method, path, bearer, body)
 	if err != nil {
 		return err
 	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
+	if status == http.StatusUnauthorized {
+		status, payload, err = c.doJSONBytes(ctx, method, path, bearer, body)
+		if err != nil {
+			return err
+		}
 	}
-	defer resp.Body.Close()
+	return decodeBridgeAPIResponse(method, path, status, payload, target)
+}
 
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode == http.StatusUnauthorized {
-		req, err = c.newRequest(ctx, method, path, bearer, body)
-		if err != nil {
-			return err
-		}
-		resp, err = c.httpClient.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		payload, err = io.ReadAll(resp.Body)
-		if err != nil {
-			return err
-		}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("bridge api %s %s failed (%d): %s", method, path, resp.StatusCode, strings.TrimSpace(string(payload)))
+func decodeBridgeAPIResponse(method, path string, status int, payload []byte, target any) error {
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("bridge api %s %s failed (%d): %s", method, path, status, strings.TrimSpace(string(payload)))
 	}
 	if len(strings.TrimSpace(string(payload))) == 0 || target == nil {
 		if len(strings.TrimSpace(string(payload))) == 0 && target != nil {
@@ -205,30 +227,32 @@ func (c *BridgeAPIClient) doJSONWithBearer(ctx context.Context, method, path, be
 	return json.Unmarshal(payload, target)
 }
 
-func (c *BridgeAPIClient) newRequest(ctx context.Context, method, path, bearer string, body any) (*http.Request, error) {
-	var reader io.Reader
-	if body != nil {
-		payload, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		reader = bytes.NewReader(payload)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+bearer)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("anthropic-beta", "environments-2025-11-01")
-	req.Header.Set("x-environment-runner-version", c.runnerVersion)
+func (c *BridgeAPIClient) doJSONBytes(ctx context.Context, method, path, bearer string, body any) (int, []byte, error) {
+	headers := make(http.Header)
+	headers.Set("Authorization", "Bearer "+bearer)
+	headers.Set("anthropic-version", "2023-06-01")
+	headers.Set("anthropic-beta", "environments-2025-11-01")
+	headers.Set("x-environment-runner-version", c.runnerVersion)
 	if c.trustedDeviceToken != nil {
 		if token, err := c.trustedDeviceToken(); err == nil && strings.TrimSpace(token) != "" {
-			req.Header.Set("X-Trusted-Device-Token", token)
+			headers.Set("X-Trusted-Device-Token", token)
 		}
 	}
-	return req, nil
+	status, payload, _, err := httpclient.New(
+		httpclient.WithHTTPClient(c.httpClient),
+		httpclient.WithComponent("bridge_api"),
+		httpclient.WithRetry(BridgeRetryPolicy()),
+	).Bytes(ctx, method, c.baseURL+path, body,
+		httpclient.WithHeaders(headers),
+	)
+	if err != nil {
+		var statusErr *httpclient.StatusError
+		if errors.As(err, &statusErr) {
+			return statusErr.StatusCode, []byte(statusErr.Body), nil
+		}
+		return 0, nil, err
+	}
+	return status, payload, nil
 }
 
 func validatePathID(id string) string {

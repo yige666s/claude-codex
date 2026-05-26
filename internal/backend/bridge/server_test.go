@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -358,5 +359,40 @@ func TestTokenRefreshSchedulerAndInboundMessages(t *testing.T) {
 	source := blocks[0]["source"].(map[string]any)
 	if source["media_type"] != "image/jpeg" {
 		t.Fatalf("expected normalized media_type, got %#v", source)
+	}
+}
+
+func TestTokenRefreshSchedulerRetriesWithPolicy(t *testing.T) {
+	attempts := 0
+	refreshed := make(chan string, 1)
+	scheduler := NewTokenRefreshScheduler(
+		func() (string, error) {
+			attempts++
+			if attempts == 1 {
+				return "", errors.New("temporary refresh failure")
+			}
+			return "oauth-token", nil
+		},
+		func(sessionID, accessToken string) {
+			refreshed <- sessionID + ":" + accessToken
+		},
+	)
+	scheduler.refreshBuffer = time.Millisecond
+	scheduler.retryDelay = 5 * time.Millisecond
+	scheduler.fallbackRefreshDelay = time.Hour
+	defer scheduler.CancelAll()
+
+	scheduler.ScheduleFromExpiresIn("session-1", 2*time.Millisecond)
+
+	select {
+	case got := <-refreshed:
+		if got != "session-1:oauth-token" {
+			t.Fatalf("unexpected refresh callback: %s", got)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected refresh callback after retry")
+	}
+	if attempts != 2 {
+		t.Fatalf("expected two provider attempts, got %d", attempts)
 	}
 }

@@ -124,7 +124,11 @@ func (a *RedisMessageSequenceAllocator) AcquireMessageSeqLock(ctx context.Contex
 	if ttl <= 0 {
 		ttl = defaultRedisMessageSeqLockTTL
 	}
-	backoff := 10 * time.Millisecond
+	retryPolicy := RetryPolicy{
+		BaseDelay: 10 * time.Millisecond,
+		MaxDelay:  100 * time.Millisecond,
+	}
+	attempt := 1
 	for {
 		acquired, err := a.client.SetNX(ctx, key, token, ttl).Result()
 		if err != nil {
@@ -135,14 +139,10 @@ func (a *RedisMessageSequenceAllocator) AcquireMessageSeqLock(ctx context.Contex
 				return a.client.Eval(ctx, redisMessageSeqReleaseLockScript, []string{key}, token).Err()
 			}, nil
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(backoff):
+		if err := retryPolicy.Sleep(ctx, attempt, nil); err != nil {
+			return nil, err
 		}
-		if backoff < 100*time.Millisecond {
-			backoff *= 2
-		}
+		attempt++
 	}
 }
 

@@ -5,9 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
+
+	backendretry "claude-codex/internal/backend/retry"
+	"claude-codex/internal/backend/workers"
 )
 
 const (
@@ -27,9 +32,13 @@ type TokenRefreshScheduler struct {
 	fallbackRefreshDelay time.Duration
 	retryDelay           time.Duration
 	maxFailures          int
+	retryPolicy          backendretry.Policy
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	workers              *workers.Group
 
 	mu          sync.Mutex
-	timers      map[string]*time.Timer
+	cancels     map[string]context.CancelFunc
 	failures    map[string]int
 	generations map[string]int64
 }
@@ -71,6 +80,7 @@ func DecodeJWTExpiry(token string) (int64, bool) {
 }
 
 func NewTokenRefreshScheduler(provider AccessTokenProvider, onRefresh RefreshCallback) *TokenRefreshScheduler {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &TokenRefreshScheduler{
 		provider:             provider,
 		onRefresh:            onRefresh,
@@ -78,9 +88,17 @@ func NewTokenRefreshScheduler(provider AccessTokenProvider, onRefresh RefreshCal
 		fallbackRefreshDelay: DefaultFallbackRefreshDelay,
 		retryDelay:           DefaultRefreshRetryDelay,
 		maxFailures:          DefaultMaxRefreshFailures,
-		timers:               make(map[string]*time.Timer),
-		failures:             make(map[string]int),
-		generations:          make(map[string]int64),
+		retryPolicy: backendretry.Policy{
+			MaxAttempts: DefaultMaxRefreshFailures,
+			BaseDelay:   DefaultRefreshRetryDelay,
+			MaxDelay:    DefaultRefreshRetryDelay,
+		},
+		ctx:         ctx,
+		cancel:      cancel,
+		workers:     workers.New(ctx, slog.Default().With(slog.String("component", "token_refresh_scheduler"))),
+		cancels:     make(map[string]context.CancelFunc),
+		failures:    make(map[string]int),
+		generations: make(map[string]int64),
 	}
 }
 
@@ -102,9 +120,9 @@ func (s *TokenRefreshScheduler) Cancel(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.bumpGenerationLocked(sessionID)
-	if timer := s.timers[sessionID]; timer != nil {
-		timer.Stop()
-		delete(s.timers, sessionID)
+	if cancel := s.cancels[sessionID]; cancel != nil {
+		cancel()
+		delete(s.cancels, sessionID)
 	}
 	delete(s.failures, sessionID)
 }
@@ -112,14 +130,26 @@ func (s *TokenRefreshScheduler) Cancel(sessionID string) {
 func (s *TokenRefreshScheduler) CancelAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for sessionID, timer := range s.timers {
-		if timer != nil {
-			timer.Stop()
+	for sessionID, cancel := range s.cancels {
+		if cancel != nil {
+			cancel()
 		}
 		s.bumpGenerationLocked(sessionID)
 	}
-	s.timers = make(map[string]*time.Timer)
+	s.cancels = make(map[string]context.CancelFunc)
 	s.failures = make(map[string]int)
+}
+
+func (s *TokenRefreshScheduler) Stop(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	s.CancelAll()
+	s.cancel()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s.workers.Stop(ctx)
 }
 
 func (s *TokenRefreshScheduler) scheduleWithDelay(sessionID string, delay time.Duration) {
@@ -128,51 +158,117 @@ func (s *TokenRefreshScheduler) scheduleWithDelay(sessionID string, delay time.D
 	}
 
 	s.mu.Lock()
-	if timer := s.timers[sessionID]; timer != nil {
-		timer.Stop()
+	if cancel := s.cancels[sessionID]; cancel != nil {
+		cancel()
 	}
 	gen := s.bumpGenerationLocked(sessionID)
-	s.timers[sessionID] = time.AfterFunc(delay, func() {
-		s.doRefresh(sessionID, gen)
-	})
+	ctx, cancel := context.WithCancel(s.ctx)
+	s.cancels[sessionID] = cancel
+	name := fmt.Sprintf("token_refresh_%s_%d", sanitizeWorkerName(sessionID), gen)
 	s.mu.Unlock()
+
+	s.workers.Start(name, func(context.Context) error {
+		if err := backendretry.Sleep(ctx, delay); err != nil {
+			return nil
+		}
+		s.refreshLoop(ctx, sessionID, gen)
+		return nil
+	})
 }
 
-func (s *TokenRefreshScheduler) doRefresh(sessionID string, generation int64) {
-	accessToken, err := s.provider()
-	if err != nil || strings.TrimSpace(accessToken) == "" {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.generations[sessionID] != generation {
+func (s *TokenRefreshScheduler) refreshLoop(ctx context.Context, sessionID string, generation int64) {
+	for {
+		if !s.isCurrentGeneration(sessionID, generation) {
 			return
 		}
-		s.failures[sessionID]++
-		if s.failures[sessionID] >= s.maxFailures {
-			delete(s.timers, sessionID)
+
+		accessToken, err := s.provider()
+		if err != nil || strings.TrimSpace(accessToken) == "" {
+			failure, keepGoing := s.recordRefreshFailure(sessionID, generation)
+			if !keepGoing {
+				return
+			}
+			if sleepErr := s.refreshRetryPolicy().Sleep(ctx, failure, err); sleepErr != nil {
+				return
+			}
+			continue
+		}
+
+		s.onRefresh(sessionID, accessToken)
+		s.clearRefreshFailure(sessionID, generation)
+		if err := backendretry.Sleep(ctx, s.fallbackRefreshDelay); err != nil {
 			return
 		}
-		s.timers[sessionID] = time.AfterFunc(s.retryDelay, func() {
-			s.doRefresh(sessionID, generation)
-		})
-		return
 	}
+}
 
-	s.onRefresh(sessionID, accessToken)
+func (s *TokenRefreshScheduler) bumpGenerationLocked(sessionID string) int64 {
+	s.generations[sessionID]++
+	return s.generations[sessionID]
+}
 
+func (s *TokenRefreshScheduler) isCurrentGeneration(sessionID string, generation int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.generations[sessionID] == generation
+}
+
+func (s *TokenRefreshScheduler) recordRefreshFailure(sessionID string, generation int64) (int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.generations[sessionID] != generation {
+		return 0, false
+	}
+	s.failures[sessionID]++
+	failures := s.failures[sessionID]
+	if failures >= s.maxFailures {
+		if cancel := s.cancels[sessionID]; cancel != nil {
+			cancel()
+		}
+		delete(s.cancels, sessionID)
+		return failures, false
+	}
+	return failures, true
+}
+
+func (s *TokenRefreshScheduler) clearRefreshFailure(sessionID string, generation int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.generations[sessionID] != generation {
 		return
 	}
 	delete(s.failures, sessionID)
-	s.timers[sessionID] = time.AfterFunc(s.fallbackRefreshDelay, func() {
-		s.doRefresh(sessionID, generation)
-	})
 }
 
-func (s *TokenRefreshScheduler) bumpGenerationLocked(sessionID string) int64 {
-	s.generations[sessionID]++
-	return s.generations[sessionID]
+func (s *TokenRefreshScheduler) refreshRetryPolicy() backendretry.Policy {
+	policy := s.retryPolicy
+	policy.MaxAttempts = 1
+	if s.retryDelay > 0 {
+		policy.BaseDelay = s.retryDelay
+		policy.MaxDelay = s.retryDelay
+	}
+	return policy
+}
+
+func sanitizeWorkerName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "session"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 func AccessTokenProviderFromContext(ctx context.Context, fn func(context.Context) (string, error)) AccessTokenProvider {

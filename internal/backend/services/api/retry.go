@@ -3,25 +3,17 @@ package api
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	backendretry "claude-codex/internal/backend/retry"
 )
 
 // CalculateBackoff calculates exponential backoff delay
 func CalculateBackoff(attempt int, baseDelayMS int) time.Duration {
-	// Exponential backoff: baseDelay * 2^attempt
-	delayMS := float64(baseDelayMS) * math.Pow(2, float64(attempt))
-
-	// Cap at reasonable maximum
-	maxDelayMS := float64(PersistentMaxBackoffMS)
-	if delayMS > maxDelayMS {
-		delayMS = maxDelayMS
-	}
-
-	return time.Duration(delayMS) * time.Millisecond
+	return apiRetryPolicy(baseDelayMS).Delay(attempt+1, nil)
 }
 
 // GetDefaultMaxRetries returns the default max retry count
@@ -42,13 +34,13 @@ func IsPersistentRetryEnabled() bool {
 
 // RetryState tracks retry attempt state
 type RetryState struct {
-	Attempt                 int
-	Consecutive529Errors    int
-	LastError               error
-	LastStatusCode          int
-	TotalDelay              time.Duration
-	ShouldFallback          bool
-	FallbackReason          string
+	Attempt              int
+	Consecutive529Errors int
+	LastError            error
+	LastStatusCode       int
+	TotalDelay           time.Duration
+	ShouldFallback       bool
+	FallbackReason       string
 }
 
 // ShouldRetry determines if another retry attempt should be made
@@ -195,12 +187,8 @@ func WithRetry(
 		delay := state.GetNextDelay(opts)
 		state.TotalDelay += delay
 
-		// Check context cancellation
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-			// Continue to next retry
+		if err := backendretry.Sleep(ctx, delay); err != nil {
+			return err
 		}
 
 		// In persistent retry mode, send heartbeat
@@ -261,12 +249,7 @@ func RetryWithFallback(
 
 // SleepWithContext sleeps for duration or until context is cancelled
 func SleepWithContext(ctx context.Context, duration time.Duration) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(duration):
-		return nil
-	}
+	return backendretry.Sleep(ctx, duration)
 }
 
 // FormatRetryError formats a retry error for display
@@ -294,4 +277,15 @@ func FormatRetryError(err error) string {
 	}
 
 	return err.Error()
+}
+
+func apiRetryPolicy(baseDelayMS int) backendretry.Policy {
+	if baseDelayMS <= 0 {
+		baseDelayMS = BaseDelayMS
+	}
+	return backendretry.Policy{
+		BaseDelay: time.Duration(baseDelayMS) * time.Millisecond,
+		MaxDelay:  time.Duration(PersistentMaxBackoffMS) * time.Millisecond,
+		Jitter:    0,
+	}
 }

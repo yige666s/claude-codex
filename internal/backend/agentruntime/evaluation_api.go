@@ -12,42 +12,13 @@ import (
 	"time"
 )
 
-func (s *Server) handleAdminOpsEval(w http.ResponseWriter, r *http.Request, actor User, parts []string) {
-	if s.evaluation == nil {
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "evaluation store is not configured"})
-		return
-	}
-	switch {
-	case r.Method == http.MethodPost && len(parts) == 5 && parts[4] == "runs":
-		s.handleAdminOpsCreateEvaluationRun(w, r, actor)
-	case r.Method == http.MethodGet && len(parts) == 5 && parts[4] == "runs":
-		s.handleAdminOpsListEvaluationRuns(w, r)
-	case r.Method == http.MethodGet && len(parts) == 6 && parts[4] == "runs":
-		s.handleAdminOpsGetEvaluationRun(w, r, parts[5])
-	case r.Method == http.MethodGet && len(parts) == 5 && parts[4] == "results":
-		s.handleAdminOpsListEvaluationResults(w, r)
-	case r.Method == http.MethodGet && len(parts) == 5 && parts[4] == "reviews":
-		s.handleAdminOpsListEvaluationReviews(w, r)
-	case r.Method == http.MethodPatch && len(parts) == 6 && parts[4] == "reviews":
-		s.handleAdminOpsUpdateEvaluationReview(w, r, actor, parts[5])
-	case r.Method == http.MethodGet && len(parts) == 5 && parts[4] == "summary":
-		s.handleAdminOpsEvaluationSummary(w, r)
-	default:
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-	}
-}
-
 func (s *Server) handleAdminOpsCreateEvaluationRun(w http.ResponseWriter, r *http.Request, actor User) {
 	var req EvaluationRunRequest
 	if err := readJSON(r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	req.Scope = normalizeEvaluationScope(req.Scope)
-	if strings.TrimSpace(req.Scope.UserID) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "scope.user_id is required"})
-		return
-	}
 	engine := NewEvaluationEngine(RuntimeEvaluationTraceSource{
 		Runtime:  s.runtime,
 		LLMUsage: s.llmUsage,
@@ -56,7 +27,7 @@ func (s *Server) handleAdminOpsCreateEvaluationRun(w http.ResponseWriter, r *htt
 	report, err := engine.Evaluate(r.Context(), req)
 	if err != nil {
 		if strings.Contains(err.Error(), " is required") {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSONError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -226,7 +197,7 @@ func (s *Server) handleAdminOpsUpdateEvaluationReview(w http.ResponseWriter, r *
 		Note     string `json:"note"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	reviewer := firstNonEmptyString(body.Reviewer, actor.ID)

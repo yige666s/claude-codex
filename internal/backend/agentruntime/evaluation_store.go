@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"claude-codex/internal/backend/agentruntime/dbsqlc"
 )
 
 type EvaluationStore interface {
@@ -204,6 +206,7 @@ func (s *MemoryEvaluationStore) SummarizeEvaluationRun(ctx context.Context, runI
 type SQLEvaluationStore struct {
 	db      *sql.DB
 	dialect SQLDialect
+	queries *dbsqlc.Queries
 }
 
 func NewSQLEvaluationStore(db *sql.DB) *SQLEvaluationStore {
@@ -214,114 +217,29 @@ func NewSQLEvaluationStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLEvalua
 	if dialect == "" {
 		dialect = SQLDialectQuestion
 	}
-	return &SQLEvaluationStore{db: db, dialect: dialect}
+	return &SQLEvaluationStore{db: db, dialect: dialect, queries: dbsqlc.New(db)}
 }
 
 func (s *SQLEvaluationStore) Init(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("sql evaluation store is not configured")
 	}
-	timeType := s.dialect.TimeType()
-	jsonType := "TEXT"
-	if s.dialect == SQLDialectPostgres {
-		jsonType = "JSONB"
-	}
-	for _, stmt := range []string{
-		`CREATE TABLE IF NOT EXISTS agent_eval_runs (
-	id TEXT PRIMARY KEY,
-	name TEXT NOT NULL,
-	status TEXT NOT NULL,
-	trigger TEXT NOT NULL DEFAULT '',
-	scope ` + jsonType + ` NOT NULL DEFAULT '{}',
-	started_at ` + timeType + ` NOT NULL,
-	completed_at ` + timeType + `,
-	total BIGINT NOT NULL DEFAULT 0,
-	passed BIGINT NOT NULL DEFAULT 0,
-	failed BIGINT NOT NULL DEFAULT 0,
-	warning BIGINT NOT NULL DEFAULT 0,
-	metrics ` + jsonType + ` NOT NULL DEFAULT '{}',
-	threshold_status TEXT NOT NULL DEFAULT '',
-	summary TEXT NOT NULL DEFAULT ''
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_eval_runs_started ON agent_eval_runs (started_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_eval_runs_status_started ON agent_eval_runs (status, started_at)`,
-		`CREATE TABLE IF NOT EXISTS agent_eval_results (
-	id TEXT PRIMARY KEY,
-	run_id TEXT NOT NULL,
-	subject_type TEXT NOT NULL,
-	subject_id TEXT NOT NULL,
-	user_id TEXT NOT NULL DEFAULT '',
-	session_id TEXT NOT NULL DEFAULT '',
-	job_id TEXT NOT NULL DEFAULT '',
-	skill_name TEXT NOT NULL DEFAULT '',
-	provider TEXT NOT NULL DEFAULT '',
-	model TEXT NOT NULL DEFAULT '',
-	status TEXT NOT NULL,
-	score DOUBLE PRECISION NOT NULL DEFAULT 0,
-	input TEXT NOT NULL DEFAULT '',
-	output TEXT NOT NULL DEFAULT '',
-	metrics ` + jsonType + ` NOT NULL DEFAULT '{}',
-	findings ` + jsonType + ` NOT NULL DEFAULT '[]',
-	created_at ` + timeType + ` NOT NULL
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_eval_results_run_status ON agent_eval_results (run_id, status)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_eval_results_subject ON agent_eval_results (subject_type, subject_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_eval_results_user_created ON agent_eval_results (user_id, created_at)`,
-		`CREATE TABLE IF NOT EXISTS agent_eval_reviews (
-	id TEXT PRIMARY KEY,
-	result_id TEXT NOT NULL,
-	status TEXT NOT NULL,
-	reviewer TEXT NOT NULL DEFAULT '',
-	note TEXT NOT NULL DEFAULT '',
-	created_at ` + timeType + ` NOT NULL,
-	updated_at ` + timeType + ` NOT NULL
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_eval_reviews_result ON agent_eval_reviews (result_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_eval_reviews_status_updated ON agent_eval_reviews (status, updated_at)`,
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_eval_runs", "started_at", "completed_at"); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_eval_runs",
+		"id", "name", "status", "trigger", "scope", "started_at", "completed_at",
+		"total", "passed", "failed", "warning", "metrics", "threshold_status", "summary",
+	); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_eval_results", "created_at"); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_eval_results",
+		"id", "run_id", "subject_type", "subject_id", "user_id", "session_id", "job_id",
+		"skill_name", "provider", "model", "status", "score", "input", "output",
+		"metrics", "findings", "created_at",
+	); err != nil {
 		return err
 	}
-	if err := s.ensureLifecycleConstraints(ctx); err != nil {
-		return err
-	}
-	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_eval_reviews", "created_at", "updated_at")
-}
-
-func (s *SQLEvaluationStore) ensureLifecycleConstraints(ctx context.Context) error {
-	if s.dialect != SQLDialectPostgres {
-		return nil
-	}
-	for _, stmt := range []string{
-		`DELETE FROM agent_eval_reviews rv WHERE NOT EXISTS (
-			SELECT 1 FROM agent_eval_results r WHERE r.id = rv.result_id
-		) OR EXISTS (
-			SELECT 1 FROM agent_eval_results r
-			WHERE r.id = rv.result_id
-			  AND NOT EXISTS (SELECT 1 FROM agent_eval_runs er WHERE er.id = r.run_id)
-		)`,
-		`DELETE FROM agent_eval_results r WHERE NOT EXISTS (
-			SELECT 1 FROM agent_eval_runs er WHERE er.id = r.run_id
-		)`,
-		postgresAddForeignKeyIfMissing("fk_agent_eval_results_run",
-			"agent_eval_results",
-			"FOREIGN KEY (run_id) REFERENCES agent_eval_runs(id) ON DELETE CASCADE"),
-		postgresAddForeignKeyIfMissing("fk_agent_eval_reviews_result",
-			"agent_eval_reviews",
-			"FOREIGN KEY (result_id) REFERENCES agent_eval_results(id) ON DELETE CASCADE"),
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	return nil
+	return requireSQLColumns(ctx, s.db, "agent_eval_reviews",
+		"id", "result_id", "status", "reviewer", "note", "created_at", "updated_at",
+	)
 }
 
 func (s *SQLEvaluationStore) CreateEvaluationRun(ctx context.Context, run EvaluationRun) (EvaluationRun, error) {
@@ -329,6 +247,28 @@ func (s *SQLEvaluationStore) CreateEvaluationRun(ctx context.Context, run Evalua
 	scope, metrics, err := marshalEvaluationRunJSON(run)
 	if err != nil {
 		return EvaluationRun{}, err
+	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		err = s.queries.InsertEvaluationRun(ctx, dbsqlc.InsertEvaluationRunParams{
+			ID:              run.ID,
+			Name:            run.Name,
+			Status:          run.Status,
+			Trigger:         run.Trigger,
+			Scope:           string(scope),
+			StartedAt:       run.StartedAt.UTC(),
+			CompletedAt:     sqlNullTime(run.CompletedAt),
+			Total:           int64(run.Total),
+			Passed:          int64(run.Passed),
+			Failed:          int64(run.Failed),
+			Warning:         int64(run.Warning),
+			Metrics:         string(metrics),
+			ThresholdStatus: run.ThresholdStatus,
+			Summary:         run.Summary,
+		})
+		if err != nil {
+			return EvaluationRun{}, err
+		}
+		return run, nil
 	}
 	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_eval_runs (id, name, status, trigger, scope, started_at, completed_at, total, passed, failed, warning, metrics, threshold_status, summary)
@@ -347,6 +287,31 @@ func (s *SQLEvaluationStore) UpdateEvaluationRun(ctx context.Context, run Evalua
 	if err != nil {
 		return EvaluationRun{}, err
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		count, err := s.queries.UpdateEvaluationRun(ctx, dbsqlc.UpdateEvaluationRunParams{
+			Name:            run.Name,
+			Status:          run.Status,
+			Trigger:         run.Trigger,
+			Scope:           string(scope),
+			StartedAt:       run.StartedAt.UTC(),
+			CompletedAt:     sqlNullTime(run.CompletedAt),
+			Total:           int64(run.Total),
+			Passed:          int64(run.Passed),
+			Failed:          int64(run.Failed),
+			Warning:         int64(run.Warning),
+			Metrics:         string(metrics),
+			ThresholdStatus: run.ThresholdStatus,
+			Summary:         run.Summary,
+			ID:              run.ID,
+		})
+		if err != nil {
+			return EvaluationRun{}, err
+		}
+		if count == 0 {
+			return EvaluationRun{}, sql.ErrNoRows
+		}
+		return run, nil
+	}
 	result, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_eval_runs
 SET name = ?, status = ?, trigger = ?, scope = ?, started_at = ?, completed_at = ?, total = ?, passed = ?, failed = ?, warning = ?, metrics = ?, threshold_status = ?, summary = ?
@@ -363,6 +328,13 @@ WHERE id = ?`),
 }
 
 func (s *SQLEvaluationStore) GetEvaluationRun(ctx context.Context, id string) (EvaluationRun, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		row, err := s.queries.GetEvaluationRun(ctx, strings.TrimSpace(id))
+		if err != nil {
+			return EvaluationRun{}, err
+		}
+		return evaluationRunFromSQLC(row), nil
+	}
 	return scanEvaluationRun(s.db.QueryRowContext(ctx, s.dialect.Bind(`
 SELECT id, name, status, trigger, scope, started_at, completed_at, total, passed, failed, warning, metrics, threshold_status, summary
 FROM agent_eval_runs WHERE id = ?`), strings.TrimSpace(id)))
@@ -370,6 +342,17 @@ FROM agent_eval_runs WHERE id = ?`), strings.TrimSpace(id)))
 
 func (s *SQLEvaluationStore) ListEvaluationRuns(ctx context.Context, filter EvaluationRunFilter) ([]EvaluationRun, error) {
 	filter = normalizeEvaluationRunFilter(filter)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.ListEvaluationRuns(ctx, dbsqlc.ListEvaluationRunsParams{
+			Status:     filter.Status,
+			Trigger:    filter.Trigger,
+			LimitCount: int32(filter.Limit),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return evaluationRunsFromSQLC(rows), nil
+	}
 	query := `SELECT id, name, status, trigger, scope, started_at, completed_at, total, passed, failed, warning, metrics, threshold_status, summary FROM agent_eval_runs`
 	where, args := evaluationRunWhere(filter)
 	if len(where) > 0 {
@@ -402,6 +385,31 @@ func (s *SQLEvaluationStore) CreateEvaluationResult(ctx context.Context, result 
 	if err != nil {
 		return EvaluationResult{}, err
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		err = s.queries.InsertEvaluationResult(ctx, dbsqlc.InsertEvaluationResultParams{
+			ID:          result.ID,
+			RunID:       result.RunID,
+			SubjectType: result.SubjectType,
+			SubjectID:   result.SubjectID,
+			UserID:      result.UserID,
+			SessionID:   result.SessionID,
+			JobID:       result.JobID,
+			SkillName:   result.SkillName,
+			Provider:    result.Provider,
+			Model:       result.Model,
+			Status:      result.Status,
+			Score:       result.Score,
+			Input:       result.Input,
+			Output:      result.Output,
+			Metrics:     string(metrics),
+			Findings:    string(findings),
+			CreatedAt:   result.CreatedAt.UTC(),
+		})
+		if err != nil {
+			return EvaluationResult{}, err
+		}
+		return result, nil
+	}
 	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_eval_results (id, run_id, subject_type, subject_id, user_id, session_id, job_id, skill_name, provider, model, status, score, input, output, metrics, findings, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
@@ -415,6 +423,24 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 
 func (s *SQLEvaluationStore) ListEvaluationResults(ctx context.Context, filter EvaluationResultFilter) ([]EvaluationResult, error) {
 	filter = normalizeEvaluationResultFilter(filter)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.ListEvaluationResults(ctx, dbsqlc.ListEvaluationResultsParams{
+			RunID:       filter.RunID,
+			Status:      filter.Status,
+			SubjectType: filter.SubjectType,
+			UserID:      filter.UserID,
+			SessionID:   filter.SessionID,
+			JobID:       filter.JobID,
+			SkillName:   filter.SkillName,
+			Provider:    filter.Provider,
+			Model:       filter.Model,
+			LimitCount:  int32(filter.Limit),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return evaluationResultsFromSQLC(rows), nil
+	}
 	query := `SELECT id, run_id, subject_type, subject_id, user_id, session_id, job_id, skill_name, provider, model, status, score, input, output, metrics, findings, created_at FROM agent_eval_results`
 	where, args := evaluationResultWhere(filter)
 	if len(where) > 0 {
@@ -443,6 +469,21 @@ func (s *SQLEvaluationStore) ListEvaluationResults(ctx context.Context, filter E
 
 func (s *SQLEvaluationStore) CreateEvaluationReview(ctx context.Context, review EvaluationReview) (EvaluationReview, error) {
 	review = normalizeEvaluationReview(review)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		err := s.queries.InsertEvaluationReview(ctx, dbsqlc.InsertEvaluationReviewParams{
+			ID:        review.ID,
+			ResultID:  review.ResultID,
+			Status:    review.Status,
+			Reviewer:  review.Reviewer,
+			Note:      review.Note,
+			CreatedAt: review.CreatedAt.UTC(),
+			UpdatedAt: review.UpdatedAt.UTC(),
+		})
+		if err != nil {
+			return EvaluationReview{}, err
+		}
+		return review, nil
+	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_eval_reviews (id, result_id, status, reviewer, note, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)`),
@@ -455,6 +496,22 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`),
 
 func (s *SQLEvaluationStore) UpdateEvaluationReview(ctx context.Context, review EvaluationReview) (EvaluationReview, error) {
 	review = normalizeEvaluationReview(review)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		count, err := s.queries.UpdateEvaluationReview(ctx, dbsqlc.UpdateEvaluationReviewParams{
+			Status:    review.Status,
+			Reviewer:  review.Reviewer,
+			Note:      review.Note,
+			UpdatedAt: review.UpdatedAt.UTC(),
+			ID:        review.ID,
+		})
+		if err != nil {
+			return EvaluationReview{}, err
+		}
+		if count == 0 {
+			return EvaluationReview{}, sql.ErrNoRows
+		}
+		return s.getEvaluationReview(ctx, review.ID)
+	}
 	result, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_eval_reviews
 SET status = ?, reviewer = ?, note = ?, updated_at = ?
@@ -469,6 +526,13 @@ WHERE id = ?`), review.Status, review.Reviewer, review.Note, sqlTimeValue(review
 }
 
 func (s *SQLEvaluationStore) getEvaluationReview(ctx context.Context, id string) (EvaluationReview, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		row, err := s.queries.GetEvaluationReview(ctx, strings.TrimSpace(id))
+		if err != nil {
+			return EvaluationReview{}, err
+		}
+		return evaluationReviewFromSQLC(row), nil
+	}
 	return scanEvaluationReview(s.db.QueryRowContext(ctx, s.dialect.Bind(`
 SELECT id, result_id, status, reviewer, note, created_at, updated_at
 FROM agent_eval_reviews WHERE id = ?`), strings.TrimSpace(id)))
@@ -476,6 +540,17 @@ FROM agent_eval_reviews WHERE id = ?`), strings.TrimSpace(id)))
 
 func (s *SQLEvaluationStore) ListEvaluationReviews(ctx context.Context, filter EvaluationReviewFilter) ([]EvaluationReview, error) {
 	filter = normalizeEvaluationReviewFilter(filter)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.ListEvaluationReviews(ctx, dbsqlc.ListEvaluationReviewsParams{
+			ResultID:   filter.ResultID,
+			Status:     filter.Status,
+			LimitCount: int32(filter.Limit),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return evaluationReviewsFromSQLC(rows), nil
+	}
 	query := `SELECT id, result_id, status, reviewer, note, created_at, updated_at FROM agent_eval_reviews`
 	where, args := evaluationReviewWhere(filter)
 	if len(where) > 0 {
@@ -567,6 +642,85 @@ func scanEvaluationReview(row evaluationScanner) (EvaluationReview, error) {
 		return EvaluationReview{}, err
 	}
 	return normalizeEvaluationReview(review), nil
+}
+
+func evaluationRunFromSQLC(row dbsqlc.AgentEvalRun) EvaluationRun {
+	run := EvaluationRun{
+		ID:              row.ID,
+		Name:            row.Name,
+		Status:          row.Status,
+		Trigger:         row.Trigger,
+		StartedAt:       row.StartedAt.UTC(),
+		CompletedAt:     timeFromNull(row.CompletedAt),
+		Total:           int(row.Total),
+		Passed:          int(row.Passed),
+		Failed:          int(row.Failed),
+		Warning:         int(row.Warning),
+		ThresholdStatus: row.ThresholdStatus,
+		Summary:         row.Summary,
+	}
+	_ = json.Unmarshal([]byte(row.Scope), &run.Scope)
+	_ = json.Unmarshal([]byte(row.Metrics), &run.Metrics)
+	return normalizeEvaluationRun(run)
+}
+
+func evaluationRunsFromSQLC(rows []dbsqlc.AgentEvalRun) []EvaluationRun {
+	out := make([]EvaluationRun, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, evaluationRunFromSQLC(row))
+	}
+	return out
+}
+
+func evaluationResultFromSQLC(row dbsqlc.AgentEvalResult) EvaluationResult {
+	result := EvaluationResult{
+		ID:          row.ID,
+		RunID:       row.RunID,
+		SubjectType: row.SubjectType,
+		SubjectID:   row.SubjectID,
+		UserID:      row.UserID,
+		SessionID:   row.SessionID,
+		JobID:       row.JobID,
+		SkillName:   row.SkillName,
+		Provider:    row.Provider,
+		Model:       row.Model,
+		Status:      row.Status,
+		Score:       row.Score,
+		Input:       row.Input,
+		Output:      row.Output,
+		CreatedAt:   row.CreatedAt.UTC(),
+	}
+	_ = json.Unmarshal([]byte(row.Metrics), &result.Metrics)
+	_ = json.Unmarshal([]byte(row.Findings), &result.Findings)
+	return normalizeEvaluationResult(result)
+}
+
+func evaluationResultsFromSQLC(rows []dbsqlc.AgentEvalResult) []EvaluationResult {
+	out := make([]EvaluationResult, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, evaluationResultFromSQLC(row))
+	}
+	return out
+}
+
+func evaluationReviewFromSQLC(row dbsqlc.AgentEvalReview) EvaluationReview {
+	return normalizeEvaluationReview(EvaluationReview{
+		ID:        row.ID,
+		ResultID:  row.ResultID,
+		Status:    row.Status,
+		Reviewer:  row.Reviewer,
+		Note:      row.Note,
+		CreatedAt: row.CreatedAt.UTC(),
+		UpdatedAt: row.UpdatedAt.UTC(),
+	})
+}
+
+func evaluationReviewsFromSQLC(rows []dbsqlc.AgentEvalReview) []EvaluationReview {
+	out := make([]EvaluationReview, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, evaluationReviewFromSQLC(row))
+	}
+	return out
 }
 
 func marshalEvaluationRunJSON(run EvaluationRun) ([]byte, []byte, error) {

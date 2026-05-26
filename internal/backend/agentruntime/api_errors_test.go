@@ -1,8 +1,13 @@
 package agentruntime
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"claude-codex/internal/backend/httpjson"
 )
 
 func TestSanitizeAPIErrorMessageHidesCredentialInternals(t *testing.T) {
@@ -27,6 +32,28 @@ func TestSanitizeAPIErrorMessageKeepsValidationText(t *testing.T) {
 	const want = "email is required"
 	if got := sanitizeAPIErrorMessage(want); got != want {
 		t.Fatalf("sanitizeAPIErrorMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestWriteJSONErrorUsesHTTPJSONErrorStatusAndCode(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rec.Header().Set("X-Request-ID", "req-1")
+
+	writeJSONError(rec, &httpjson.Error{
+		Status:  http.StatusRequestEntityTooLarge,
+		Code:    "payload_too_large",
+		Message: "request body must not exceed 8 bytes",
+	})
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var body APIError
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Code != "payload_too_large" || body.RequestID != "req-1" {
+		t.Fatalf("body = %+v", body)
 	}
 }
 

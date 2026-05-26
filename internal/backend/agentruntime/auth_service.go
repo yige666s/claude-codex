@@ -2,12 +2,10 @@ package agentruntime
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"html"
 	"net"
@@ -16,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -464,7 +463,7 @@ func signAccessToken(secret, issuer, audience string, user *UserAccount, expires
 		return "", fmt.Errorf("JWT secret is required")
 	}
 	now := time.Now().UTC()
-	claims := map[string]any{
+	claims := jwt.MapClaims{
 		"sub":          user.ID,
 		"email":        user.Email,
 		"display_name": user.DisplayName,
@@ -478,18 +477,8 @@ func signAccessToken(secret, issuer, audience string, user *UserAccount, expires
 	if audience != "" {
 		claims["aud"] = audience
 	}
-	header, err := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
-	if err != nil {
-		return "", err
-	}
-	payload, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-	encoded := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(encoded))
-	return encoded + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
 }
 
 func randomToken() (string, error) {

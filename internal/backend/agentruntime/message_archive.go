@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"path"
 	"regexp"
 	"strings"
@@ -57,20 +58,21 @@ type MessageArchiveWorker struct {
 	queue   MessageArchiveQueue
 	archive *MessageArchiveObjectStore
 	config  MessageArchiveWorkerConfig
-	logger  *log.Logger
+	logger  *slog.Logger
 	now     func() time.Time
 }
 
 func NewMessageArchiveWorker(queue MessageArchiveQueue, archive *MessageArchiveObjectStore, config MessageArchiveWorkerConfig, logger *log.Logger) *MessageArchiveWorker {
+	return NewMessageArchiveWorkerWithLogger(queue, archive, config, newStructuredLogger(logger))
+}
+
+func NewMessageArchiveWorkerWithLogger(queue MessageArchiveQueue, archive *MessageArchiveObjectStore, config MessageArchiveWorkerConfig, logger *slog.Logger) *MessageArchiveWorker {
 	config = normalizeMessageArchiveWorkerConfig(config)
-	if logger == nil {
-		logger = log.Default()
-	}
 	return &MessageArchiveWorker{
 		queue:   queue,
 		archive: archive,
 		config:  config,
-		logger:  logger,
+		logger:  componentLogger(logger, "message_archive_worker"),
 		now:     func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -99,7 +101,7 @@ func (w *MessageArchiveWorker) Run(ctx context.Context) error {
 	defer ticker.Stop()
 	for {
 		if _, err := w.ProcessBatch(ctx); err != nil && !errorsIsContextDone(ctx, err) {
-			w.logger.Printf("message archive worker batch failed: %v", err)
+			logError(ctx, w.logger, "message archive worker batch failed", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -124,7 +126,9 @@ func (w *MessageArchiveWorker) ProcessBatch(ctx context.Context) (int, error) {
 		record, err := w.archive.WriteMessage(processCtx, message)
 		cancel()
 		if err != nil {
-			w.logger.Printf("archive message failed: user=%s session=%s message=%s: %v", message.UserID, message.SessionID, message.ID, err)
+			attrs := contextLogAttrs(ctx, message.UserID, message.SessionID, "")
+			attrs = append(attrs, slog.String("message_id", message.ID))
+			logError(ctx, w.logger, "archive message failed", err, attrs...)
 			continue
 		}
 		records = append(records, record)

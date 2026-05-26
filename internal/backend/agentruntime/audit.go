@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"claude-codex/internal/backend/agentruntime/dbsqlc"
 )
 
 type AuditRecord struct {
@@ -103,42 +105,33 @@ func (l *MemoryAuditLogger) ListAuditRecords(_ context.Context, filter AuditLogF
 type SQLAuditLogger struct {
 	db      *sql.DB
 	dialect SQLDialect
+	queries *dbsqlc.Queries
 }
 
 func NewSQLAuditLoggerWithDialect(db *sql.DB, dialect SQLDialect) *SQLAuditLogger {
 	if dialect == "" {
 		dialect = SQLDialectQuestion
 	}
-	return &SQLAuditLogger{db: db, dialect: dialect}
+	return &SQLAuditLogger{db: db, dialect: dialect, queries: dbsqlc.New(db)}
 }
 
 func (l *SQLAuditLogger) Init(ctx context.Context) error {
 	if l == nil || l.db == nil {
 		return fmt.Errorf("sql audit logger is not configured")
 	}
-	timeType := l.dialect.TimeType()
-	for _, stmt := range []string{
-		`CREATE TABLE IF NOT EXISTS agent_audit_logs (
-	id TEXT PRIMARY KEY,
-	event TEXT NOT NULL,
-	user_id TEXT,
-	session_id TEXT,
-	job_id TEXT,
-	asset_id TEXT,
-	request_id TEXT,
-	ip_address TEXT,
-	user_agent TEXT,
-	metadata TEXT NOT NULL,
-	created_at ` + timeType + ` NOT NULL
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_audit_logs_user_created ON agent_audit_logs (user_id, created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_audit_logs_event_created ON agent_audit_logs (event, created_at)`,
-	} {
-		if _, err := l.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	return ensureReadableTimeColumns(ctx, l.db, l.dialect, "agent_audit_logs", "created_at")
+	return requireSQLColumns(ctx, l.db, "agent_audit_logs",
+		"id",
+		"event",
+		"user_id",
+		"session_id",
+		"job_id",
+		"asset_id",
+		"request_id",
+		"ip_address",
+		"user_agent",
+		"metadata",
+		"created_at",
+	)
 }
 
 func (l *SQLAuditLogger) Record(ctx context.Context, record AuditRecord) error {
@@ -152,9 +145,24 @@ func (l *SQLAuditLogger) Record(ctx context.Context, record AuditRecord) error {
 	if err != nil {
 		return err
 	}
+	if l.dialect == SQLDialectPostgres && l.queries != nil {
+		return l.queries.InsertAuditRecord(ctx, dbsqlc.InsertAuditRecordParams{
+			ID:        record.ID,
+			Event:     record.Event,
+			UserID:    sqlNullString(record.UserID),
+			SessionID: sqlNullString(record.SessionID),
+			JobID:     sqlNullString(record.JobID),
+			AssetID:   sqlNullString(record.AssetID),
+			RequestID: sqlNullString(record.RequestID),
+			IpAddress: sqlNullString(record.IPAddress),
+			UserAgent: sqlNullString(record.UserAgent),
+			Metadata:  string(metadata),
+			CreatedAt: record.CreatedAt.UTC(),
+		})
+	}
 	_, err = l.db.ExecContext(ctx, l.dialect.Bind(`
-INSERT INTO agent_audit_logs (id, event, user_id, session_id, job_id, asset_id, request_id, ip_address, user_agent, metadata, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+	INSERT INTO agent_audit_logs (id, event, user_id, session_id, job_id, asset_id, request_id, ip_address, user_agent, metadata, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		record.ID,
 		record.Event,
 		nullableString(record.UserID),
@@ -175,6 +183,25 @@ func (l *SQLAuditLogger) ListAuditRecords(ctx context.Context, filter AuditLogFi
 		return AuditLogSummary{}, fmt.Errorf("sql audit logger is not configured")
 	}
 	filter = normalizeAuditLogFilter(filter)
+	if l.dialect == SQLDialectPostgres && l.queries != nil {
+		rows, err := l.queries.ListAuditRecords(ctx, dbsqlc.ListAuditRecordsParams{
+			Since:  filter.Since.UTC(),
+			UserID: sqlOptionalString(filter.UserID, filter.UserID != ""),
+			Event:  sqlOptionalString(filter.Event, filter.Event != "" && filter.Event != "all"),
+		})
+		if err != nil {
+			return AuditLogSummary{}, err
+		}
+		records := make([]AuditRecord, 0, len(rows))
+		for _, row := range rows {
+			record, err := auditRecordFromSQLC(row)
+			if err != nil {
+				return AuditLogSummary{}, err
+			}
+			records = append(records, record)
+		}
+		return summarizeAuditRecords(records, filter), nil
+	}
 	query := `SELECT id, event, user_id, session_id, job_id, asset_id, request_id, ip_address, user_agent, metadata, created_at FROM agent_audit_logs WHERE created_at >= ?`
 	args := []any{sqlTimeValue(filter.Since, l.dialect)}
 	if filter.UserID != "" {
@@ -248,6 +275,29 @@ func scanAuditRecord(row auditRecordScanner) (AuditRecord, error) {
 	}
 	record.CreatedAt = parsed
 	record.RiskLevel = auditRiskLevel(record.Event)
+	return record, nil
+}
+
+func auditRecordFromSQLC(row dbsqlc.AgentAuditLog) (AuditRecord, error) {
+	record := AuditRecord{
+		ID:        row.ID,
+		Event:     row.Event,
+		UserID:    row.UserID.String,
+		SessionID: row.SessionID.String,
+		JobID:     row.JobID.String,
+		AssetID:   row.AssetID.String,
+		RequestID: row.RequestID.String,
+		IPAddress: row.IpAddress.String,
+		UserAgent: row.UserAgent.String,
+		CreatedAt: row.CreatedAt.UTC(),
+		RiskLevel: auditRiskLevel(row.Event),
+	}
+	if strings.TrimSpace(row.Metadata) != "" {
+		_ = json.Unmarshal([]byte(row.Metadata), &record.Metadata)
+	}
+	if record.Metadata == nil {
+		record.Metadata = map[string]any{}
+	}
 	return record, nil
 }
 
@@ -417,12 +467,6 @@ func newAuditID() string {
 }
 
 func clientIP(r *http.Request) string {
-	if value := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); value != "" {
-		if first, _, ok := strings.Cut(value, ","); ok {
-			return strings.TrimSpace(first)
-		}
-		return value
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
 		return host
@@ -435,4 +479,14 @@ func nullableString(value string) any {
 		return nil
 	}
 	return value
+}
+
+func sqlNullString(value string) sql.NullString {
+	value = strings.TrimSpace(value)
+	return sql.NullString{String: value, Valid: value != ""}
+}
+
+func sqlOptionalString(value string, valid bool) sql.NullString {
+	value = strings.TrimSpace(value)
+	return sql.NullString{String: value, Valid: valid && value != ""}
 }

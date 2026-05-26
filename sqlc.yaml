@@ -1,0 +1,32 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema:
+      - "internal/backend/agentruntime/sqlc/schema/audit.sql"
+      - "internal/backend/agentruntime/sqlc/schema/artifacts.sql"
+      - "internal/backend/agentruntime/sqlc/schema/evaluation.sql"
+      - "internal/backend/agentruntime/sqlc/schema/jobs.sql"
+      - "internal/backend/agentruntime/sqlc/schema/llm_governance.sql"
+      - "internal/backend/agentruntime/sqlc/schema/memory.sql"
+      - "internal/backend/agentruntime/sqlc/schema/risk.sql"
+      - "internal/backend/agentruntime/sqlc/schema/runtime_config.sql"
+      - "internal/backend/agentruntime/sqlc/schema/sessions_messages.sql"
+      - "internal/backend/agentruntime/sqlc/schema/users.sql"
+    queries:
+      - "internal/backend/agentruntime/sqlc/query/audit.sql"
+      - "internal/backend/agentruntime/sqlc/query/artifacts.sql"
+      - "internal/backend/agentruntime/sqlc/query/evaluation.sql"
+      - "internal/backend/agentruntime/sqlc/query/jobs.sql"
+      - "internal/backend/agentruntime/sqlc/query/llm_governance.sql"
+      - "internal/backend/agentruntime/sqlc/query/memory.sql"
+      - "internal/backend/agentruntime/sqlc/query/risk.sql"
+      - "internal/backend/agentruntime/sqlc/query/runtime_config.sql"
+      - "internal/backend/agentruntime/sqlc/query/sessions_messages.sql"
+      - "internal/backend/agentruntime/sqlc/query/users.sql"
+    gen:
+      go:
+        package: "dbsqlc"
+        out: "internal/backend/agentruntime/dbsqlc"
+        sql_package: "database/sql"
+        emit_json_tags: true
+        emit_empty_slices: true

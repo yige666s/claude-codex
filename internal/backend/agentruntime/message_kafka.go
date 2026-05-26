@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -249,10 +249,15 @@ type KafkaMessageEventConsumerWorker struct {
 	retryAttempts  int
 	retryBackoff   time.Duration
 	processTimeout time.Duration
-	logger         *log.Logger
+	logger         *slog.Logger
 }
 
 func NewKafkaMessageEventConsumerWorker(reader kafkaMessageReader, handler MessageEventHandler, config KafkaMessageEventConfig) *KafkaMessageEventConsumerWorker {
+	config = config.normalized()
+	return NewKafkaMessageEventConsumerWorkerWithLogger(reader, handler, config, nil)
+}
+
+func NewKafkaMessageEventConsumerWorkerWithLogger(reader kafkaMessageReader, handler MessageEventHandler, config KafkaMessageEventConfig, logger *slog.Logger) *KafkaMessageEventConsumerWorker {
 	config = config.normalized()
 	return &KafkaMessageEventConsumerWorker{
 		reader:         reader,
@@ -261,7 +266,7 @@ func NewKafkaMessageEventConsumerWorker(reader kafkaMessageReader, handler Messa
 		retryAttempts:  config.RetryAttempts,
 		retryBackoff:   config.RetryBackoff,
 		processTimeout: config.ProcessTimeout,
-		logger:         log.Default(),
+		logger:         componentLogger(logger, "kafka_message_event_consumer"),
 	}
 }
 
@@ -294,18 +299,26 @@ func (w *KafkaMessageEventConsumerWorker) Run(ctx context.Context) error {
 				return ctx.Err()
 			}
 			if w.logger != nil {
-				w.logger.Printf("kafka message event fetch failed: %v", err)
+				logError(ctx, w.logger, "kafka message event fetch failed", err)
 			}
 			continue
 		}
 		if err := w.processKafkaMessage(ctx, message); err != nil {
 			if w.logger != nil {
-				w.logger.Printf("kafka message event process failed: topic=%s partition=%d offset=%d: %v", message.Topic, message.Partition, message.Offset, err)
+				logError(ctx, w.logger, "kafka message event process failed", err,
+					slog.String("topic", message.Topic),
+					slog.Int("partition", message.Partition),
+					slog.Int64("offset", message.Offset),
+				)
 			}
 			continue
 		}
 		if err := w.reader.CommitMessages(ctx, message); err != nil && w.logger != nil {
-			w.logger.Printf("kafka message event commit failed: topic=%s partition=%d offset=%d: %v", message.Topic, message.Partition, message.Offset, err)
+			logError(ctx, w.logger, "kafka message event commit failed", err,
+				slog.String("topic", message.Topic),
+				slog.Int("partition", message.Partition),
+				slog.Int64("offset", message.Offset),
+			)
 		}
 	}
 }
@@ -352,12 +365,14 @@ func (w *KafkaMessageEventConsumerWorker) processKafkaMessage(ctx context.Contex
 }
 
 func (w *KafkaMessageEventConsumerWorker) handleWithRetry(ctx context.Context, event MessageEvent) error {
-	attempts := w.retryAttempts
-	if attempts <= 0 {
-		attempts = 1
+	retryPolicy := RetryPolicy{
+		MaxAttempts: w.retryAttempts,
+		BaseDelay:   w.retryBackoff,
+		MaxDelay:    30 * time.Second,
+		Jitter:      0.2,
 	}
 	var lastErr error
-	for attempt := 1; attempt <= attempts; attempt++ {
+	for attempt := 1; attempt <= retryPolicy.Attempts(); attempt++ {
 		processCtx := ctx
 		cancel := func() {}
 		if w.processTimeout > 0 {
@@ -368,10 +383,10 @@ func (w *KafkaMessageEventConsumerWorker) handleWithRetry(ctx context.Context, e
 		if lastErr == nil {
 			return nil
 		}
-		if attempt == attempts {
+		if attempt == retryPolicy.Attempts() {
 			break
 		}
-		if err := sleepContext(ctx, w.retryBackoff); err != nil {
+		if err := retryPolicy.Sleep(ctx, attempt, lastErr); err != nil {
 			return err
 		}
 	}

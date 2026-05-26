@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"claude-codex/internal/backend/agentruntime/dbsqlc"
 	"claude-codex/internal/harness/engine"
 	"claude-codex/internal/harness/plannerapi"
 	"claude-codex/internal/harness/state"
@@ -294,9 +295,14 @@ func (p *GovernedPlanner) execute(ctx context.Context, session *state.Session, t
 		return plannerapi.Plan{}, err
 	}
 	inputTokens := estimateSessionTokens(session)
-	attempts := p.config.MaxAttempts
+	retryPolicy := RetryPolicy{
+		MaxAttempts: p.config.MaxAttempts,
+		BaseDelay:   p.config.RetryBackoff,
+		MaxDelay:    30 * time.Second,
+		Jitter:      0.2,
+	}
 	var lastErr error
-	for attempt := 1; attempt <= attempts; attempt++ {
+	for attempt := 1; attempt <= retryPolicy.Attempts(); attempt++ {
 		for idx := range p.backends {
 			if !p.backendAvailable(idx) {
 				continue
@@ -317,8 +323,8 @@ func (p *GovernedPlanner) execute(ctx context.Context, session *state.Session, t
 			}
 			p.markFailure(idx, err)
 		}
-		if attempt < attempts {
-			if err := sleepContext(ctx, backoffForAttempt(p.config.RetryBackoff, attempt)); err != nil {
+		if attempt < retryPolicy.Attempts() {
+			if err := retryPolicy.Sleep(ctx, attempt, lastErr); err != nil {
 				return plannerapi.Plan{}, err
 			}
 		}
@@ -535,24 +541,6 @@ func isRetryableLLMError(err error) bool {
 	return false
 }
 
-func backoffForAttempt(base time.Duration, attempt int) time.Duration {
-	if attempt <= 1 {
-		return base
-	}
-	return time.Duration(1<<minInt(attempt-1, 5)) * base
-}
-
-func sleepContext(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
 func startOfUTCDay(now time.Time) time.Time {
 	year, month, day := now.UTC().Date()
 	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
@@ -600,6 +588,7 @@ func minInt(a, b int) int {
 type SQLLLMUsageStore struct {
 	db      *sql.DB
 	dialect SQLDialect
+	queries *dbsqlc.Queries
 }
 
 type MemoryLLMUsageStore struct {
@@ -703,70 +692,21 @@ func NewSQLLLMUsageStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLLLMUsage
 	if dialect == "" {
 		dialect = SQLDialectQuestion
 	}
-	return &SQLLLMUsageStore{db: db, dialect: dialect}
+	return &SQLLLMUsageStore{db: db, dialect: dialect, queries: dbsqlc.New(db)}
 }
 
 func (s *SQLLLMUsageStore) Init(ctx context.Context) error {
-	timeType := s.dialect.TimeType()
-	for _, stmt := range []string{
-		`CREATE TABLE IF NOT EXISTS agent_llm_usage (
-	id TEXT PRIMARY KEY,
-	user_id TEXT NOT NULL,
-	session_id TEXT NOT NULL,
-	request_id TEXT,
-	skill_name TEXT,
-	provider TEXT NOT NULL,
-	model TEXT NOT NULL,
-	input_tokens INTEGER NOT NULL,
-	output_tokens INTEGER NOT NULL,
-	total_tokens INTEGER NOT NULL,
-	estimated_cost_usd REAL NOT NULL,
-	attempt INTEGER NOT NULL,
-	status TEXT NOT NULL,
-	error TEXT,
-	latency_ms BIGINT NOT NULL,
-	ttft_ms BIGINT NOT NULL DEFAULT 0,
-	created_at ` + timeType + ` NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS agent_llm_quota_adjustments (
-	id TEXT PRIMARY KEY,
-	user_id TEXT NOT NULL,
-	actor_user_id TEXT,
-	reason TEXT,
-	request_delta INTEGER NOT NULL,
-	input_token_delta INTEGER NOT NULL,
-	output_token_delta INTEGER NOT NULL,
-	total_token_delta INTEGER NOT NULL,
-	estimated_cost_delta_usd REAL NOT NULL,
-	created_at ` + timeType + ` NOT NULL
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_llm_usage_user_created ON agent_llm_usage (user_id, created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_llm_usage_session_created ON agent_llm_usage (session_id, created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_llm_quota_adjustments_user_created ON agent_llm_quota_adjustments (user_id, created_at)`,
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	if err := s.ensureUsageColumns(ctx); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_llm_usage",
+		"id", "user_id", "session_id", "request_id", "skill_name", "provider", "model",
+		"input_tokens", "output_tokens", "total_tokens", "estimated_cost_usd", "attempt",
+		"status", "error", "latency_ms", "ttft_ms", "created_at",
+	); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_llm_usage", "created_at"); err != nil {
-		return err
-	}
-	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_llm_quota_adjustments", "created_at")
-}
-
-func (s *SQLLLMUsageStore) ensureUsageColumns(ctx context.Context) error {
-	stmt := `ALTER TABLE agent_llm_usage ADD COLUMN `
-	if s.dialect == SQLDialectPostgres {
-		stmt += `IF NOT EXISTS `
-	}
-	stmt += `ttft_ms BIGINT NOT NULL DEFAULT 0`
-	if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
-		return err
-	}
-	return nil
+	return requireSQLColumns(ctx, s.db, "agent_llm_quota_adjustments",
+		"id", "user_id", "actor_user_id", "reason", "request_delta", "input_token_delta",
+		"output_token_delta", "total_token_delta", "estimated_cost_delta_usd", "created_at",
+	)
 }
 
 func (s *SQLLLMUsageStore) RecordLLMUsage(ctx context.Context, record LLMUsageRecord) error {
@@ -775,6 +715,27 @@ func (s *SQLLLMUsageStore) RecordLLMUsage(ctx context.Context, record LLMUsageRe
 	}
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now().UTC()
+	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.InsertLLMUsage(ctx, dbsqlc.InsertLLMUsageParams{
+			ID:               record.ID,
+			UserID:           record.UserID,
+			SessionID:        record.SessionID,
+			RequestID:        sqlNullString(record.RequestID),
+			SkillName:        sqlNullString(record.SkillName),
+			Provider:         record.Provider,
+			Model:            record.Model,
+			InputTokens:      int32(record.InputTokens),
+			OutputTokens:     int32(record.OutputTokens),
+			TotalTokens:      int32(record.TotalTokens),
+			EstimatedCostUsd: record.EstimatedCostUSD,
+			Attempt:          int32(record.Attempt),
+			Status:           record.Status,
+			Error:            sqlNullString(record.Error),
+			LatencyMs:        record.LatencyMs,
+			TtftMs:           record.TTFTMs,
+			CreatedAt:        record.CreatedAt.UTC(),
+		})
 	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_llm_usage (
@@ -803,6 +764,19 @@ func (s *SQLLLMUsageStore) SumLLMUsage(ctx context.Context, userID string, since
 }
 
 func (s *SQLLLMUsageStore) rawLLMUsage(ctx context.Context, userID string, since time.Time) (LLMUsageSummary, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		row, err := s.queries.SumLLMUsageSuccess(ctx, dbsqlc.SumLLMUsageSuccessParams{UserID: userID, CreatedAt: since.UTC()})
+		if err != nil {
+			return LLMUsageSummary{}, err
+		}
+		return LLMUsageSummary{
+			Requests:         int(row.Requests),
+			InputTokens:      int(row.InputTokens),
+			OutputTokens:     int(row.OutputTokens),
+			TotalTokens:      int(row.TotalTokens),
+			EstimatedCostUSD: row.EstimatedCostUsd,
+		}, nil
+	}
 	var summary LLMUsageSummary
 	err := s.db.QueryRowContext(ctx, s.dialect.Bind(`
 SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(estimated_cost_usd), 0)
@@ -818,6 +792,19 @@ WHERE user_id = ? AND created_at >= ? AND status = 'success'`), userID, sqlTimeV
 }
 
 func (s *SQLLLMUsageStore) sumLLMQuotaAdjustments(ctx context.Context, userID string, since time.Time) (LLMUsageSummary, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		row, err := s.queries.SumLLMQuotaAdjustments(ctx, dbsqlc.SumLLMQuotaAdjustmentsParams{UserID: userID, CreatedAt: since.UTC()})
+		if err != nil {
+			return LLMUsageSummary{}, err
+		}
+		return LLMUsageSummary{
+			Requests:         int(row.Requests),
+			InputTokens:      int(row.InputTokens),
+			OutputTokens:     int(row.OutputTokens),
+			TotalTokens:      int(row.TotalTokens),
+			EstimatedCostUSD: row.EstimatedCostUsd,
+		}, nil
+	}
 	var summary LLMUsageSummary
 	err := s.db.QueryRowContext(ctx, s.dialect.Bind(`
 SELECT COALESCE(SUM(request_delta), 0), COALESCE(SUM(input_token_delta), 0), COALESCE(SUM(output_token_delta), 0), COALESCE(SUM(total_token_delta), 0), COALESCE(SUM(estimated_cost_delta_usd), 0)
@@ -834,6 +821,49 @@ WHERE user_id = ? AND created_at >= ?`), userID, sqlTimeValue(since, s.dialect))
 
 func (s *SQLLLMUsageStore) SummarizeLLMUsage(ctx context.Context, filter LLMUsageAdminFilter) (LLMUsageAdminSummary, error) {
 	filter = normalizeLLMUsageAdminFilter(filter)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		userID := strings.TrimSpace(filter.UserID)
+		totals, err := s.queries.SummarizeLLMUsageTotals(ctx, dbsqlc.SummarizeLLMUsageTotalsParams{Since: filter.Since.UTC(), UserID: userID})
+		if err != nil {
+			return LLMUsageAdminSummary{}, err
+		}
+		summary := LLMUsageAdminSummary{
+			Since:            filter.Since,
+			Requests:         int(totals.Requests),
+			Successes:        int(totals.Successes),
+			Failures:         int(totals.Failures),
+			InputTokens:      int(totals.InputTokens),
+			OutputTokens:     int(totals.OutputTokens),
+			TotalTokens:      int(totals.TotalTokens),
+			EstimatedCostUSD: totals.EstimatedCostUsd,
+			AverageLatencyMs: totals.AverageLatencyMs,
+		}
+		groups, err := s.queries.ListLLMUsageGroups(ctx, dbsqlc.ListLLMUsageGroupsParams{Since: filter.Since.UTC(), UserID: userID})
+		if err != nil {
+			return LLMUsageAdminSummary{}, err
+		}
+		for _, group := range groups {
+			summary.ByProvider = append(summary.ByProvider, LLMUsageAdminGroup{
+				Provider:         group.Provider,
+				Model:            group.Model,
+				Status:           group.Status,
+				Requests:         int(group.Requests),
+				TotalTokens:      int(group.TotalTokens),
+				EstimatedCostUSD: math.Round(group.EstimatedCostUsd*1_000_000) / 1_000_000,
+			})
+		}
+		recent, err := s.queries.ListRecentLLMUsage(ctx, dbsqlc.ListRecentLLMUsageParams{
+			Since:      filter.Since.UTC(),
+			UserID:     userID,
+			LimitCount: int32(filter.Limit),
+		})
+		if err != nil {
+			return LLMUsageAdminSummary{}, err
+		}
+		summary.Recent = llmUsageRecordsFromSQLC(recent)
+		summary.EstimatedCostUSD = math.Round(summary.EstimatedCostUSD*1_000_000) / 1_000_000
+		return summary, nil
+	}
 	where := ` WHERE created_at >= ?`
 	args := []any{sqlTimeValue(filter.Since, s.dialect)}
 	if strings.TrimSpace(filter.UserID) != "" {
@@ -910,6 +940,20 @@ ORDER BY COALESCE(SUM(estimated_cost_usd), 0) DESC, COUNT(*) DESC`), args...)
 
 func (s *SQLLLMUsageStore) RecordLLMQuotaAdjustment(ctx context.Context, adjustment LLMQuotaAdjustment) error {
 	adjustment = normalizeLLMQuotaAdjustment(adjustment)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.InsertLLMQuotaAdjustment(ctx, dbsqlc.InsertLLMQuotaAdjustmentParams{
+			ID:                    adjustment.ID,
+			UserID:                adjustment.UserID,
+			ActorUserID:           sqlNullString(adjustment.ActorUserID),
+			Reason:                sqlNullString(adjustment.Reason),
+			RequestDelta:          int32(adjustment.RequestDelta),
+			InputTokenDelta:       int32(adjustment.InputTokenDelta),
+			OutputTokenDelta:      int32(adjustment.OutputTokenDelta),
+			TotalTokenDelta:       int32(adjustment.TotalTokenDelta),
+			EstimatedCostDeltaUsd: adjustment.EstimatedCostDeltaUSD,
+			CreatedAt:             adjustment.CreatedAt.UTC(),
+		})
+	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_llm_quota_adjustments (
 	id, user_id, actor_user_id, reason, request_delta, input_token_delta,
@@ -943,6 +987,23 @@ func (s *SQLLLMUsageStore) SummarizeLLMQuota(ctx context.Context, userID string,
 	}
 	effective := raw
 	applyQuotaAdjustments(&effective, adjustments)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.ListLLMQuotaAdjustments(ctx, dbsqlc.ListLLMQuotaAdjustmentsParams{
+			UserID:    userID,
+			CreatedAt: since.UTC(),
+			Limit:     int32(limit),
+		})
+		if err != nil {
+			return LLMQuotaAdminSummary{}, err
+		}
+		return LLMQuotaAdminSummary{
+			Since:             since,
+			RawUsage:          raw,
+			Adjustments:       adjustments,
+			EffectiveUsage:    clampLLMUsageSummary(effective),
+			RecentAdjustments: llmQuotaAdjustmentsFromSQLC(rows),
+		}, nil
+	}
 	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
 SELECT id, user_id, actor_user_id, reason, request_delta, input_token_delta, output_token_delta, total_token_delta, estimated_cost_delta_usd, created_at
 FROM agent_llm_quota_adjustments
@@ -1035,6 +1096,59 @@ func scanLLMQuotaAdjustment(row llmUsageScanner) (LLMQuotaAdjustment, error) {
 	}
 	adjustment.CreatedAt = parsed
 	return adjustment, nil
+}
+
+func llmUsageRecordFromSQLC(row dbsqlc.AgentLlmUsage) LLMUsageRecord {
+	return LLMUsageRecord{
+		ID:               row.ID,
+		UserID:           row.UserID,
+		SessionID:        row.SessionID,
+		RequestID:        row.RequestID.String,
+		SkillName:        row.SkillName.String,
+		Provider:         row.Provider,
+		Model:            row.Model,
+		InputTokens:      int(row.InputTokens),
+		OutputTokens:     int(row.OutputTokens),
+		TotalTokens:      int(row.TotalTokens),
+		EstimatedCostUSD: row.EstimatedCostUsd,
+		Attempt:          int(row.Attempt),
+		Status:           row.Status,
+		Error:            row.Error.String,
+		LatencyMs:        row.LatencyMs,
+		TTFTMs:           row.TtftMs,
+		CreatedAt:        row.CreatedAt.UTC(),
+	}
+}
+
+func llmUsageRecordsFromSQLC(rows []dbsqlc.AgentLlmUsage) []LLMUsageRecord {
+	out := make([]LLMUsageRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, llmUsageRecordFromSQLC(row))
+	}
+	return out
+}
+
+func llmQuotaAdjustmentFromSQLC(row dbsqlc.AgentLlmQuotaAdjustment) LLMQuotaAdjustment {
+	return LLMQuotaAdjustment{
+		ID:                    row.ID,
+		UserID:                row.UserID,
+		ActorUserID:           row.ActorUserID.String,
+		Reason:                row.Reason.String,
+		RequestDelta:          int(row.RequestDelta),
+		InputTokenDelta:       int(row.InputTokenDelta),
+		OutputTokenDelta:      int(row.OutputTokenDelta),
+		TotalTokenDelta:       int(row.TotalTokenDelta),
+		EstimatedCostDeltaUSD: row.EstimatedCostDeltaUsd,
+		CreatedAt:             row.CreatedAt.UTC(),
+	}
+}
+
+func llmQuotaAdjustmentsFromSQLC(rows []dbsqlc.AgentLlmQuotaAdjustment) []LLMQuotaAdjustment {
+	out := make([]LLMQuotaAdjustment, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, llmQuotaAdjustmentFromSQLC(row))
+	}
+	return out
 }
 
 func normalizeLLMQuotaAdjustment(adjustment LLMQuotaAdjustment) LLMQuotaAdjustment {

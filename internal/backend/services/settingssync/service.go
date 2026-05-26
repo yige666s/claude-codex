@@ -1,13 +1,11 @@
 package settingssync
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +15,7 @@ import (
 	appauth "claude-codex/internal/app/auth"
 	"claude-codex/internal/app/config"
 	"claude-codex/internal/app/settings"
+	"claude-codex/internal/backend/httpclient"
 )
 
 const endpointPath = "/api/claude_code/user_settings"
@@ -84,28 +83,26 @@ func (s *Service) Fetch(ctx context.Context) FetchResult {
 	if err != nil {
 		return FetchResult{Success: false, Error: "No OAuth token available", SkipRetry: true}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(s.auth.BaseAPIURL(), "/")+endpointPath, nil)
+	headers := make(http.Header)
+	headers.Set("Authorization", "Bearer "+token)
+	headers.Set("anthropic-beta", "oauth-2025-04-20")
+	headers.Set("User-Agent", "claude-codex")
+	status, body, _, err := httpclient.New(
+		httpclient.WithHTTPClient(s.httpClient),
+		httpclient.WithComponent("settings_sync"),
+	).Bytes(ctx, http.MethodGet, strings.TrimRight(s.auth.BaseAPIURL(), "/")+endpointPath, nil,
+		httpclient.WithHeaders(headers),
+		httpclient.WithOKStatuses(http.StatusOK, http.StatusNotFound),
+	)
 	if err != nil {
 		return FetchResult{Success: false, Error: err.Error()}
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	req.Header.Set("User-Agent", "claude-codex")
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return FetchResult{Success: false, Error: err.Error()}
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return FetchResult{Success: false, Error: err.Error()}
-	}
-	switch resp.StatusCode {
+	switch status {
 	case http.StatusNotFound:
 		return FetchResult{Success: true, IsEmpty: true}
 	case http.StatusOK:
 	default:
-		return FetchResult{Success: false, Error: fmt.Sprintf("settings sync fetch failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))}
+		return FetchResult{Success: false, Error: fmt.Sprintf("settings sync fetch failed (%d): %s", status, strings.TrimSpace(string(body)))}
 	}
 	var data UserSyncData
 	if err := json.Unmarshal(body, &data); err != nil {
@@ -120,30 +117,18 @@ func (s *Service) Upload(ctx context.Context, entries map[string]string) UploadR
 		return UploadResult{Success: false, Error: "No OAuth token available"}
 	}
 	payload := map[string]any{"entries": entries}
-	body, err := json.Marshal(payload)
+	headers := make(http.Header)
+	headers.Set("Authorization", "Bearer "+token)
+	headers.Set("anthropic-beta", "oauth-2025-04-20")
+	headers.Set("User-Agent", "claude-codex")
+	_, respBody, _, err := httpclient.New(
+		httpclient.WithHTTPClient(s.httpClient),
+		httpclient.WithComponent("settings_sync"),
+	).Bytes(ctx, http.MethodPost, strings.TrimRight(s.auth.BaseAPIURL(), "/")+endpointPath, payload,
+		httpclient.WithHeaders(headers),
+	)
 	if err != nil {
-		return UploadResult{Success: false, Error: err.Error()}
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.auth.BaseAPIURL(), "/")+endpointPath, bytes.NewReader(body))
-	if err != nil {
-		return UploadResult{Success: false, Error: err.Error()}
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "claude-codex")
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return UploadResult{Success: false, Error: err.Error()}
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return UploadResult{Success: false, Error: err.Error()}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return UploadResult{Success: false, Error: fmt.Sprintf("settings sync upload failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))}
+		return UploadResult{Success: false, Error: fmt.Sprintf("settings sync upload failed: %s", err.Error())}
 	}
 	var parsed struct {
 		Checksum     string `json:"checksum"`

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	toolkit "claude-codex/internal/harness/tools"
 )
@@ -80,12 +81,12 @@ func (s *Server) handle(ctx context.Context, request Request) Response {
 
 	switch request.Method {
 	case MethodRunPrompt:
-		workingDir, prompt := resolveRunPromptArgs(request)
-		if prompt == "" {
-			response.Error = "prompt is required"
+		args, err := resolveRunPromptArgs(request)
+		if err != nil {
+			response.Error = err.Error()
 			return response
 		}
-		result, err := s.runner.RunPrompt(ctx, workingDir, prompt)
+		result, err := s.runner.RunPrompt(ctx, args.WorkingDir, args.Prompt)
 		if err != nil {
 			response.Error = err.Error()
 			return response
@@ -118,12 +119,12 @@ func (s *Server) handle(ctx context.Context, request Request) Response {
 			response.Error = "session_prompt is not supported"
 			return response
 		}
-		sessionID, prompt := resolveSessionPromptArgs(request)
-		if sessionID == "" || prompt == "" {
-			response.Error = "session_id and prompt are required"
+		args, err := resolveSessionPromptArgs(request)
+		if err != nil {
+			response.Error = err.Error()
 			return response
 		}
-		result, err := runner.RunSessionPrompt(ctx, sessionID, prompt)
+		result, err := runner.RunSessionPrompt(ctx, args.SessionID, args.Prompt)
 		if err != nil {
 			response.Error = err.Error()
 			return response
@@ -135,12 +136,12 @@ func (s *Server) handle(ctx context.Context, request Request) Response {
 			response.Error = "get_session is not supported"
 			return response
 		}
-		sessionID := resolveSessionID(request)
-		if sessionID == "" {
-			response.Error = "session_id is required"
+		args, err := resolveSessionIDArgs(request)
+		if err != nil {
+			response.Error = err.Error()
 			return response
 		}
-		session, err := runner.GetSession(ctx, sessionID)
+		session, err := runner.GetSession(ctx, args.SessionID)
 		if err != nil {
 			response.Error = err.Error()
 			return response
@@ -165,23 +166,37 @@ func (s *Server) handle(ctx context.Context, request Request) Response {
 			response.Error = "delete_session is not supported"
 			return response
 		}
-		sessionID := resolveSessionID(request)
-		if sessionID == "" {
-			response.Error = "session_id is required"
-			return response
-		}
-		if err := runner.DeleteSession(ctx, sessionID); err != nil {
+		args, err := resolveSessionIDArgs(request)
+		if err != nil {
 			response.Error = err.Error()
 			return response
 		}
-		mustWriteResult(&response, DeleteSessionResult{Deleted: true, SessionID: sessionID})
+		if err := runner.DeleteSession(ctx, args.SessionID); err != nil {
+			response.Error = err.Error()
+			return response
+		}
+		mustWriteResult(&response, DeleteSessionResult{Deleted: true, SessionID: args.SessionID})
 	default:
 		response.Error = fmt.Sprintf("unknown method %s", request.Method)
 	}
 	return response
 }
 
-func resolveRunPromptArgs(request Request) (string, string) {
+type runPromptArgs struct {
+	WorkingDir string
+	Prompt     string
+}
+
+type sessionPromptArgs struct {
+	SessionID string
+	Prompt    string
+}
+
+type sessionIDArgs struct {
+	SessionID string
+}
+
+func resolveRunPromptArgs(request Request) (runPromptArgs, error) {
 	workingDir := request.WorkingDir
 	prompt := request.Prompt
 	if len(request.Params) > 0 {
@@ -195,7 +210,10 @@ func resolveRunPromptArgs(request Request) (string, string) {
 			}
 		}
 	}
-	return workingDir, prompt
+	if strings.TrimSpace(prompt) == "" {
+		return runPromptArgs{}, errors.New("prompt is required")
+	}
+	return runPromptArgs{WorkingDir: workingDir, Prompt: prompt}, nil
 }
 
 func resolveListToolsArgs(request Request) string {
@@ -220,7 +238,7 @@ func resolveCreateSessionArgs(request Request) string {
 	return workingDir
 }
 
-func resolveSessionPromptArgs(request Request) (string, string) {
+func resolveSessionPromptArgs(request Request) (sessionPromptArgs, error) {
 	sessionID := request.SessionID
 	prompt := request.Prompt
 	if len(request.Params) > 0 {
@@ -234,7 +252,10 @@ func resolveSessionPromptArgs(request Request) (string, string) {
 			}
 		}
 	}
-	return sessionID, prompt
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(prompt) == "" {
+		return sessionPromptArgs{}, errors.New("session_id and prompt are required")
+	}
+	return sessionPromptArgs{SessionID: sessionID, Prompt: prompt}, nil
 }
 
 func resolveSessionID(request Request) string {
@@ -259,6 +280,14 @@ func resolveSessionID(request Request) string {
 		}
 	}
 	return ""
+}
+
+func resolveSessionIDArgs(request Request) (sessionIDArgs, error) {
+	sessionID := resolveSessionID(request)
+	if strings.TrimSpace(sessionID) == "" {
+		return sessionIDArgs{}, errors.New("session_id is required")
+	}
+	return sessionIDArgs{SessionID: sessionID}, nil
 }
 
 func resolveListSessionsArgs(request Request) string {

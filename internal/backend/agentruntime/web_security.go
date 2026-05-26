@@ -25,6 +25,7 @@ type WebSecurityConfig struct {
 	CookieHTTPOnly       bool
 	CookieSameSite       http.SameSite
 	EnableCSRF           bool
+	RequestTimeout       time.Duration
 }
 
 func (c WebSecurityConfig) csrfHeaderName() string {
@@ -90,36 +91,6 @@ func ParseSameSite(value string) http.SameSite {
 	}
 }
 
-func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) bool {
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if origin == "" {
-		return true
-	}
-	if sameHostOrigin(r) {
-		return true
-	}
-	if !originAllowed(origin, s.security.CORSAllowedOrigins) {
-		return false
-	}
-	w.Header().Set("Access-Control-Allow-Origin", origin)
-	w.Header().Add("Vary", "Origin")
-	if s.security.CORSAllowCredentials {
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-	}
-	methods := s.security.CORSAllowedMethods
-	if len(methods) == 0 {
-		methods = []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"}
-	}
-	w.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ", "))
-	headers := s.security.CORSAllowedHeaders
-	if len(headers) == 0 {
-		headers = []string{"Authorization", "Content-Type", "X-User-ID", "X-Admin-Token", s.security.csrfHeaderName()}
-	}
-	w.Header().Set("Access-Control-Allow-Headers", strings.Join(headers, ", "))
-	w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
-	return true
-}
-
 func originAllowed(origin string, allowed []string) bool {
 	if len(allowed) == 0 {
 		return false
@@ -133,21 +104,26 @@ func originAllowed(origin string, allowed []string) bool {
 	return false
 }
 
-func (s *Server) requireCSRF(w http.ResponseWriter, r *http.Request) bool {
-	if !s.security.EnableCSRF || !usesSessionCookie(r, s.security.sessionCookieName()) || csrfSafeMethod(r.Method) {
-		return true
+func csrfProtection(config WebSecurityConfig) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !config.EnableCSRF || !usesSessionCookie(r, config.sessionCookieName()) || csrfSafeMethod(r.Method) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			cookie, err := r.Cookie(config.csrfCookieName())
+			if err != nil || strings.TrimSpace(cookie.Value) == "" {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "csrf token cookie is required"})
+				return
+			}
+			header := strings.TrimSpace(r.Header.Get(config.csrfHeaderName()))
+			if header == "" || header != cookie.Value {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "csrf token is invalid"})
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
-	cookie, err := r.Cookie(s.security.csrfCookieName())
-	if err != nil || strings.TrimSpace(cookie.Value) == "" {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "csrf token cookie is required"})
-		return false
-	}
-	header := strings.TrimSpace(r.Header.Get(s.security.csrfHeaderName()))
-	if header == "" || header != cookie.Value {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "csrf token is invalid"})
-		return false
-	}
-	return true
 }
 
 func csrfSafeMethod(method string) bool {

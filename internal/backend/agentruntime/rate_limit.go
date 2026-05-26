@@ -1,15 +1,15 @@
 package agentruntime
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"net"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type RateLimitPolicy interface {
@@ -66,6 +66,7 @@ type RedisRateLimiter struct {
 	Window   time.Duration
 	Timeout  time.Duration
 	FailOpen bool
+	client   redis.UniversalClient
 }
 
 func (l RedisRateLimiter) Allow(key string) bool {
@@ -77,49 +78,14 @@ func (l RedisRateLimiter) Allow(key string) bool {
 }
 
 func (l RedisRateLimiter) Ping(ctx context.Context) error {
-	timeout := l.Timeout
-	if timeout <= 0 {
-		timeout = 750 * time.Millisecond
-	}
-	address := l.Address
-	if address == "" {
-		address = "127.0.0.1:6379"
-	}
-	dialer := net.Dialer{Timeout: timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", address)
+	client, closeClient, err := l.redisClient()
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-	reader := bufio.NewReader(conn)
-	if l.Password != "" {
-		if err := redisWriteCommand(conn, "AUTH", l.Password); err != nil {
-			return err
-		}
-		if _, err := redisReadSimple(reader); err != nil {
-			return err
-		}
-	}
-	if l.DB > 0 {
-		if err := redisWriteCommand(conn, "SELECT", strconv.Itoa(l.DB)); err != nil {
-			return err
-		}
-		if _, err := redisReadSimple(reader); err != nil {
-			return err
-		}
-	}
-	if err := redisWriteCommand(conn, "PING"); err != nil {
-		return err
-	}
-	reply, err := redisReadSimple(reader)
-	if err != nil {
-		return err
-	}
-	if reply != "+PONG" {
-		return fmt.Errorf("unexpected redis ping response: %s", reply)
-	}
-	return nil
+	defer closeClient()
+	ctx, cancel := l.withTimeout(ctx)
+	defer cancel()
+	return client.Ping(ctx).Err()
 }
 
 func (l RedisRateLimiter) allow(ctx context.Context, key string) (bool, error) {
@@ -130,57 +96,22 @@ func (l RedisRateLimiter) allow(ctx context.Context, key string) (bool, error) {
 	if window <= 0 {
 		window = time.Minute
 	}
-	timeout := l.Timeout
-	if timeout <= 0 {
-		timeout = 750 * time.Millisecond
-	}
-	address := l.Address
-	if address == "" {
-		address = "127.0.0.1:6379"
-	}
-	dialer := net.Dialer{Timeout: timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", address)
-	if err != nil {
-		return false, err
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-	reader := bufio.NewReader(conn)
-	if l.Password != "" {
-		if err := redisWriteCommand(conn, "AUTH", l.Password); err != nil {
-			return false, err
-		}
-		if _, err := redisReadSimple(reader); err != nil {
-			return false, err
-		}
-	}
-	if l.DB > 0 {
-		if err := redisWriteCommand(conn, "SELECT", strconv.Itoa(l.DB)); err != nil {
-			return false, err
-		}
-		if _, err := redisReadSimple(reader); err != nil {
-			return false, err
-		}
-	}
 	prefix := l.Prefix
 	if prefix == "" {
 		prefix = "agentapi:rate"
 	}
-	redisKey := prefix + ":" + key + ":" + strconv.FormatInt(time.Now().Unix()/int64(window.Seconds()), 10)
-	if err := redisWriteCommand(conn, "INCR", redisKey); err != nil {
-		return false, err
-	}
-	count, err := redisReadInt(reader)
+	client, closeClient, err := l.redisClient()
 	if err != nil {
 		return false, err
 	}
-	if count == 1 {
-		if err := redisWriteCommand(conn, "EXPIRE", redisKey, strconv.Itoa(int(window.Seconds())+2)); err != nil {
-			return false, err
-		}
-		if _, err := redisReadInt(reader); err != nil {
-			return false, err
-		}
+	defer closeClient()
+	ctx, cancel := l.withTimeout(ctx)
+	defer cancel()
+	bucket := time.Now().UnixNano() / int64(window)
+	redisKey := strings.TrimRight(prefix, ":") + ":" + key + ":" + strconv.FormatInt(bucket, 10)
+	count, err := client.Eval(ctx, redisFixedWindowScript, []string{redisKey}, redisTTLSeconds(window)).Int64()
+	if err != nil {
+		return false, err
 	}
 	return count <= int64(l.Limit), nil
 }
@@ -189,6 +120,7 @@ func NewRedisRateLimiter(rawURL string, limit int, window time.Duration, failOpe
 	cfg := &RedisRateLimiter{Limit: limit, Window: window, FailOpen: failOpen}
 	if strings.TrimSpace(rawURL) == "" {
 		cfg.Address = "127.0.0.1:6379"
+		cfg.client = redis.NewClient(&redis.Options{Addr: cfg.Address})
 		return cfg, nil
 	}
 	parsed, err := url.Parse(rawURL)
@@ -209,44 +141,48 @@ func NewRedisRateLimiter(rawURL string, limit int, window time.Duration, failOpe
 	if prefix := parsed.Query().Get("prefix"); prefix != "" {
 		cfg.Prefix = prefix
 	}
+	cfg.client, err = NewRedisClientFromURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
-func redisWriteCommand(conn net.Conn, args ...string) error {
-	var b strings.Builder
-	b.WriteString("*")
-	b.WriteString(strconv.Itoa(len(args)))
-	b.WriteString("\r\n")
-	for _, arg := range args {
-		b.WriteString("$")
-		b.WriteString(strconv.Itoa(len(arg)))
-		b.WriteString("\r\n")
-		b.WriteString(arg)
-		b.WriteString("\r\n")
+const redisFixedWindowScript = `
+local current = redis.call("INCR", KEYS[1])
+if current == 1 then
+	redis.call("EXPIRE", KEYS[1], ARGV[1])
+end
+return current
+`
+
+func (l RedisRateLimiter) redisClient() (redis.UniversalClient, func(), error) {
+	if l.client != nil {
+		return l.client, func() {}, nil
 	}
-	_, err := conn.Write([]byte(b.String()))
-	return err
+	options := &redis.Options{Addr: l.Address, Password: l.Password, DB: l.DB}
+	if options.Addr == "" {
+		options.Addr = "127.0.0.1:6379"
+	}
+	client := redis.NewClient(options)
+	return client, func() { _ = client.Close() }, nil
 }
 
-func redisReadSimple(r *bufio.Reader) (string, error) {
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return "", err
+func (l RedisRateLimiter) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := l.Timeout
+	if timeout <= 0 {
+		timeout = 750 * time.Millisecond
 	}
-	line = strings.TrimSpace(line)
-	if strings.HasPrefix(line, "-") {
-		return "", fmt.Errorf("redis error: %s", strings.TrimPrefix(line, "-"))
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
 	}
-	return line, nil
+	return context.WithTimeout(ctx, timeout)
 }
 
-func redisReadInt(r *bufio.Reader) (int64, error) {
-	line, err := redisReadSimple(r)
-	if err != nil {
-		return 0, err
+func redisTTLSeconds(window time.Duration) int {
+	ttl := int((window + time.Second - time.Nanosecond) / time.Second)
+	if ttl < 1 {
+		return 1
 	}
-	if !strings.HasPrefix(line, ":") {
-		return 0, fmt.Errorf("unexpected redis integer response: %s", line)
-	}
-	return strconv.ParseInt(strings.TrimPrefix(line, ":"), 10, 64)
+	return ttl + 2
 }

@@ -1,0 +1,70 @@
+package agentruntime
+
+import (
+	"fmt"
+	"strings"
+)
+
+type adminOpsQuotaResetRequest struct {
+	UserID string `json:"user_id" validate:"notblank"`
+	Reason string `json:"reason"`
+}
+
+type adminOpsQuotaRefundRequest struct {
+	UserID        string  `json:"user_id" validate:"notblank"`
+	RequestRefund int     `json:"request_refund" validate:"gte=0"`
+	TokenRefund   int     `json:"token_refund" validate:"gte=0"`
+	CostRefundUSD float64 `json:"cost_refund_usd" validate:"gte=0"`
+	Reason        string  `json:"reason"`
+}
+
+func (req adminOpsQuotaRefundRequest) ValidateRequest() error {
+	if req.RequestRefund == 0 && req.TokenRefund == 0 && req.CostRefundUSD == 0 {
+		return fmt.Errorf("at least one refund value is required")
+	}
+	return nil
+}
+
+type createJobRequest struct {
+	SessionID      string              `json:"session_id" validate:"notblank"`
+	Content        string              `json:"content"`
+	Type           string              `json:"type"`
+	AttachmentIDs  []string            `json:"attachment_ids"`
+	AttachmentURLs []ChatAttachmentURL `json:"attachment_urls"`
+}
+
+func (req createJobRequest) ValidateRequest() error {
+	return validatePromptPayload(req.Content, req.AttachmentIDs, req.AttachmentURLs)
+}
+
+type chatMessageRequest struct {
+	Content        string              `json:"content"`
+	AttachmentIDs  []string            `json:"attachment_ids"`
+	AttachmentURLs []ChatAttachmentURL `json:"attachment_urls"`
+	ThinkingMode   bool                `json:"thinking_mode,omitempty"`
+}
+
+func (req chatMessageRequest) ValidateRequest() error {
+	return validatePromptPayload(req.Content, req.AttachmentIDs, req.AttachmentURLs)
+}
+
+func validatePromptPayload(content string, attachmentIDs []string, attachmentURLs []ChatAttachmentURL) error {
+	if strings.TrimSpace(content) == "" && len(attachmentIDs) == 0 && len(attachmentURLs) == 0 {
+		return fmt.Errorf("content or attachment is required")
+	}
+	return nil
+}
+
+func (req BrowserMemoryRequest) ValidateRequest() error {
+	if strings.TrimSpace(req.URL) == "" && strings.TrimSpace(req.Title) == "" && strings.TrimSpace(req.Content) == "" {
+		return fmt.Errorf("browser memory requires url, title, or content")
+	}
+	return nil
+}
+
+func (req EvaluationRunRequest) ValidateRequest() error {
+	if strings.TrimSpace(req.Scope.UserID) == "" {
+		return fmt.Errorf("scope.user_id is required")
+	}
+	return nil
+}

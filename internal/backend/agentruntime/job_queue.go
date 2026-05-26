@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -335,17 +336,34 @@ func (c JobWorkerConfig) normalized() JobWorkerConfig {
 }
 
 type JobWorker struct {
-	queue  JobQueueConsumer
-	runner *Runtime
-	config JobWorkerConfig
-	logger *log.Logger
+	queue              JobQueueConsumer
+	runner             *Runtime
+	config             JobWorkerConfig
+	logger             *slog.Logger
+	idleRetryPolicy    RetryPolicy
+	receiveRetryPolicy RetryPolicy
 }
 
 func NewJobWorker(queue JobQueueConsumer, runner *Runtime, config JobWorkerConfig, logger *log.Logger) *JobWorker {
-	if logger == nil {
-		logger = log.Default()
+	return NewJobWorkerWithLogger(queue, runner, config, newStructuredLogger(logger))
+}
+
+func NewJobWorkerWithLogger(queue JobQueueConsumer, runner *Runtime, config JobWorkerConfig, logger *slog.Logger) *JobWorker {
+	config = config.normalized()
+	return &JobWorker{
+		queue:  queue,
+		runner: runner,
+		config: config,
+		logger: componentLogger(logger, "job_worker"),
+		idleRetryPolicy: RetryPolicy{
+			BaseDelay: config.IdleBackoff,
+			MaxDelay:  config.IdleBackoff,
+		},
+		receiveRetryPolicy: RetryPolicy{
+			BaseDelay: config.ErrorBackoff,
+			MaxDelay:  config.ErrorBackoff,
+		},
 	}
-	return &JobWorker{queue: queue, runner: runner, config: config.normalized(), logger: logger}
 }
 
 func (w *JobWorker) Run(ctx context.Context) error {
@@ -365,26 +383,32 @@ func (w *JobWorker) Run(ctx context.Context) error {
 				return ctx.Err()
 			}
 			if w.logger != nil {
-				w.logger.Printf("job worker receive failed: %v", err)
+				logError(ctx, w.logger, "job worker receive failed", err)
 			}
-			if err := sleepContext(ctx, w.config.ErrorBackoff); err != nil {
+			if err := w.receiveRetryPolicy.Sleep(ctx, 1, err); err != nil {
 				return err
 			}
 			continue
 		}
 		if message == nil {
-			if err := sleepContext(ctx, w.config.IdleBackoff); err != nil {
+			if err := w.idleRetryPolicy.Sleep(ctx, 1, nil); err != nil {
 				return err
 			}
 			continue
 		}
 		ack, err := w.process(ctx, message)
 		if err != nil && w.logger != nil {
-			w.logger.Printf("job worker process failed: job=%s message=%s: %v", message.Item.JobID, message.ID, err)
+			logError(ctx, w.logger, "job worker process failed", err,
+				slog.String("job_id", message.Item.JobID),
+				slog.String("message_id", message.ID),
+			)
 		}
 		if ack {
 			if err := w.queue.AckJob(ctx, message); err != nil && w.logger != nil {
-				w.logger.Printf("job worker ack failed: job=%s message=%s: %v", message.Item.JobID, message.ID, err)
+				logError(ctx, w.logger, "job worker ack failed", err,
+					slog.String("job_id", message.Item.JobID),
+					slog.String("message_id", message.ID),
+				)
 			}
 		}
 	}

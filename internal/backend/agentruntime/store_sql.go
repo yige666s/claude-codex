@@ -12,12 +12,14 @@ import (
 
 	"github.com/google/uuid"
 
+	"claude-codex/internal/backend/agentruntime/dbsqlc"
 	"claude-codex/internal/harness/state"
 )
 
 type SQLSessionStore struct {
 	db             *sql.DB
 	dialect        SQLDialect
+	queries        *dbsqlc.Queries
 	messageArchive *MessageArchiveObjectStore
 	sessionList    SessionListCache
 	messageSeq     MessageSequenceAllocator
@@ -36,7 +38,7 @@ func NewSQLSessionStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLSessionSt
 	if dialect == "" {
 		dialect = SQLDialectQuestion
 	}
-	return &SQLSessionStore{db: db, dialect: dialect}
+	return &SQLSessionStore{db: db, dialect: dialect, queries: dbsqlc.New(db)}
 }
 
 func (s *SQLSessionStore) SetMessageArchiveObjectStore(objects ObjectStore, prefix string) {
@@ -61,317 +63,33 @@ func (s *SQLSessionStore) SetMessageSequenceAllocator(allocator MessageSequenceA
 }
 
 func (s *SQLSessionStore) Init(ctx context.Context) error {
-	timeType := s.dialect.TimeType()
-	jsonType := "TEXT"
-	if s.dialect == SQLDialectPostgres {
-		jsonType = "JSONB"
-	}
-	if err := RunSQLMigrations(ctx, s.db, s.dialect, []SQLMigration{
-		{
-			Version:    1,
-			Statements: agentSessionSchemaStatements(timeType, jsonType),
-		},
-		{
-			Version:    4,
-			Statements: agentMessageSchemaStatements(timeType, jsonType),
-		},
-		{
-			Version:    5,
-			Statements: agentMessageAuxiliarySchemaStatements(timeType),
-		},
-		{
-			Version: 6,
-			Statements: append([]string{
-				`DROP TABLE IF EXISTS agent_message_embedding_meta`,
-				`DROP TABLE IF EXISTS agent_message_attachments`,
-				`DROP TABLE IF EXISTS agent_messages`,
-				`DROP TABLE IF EXISTS agent_sessions`,
-			}, append(agentSessionSchemaStatements(timeType, jsonType), append(agentMessageSchemaStatements(timeType, jsonType), agentMessageAuxiliarySchemaStatements(timeType)...)...)...),
-		},
-		{
-			Version: 7,
-			Statements: append([]string{
-				`DROP TABLE IF EXISTS agent_message_attachments`,
-			}, agentMessageAttachmentSchemaStatements(timeType)...),
-		},
-		{
-			Version:    8,
-			Statements: agentMessageAttachmentProcessingSchemaStatements(s.dialect),
-		},
-		{
-			Version:    9,
-			Statements: agentMessageSoftDeleteSchemaStatements(timeType, jsonType, s.dialect),
-		},
-		{
-			Version:    10,
-			Statements: agentMessageArchiveSchemaStatements(timeType, s.dialect),
-		},
-		{
-			Version:    11,
-			Statements: agentSessionLegacyReconcileStatements(timeType, jsonType, s.dialect),
-		},
-		{
-			Version:    12,
-			Statements: agentMessageLifecycleConstraintStatements(s.dialect),
-		},
-	}); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_sessions",
+		"user_id", "session_id", "agent_id", "title", "status", "message_count", "total_tokens",
+		"working_dir", "tags", "description", "parent_id", "branch_point", "metadata", "archived",
+		"created_at", "updated_at", "last_message_at",
+	); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_sessions", "created_at", "updated_at", "last_message_at"); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_messages",
+		"message_id", "session_id", "user_id", "seq_no", "parent_id", "role", "content_type",
+		"content", "content_parts", "tool_call_id", "tool_name", "tool_input", "tool_output",
+		"tool_calls", "prompt_tokens", "completion_tokens", "status", "is_context_used",
+		"model_id", "run_id", "hidden", "created_at", "updated_at", "archive_uri",
+		"archive_checksum", "archived_at",
+	); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_messages", "created_at", "updated_at"); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_message_attachments",
+		"attachment_id", "message_id", "session_id", "user_id", "file_type", "mime_type",
+		"file_name", "file_size", "storage_key", "thumbnail_key", "embedding_status",
+		"extracted_text_key", "created_at",
+	); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_messages", "archived_at"); err != nil {
-		return err
-	}
-	if err := s.initMessageSearchIndexes(ctx); err != nil {
-		return err
-	}
-	return nil
-}
-
-func agentSessionSchemaStatements(timeType, jsonType string) []string {
-	return []string{
-		`CREATE TABLE IF NOT EXISTS agent_sessions (
-	user_id TEXT NOT NULL,
-	session_id TEXT NOT NULL,
-	agent_id TEXT NOT NULL DEFAULT '',
-	title TEXT NOT NULL DEFAULT '',
-	status INTEGER NOT NULL DEFAULT 1,
-	message_count INTEGER NOT NULL DEFAULT 0,
-	total_tokens BIGINT NOT NULL DEFAULT 0,
-	working_dir TEXT NOT NULL DEFAULT '',
-	tags ` + jsonType + ` NOT NULL DEFAULT '[]',
-	description TEXT NOT NULL DEFAULT '',
-	parent_id TEXT NOT NULL DEFAULT '',
-	branch_point INTEGER NOT NULL DEFAULT 0,
-	metadata ` + jsonType + ` NOT NULL DEFAULT '{}',
-	archived INTEGER NOT NULL DEFAULT 0,
-	created_at ` + timeType + ` NOT NULL,
-	updated_at ` + timeType + ` NOT NULL,
-	last_message_at ` + timeType + `,
-	PRIMARY KEY (user_id, session_id)
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_status_last_message ON agent_sessions (user_id, status, last_message_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_status ON agent_sessions (agent_id, status)`,
-	}
-}
-
-func agentSessionLegacyReconcileStatements(timeType, jsonType string, dialect SQLDialect) []string {
-	if dialect != SQLDialectPostgres {
-		return nil
-	}
-	statements := []string{
-		`DO $$
-BEGIN
-	IF EXISTS (
-		SELECT 1
-		FROM information_schema.columns
-		WHERE table_schema = current_schema()
-		  AND table_name = 'agent_sessions'
-		  AND column_name = 'payload'
-	) AND NOT EXISTS (
-		SELECT 1
-		FROM information_schema.columns
-		WHERE table_schema = current_schema()
-		  AND table_name = 'agent_sessions'
-		  AND column_name = 'status'
-	) THEN
-		DROP TABLE IF EXISTS agent_sessions_legacy_pre_message_module;
-		ALTER TABLE agent_sessions RENAME TO agent_sessions_legacy_pre_message_module;
-	END IF;
-END $$`,
-	}
-	statements = append(statements, agentSessionSchemaStatements(timeType, jsonType)...)
-	return statements
-}
-
-func agentMessageLifecycleConstraintStatements(dialect SQLDialect) []string {
-	if dialect != SQLDialectPostgres {
-		return nil
-	}
-	return []string{
-		`DROP TABLE IF EXISTS agent_message_embedding_meta_legacy_pre_message_module`,
-		`DROP TABLE IF EXISTS agent_messages_legacy_pre_message_module`,
-		`DROP TABLE IF EXISTS agent_sessions_legacy_pre_message_module`,
-		`DELETE FROM agent_message_attachments a WHERE NOT EXISTS (
-			SELECT 1 FROM agent_messages m WHERE m.message_id = a.message_id
-		)`,
-		`DELETE FROM agent_message_embedding_meta e WHERE NOT EXISTS (
-			SELECT 1 FROM agent_messages m WHERE m.message_id = e.message_id
-		)`,
-		`DELETE FROM agent_messages m WHERE NOT EXISTS (
-			SELECT 1 FROM agent_sessions s WHERE s.user_id = m.user_id AND s.session_id = m.session_id
-		)`,
-		postgresAddForeignKeyIfMissing("fk_agent_messages_session",
-			"agent_messages",
-			"FOREIGN KEY (user_id, session_id) REFERENCES agent_sessions(user_id, session_id) ON DELETE CASCADE"),
-		postgresAddForeignKeyIfMissing("fk_agent_message_attachments_message",
-			"agent_message_attachments",
-			"FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE"),
-		postgresAddForeignKeyIfMissing("fk_agent_message_embedding_meta_message",
-			"agent_message_embedding_meta",
-			"FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE"),
-	}
-}
-
-func postgresAddForeignKeyIfMissing(name, table, definition string) string {
-	return `DO $$
-BEGIN
-	IF NOT EXISTS (
-		SELECT 1
-		FROM pg_constraint
-		WHERE conname = '` + name + `'
-	) THEN
-		ALTER TABLE ` + table + ` ADD CONSTRAINT ` + name + ` ` + definition + `;
-	END IF;
-END $$`
-}
-
-func agentMessageSchemaStatements(timeType, jsonType string) []string {
-	return []string{
-		`CREATE TABLE IF NOT EXISTS agent_messages (
-	message_id TEXT PRIMARY KEY,
-	session_id TEXT NOT NULL,
-	user_id TEXT NOT NULL,
-	seq_no BIGINT NOT NULL,
-	parent_id TEXT NOT NULL DEFAULT '',
-	role TEXT NOT NULL,
-	content_type TEXT NOT NULL DEFAULT 'text',
-	content TEXT NOT NULL DEFAULT '',
-	content_parts ` + jsonType + ` NOT NULL DEFAULT '[]',
-	tool_call_id TEXT NOT NULL DEFAULT '',
-	tool_name TEXT NOT NULL DEFAULT '',
-	tool_input ` + jsonType + ` NOT NULL DEFAULT '{}',
-	tool_output TEXT NOT NULL DEFAULT '',
-	tool_calls ` + jsonType + ` NOT NULL DEFAULT '[]',
-	prompt_tokens INTEGER NOT NULL DEFAULT 0,
-	completion_tokens INTEGER NOT NULL DEFAULT 0,
-	status INTEGER NOT NULL DEFAULT 1,
-	is_context_used INTEGER NOT NULL DEFAULT 1,
-	model_id TEXT NOT NULL DEFAULT '',
-	run_id TEXT NOT NULL DEFAULT '',
-	hidden INTEGER NOT NULL DEFAULT 0,
-	created_at ` + timeType + ` NOT NULL,
-	updated_at ` + timeType + ` NOT NULL
-)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_messages_session_active_seq ON agent_messages (user_id, session_id, seq_no) WHERE status <> 2`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_messages_session_created ON agent_messages (user_id, session_id, created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_messages_run_id ON agent_messages (run_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_messages_user_created ON agent_messages (user_id, created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_messages_role_created ON agent_messages (user_id, role, created_at)`,
-	}
-}
-
-func agentMessageAuxiliarySchemaStatements(timeType string) []string {
-	return append(agentMessageAttachmentSchemaStatements(timeType), agentMessageEmbeddingSchemaStatements(timeType)...)
-}
-
-func agentMessageAttachmentSchemaStatements(timeType string) []string {
-	return []string{
-		`CREATE TABLE IF NOT EXISTS agent_message_attachments (
-	attachment_id TEXT NOT NULL,
-	message_id TEXT NOT NULL,
-	session_id TEXT NOT NULL,
-	user_id TEXT NOT NULL,
-	file_type TEXT NOT NULL,
-	mime_type TEXT NOT NULL,
-	file_name TEXT NOT NULL DEFAULT '',
-	file_size BIGINT NOT NULL DEFAULT 0,
-	storage_key TEXT NOT NULL,
-	thumbnail_key TEXT NOT NULL DEFAULT '',
-	embedding_status INTEGER NOT NULL DEFAULT 0,
-	created_at ` + timeType + ` NOT NULL,
-	PRIMARY KEY (message_id, attachment_id)
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_message_attachments_message ON agent_message_attachments (message_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_message_attachments_session ON agent_message_attachments (session_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_message_attachments_user_status ON agent_message_attachments (user_id, embedding_status, created_at)`,
-	}
-}
-
-func agentMessageAttachmentProcessingSchemaStatements(dialect SQLDialect) []string {
-	stmt := `ALTER TABLE agent_message_attachments ADD COLUMN `
-	if dialect == SQLDialectPostgres {
-		stmt += `IF NOT EXISTS `
-	}
-	stmt += `extracted_text_key TEXT NOT NULL DEFAULT ''`
-	return []string{stmt}
-}
-
-func agentMessageSoftDeleteSchemaStatements(timeType, jsonType string, dialect SQLDialect) []string {
-	statements := make([]string, 0, 8)
-	if dialect == SQLDialectPostgres {
-		statements = append(statements, agentMessagePostgresLegacyReconcileStatements(timeType, jsonType)...)
-	}
-	statements = append(statements,
-		`DROP INDEX IF EXISTS idx_agent_messages_session_seq`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_messages_session_active_seq ON agent_messages (user_id, session_id, seq_no) WHERE status <> 2`,
+	return requireSQLColumns(ctx, s.db, "agent_message_embedding_meta",
+		"embedding_id", "message_id", "session_id", "user_id", "chunk_index",
+		"vector_id", "model_version", "created_at",
 	)
-	return statements
-}
-
-func agentMessagePostgresLegacyReconcileStatements(timeType, jsonType string) []string {
-	statements := []string{
-		`DO $$
-BEGIN
-	IF EXISTS (
-		SELECT 1
-		FROM information_schema.columns
-		WHERE table_schema = current_schema()
-		  AND table_name = 'agent_messages'
-		  AND column_name = 'message_index'
-	) AND NOT EXISTS (
-		SELECT 1
-		FROM information_schema.columns
-		WHERE table_schema = current_schema()
-		  AND table_name = 'agent_messages'
-		  AND column_name = 'message_id'
-	) THEN
-		DROP TABLE IF EXISTS agent_message_embedding_meta;
-		DROP TABLE IF EXISTS agent_message_attachments;
-		DROP TABLE IF EXISTS agent_messages_legacy_pre_message_module;
-		ALTER TABLE agent_messages RENAME TO agent_messages_legacy_pre_message_module;
-	END IF;
-END $$`,
-	}
-	statements = append(statements, agentMessageSchemaStatements(timeType, jsonType)...)
-	statements = append(statements, agentMessageAuxiliarySchemaStatements(timeType)...)
-	statements = append(statements, agentMessageAttachmentProcessingSchemaStatements(SQLDialectPostgres)...)
-	return statements
-}
-
-func agentMessageArchiveSchemaStatements(timeType string, dialect SQLDialect) []string {
-	columnPrefix := `ALTER TABLE agent_messages ADD COLUMN `
-	if dialect == SQLDialectPostgres {
-		columnPrefix += `IF NOT EXISTS `
-	}
-	return []string{
-		columnPrefix + `archive_uri TEXT NOT NULL DEFAULT ''`,
-		columnPrefix + `archive_checksum TEXT NOT NULL DEFAULT ''`,
-		columnPrefix + `archived_at ` + timeType,
-		`CREATE INDEX IF NOT EXISTS idx_agent_messages_archive_due ON agent_messages (created_at, archived_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_messages_archive_uri ON agent_messages (archive_uri)`,
-	}
-}
-
-func agentMessageEmbeddingSchemaStatements(timeType string) []string {
-	return []string{
-		`CREATE TABLE IF NOT EXISTS agent_message_embedding_meta (
-	embedding_id TEXT PRIMARY KEY,
-	message_id TEXT NOT NULL,
-	session_id TEXT NOT NULL,
-	user_id TEXT NOT NULL,
-	chunk_index INTEGER NOT NULL DEFAULT 0,
-	vector_id TEXT NOT NULL,
-	model_version TEXT NOT NULL DEFAULT '',
-	created_at ` + timeType + ` NOT NULL
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_message_embedding_message ON agent_message_embedding_meta (message_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_message_embedding_user ON agent_message_embedding_meta (user_id)`,
-	}
 }
 
 type MessageEmbeddingMeta struct {
@@ -399,6 +117,23 @@ func (s *SQLSessionStore) Create(ctx context.Context, userID, workingDir string)
 }
 
 func (s *SQLSessionStore) Get(ctx context.Context, userID, sessionID string) (*state.Session, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		row, err := s.queries.GetSession(ctx, dbsqlc.GetSessionParams{
+			UserID:    userID,
+			SessionID: sessionID,
+			Status:    int32(state.SessionStatusDeleted),
+		})
+		if err != nil {
+			return nil, err
+		}
+		session := sqlSessionFromSQLC(row)
+		messages, err := s.ListMessages(ctx, userID, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		session.Messages = messages
+		return session, nil
+	}
 	row := s.db.QueryRowContext(ctx, s.dialect.Bind(`
 SELECT user_id, session_id, agent_id, title, status, message_count, total_tokens,
 	working_dir, tags, description, parent_id, branch_point, metadata, archived,
@@ -455,6 +190,25 @@ func (s *SQLSessionStore) ListPage(ctx context.Context, userID string, limit, of
 }
 
 func (s *SQLSessionStore) listSessionsFromSQL(ctx context.Context, userID string, limit, offset int) ([]*state.Session, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.ListSessions(ctx, dbsqlc.ListSessionsParams{
+			UserID:        userID,
+			DeletedStatus: int32(state.SessionStatusDeleted),
+			LimitCount:    int32(limit),
+			OffsetCount:   int32(offset),
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]*state.Session, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, sqlSessionFromSQLCList(row))
+		}
+		sort.SliceStable(out, func(i, j int) bool {
+			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		})
+		return out, nil
+	}
 	query := `
 SELECT s.user_id, s.session_id, s.agent_id,
 	COALESCE(NULLIF(s.title, ''), (
@@ -570,6 +324,31 @@ func (s *SQLSessionStore) saveSessionMetadataTx(ctx context.Context, tx *sql.Tx,
 	if err != nil {
 		return nil, err
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		err = s.queries.WithTx(tx).UpsertSession(ctx, dbsqlc.UpsertSessionParams{
+			UserID:        userID,
+			SessionID:     sessionForSQL.ID,
+			AgentID:       sessionForSQL.AgentID,
+			Title:         sessionForSQL.Title,
+			Status:        int32(sessionForSQL.Status),
+			MessageCount:  int32(sessionForSQL.MessageCount),
+			TotalTokens:   sessionForSQL.TotalTokens,
+			WorkingDir:    sessionForSQL.WorkingDir,
+			Tags:          string(tags),
+			Description:   sessionForSQL.Description,
+			ParentID:      sessionForSQL.ParentID,
+			BranchPoint:   int32(sessionForSQL.BranchPoint),
+			Metadata:      string(metadata),
+			Archived:      int32(sqlIntFromBool(sessionForSQL.Archived)),
+			CreatedAt:     sessionForSQL.StartedAt.UTC(),
+			UpdatedAt:     updatedAt.UTC(),
+			LastMessageAt: sqlNullTime(zeroTimeAsNil(sessionForSQL.LastMessageAt)),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return sessionForSQL, nil
+	}
 	if _, err = tx.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_sessions (
 	user_id, session_id, agent_id, title, status, message_count, total_tokens,
@@ -619,7 +398,30 @@ func (s *SQLSessionStore) Delete(ctx context.Context, userID, sessionID string) 
 		return err
 	}
 	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		q := s.queries.WithTx(tx)
+		if err := q.SoftDeleteSessionMessages(ctx, dbsqlc.SoftDeleteSessionMessagesParams{
+			Status:    int32(state.MessageStatusDeleted),
+			UpdatedAt: now,
+			UserID:    userID,
+			SessionID: sessionID,
+			Status_2:  int32(state.MessageStatusDeleted),
+		}); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := q.SoftDeleteSession(ctx, dbsqlc.SoftDeleteSessionParams{
+			Status:    int32(state.SessionStatusDeleted),
+			Archived:  int32(sqlIntFromBool(true)),
+			UpdatedAt: now,
+			UserID:    userID,
+			SessionID: sessionID,
+			Status_2:  int32(state.SessionStatusDeleted),
+		}); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	} else if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_messages
 SET status = ?,
 	updated_at = ?
@@ -632,8 +434,7 @@ WHERE user_id = ? AND session_id = ? AND status <> ?`),
 	); err != nil {
 		_ = tx.Rollback()
 		return err
-	}
-	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+	} else if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_sessions
 SET status = ?, archived = ?, updated_at = ?
 WHERE user_id = ? AND session_id = ? AND status <> ?`),
@@ -662,7 +463,28 @@ func (s *SQLSessionStore) DeleteUser(ctx context.Context, userID string) error {
 		return err
 	}
 	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		q := s.queries.WithTx(tx)
+		if err := q.SoftDeleteUserMessages(ctx, dbsqlc.SoftDeleteUserMessagesParams{
+			Status:    int32(state.MessageStatusDeleted),
+			UpdatedAt: now,
+			UserID:    userID,
+			Status_2:  int32(state.MessageStatusDeleted),
+		}); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := q.SoftDeleteUserSessions(ctx, dbsqlc.SoftDeleteUserSessionsParams{
+			Status:    int32(state.SessionStatusDeleted),
+			Archived:  int32(sqlIntFromBool(true)),
+			UpdatedAt: now,
+			UserID:    userID,
+			Status_2:  int32(state.SessionStatusDeleted),
+		}); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	} else if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_messages
 SET status = ?,
 	updated_at = ?
@@ -674,8 +496,7 @@ WHERE user_id = ? AND status <> ?`),
 	); err != nil {
 		_ = tx.Rollback()
 		return err
-	}
-	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+	} else if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_sessions
 SET status = ?, archived = ?, updated_at = ?
 WHERE user_id = ? AND status <> ?`),
@@ -698,6 +519,21 @@ WHERE user_id = ? AND status <> ?`),
 }
 
 func (s *SQLSessionStore) PruneBefore(ctx context.Context, cutoff time.Time) (int, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.ListSessionsBeforePrune(ctx, dbsqlc.ListSessionsBeforePruneParams{
+			UpdatedAt: cutoff.UTC(),
+			Status:    int32(state.SessionStatusDeleted),
+		})
+		if err != nil {
+			return 0, err
+		}
+		for _, item := range rows {
+			if err := s.Delete(ctx, item.UserID, item.SessionID); err != nil {
+				return 0, err
+			}
+		}
+		return len(rows), nil
+	}
 	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`SELECT user_id, session_id FROM agent_sessions WHERE updated_at < ? AND status <> ?`), sqlTimeValue(cutoff, s.dialect), state.SessionStatusDeleted)
 	if err != nil {
 		return 0, err
@@ -727,6 +563,18 @@ func (s *SQLSessionStore) PruneBefore(ctx context.Context, cutoff time.Time) (in
 }
 
 func (s *SQLSessionStore) ListMessages(ctx context.Context, userID, sessionID string) ([]state.Message, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.ListMessages(ctx, dbsqlc.ListMessagesParams{
+			UserID:    userID,
+			SessionID: sessionID,
+			Status:    int32(state.MessageStatusDeleted),
+		})
+		if err != nil {
+			return nil, err
+		}
+		messages := sqlMessagesFromSQLC(rows)
+		return s.hydrateSQLMessages(ctx, userID, messages)
+	}
 	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
 SELECT `+sqlMessageColumns+`
 FROM agent_messages
@@ -814,7 +662,21 @@ func (s *SQLSessionStore) appendMessageOnce(ctx context.Context, userID, session
 		}
 	}
 	var sessionStartedRaw any
-	if err := tx.QueryRowContext(ctx, s.dialect.Bind(`SELECT created_at FROM agent_sessions WHERE user_id = ? AND session_id = ? AND status <> ?`), userID, sessionID, state.SessionStatusDeleted).Scan(&sessionStartedRaw); err != nil {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		sessionStarted, err := s.queries.WithTx(tx).GetSessionCreatedAt(ctx, dbsqlc.GetSessionCreatedAtParams{
+			UserID:    userID,
+			SessionID: sessionID,
+			Status:    int32(state.SessionStatusDeleted),
+		})
+		if err != nil {
+			_ = tx.Rollback()
+			if errors.Is(err, sql.ErrNoRows) {
+				return state.Message{}, fmt.Errorf("session %s not found", sessionID)
+			}
+			return state.Message{}, err
+		}
+		sessionStartedRaw = sessionStarted
+	} else if err := tx.QueryRowContext(ctx, s.dialect.Bind(`SELECT created_at FROM agent_sessions WHERE user_id = ? AND session_id = ? AND status <> ?`), userID, sessionID, state.SessionStatusDeleted).Scan(&sessionStartedRaw); err != nil {
 		_ = tx.Rollback()
 		if errors.Is(err, sql.ErrNoRows) {
 			return state.Message{}, fmt.Errorf("session %s not found", sessionID)
@@ -838,7 +700,22 @@ func (s *SQLSessionStore) appendMessageOnce(ctx context.Context, userID, session
 	}
 	tokenDelta := int64(message.PromptTokens + message.CompletionTokens)
 	titleCandidate := sessionTitleCandidateFromMessage(message)
-	if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		if err := s.queries.WithTx(tx).UpdateSessionAfterAppend(ctx, dbsqlc.UpdateSessionAfterAppendParams{
+			UserID:          userID,
+			SessionID:       sessionID,
+			Status:          int32(state.MessageStatusDeleted),
+			TotalTokens:     tokenDelta,
+			TitleCandidate:  titleCandidate,
+			UpdatedAt:       message.CreatedAt.UTC(),
+			LastMessageAt:   sqlNullTime(&message.CreatedAt),
+			TargetUserID:    userID,
+			TargetSessionID: sessionID,
+		}); err != nil {
+			_ = tx.Rollback()
+			return state.Message{}, err
+		}
+	} else if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_sessions
 SET message_count = (
 		SELECT COUNT(*) FROM agent_messages
@@ -911,6 +788,9 @@ func (s *SQLSessionStore) nextMessageSeq(ctx context.Context, tx *sql.Tx, userID
 		}
 		return s.messageSeq.NextMessageSeq(ctx, userID, sessionID)
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.WithTx(tx).NextMessageSeq(ctx, dbsqlc.NextMessageSeqParams{UserID: userID, SessionID: sessionID})
+	}
 	var nextSeq int64
 	if err := tx.QueryRowContext(ctx, s.dialect.Bind(`SELECT COALESCE(MAX(seq_no), 0) + 1 FROM agent_messages WHERE user_id = ? AND session_id = ?`), userID, sessionID).Scan(&nextSeq); err != nil {
 		return 0, err
@@ -923,13 +803,24 @@ func (s *SQLSessionStore) syncMessageSeqToSQL(ctx context.Context, userID, sessi
 		return nil
 	}
 	var maxSeq int64
-	if err := s.db.QueryRowContext(ctx, s.dialect.Bind(`SELECT COALESCE(MAX(seq_no), 0) FROM agent_messages WHERE user_id = ? AND session_id = ?`), userID, sessionID).Scan(&maxSeq); err != nil {
-		return err
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		var err error
+		maxSeq, err = s.queries.MaxMessageSeq(ctx, dbsqlc.MaxMessageSeqParams{UserID: userID, SessionID: sessionID})
+		if err != nil {
+			return err
+		}
+	} else {
+		if err := s.db.QueryRowContext(ctx, s.dialect.Bind(`SELECT COALESCE(MAX(seq_no), 0) FROM agent_messages WHERE user_id = ? AND session_id = ?`), userID, sessionID).Scan(&maxSeq); err != nil {
+			return err
+		}
 	}
 	return s.reconcileMessageSeq(ctx, userID, sessionID, maxSeq)
 }
 
 func (s *SQLSessionStore) maxMessageSeqTx(ctx context.Context, tx *sql.Tx, userID, sessionID string) (int64, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.WithTx(tx).MaxMessageSeq(ctx, dbsqlc.MaxMessageSeqParams{UserID: userID, SessionID: sessionID})
+	}
 	var maxSeq int64
 	if err := tx.QueryRowContext(ctx, s.dialect.Bind(`SELECT COALESCE(MAX(seq_no), 0) FROM agent_messages WHERE user_id = ? AND session_id = ?`), userID, sessionID).Scan(&maxSeq); err != nil {
 		return 0, err
@@ -960,6 +851,26 @@ func isMessageSeqConflict(err error) bool {
 
 func (s *SQLSessionStore) LoadSessionMessages(ctx context.Context, userID, sessionID string, opts SessionLoadOptions) ([]state.Message, error) {
 	opts = normalizeSessionLoadOptions(opts)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.LoadSessionMessages(ctx, dbsqlc.LoadSessionMessagesParams{
+			UserID:             userID,
+			SessionID:          sessionID,
+			NormalStatus:       int32(state.MessageStatusNormal),
+			IncludeSystem:      opts.IncludeSystem,
+			SystemRole:         state.MessageRoleSystem,
+			SummaryContentType: state.MessageContentTypeSummary,
+			MaxMessages:        int32(opts.MaxMessages),
+		})
+		if err != nil {
+			return nil, err
+		}
+		reversed := sqlMessagesFromSQLC(rows)
+		messages := make([]state.Message, 0, len(reversed))
+		for i := len(reversed) - 1; i >= 0; i-- {
+			messages = append(messages, reversed[i])
+		}
+		return s.hydrateSQLMessages(ctx, userID, messages)
+	}
 	predicates := []string{
 		"user_id = ?",
 		"session_id = ?",
@@ -1001,6 +912,27 @@ LIMIT ?`), args...)
 }
 
 func (s *SQLSessionStore) LoadLatestSummaryMessage(ctx context.Context, userID, sessionID string) (state.Message, bool, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		row, err := s.queries.LoadLatestSummaryMessage(ctx, dbsqlc.LoadLatestSummaryMessageParams{
+			UserID:      userID,
+			SessionID:   sessionID,
+			Status:      int32(state.MessageStatusNormal),
+			Role:        state.MessageRoleSystem,
+			ContentType: state.MessageContentTypeSummary,
+		})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return state.Message{}, false, nil
+			}
+			return state.Message{}, false, err
+		}
+		message := sqlMessageFromSQLC(row)
+		hydrated, err := s.hydrateSQLMessages(ctx, userID, []state.Message{message})
+		if err != nil {
+			return state.Message{}, false, err
+		}
+		return hydrated[0], true, nil
+	}
 	row := s.db.QueryRowContext(ctx, s.dialect.Bind(`
 SELECT `+sqlMessageColumns+`
 FROM agent_messages
@@ -1082,6 +1014,24 @@ func (s *SQLSessionStore) SearchMessages(ctx context.Context, userID, query stri
 		offset = 0
 	}
 	pattern := "%" + escapeLikePattern(query) + "%"
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.SearchMessages(ctx, dbsqlc.SearchMessagesParams{
+			UserID:      userID,
+			Status:      int32(state.MessageStatusNormal),
+			Status_2:    int32(state.SessionStatusDeleted),
+			Pattern:     pattern,
+			LimitCount:  int32(limit),
+			OffsetCount: int32(offset),
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]MessageSearchResult, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, messageSearchResultFromSQLC(row, query))
+		}
+		return out, nil
+	}
 	matchOperator := "LIKE"
 	if s.dialect == SQLDialectPostgres {
 		matchOperator = "ILIKE"
@@ -1216,6 +1166,18 @@ func (s *SQLSessionStore) SaveMessageEmbeddingMeta(ctx context.Context, meta Mes
 	if meta.CreatedAt.IsZero() {
 		meta.CreatedAt = time.Now().UTC()
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.UpsertMessageEmbeddingMeta(ctx, dbsqlc.UpsertMessageEmbeddingMetaParams{
+			EmbeddingID:  meta.EmbeddingID,
+			MessageID:    meta.MessageID,
+			SessionID:    meta.SessionID,
+			UserID:       meta.UserID,
+			ChunkIndex:   int32(meta.ChunkIndex),
+			VectorID:     meta.VectorID,
+			ModelVersion: meta.ModelVersion,
+			CreatedAt:    meta.CreatedAt.UTC(),
+		})
+	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_message_embedding_meta (
 	embedding_id, message_id, session_id, user_id, chunk_index, vector_id, model_version, created_at
@@ -1234,22 +1196,6 @@ ON CONFLICT(embedding_id) DO UPDATE SET
 		sqlTimeValue(meta.CreatedAt, s.dialect),
 	)
 	return err
-}
-
-func (s *SQLSessionStore) initMessageSearchIndexes(ctx context.Context) error {
-	if s.dialect != SQLDialectPostgres {
-		return nil
-	}
-	for _, stmt := range []string{
-		`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_messages_content_trgm ON agent_messages USING GIN (content gin_trgm_ops)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_messages_tool_output_trgm ON agent_messages USING GIN (tool_output gin_trgm_ops)`,
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (s *SQLSessionStore) BackfillMessages(ctx context.Context) error {
@@ -1274,6 +1220,15 @@ func (s *SQLSessionStore) replaceMessages(ctx context.Context, tx *sql.Tx, userI
 }
 
 func softDeleteSessionMessagesForReplace(ctx context.Context, tx *sql.Tx, dialect SQLDialect, userID, sessionID string) error {
+	if dialect == SQLDialectPostgres {
+		return dbsqlc.New(tx).SoftDeleteSessionMessages(ctx, dbsqlc.SoftDeleteSessionMessagesParams{
+			Status:    int32(state.MessageStatusDeleted),
+			UpdatedAt: time.Now().UTC(),
+			UserID:    userID,
+			SessionID: sessionID,
+			Status_2:  int32(state.MessageStatusDeleted),
+		})
+	}
 	_, err := tx.ExecContext(ctx, dialect.Bind(`
 UPDATE agent_messages
 SET status = ?,
@@ -1291,6 +1246,20 @@ WHERE user_id = ?
 }
 
 func (s *SQLSessionStore) findMessageByID(ctx context.Context, tx *sql.Tx, userID, sessionID, messageID string) (state.Message, bool, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		row, err := s.queries.WithTx(tx).FindMessageByID(ctx, dbsqlc.FindMessageByIDParams{
+			UserID:    userID,
+			SessionID: sessionID,
+			MessageID: messageID,
+		})
+		if err == nil {
+			return sqlMessageFromSQLC(row), true, nil
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return state.Message{}, false, nil
+		}
+		return state.Message{}, false, err
+	}
 	row := tx.QueryRowContext(ctx, s.dialect.Bind(`
 SELECT `+sqlMessageColumns+`
 FROM agent_messages
@@ -1334,6 +1303,19 @@ func writeSQLMessage(ctx context.Context, tx *sql.Tx, dialect SQLDialect, messag
 	toolCalls, err := json.Marshal(message.ToolCalls)
 	if err != nil {
 		return err
+	}
+	if dialect == SQLDialectPostgres {
+		params := sqlMessageParams(message, string(contentPartsJSON), sanitizeSQLText(string(toolInput)), sanitizeSQLText(string(toolCalls)))
+		q := dbsqlc.New(tx)
+		if upsert {
+			err = q.UpsertMessage(ctx, dbsqlc.UpsertMessageParams(params))
+		} else {
+			err = q.InsertMessage(ctx, dbsqlc.InsertMessageParams(params))
+		}
+		if err != nil {
+			return err
+		}
+		return insertSQLMessageAttachments(ctx, tx, dialect, message)
 	}
 	query := `
 INSERT INTO agent_messages (
@@ -1412,6 +1394,27 @@ func insertSQLMessageAttachments(ctx context.Context, tx *sql.Tx, dialect SQLDia
 		ref.MessageID = message.ID
 		ref.SessionID = firstNonEmptyString(message.SessionID, ref.SessionID)
 		ref.UserID = firstNonEmptyString(message.UserID, ref.UserID)
+		if dialect == SQLDialectPostgres {
+			err = dbsqlc.New(tx).UpsertMessageAttachment(ctx, dbsqlc.UpsertMessageAttachmentParams{
+				AttachmentID:     ref.ID,
+				MessageID:        ref.MessageID,
+				SessionID:        ref.SessionID,
+				UserID:           ref.UserID,
+				FileType:         ref.FileType,
+				MimeType:         ref.MimeType,
+				FileName:         ref.FileName,
+				FileSize:         ref.FileSize,
+				StorageKey:       ref.StorageKey,
+				ThumbnailKey:     ref.ThumbnailKey,
+				ExtractedTextKey: ref.ExtractedTextKey,
+				EmbeddingStatus:  int32(ref.EmbeddingStatus),
+				CreatedAt:        ref.CreatedAt.UTC(),
+			})
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		_, err = tx.ExecContext(ctx, dialect.Bind(`
 INSERT INTO agent_message_attachments (
 	attachment_id, message_id, session_id, user_id, file_type, mime_type,
@@ -1538,6 +1541,21 @@ func (s *SQLSessionStore) ListPendingMessageAttachments(ctx context.Context, use
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.ListPendingMessageAttachments(ctx, dbsqlc.ListPendingMessageAttachmentsParams{
+			UserID:          userID,
+			EmbeddingStatus: int32(state.MessageAttachmentEmbeddingPending),
+			Limit:           int32(limit),
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]state.MessageAttachment, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, pendingMessageAttachmentFromSQLC(row))
+		}
+		return out, nil
+	}
 	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
 SELECT attachment_id, message_id, session_id, user_id, file_type, mime_type,
 	file_name, file_size, storage_key, thumbnail_key, extracted_text_key, embedding_status, created_at
@@ -1564,6 +1582,20 @@ func (s *SQLSessionStore) ListPendingMessageAttachmentsForProcessing(ctx context
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.ListPendingMessageAttachmentsForProcessing(ctx, dbsqlc.ListPendingMessageAttachmentsForProcessingParams{
+			EmbeddingStatus: int32(state.MessageAttachmentEmbeddingPending),
+			Limit:           int32(limit),
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]state.MessageAttachment, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, processingMessageAttachmentFromSQLC(row))
+		}
+		return out, nil
+	}
 	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
 SELECT attachment_id, message_id, session_id, user_id, file_type, mime_type,
 	file_name, file_size, storage_key, thumbnail_key, extracted_text_key, embedding_status, created_at
@@ -1589,6 +1621,16 @@ LIMIT ?`), state.MessageAttachmentEmbeddingPending, limit)
 func (s *SQLSessionStore) UpdateMessageAttachmentProcessing(ctx context.Context, userID, messageID, attachmentID string, status int, thumbnailKey, extractedTextKey string) error {
 	if status == 0 {
 		status = state.MessageAttachmentEmbeddingPending
+	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.UpdateMessageAttachmentProcessing(ctx, dbsqlc.UpdateMessageAttachmentProcessingParams{
+			EmbeddingStatus:  int32(status),
+			ThumbnailKey:     strings.TrimSpace(thumbnailKey),
+			ExtractedTextKey: strings.TrimSpace(extractedTextKey),
+			UserID:           userID,
+			MessageID:        messageID,
+			AttachmentID:     attachmentID,
+		})
 	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_message_attachments
@@ -1627,6 +1669,42 @@ func scanSQLMessageAttachment(scanner sqlScanner) (state.MessageAttachment, erro
 	}
 	attachment.CreatedAt = createdAt
 	return attachment, nil
+}
+
+func pendingMessageAttachmentFromSQLC(row dbsqlc.ListPendingMessageAttachmentsRow) state.MessageAttachment {
+	return state.MessageAttachment{
+		ID:               row.AttachmentID,
+		MessageID:        row.MessageID,
+		SessionID:        row.SessionID,
+		UserID:           row.UserID,
+		FileType:         row.FileType,
+		MimeType:         row.MimeType,
+		FileName:         row.FileName,
+		FileSize:         row.FileSize,
+		StorageKey:       row.StorageKey,
+		ThumbnailKey:     row.ThumbnailKey,
+		ExtractedTextKey: row.ExtractedTextKey,
+		EmbeddingStatus:  int(row.EmbeddingStatus),
+		CreatedAt:        row.CreatedAt.UTC(),
+	}
+}
+
+func processingMessageAttachmentFromSQLC(row dbsqlc.ListPendingMessageAttachmentsForProcessingRow) state.MessageAttachment {
+	return state.MessageAttachment{
+		ID:               row.AttachmentID,
+		MessageID:        row.MessageID,
+		SessionID:        row.SessionID,
+		UserID:           row.UserID,
+		FileType:         row.FileType,
+		MimeType:         row.MimeType,
+		FileName:         row.FileName,
+		FileSize:         row.FileSize,
+		StorageKey:       row.StorageKey,
+		ThumbnailKey:     row.ThumbnailKey,
+		ExtractedTextKey: row.ExtractedTextKey,
+		EmbeddingStatus:  int(row.EmbeddingStatus),
+		CreatedAt:        row.CreatedAt.UTC(),
+	}
 }
 
 type sqlScanner interface {
@@ -1755,6 +1833,179 @@ func scanSQLMessage(scanner sqlScanner) (state.Message, error) {
 	return message, nil
 }
 
+func sqlSessionFromSQLC(row dbsqlc.AgentSession) *state.Session {
+	session := &state.Session{
+		UserID:        row.UserID,
+		ID:            row.SessionID,
+		AgentID:       row.AgentID,
+		Title:         row.Title,
+		Status:        int(row.Status),
+		MessageCount:  int(row.MessageCount),
+		TotalTokens:   row.TotalTokens,
+		WorkingDir:    row.WorkingDir,
+		Description:   row.Description,
+		ParentID:      row.ParentID,
+		BranchPoint:   int(row.BranchPoint),
+		Archived:      row.Archived != 0,
+		StartedAt:     row.CreatedAt.UTC(),
+		UpdatedAt:     row.UpdatedAt.UTC(),
+		LastMessageAt: timeValueFromNull(row.LastMessageAt),
+	}
+	if strings.TrimSpace(row.Tags) != "" {
+		_ = json.Unmarshal([]byte(row.Tags), &session.Tags)
+	}
+	if strings.TrimSpace(row.Metadata) != "" {
+		_ = json.Unmarshal([]byte(row.Metadata), &session.Metadata)
+	}
+	if session.Metadata == nil {
+		session.Metadata = map[string]string{}
+	}
+	if session.Status == 0 {
+		session.Status = state.SessionStatusActive
+	}
+	return session
+}
+
+func sqlSessionFromSQLCList(row dbsqlc.ListSessionsRow) *state.Session {
+	session := &state.Session{
+		UserID:        row.UserID,
+		ID:            row.SessionID,
+		AgentID:       row.AgentID,
+		Title:         row.Title,
+		Status:        int(row.Status),
+		MessageCount:  int(row.MessageCount),
+		TotalTokens:   row.TotalTokens,
+		WorkingDir:    row.WorkingDir,
+		Description:   row.Description,
+		ParentID:      row.ParentID,
+		BranchPoint:   int(row.BranchPoint),
+		Archived:      row.Archived != 0,
+		StartedAt:     row.CreatedAt.UTC(),
+		UpdatedAt:     row.UpdatedAt.UTC(),
+		LastMessageAt: timeValueFromNull(row.LastMessageAt),
+	}
+	if strings.TrimSpace(row.Tags) != "" {
+		_ = json.Unmarshal([]byte(row.Tags), &session.Tags)
+	}
+	if strings.TrimSpace(row.Metadata) != "" {
+		_ = json.Unmarshal([]byte(row.Metadata), &session.Metadata)
+	}
+	if session.Metadata == nil {
+		session.Metadata = map[string]string{}
+	}
+	if session.Status == 0 {
+		session.Status = state.SessionStatusActive
+	}
+	return session
+}
+
+func sqlMessageFromSQLC(row dbsqlc.AgentMessage) state.Message {
+	message := state.Message{
+		ID:               row.MessageID,
+		SessionID:        row.SessionID,
+		UserID:           row.UserID,
+		SeqNo:            row.SeqNo,
+		ParentID:         row.ParentID,
+		Role:             row.Role,
+		ContentType:      row.ContentType,
+		Content:          row.Content,
+		ToolCallID:       row.ToolCallID,
+		ToolName:         row.ToolName,
+		ToolOutput:       row.ToolOutput,
+		PromptTokens:     int(row.PromptTokens),
+		CompletionTokens: int(row.CompletionTokens),
+		Status:           int(row.Status),
+		IsContextUsed:    row.IsContextUsed != 0,
+		ModelID:          row.ModelID,
+		RunID:            row.RunID,
+		Hidden:           row.Hidden != 0,
+		CreatedAt:        row.CreatedAt.UTC(),
+		UpdatedAt:        row.UpdatedAt.UTC(),
+		ArchiveURI:       row.ArchiveUri,
+		ArchiveChecksum:  row.ArchiveChecksum,
+		ArchivedAt:       timeFromNull(row.ArchivedAt),
+	}
+	if strings.TrimSpace(row.ContentParts) != "" {
+		_ = json.Unmarshal([]byte(row.ContentParts), &message.ContentParts)
+		message.ContentBlocks = message.ContentParts
+	}
+	if strings.TrimSpace(row.ToolInput) != "" && row.ToolInput != "{}" {
+		message.ToolInput = json.RawMessage(row.ToolInput)
+	}
+	if strings.TrimSpace(row.ToolCalls) != "" {
+		_ = json.Unmarshal([]byte(row.ToolCalls), &message.ToolCalls)
+	}
+	return message
+}
+
+func sqlMessagesFromSQLC(rows []dbsqlc.AgentMessage) []state.Message {
+	out := make([]state.Message, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, sqlMessageFromSQLC(row))
+	}
+	return out
+}
+
+func sqlMessageParams(message state.Message, contentPartsJSON, toolInput, toolCalls string) dbsqlc.InsertMessageParams {
+	return dbsqlc.InsertMessageParams{
+		MessageID:        message.ID,
+		SessionID:        message.SessionID,
+		UserID:           message.UserID,
+		SeqNo:            message.SeqNo,
+		ParentID:         message.ParentID,
+		Role:             message.Role,
+		ContentType:      message.ContentType,
+		Content:          message.Content,
+		ContentParts:     contentPartsJSON,
+		ToolCallID:       message.ToolCallID,
+		ToolName:         message.ToolName,
+		ToolInput:        toolInput,
+		ToolOutput:       message.ToolOutput,
+		ToolCalls:        toolCalls,
+		PromptTokens:     int32(message.PromptTokens),
+		CompletionTokens: int32(message.CompletionTokens),
+		Status:           int32(message.Status),
+		IsContextUsed:    int32(sqlIntFromBool(message.IsContextUsed)),
+		ModelID:          message.ModelID,
+		RunID:            message.RunID,
+		Hidden:           int32(sqlIntFromBool(message.Hidden)),
+		CreatedAt:        message.CreatedAt.UTC(),
+		UpdatedAt:        message.UpdatedAt.UTC(),
+	}
+}
+
+func messageSearchResultFromSQLC(row dbsqlc.SearchMessagesRow, query string) MessageSearchResult {
+	return messageSearchResultFromFields(
+		row.MessageID,
+		row.SessionID,
+		row.SeqNo,
+		row.Role,
+		row.Content,
+		row.ToolOutput,
+		row.CreatedAt,
+		row.Title,
+		row.Description,
+		query,
+	)
+}
+
+func messageSearchResultFromFields(messageID, sessionID string, seqNo int64, role, content, toolOutput string, createdAt time.Time, title, description, query string) MessageSearchResult {
+	searchable := messageSearchContent(content, toolOutput, query)
+	result := MessageSearchResult{
+		MessageID:    messageID,
+		SessionID:    sessionID,
+		Role:         role,
+		Content:      searchable,
+		Snippet:      messageSearchSnippet(searchable, query, 160),
+		SessionTitle: firstNonEmptyString(title, description, sessionID),
+		CreatedAt:    createdAt.UTC(),
+	}
+	if seqNo > 0 {
+		result.MessageIndex = int(seqNo - 1)
+	}
+	return result
+}
+
 func normalizeSessionForSQL(session *state.Session) {
 	if session.Status == 0 {
 		session.Status = state.SessionStatusActive
@@ -1845,6 +2096,13 @@ func zeroTimeAsNil(value time.Time) *time.Time {
 	return &value
 }
 
+func timeValueFromNull(value sql.NullTime) time.Time {
+	if !value.Valid {
+		return time.Time{}
+	}
+	return value.Time.UTC()
+}
+
 func sanitizeSessionForSQL(session *state.Session) *state.Session {
 	if session == nil {
 		return nil
@@ -1918,6 +2176,7 @@ func sanitizeSQLText(value string) string {
 type SQLMemoryService struct {
 	db      *sql.DB
 	dialect SQLDialect
+	queries *dbsqlc.Queries
 }
 
 func NewSQLMemoryService(db *sql.DB) *SQLMemoryService {
@@ -1928,131 +2187,25 @@ func NewSQLMemoryServiceWithDialect(db *sql.DB, dialect SQLDialect) *SQLMemorySe
 	if dialect == "" {
 		dialect = SQLDialectQuestion
 	}
-	return &SQLMemoryService{db: db, dialect: dialect}
+	return &SQLMemoryService{db: db, dialect: dialect, queries: dbsqlc.New(db)}
 }
 
 func (m *SQLMemoryService) Init(ctx context.Context) error {
-	if err := m.renameLegacyMemoryItemsTable(ctx); err != nil {
+	if err := requireSQLColumns(ctx, m.db, "agent_memory",
+		"id", "user_id", "session_id", "namespace", "kind", "level", "category", "tags",
+		"source", "source_refs", "visibility", "status", "content", "raw_hash",
+		"confidence", "weight", "access_count", "parent_id", "related_ids", "conflict_ids",
+		"supersedes_id", "superseded_by_id", "last_injected_at", "metadata", "expires_at",
+		"created_at", "updated_at",
+	); err != nil {
 		return err
 	}
-	for _, stmt := range []string{
-		`DROP TABLE IF EXISTS agent_memories`,
-		`CREATE TABLE IF NOT EXISTS agent_memory (
-	id TEXT PRIMARY KEY,
-	user_id TEXT NOT NULL,
-	session_id TEXT,
-	namespace TEXT NOT NULL DEFAULT 'default',
-	kind TEXT NOT NULL,
-	level TEXT NOT NULL DEFAULT 'atomic',
-	category TEXT NOT NULL DEFAULT 'fact',
-	tags TEXT NOT NULL DEFAULT '',
-	source TEXT NOT NULL,
-	source_refs TEXT NOT NULL DEFAULT '',
-	visibility TEXT NOT NULL,
-	status TEXT NOT NULL DEFAULT 'active',
-	content TEXT NOT NULL,
-	raw_hash TEXT NOT NULL DEFAULT '',
-	confidence DOUBLE PRECISION NOT NULL DEFAULT 0.7,
-	weight DOUBLE PRECISION NOT NULL DEFAULT 0.65,
-	access_count BIGINT NOT NULL DEFAULT 0,
-	parent_id TEXT NOT NULL DEFAULT '',
-	related_ids TEXT NOT NULL DEFAULT '',
-	conflict_ids TEXT NOT NULL DEFAULT '',
-	supersedes_id TEXT NOT NULL DEFAULT '',
-	superseded_by_id TEXT NOT NULL DEFAULT '',
-	last_injected_at ` + m.dialect.TimeType() + `,
-	metadata TEXT NOT NULL DEFAULT '{}',
-	expires_at ` + m.dialect.TimeType() + `,
-	created_at ` + m.dialect.TimeType() + ` NOT NULL,
-	updated_at ` + m.dialect.TimeType() + ` NOT NULL
-)`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS level TEXT NOT NULL DEFAULT 'atomic'`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default'`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'fact'`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS tags TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS source_refs TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS raw_hash TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION NOT NULL DEFAULT 0.7`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS weight DOUBLE PRECISION NOT NULL DEFAULT 0.65`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS access_count BIGINT NOT NULL DEFAULT 0`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS parent_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS related_ids TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS conflict_ids TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS supersedes_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS superseded_by_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS last_injected_at ` + m.dialect.TimeType(),
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS expires_at ` + m.dialect.TimeType(),
-		`CREATE INDEX IF NOT EXISTS idx_agent_memory_user_created ON agent_memory (user_id, created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_memory_user_session ON agent_memory (user_id, session_id, created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_memory_user_weight ON agent_memory (user_id, status, visibility, weight)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_memory_user_hash ON agent_memory (user_id, raw_hash)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_memory_user_level ON agent_memory (user_id, level, status)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_memory_user_namespace ON agent_memory (user_id, namespace, status)`,
-		`CREATE TABLE IF NOT EXISTS agent_memory_settings (
-	user_id TEXT PRIMARY KEY,
-	payload TEXT NOT NULL,
-	updated_at ` + m.dialect.TimeType() + ` NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS agent_personalization_settings (
-	user_id TEXT PRIMARY KEY,
-	payload TEXT NOT NULL,
-	version BIGINT NOT NULL DEFAULT 1,
-	updated_at ` + m.dialect.TimeType() + ` NOT NULL
-)`,
-	} {
-		if _, err := m.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	if err := ensureReadableTimeColumns(ctx, m.db, m.dialect, "agent_memory", "created_at", "updated_at", "expires_at", "last_injected_at"); err != nil {
+	if err := requireSQLColumns(ctx, m.db, "agent_memory_settings", "user_id", "payload", "updated_at"); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, m.db, m.dialect, "agent_memory_settings", "updated_at"); err != nil {
-		return err
-	}
-	return ensureReadableTimeColumns(ctx, m.db, m.dialect, "agent_personalization_settings", "updated_at")
-}
-
-func (m *SQLMemoryService) renameLegacyMemoryItemsTable(ctx context.Context) error {
-	hasCurrent, err := m.sqlTableExists(ctx, "agent_memory")
-	if err != nil {
-		return err
-	}
-	if hasCurrent {
-		return nil
-	}
-	hasLegacy, err := m.sqlTableExists(ctx, "agent_memory_items")
-	if err != nil {
-		return err
-	}
-	if !hasLegacy {
-		return nil
-	}
-	_, err = m.db.ExecContext(ctx, `ALTER TABLE agent_memory_items RENAME TO agent_memory`)
-	return err
-}
-
-func (m *SQLMemoryService) sqlTableExists(ctx context.Context, table string) (bool, error) {
-	var name string
-	var err error
-	if m.dialect == SQLDialectPostgres {
-		err = m.db.QueryRowContext(ctx, `
-SELECT table_name
-FROM information_schema.tables
-WHERE table_schema = current_schema()
-  AND table_name = $1`, table).Scan(&name)
-	} else {
-		err = m.db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name)
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return name == table, nil
+	return requireSQLColumns(ctx, m.db, "agent_personalization_settings",
+		"user_id", "payload", "version", "updated_at",
+	)
 }
 
 func (m *SQLMemoryService) LoadContext(ctx context.Context, userID string, session *state.Session) (string, error) {
@@ -2136,11 +2289,26 @@ func (m *SQLMemoryService) AfterTurn(ctx context.Context, userID string, session
 }
 
 func (m *SQLMemoryService) DeleteSession(ctx context.Context, userID, sessionID string) error {
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		return m.queries.DeleteMemoryForSession(ctx, dbsqlc.DeleteMemoryForSessionParams{
+			UserID:    userID,
+			SessionID: sqlNullString(sessionID),
+		})
+	}
 	_, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory WHERE user_id = ? AND session_id = ?`), userID, sessionID)
 	return err
 }
 
 func (m *SQLMemoryService) DeleteUser(ctx context.Context, userID string) error {
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		if err := m.queries.DeleteMemoryForUser(ctx, userID); err != nil {
+			return err
+		}
+		if err := m.queries.DeleteMemorySettingsForUser(ctx, userID); err != nil {
+			return err
+		}
+		return m.queries.DeletePersonalizationSettingsForUser(ctx, userID)
+	}
 	if _, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory WHERE user_id = ?`), userID); err != nil {
 		return err
 	}
@@ -2171,7 +2339,12 @@ func (m *SQLMemoryService) DeleteSavedMemory(ctx context.Context, userID string)
 
 func (m *SQLMemoryService) GetMemorySettings(ctx context.Context, userID string) (MemorySettings, error) {
 	var payload string
-	err := m.db.QueryRowContext(ctx, m.dialect.Bind(`SELECT payload FROM agent_memory_settings WHERE user_id = ?`), userID).Scan(&payload)
+	var err error
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		payload, err = m.queries.GetMemorySettingsPayload(ctx, userID)
+	} else {
+		err = m.db.QueryRowContext(ctx, m.dialect.Bind(`SELECT payload FROM agent_memory_settings WHERE user_id = ?`), userID).Scan(&payload)
+	}
 	if err == sql.ErrNoRows {
 		return defaultMemorySettings(), nil
 	}
@@ -2192,6 +2365,14 @@ func (m *SQLMemoryService) UpdateMemorySettings(ctx context.Context, userID stri
 	if err != nil {
 		return MemorySettings{}, err
 	}
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		err = m.queries.UpsertMemorySettings(ctx, dbsqlc.UpsertMemorySettingsParams{
+			UserID:    userID,
+			Payload:   string(payload),
+			UpdatedAt: settings.UpdatedAt.UTC(),
+		})
+		return settings, err
+	}
 	_, err = m.db.ExecContext(ctx, m.dialect.Bind(`
 INSERT INTO agent_memory_settings (user_id, payload, updated_at)
 VALUES (?, ?, ?)
@@ -2203,7 +2384,12 @@ ON CONFLICT(user_id) DO UPDATE SET
 
 func (m *SQLMemoryService) GetPersonalizationSettings(ctx context.Context, userID string) (PersonalizationSettings, error) {
 	var payload string
-	err := m.db.QueryRowContext(ctx, m.dialect.Bind(`SELECT payload FROM agent_personalization_settings WHERE user_id = ?`), userID).Scan(&payload)
+	var err error
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		payload, err = m.queries.GetPersonalizationSettingsPayload(ctx, userID)
+	} else {
+		err = m.db.QueryRowContext(ctx, m.dialect.Bind(`SELECT payload FROM agent_personalization_settings WHERE user_id = ?`), userID).Scan(&payload)
+	}
 	if err == sql.ErrNoRows {
 		return defaultPersonalizationSettings(), nil
 	}
@@ -2224,6 +2410,15 @@ func (m *SQLMemoryService) UpdatePersonalizationSettings(ctx context.Context, us
 	if err != nil {
 		return PersonalizationSettings{}, err
 	}
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		err = m.queries.UpsertPersonalizationSettings(ctx, dbsqlc.UpsertPersonalizationSettingsParams{
+			UserID:    userID,
+			Payload:   string(payload),
+			Version:   int64(settings.Version),
+			UpdatedAt: settings.UpdatedAt.UTC(),
+		})
+		return settings, err
+	}
 	_, err = m.db.ExecContext(ctx, m.dialect.Bind(`
 INSERT INTO agent_personalization_settings (user_id, payload, version, updated_at)
 VALUES (?, ?, ?, ?)
@@ -2235,6 +2430,9 @@ ON CONFLICT(user_id) DO UPDATE SET
 }
 
 func (m *SQLMemoryService) DeletePersonalizationSettings(ctx context.Context, userID string) error {
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		return m.queries.DeletePersonalizationSettingsForUser(ctx, userID)
+	}
 	_, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_personalization_settings WHERE user_id = ?`), userID)
 	return err
 }
@@ -2256,15 +2454,32 @@ func (m *SQLMemoryService) PruneBefore(ctx context.Context, cutoff time.Time) (i
 		}
 		changed++
 	}
-	result, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory WHERE status = ? AND updated_at < ?`), MemoryStatusDeleted, sqlTimeValue(cutoff, m.dialect))
+	var rows int64
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		rows, err = m.queries.DeleteDeletedMemoryBefore(ctx, dbsqlc.DeleteDeletedMemoryBeforeParams{
+			Status:    MemoryStatusDeleted,
+			UpdatedAt: cutoff.UTC(),
+		})
+	} else {
+		result, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory WHERE status = ? AND updated_at < ?`), MemoryStatusDeleted, sqlTimeValue(cutoff, m.dialect))
+		if err == nil {
+			rows, _ = result.RowsAffected()
+		}
+	}
 	if err != nil {
 		return changed, err
 	}
-	rows, _ := result.RowsAffected()
 	return changed + int(rows), nil
 }
 
 func (m *SQLMemoryService) GetMemoryItem(ctx context.Context, userID, itemID string) (MemoryItem, error) {
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		row, err := m.queries.GetMemoryItem(ctx, dbsqlc.GetMemoryItemParams{UserID: userID, ID: itemID})
+		if err != nil {
+			return MemoryItem{}, err
+		}
+		return normalizeMemoryItem(memoryItemFromSQLC(row)), nil
+	}
 	row := m.db.QueryRowContext(ctx, m.dialect.Bind(`SELECT id, user_id, session_id, namespace, kind, level, category, tags, source, source_refs, visibility, status, content, raw_hash, confidence, weight, access_count, parent_id, related_ids, conflict_ids, supersedes_id, superseded_by_id, last_injected_at, metadata, expires_at, created_at, updated_at
 FROM agent_memory
 WHERE user_id = ? AND id = ?`), userID, itemID)
@@ -2276,6 +2491,38 @@ WHERE user_id = ? AND id = ?`), userID, itemID)
 }
 
 func (m *SQLMemoryService) ListMemoryItems(ctx context.Context, userID string, filter MemoryItemFilter) ([]MemoryItem, error) {
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		queryPattern := ""
+		if filter.Query != "" {
+			queryPattern = "%" + strings.ToLower(filter.Query) + "%"
+		}
+		sourceKindPattern := ""
+		sourceIDPattern := ""
+		if filter.SourceKind != "" {
+			sourceKindPattern = "%\"kind\":\"" + normalizeAssetKind(filter.SourceKind) + "\"%"
+		}
+		if filter.SourceID != "" {
+			sourceIDPattern = "%\"id\":\"" + strings.TrimSpace(filter.SourceID) + "\"%"
+		}
+		rows, err := m.queries.ListMemoryItems(ctx, dbsqlc.ListMemoryItemsParams{
+			UserID:            userID,
+			SessionID:         filter.SessionID,
+			Namespace:         normalizeMemoryNamespace(filter.Namespace),
+			Kind:              filter.Kind,
+			Level:             filter.Level,
+			Category:          filter.Category,
+			Visibility:        filter.Visibility,
+			Status:            filter.Status,
+			QueryPattern:      queryPattern,
+			SourceKindPattern: sourceKindPattern,
+			SourceIDPattern:   sourceIDPattern,
+			LimitCount:        int32(filter.Limit),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return memoryItemsFromSQLC(rows), nil
+	}
 	query := `SELECT id, user_id, session_id, namespace, kind, level, category, tags, source, source_refs, visibility, status, content, raw_hash, confidence, weight, access_count, parent_id, related_ids, conflict_ids, supersedes_id, superseded_by_id, last_injected_at, metadata, expires_at, created_at, updated_at
 FROM agent_memory
 WHERE user_id = ?`
@@ -2344,6 +2591,13 @@ WHERE user_id = ?`
 }
 
 func (m *SQLMemoryService) ListAllMemoryItems(ctx context.Context) ([]MemoryItem, error) {
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		rows, err := m.queries.ListAllMemoryItems(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return memoryItemsFromSQLC(rows), nil
+	}
 	rows, err := m.db.QueryContext(ctx, `SELECT id, user_id, session_id, namespace, kind, level, category, tags, source, source_refs, visibility, status, content, raw_hash, confidence, weight, access_count, parent_id, related_ids, conflict_ids, supersedes_id, superseded_by_id, last_injected_at, metadata, expires_at, created_at, updated_at FROM agent_memory`)
 	if err != nil {
 		return nil, err
@@ -2393,6 +2647,38 @@ func (m *SQLMemoryService) upsertMemoryItem(ctx context.Context, item MemoryItem
 	metadataJSON, err := json.Marshal(item.Metadata)
 	if err != nil {
 		return MemoryItem{}, err
+	}
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		err = m.queries.UpsertMemoryItem(ctx, dbsqlc.UpsertMemoryItemParams{
+			ID:             item.ID,
+			UserID:         item.UserID,
+			SessionID:      sqlNullString(item.SessionID),
+			Namespace:      item.Namespace,
+			Kind:           item.Kind,
+			Level:          item.Level,
+			Category:       item.Category,
+			Tags:           string(tagsJSON),
+			Source:         item.Source,
+			SourceRefs:     string(sourceRefsJSON),
+			Visibility:     item.Visibility,
+			Status:         item.Status,
+			Content:        item.Content,
+			RawHash:        item.RawHash,
+			Confidence:     item.Confidence,
+			Weight:         item.Weight,
+			AccessCount:    item.AccessCount,
+			ParentID:       item.ParentID,
+			RelatedIds:     string(relatedIDsJSON),
+			ConflictIds:    string(conflictIDsJSON),
+			SupersedesID:   item.SupersedesID,
+			SupersededByID: item.SupersededByID,
+			LastInjectedAt: sqlNullTime(item.LastInjectedAt),
+			Metadata:       string(metadataJSON),
+			ExpiresAt:      sqlNullTime(item.ExpiresAt),
+			CreatedAt:      item.CreatedAt.UTC(),
+			UpdatedAt:      item.UpdatedAt.UTC(),
+		})
+		return item, err
 	}
 	_, err = m.db.ExecContext(ctx, m.dialect.Bind(`
 INSERT INTO agent_memory (id, user_id, session_id, namespace, kind, level, category, tags, source, source_refs, visibility, status, content, raw_hash, confidence, weight, access_count, parent_id, related_ids, conflict_ids, supersedes_id, superseded_by_id, last_injected_at, metadata, expires_at, created_at, updated_at)
@@ -2453,6 +2739,9 @@ ON CONFLICT(id) DO UPDATE SET
 }
 
 func (m *SQLMemoryService) DeleteMemoryItem(ctx context.Context, userID, itemID string) error {
+	if m.dialect == SQLDialectPostgres && m.queries != nil {
+		return m.queries.DeleteMemoryItem(ctx, dbsqlc.DeleteMemoryItemParams{UserID: userID, ID: itemID})
+	}
 	_, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory WHERE user_id = ? AND id = ?`), userID, itemID)
 	return err
 }
@@ -2491,6 +2780,47 @@ func scanMemoryItemRows(row memoryItemScanner) (MemoryItem, error) {
 		return MemoryItem{}, err
 	}
 	return item, nil
+}
+
+func memoryItemFromSQLC(row dbsqlc.AgentMemory) MemoryItem {
+	item := MemoryItem{
+		ID:             row.ID,
+		UserID:         row.UserID,
+		SessionID:      row.SessionID.String,
+		Namespace:      row.Namespace,
+		Kind:           row.Kind,
+		Level:          row.Level,
+		Category:       row.Category,
+		Source:         row.Source,
+		Visibility:     row.Visibility,
+		Status:         row.Status,
+		Content:        row.Content,
+		RawHash:        row.RawHash,
+		Confidence:     row.Confidence,
+		Weight:         row.Weight,
+		AccessCount:    row.AccessCount,
+		ParentID:       row.ParentID,
+		SupersedesID:   row.SupersedesID,
+		SupersededByID: row.SupersededByID,
+		LastInjectedAt: timeFromNull(row.LastInjectedAt),
+		ExpiresAt:      timeFromNull(row.ExpiresAt),
+		CreatedAt:      row.CreatedAt.UTC(),
+		UpdatedAt:      row.UpdatedAt.UTC(),
+	}
+	_ = json.Unmarshal([]byte(row.Tags), &item.Tags)
+	_ = json.Unmarshal([]byte(row.SourceRefs), &item.SourceRefs)
+	_ = json.Unmarshal([]byte(row.RelatedIds), &item.RelatedIDs)
+	_ = json.Unmarshal([]byte(row.ConflictIds), &item.ConflictIDs)
+	_ = json.Unmarshal([]byte(row.Metadata), &item.Metadata)
+	return item
+}
+
+func memoryItemsFromSQLC(rows []dbsqlc.AgentMemory) []MemoryItem {
+	out := make([]MemoryItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, normalizeMemoryItem(memoryItemFromSQLC(row)))
+	}
+	return out
 }
 
 type SQLDialect string

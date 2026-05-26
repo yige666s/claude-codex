@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"claude-codex/internal/backend/httpclient"
 )
 
 type WorkSecretSource struct {
@@ -90,28 +93,22 @@ func RegisterWorker(ctx context.Context, client *http.Client, sessionURL, access
 	if client == nil {
 		client = http.DefaultClient
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(sessionURL, "/")+"/worker/register", strings.NewReader("{}"))
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
 	var body struct {
 		WorkerEpoch any `json:"worker_epoch"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	err := httpclient.New(
+		httpclient.WithHTTPClient(client),
+		httpclient.WithComponent("bridge_worker"),
+	).JSON(ctx, http.MethodPost, strings.TrimRight(sessionURL, "/")+"/worker/register", map[string]any{}, &body,
+		httpclient.WithBearer(accessToken),
+		httpclient.WithHeader("anthropic-version", "2023-06-01"),
+	)
+	if err != nil {
+		var statusErr *httpclient.StatusError
+		if errors.As(err, &statusErr) {
+			return 0, fmt.Errorf("registerWorker: unexpected status %d", statusErr.StatusCode)
+		}
 		return 0, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("registerWorker: unexpected status %d", resp.StatusCode)
 	}
 	switch value := body.WorkerEpoch.(type) {
 	case float64:

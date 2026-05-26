@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -16,6 +17,11 @@ const DefaultJobEventFanoutChannel = "agentapi:job-events"
 
 type JobEventPublisher interface {
 	PublishJobEvent(ctx context.Context, event *JobEvent) error
+}
+
+type JobEventTransport interface {
+	JobEventPublisher
+	Run(ctx context.Context, onEvent func(*JobEvent)) error
 }
 
 type RedisJobEventFanoutConfig struct {
@@ -37,14 +43,15 @@ func (c RedisJobEventFanoutConfig) normalized() RedisJobEventFanoutConfig {
 type RedisJobEventFanout struct {
 	client redis.UniversalClient
 	config RedisJobEventFanoutConfig
-	logger *log.Logger
+	logger *slog.Logger
 }
 
 func NewRedisJobEventFanout(client redis.UniversalClient, config RedisJobEventFanoutConfig, logger *log.Logger) *RedisJobEventFanout {
-	if logger == nil {
-		logger = log.Default()
-	}
-	return &RedisJobEventFanout{client: client, config: config.normalized(), logger: logger}
+	return NewRedisJobEventFanoutWithLogger(client, config, newStructuredLogger(logger))
+}
+
+func NewRedisJobEventFanoutWithLogger(client redis.UniversalClient, config RedisJobEventFanoutConfig, logger *slog.Logger) *RedisJobEventFanout {
+	return &RedisJobEventFanout{client: client, config: config.normalized(), logger: componentLogger(logger, "job_event_fanout")}
 }
 
 func (f *RedisJobEventFanout) PublishJobEvent(ctx context.Context, event *JobEvent) error {
@@ -93,7 +100,7 @@ func (f *RedisJobEventFanout) decode(payload string) (*JobEvent, bool) {
 	var message redisJobEventFanoutMessage
 	if err := json.Unmarshal([]byte(payload), &message); err != nil {
 		if f.logger != nil {
-			f.logger.Printf("decode redis job event fanout: %v", err)
+			logError(context.Background(), f.logger, "decode redis job event fanout failed", err)
 		}
 		return nil, false
 	}

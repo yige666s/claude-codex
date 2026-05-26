@@ -1,54 +1,182 @@
 package agentruntime
 
 import (
-	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type MetricsRegistry struct {
-	mu                                sync.Mutex
-	requestsTotal                     int64
-	requestsByStatus                  map[int]int64
-	requestsByRoute                   map[string]int64
-	governanceEvents                  map[string]int64
-	personalizationEnabled            map[string]int64
-	personalizationFieldCoverage      map[string]int64
-	errorsTotal                       int64
-	rateLimitedTotal                  int64
-	auditErrorsTotal                  int64
-	piiRedactions                     int64
-	latencyTotalMS                    int64
-	personalizationUpdatesTotal       int64
-	personalizationChangesTotal       int64
-	personalizationBrowserMemoryTotal int64
-	liveActiveSessions                int64
-	liveSessionsTotal                 int64
-	liveSuccessfulSessions            int64
-	liveFailedSessions                int64
-	liveDisconnectedSessions          int64
-	liveAudioChunksTotal              int64
-	liveAudioBytesTotal               int64
-	liveDurationTotalMS               int64
-	liveFirstTranscriptTotalMS        int64
-	liveFirstTranscriptCount          int64
-	liveFirstAudioTotalMS             int64
-	liveFirstAudioCount               int64
-	liveErrorsByCode                  map[string]int64
+	mu                         sync.Mutex
+	registry                   *prometheus.Registry
+	requestsTotal              prometheus.Counter
+	requestsByStatus           *prometheus.CounterVec
+	requestsByRoute            *prometheus.CounterVec
+	requestErrorsTotal         prometheus.Counter
+	requestLatencyMSTotal      prometheus.Counter
+	requestDurationSeconds     *prometheus.HistogramVec
+	rateLimitedTotal           prometheus.Counter
+	auditErrorsTotal           prometheus.Counter
+	governanceEvents           *prometheus.CounterVec
+	piiRedactions              prometheus.Counter
+	personalizationUpdates     prometheus.Counter
+	personalizationChanges     prometheus.Counter
+	personalizationEnabled     *prometheus.CounterVec
+	personalizationFields      *prometheus.CounterVec
+	browserMemoryTotal         prometheus.Counter
+	liveActiveSessionsMetric   prometheus.Gauge
+	liveSessionsTotalMetric    prometheus.Counter
+	liveSucceededTotalMetric   prometheus.Counter
+	liveFailedTotalMetric      prometheus.Counter
+	liveDisconnectedMetric     prometheus.Counter
+	liveAudioChunksMetric      prometheus.Counter
+	liveAudioBytesMetric       prometheus.Counter
+	liveErrorsMetric           *prometheus.CounterVec
+	liveActiveSessions         int64
+	liveSessionsTotal          int64
+	liveSuccessfulSessions     int64
+	liveFailedSessions         int64
+	liveDisconnectedSessions   int64
+	liveAudioChunksTotal       int64
+	liveAudioBytesTotal        int64
+	liveDurationTotalMS        int64
+	liveFirstTranscriptTotalMS int64
+	liveFirstTranscriptCount   int64
+	liveFirstAudioTotalMS      int64
+	liveFirstAudioCount        int64
+	liveErrorsByCode           map[string]int64
 }
 
 func NewMetricsRegistry() *MetricsRegistry {
-	return &MetricsRegistry{
-		requestsByStatus:             make(map[int]int64),
-		requestsByRoute:              make(map[string]int64),
-		governanceEvents:             make(map[string]int64),
-		personalizationEnabled:       make(map[string]int64),
-		personalizationFieldCoverage: make(map[string]int64),
-		liveErrorsByCode:             make(map[string]int64),
+	m := &MetricsRegistry{
+		registry:         prometheus.NewRegistry(),
+		liveErrorsByCode: make(map[string]int64),
 	}
+	m.requestsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_requests_total",
+		Help: "Total HTTP requests.",
+	})
+	m.requestsByStatus = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "agentapi_requests_by_status_total",
+		Help: "Total HTTP requests by status.",
+	}, []string{"status"})
+	m.requestsByRoute = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "agentapi_requests_by_route_total",
+		Help: "Total HTTP requests by normalized route.",
+	}, []string{"route"})
+	m.requestErrorsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_request_errors_total",
+		Help: "Total HTTP requests with 4xx/5xx status.",
+	})
+	m.requestLatencyMSTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_request_latency_ms_total",
+		Help: "Total HTTP request latency in milliseconds.",
+	})
+	m.requestDurationSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "agentapi_request_duration_seconds",
+		Help:    "HTTP request duration in seconds.",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"route", "method", "status"})
+	m.rateLimitedTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_rate_limited_total",
+		Help: "Total rate-limited requests.",
+	})
+	m.auditErrorsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_audit_errors_total",
+		Help: "Total audit log write failures.",
+	})
+	m.governanceEvents = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "agentapi_governance_events_total",
+		Help: "Total C-end governance events.",
+	}, []string{"event"})
+	m.piiRedactions = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_pii_redactions_total",
+		Help: "Total PII redactions observed in user-facing governance operations.",
+	})
+	m.personalizationUpdates = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_personalization_updates_total",
+		Help: "Total personalization setting save/reset operations.",
+	})
+	m.personalizationChanges = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_personalization_changes_total",
+		Help: "Total personalization operations that changed persisted settings.",
+	})
+	m.personalizationEnabled = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "agentapi_personalization_enabled_total",
+		Help: "Personalization operations by whether effective personalization is enabled.",
+	}, []string{"enabled"})
+	m.personalizationFields = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "agentapi_personalization_field_coverage_total",
+		Help: "Personalization operations by field and whether that field is populated.",
+	}, []string{"field", "present"})
+	m.browserMemoryTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_personalization_browser_memory_total",
+		Help: "Total browser memory submissions accepted.",
+	})
+	m.liveActiveSessionsMetric = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "agentapi_live_sessions_active",
+		Help: "Current active Live websocket sessions.",
+	})
+	m.liveSessionsTotalMetric = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_live_sessions_total",
+		Help: "Total Live websocket sessions.",
+	})
+	m.liveSucceededTotalMetric = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_live_sessions_succeeded_total",
+		Help: "Total successful Live websocket sessions.",
+	})
+	m.liveFailedTotalMetric = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_live_sessions_failed_total",
+		Help: "Total failed Live websocket sessions.",
+	})
+	m.liveDisconnectedMetric = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_live_sessions_disconnected_total",
+		Help: "Total disconnected Live websocket sessions.",
+	})
+	m.liveAudioChunksMetric = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_live_audio_chunks_total",
+		Help: "Total Live audio chunks.",
+	})
+	m.liveAudioBytesMetric = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "agentapi_live_audio_bytes_total",
+		Help: "Total Live audio bytes.",
+	})
+	m.liveErrorsMetric = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "agentapi_live_errors_total",
+		Help: "Total Live websocket errors by code.",
+	}, []string{"code"})
+	m.registry.MustRegister(
+		m.requestsTotal,
+		m.requestsByStatus,
+		m.requestsByRoute,
+		m.requestErrorsTotal,
+		m.requestLatencyMSTotal,
+		m.requestDurationSeconds,
+		m.rateLimitedTotal,
+		m.auditErrorsTotal,
+		m.governanceEvents,
+		m.piiRedactions,
+		m.personalizationUpdates,
+		m.personalizationChanges,
+		m.personalizationEnabled,
+		m.personalizationFields,
+		m.browserMemoryTotal,
+		m.liveActiveSessionsMetric,
+		m.liveSessionsTotalMetric,
+		m.liveSucceededTotalMetric,
+		m.liveFailedTotalMetric,
+		m.liveDisconnectedMetric,
+		m.liveAudioChunksMetric,
+		m.liveAudioBytesMetric,
+		m.liveErrorsMetric,
+	)
+	return m
 }
 
 type LiveMetricsRecord struct {
@@ -87,33 +215,28 @@ func (m *MetricsRegistry) RecordRequest(method, path string, status int, duratio
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.requestsTotal++
-	m.requestsByStatus[status]++
-	m.requestsByRoute[method+" "+routeLabel(path)]++
+	route := routeLabel(path)
+	statusCode := statusString(status)
+	m.requestsTotal.Inc()
+	m.requestsByStatus.WithLabelValues(statusCode).Inc()
+	m.requestsByRoute.WithLabelValues(method + " " + route).Inc()
+	m.requestLatencyMSTotal.Add(float64(duration.Milliseconds()))
+	m.requestDurationSeconds.WithLabelValues(route, method, statusCode).Observe(duration.Seconds())
 	if status >= http.StatusBadRequest {
-		m.errorsTotal++
+		m.requestErrorsTotal.Inc()
 	}
-	m.latencyTotalMS += duration.Milliseconds()
 }
 
 func (m *MetricsRegistry) IncRateLimited() {
-	if m == nil {
-		return
+	if m != nil {
+		m.rateLimitedTotal.Inc()
 	}
-	m.mu.Lock()
-	m.rateLimitedTotal++
-	m.mu.Unlock()
 }
 
 func (m *MetricsRegistry) IncAuditError() {
-	if m == nil {
-		return
+	if m != nil {
+		m.auditErrorsTotal.Inc()
 	}
-	m.mu.Lock()
-	m.auditErrorsTotal++
-	m.mu.Unlock()
 }
 
 func (m *MetricsRegistry) IncGovernanceEvent(name string) {
@@ -124,44 +247,33 @@ func (m *MetricsRegistry) IncGovernanceEvent(name string) {
 	if name == "" {
 		name = "unknown"
 	}
-	m.mu.Lock()
-	m.governanceEvents[name]++
-	m.mu.Unlock()
+	m.governanceEvents.WithLabelValues(name).Inc()
 }
 
 func (m *MetricsRegistry) AddPIIRedactions(count int) {
-	if m == nil || count <= 0 {
-		return
+	if m != nil && count > 0 {
+		m.piiRedactions.Add(float64(count))
 	}
-	m.mu.Lock()
-	m.piiRedactions += int64(count)
-	m.mu.Unlock()
 }
 
 func (m *MetricsRegistry) RecordPersonalizationUpdate(enabled bool, changed bool, fieldCoverage map[string]bool) {
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.personalizationUpdatesTotal++
+	m.personalizationUpdates.Inc()
 	if changed {
-		m.personalizationChangesTotal++
+		m.personalizationChanges.Inc()
 	}
-	m.personalizationEnabled[fmt.Sprintf("%t", enabled)]++
+	m.personalizationEnabled.WithLabelValues(boolString(enabled)).Inc()
 	for field, present := range fieldCoverage {
-		key := strings.TrimSpace(field) + "\x00" + fmt.Sprintf("%t", present)
-		m.personalizationFieldCoverage[key]++
+		m.personalizationFields.WithLabelValues(strings.TrimSpace(field), boolString(present)).Inc()
 	}
 }
 
 func (m *MetricsRegistry) IncPersonalizationBrowserMemory() {
-	if m == nil {
-		return
+	if m != nil {
+		m.browserMemoryTotal.Inc()
 	}
-	m.mu.Lock()
-	m.personalizationBrowserMemoryTotal++
-	m.mu.Unlock()
 }
 
 func (m *MetricsRegistry) IncLiveActive() {
@@ -171,6 +283,7 @@ func (m *MetricsRegistry) IncLiveActive() {
 	m.mu.Lock()
 	m.liveActiveSessions++
 	m.mu.Unlock()
+	m.liveActiveSessionsMetric.Inc()
 }
 
 func (m *MetricsRegistry) DecLiveActive() {
@@ -180,6 +293,7 @@ func (m *MetricsRegistry) DecLiveActive() {
 	m.mu.Lock()
 	if m.liveActiveSessions > 0 {
 		m.liveActiveSessions--
+		m.liveActiveSessionsMetric.Dec()
 	}
 	m.mu.Unlock()
 }
@@ -191,17 +305,25 @@ func (m *MetricsRegistry) RecordLiveSession(record LiveMetricsRecord) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.liveSessionsTotal++
+	m.liveSessionsTotalMetric.Inc()
 	if record.Success {
 		m.liveSuccessfulSessions++
+		m.liveSucceededTotalMetric.Inc()
 	} else {
 		m.liveFailedSessions++
+		m.liveFailedTotalMetric.Inc()
 	}
 	if record.Disconnected {
 		m.liveDisconnectedSessions++
+		m.liveDisconnectedMetric.Inc()
 	}
+	audioChunks := maxInt64Value(record.AudioChunks, 0)
+	audioBytes := maxInt64Value(record.AudioBytes, 0)
 	m.liveDurationTotalMS += maxInt64Value(record.DurationMS, 0)
-	m.liveAudioChunksTotal += maxInt64Value(record.AudioChunks, 0)
-	m.liveAudioBytesTotal += maxInt64Value(record.AudioBytes, 0)
+	m.liveAudioChunksTotal += audioChunks
+	m.liveAudioBytesTotal += audioBytes
+	m.liveAudioChunksMetric.Add(float64(audioChunks))
+	m.liveAudioBytesMetric.Add(float64(audioBytes))
 	if record.FirstTranscriptMS > 0 {
 		m.liveFirstTranscriptTotalMS += record.FirstTranscriptMS
 		m.liveFirstTranscriptCount++
@@ -212,6 +334,7 @@ func (m *MetricsRegistry) RecordLiveSession(record LiveMetricsRecord) {
 	}
 	if code := strings.TrimSpace(record.ErrorCode); code != "" {
 		m.liveErrorsByCode[code]++
+		m.liveErrorsMetric.WithLabelValues(code).Inc()
 	}
 }
 
@@ -242,108 +365,11 @@ func (m *MetricsRegistry) LiveHealthSnapshot() LiveHealthSnapshot {
 }
 
 func (m *MetricsRegistry) WritePrometheus(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	if m == nil {
-		_, _ = fmt.Fprintln(w, "agentapi_requests_total 0")
+		promhttp.HandlerFor(prometheus.NewRegistry(), promhttp.HandlerOpts{}).ServeHTTP(w, &http.Request{})
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_requests_total Total HTTP requests.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_requests_total counter")
-	_, _ = fmt.Fprintf(w, "agentapi_requests_total %d\n", m.requestsTotal)
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_request_errors_total Total HTTP requests with 4xx/5xx status.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_request_errors_total counter")
-	_, _ = fmt.Fprintf(w, "agentapi_request_errors_total %d\n", m.errorsTotal)
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_rate_limited_total Total rate-limited requests.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_rate_limited_total counter")
-	_, _ = fmt.Fprintf(w, "agentapi_rate_limited_total %d\n", m.rateLimitedTotal)
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_audit_errors_total Total audit log write failures.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_audit_errors_total counter")
-	_, _ = fmt.Fprintf(w, "agentapi_audit_errors_total %d\n", m.auditErrorsTotal)
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_pii_redactions_total Total PII redactions observed in user-facing governance operations.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_pii_redactions_total counter")
-	_, _ = fmt.Fprintf(w, "agentapi_pii_redactions_total %d\n", m.piiRedactions)
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_request_latency_ms_total Total HTTP request latency in milliseconds.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_request_latency_ms_total counter")
-	_, _ = fmt.Fprintf(w, "agentapi_request_latency_ms_total %d\n", m.latencyTotalMS)
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_personalization_updates_total Total personalization setting save/reset operations.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_personalization_updates_total counter")
-	_, _ = fmt.Fprintf(w, "agentapi_personalization_updates_total %d\n", m.personalizationUpdatesTotal)
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_personalization_changes_total Total personalization operations that changed persisted settings.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_personalization_changes_total counter")
-	_, _ = fmt.Fprintf(w, "agentapi_personalization_changes_total %d\n", m.personalizationChangesTotal)
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_personalization_browser_memory_total Total browser memory submissions accepted.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_personalization_browser_memory_total counter")
-	_, _ = fmt.Fprintf(w, "agentapi_personalization_browser_memory_total %d\n", m.personalizationBrowserMemoryTotal)
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_live_sessions_total Total Live websocket sessions.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_live_sessions_total counter")
-	_, _ = fmt.Fprintf(w, "agentapi_live_sessions_total %d\n", m.liveSessionsTotal)
-	_, _ = fmt.Fprintf(w, "agentapi_live_sessions_active %d\n", m.liveActiveSessions)
-	_, _ = fmt.Fprintf(w, "agentapi_live_sessions_failed_total %d\n", m.liveFailedSessions)
-	_, _ = fmt.Fprintf(w, "agentapi_live_sessions_disconnected_total %d\n", m.liveDisconnectedSessions)
-	_, _ = fmt.Fprintf(w, "agentapi_live_audio_chunks_total %d\n", m.liveAudioChunksTotal)
-	_, _ = fmt.Fprintf(w, "agentapi_live_audio_bytes_total %d\n", m.liveAudioBytesTotal)
-	liveErrorCodes := make([]string, 0, len(m.liveErrorsByCode))
-	for code := range m.liveErrorsByCode {
-		liveErrorCodes = append(liveErrorCodes, code)
-	}
-	sort.Strings(liveErrorCodes)
-	for _, code := range liveErrorCodes {
-		_, _ = fmt.Fprintf(w, "agentapi_live_errors_total{code=%q} %d\n", code, m.liveErrorsByCode[code])
-	}
-
-	statuses := make([]int, 0, len(m.requestsByStatus))
-	for status := range m.requestsByStatus {
-		statuses = append(statuses, status)
-	}
-	sort.Ints(statuses)
-	for _, status := range statuses {
-		_, _ = fmt.Fprintf(w, "agentapi_requests_by_status_total{status=\"%d\"} %d\n", status, m.requestsByStatus[status])
-	}
-	routes := make([]string, 0, len(m.requestsByRoute))
-	for route := range m.requestsByRoute {
-		routes = append(routes, route)
-	}
-	sort.Strings(routes)
-	for _, route := range routes {
-		_, _ = fmt.Fprintf(w, "agentapi_requests_by_route_total{route=%q} %d\n", route, m.requestsByRoute[route])
-	}
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_governance_events_total Total C-end governance events.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_governance_events_total counter")
-	eventNames := make([]string, 0, len(m.governanceEvents))
-	for name := range m.governanceEvents {
-		eventNames = append(eventNames, name)
-	}
-	sort.Strings(eventNames)
-	for _, name := range eventNames {
-		_, _ = fmt.Fprintf(w, "agentapi_governance_events_total{event=%q} %d\n", name, m.governanceEvents[name])
-	}
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_personalization_enabled_total Personalization operations by whether effective personalization is enabled.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_personalization_enabled_total counter")
-	enabledLabels := make([]string, 0, len(m.personalizationEnabled))
-	for label := range m.personalizationEnabled {
-		enabledLabels = append(enabledLabels, label)
-	}
-	sort.Strings(enabledLabels)
-	for _, label := range enabledLabels {
-		_, _ = fmt.Fprintf(w, "agentapi_personalization_enabled_total{enabled=%q} %d\n", label, m.personalizationEnabled[label])
-	}
-	_, _ = fmt.Fprintln(w, "# HELP agentapi_personalization_field_coverage_total Personalization operations by field and whether that field is populated.")
-	_, _ = fmt.Fprintln(w, "# TYPE agentapi_personalization_field_coverage_total counter")
-	fieldKeys := make([]string, 0, len(m.personalizationFieldCoverage))
-	for key := range m.personalizationFieldCoverage {
-		fieldKeys = append(fieldKeys, key)
-	}
-	sort.Strings(fieldKeys)
-	for _, key := range fieldKeys {
-		parts := strings.SplitN(key, "\x00", 2)
-		field, present := parts[0], ""
-		if len(parts) > 1 {
-			present = parts[1]
-		}
-		_, _ = fmt.Fprintf(w, "agentapi_personalization_field_coverage_total{field=%q,present=%q} %d\n", field, present, m.personalizationFieldCoverage[key])
-	}
+	promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{}).ServeHTTP(w, &http.Request{})
 }
 
 func averageInt64(total, count int64) int64 {
@@ -395,4 +421,18 @@ func looksLikeID(part string) bool {
 		return true
 	}
 	return false
+}
+
+func statusString(status int) string {
+	if status <= 0 {
+		return "0"
+	}
+	return strconv.Itoa(status)
+}
+
+func boolString(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }

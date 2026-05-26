@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,6 +13,7 @@ import (
 
 	appauth "claude-codex/internal/app/auth"
 	"claude-codex/internal/app/config"
+	"claude-codex/internal/backend/httpclient"
 )
 
 type Restrictions map[string]any
@@ -73,29 +73,27 @@ func (s *Service) Fetch(ctx context.Context) FetchResult {
 	if err != nil {
 		return FetchResult{Success: false, SkipRetry: true, Error: err.Error()}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(s.auth.BaseAPIURL(), "/")+"/api/claude_code/policy_limits", nil)
-	if err != nil {
-		return FetchResult{Success: false, Error: err.Error()}
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	headers := make(http.Header)
+	headers.Set("Authorization", "Bearer "+token)
+	headers.Set("anthropic-beta", "oauth-2025-04-20")
 	s.mu.RLock()
 	if s.checksum != "" {
-		req.Header.Set("If-None-Match", `"`+s.checksum+`"`)
+		headers.Set("If-None-Match", `"`+s.checksum+`"`)
 	}
 	s.mu.RUnlock()
 
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return FetchResult{Success: false, Error: err.Error()}
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	status, body, _, err := httpclient.New(
+		httpclient.WithHTTPClient(s.httpClient),
+		httpclient.WithComponent("policy_limits"),
+	).Bytes(ctx, http.MethodGet, strings.TrimRight(s.auth.BaseAPIURL(), "/")+"/api/claude_code/policy_limits", nil,
+		httpclient.WithHeaders(headers),
+		httpclient.WithOKStatuses(http.StatusOK, http.StatusNotModified, http.StatusNoContent, http.StatusNotFound),
+	)
 	if err != nil {
 		return FetchResult{Success: false, Error: err.Error()}
 	}
 
-	switch resp.StatusCode {
+	switch status {
 	case http.StatusNotModified:
 		return FetchResult{Success: true, NotModified: true}
 	case http.StatusNoContent, http.StatusNotFound:
@@ -103,7 +101,7 @@ func (s *Service) Fetch(ctx context.Context) FetchResult {
 		return FetchResult{Success: true, Restrictions: Restrictions{}}
 	case http.StatusOK:
 	default:
-		return FetchResult{Success: false, Error: fmt.Sprintf("policy limits fetch failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))}
+		return FetchResult{Success: false, Error: fmt.Sprintf("policy limits fetch failed (%d): %s", status, strings.TrimSpace(string(body)))}
 	}
 
 	var parsed Response

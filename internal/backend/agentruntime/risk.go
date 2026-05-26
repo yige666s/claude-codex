@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"claude-codex/internal/backend/agentruntime/dbsqlc"
 )
 
 const (
@@ -440,108 +442,36 @@ func (s *MemoryRiskStore) UpdateRiskReview(_ context.Context, id string, update 
 type SQLRiskStore struct {
 	db      *sql.DB
 	dialect SQLDialect
+	queries *dbsqlc.Queries
 }
 
 func NewSQLRiskStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLRiskStore {
 	if dialect == "" {
 		dialect = SQLDialectQuestion
 	}
-	return &SQLRiskStore{db: db, dialect: dialect}
+	return &SQLRiskStore{db: db, dialect: dialect, queries: dbsqlc.New(db)}
 }
 
 func (s *SQLRiskStore) Init(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("sql risk store is not configured")
 	}
-	timeType := s.dialect.TimeType()
-	for _, stmt := range []string{
-		`CREATE TABLE IF NOT EXISTS agent_risk_events (
-	id TEXT PRIMARY KEY,
-	user_id TEXT,
-	session_id TEXT,
-	job_id TEXT,
-	asset_id TEXT,
-	request_id TEXT,
-	ip_address TEXT,
-	operation TEXT NOT NULL,
-	reason TEXT NOT NULL,
-	risk_level TEXT NOT NULL,
-	score_delta INTEGER NOT NULL,
-	metadata TEXT NOT NULL,
-	created_at ` + timeType + ` NOT NULL
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_risk_events_user_created ON agent_risk_events (user_id, created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_risk_events_operation_created ON agent_risk_events (operation, created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_risk_events_ip_created ON agent_risk_events (ip_address, created_at)`,
-		`CREATE TABLE IF NOT EXISTS agent_risk_scores (
-	subject_type TEXT NOT NULL,
-	subject_id TEXT NOT NULL,
-	score INTEGER NOT NULL,
-	risk_level TEXT NOT NULL,
-	event_count INTEGER NOT NULL,
-	last_event_at ` + timeType + ` NOT NULL,
-	updated_at ` + timeType + ` NOT NULL,
-	PRIMARY KEY (subject_type, subject_id)
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_risk_scores_score ON agent_risk_scores (score)`,
-		`CREATE TABLE IF NOT EXISTS agent_risk_reviews (
-	id TEXT PRIMARY KEY,
-	risk_event_id TEXT NOT NULL UNIQUE,
-	user_id TEXT,
-	session_id TEXT,
-	job_id TEXT,
-	asset_id TEXT,
-	request_id TEXT,
-	ip_address TEXT,
-	operation TEXT NOT NULL,
-	reason TEXT NOT NULL,
-	risk_level TEXT NOT NULL,
-	priority TEXT NOT NULL,
-	status TEXT NOT NULL,
-	assigned_to TEXT,
-	resolution TEXT,
-	note TEXT,
-	metadata TEXT NOT NULL,
-	created_at ` + timeType + ` NOT NULL,
-	updated_at ` + timeType + ` NOT NULL,
-	resolved_at ` + timeType + `
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_risk_reviews_status_updated ON agent_risk_reviews (status, updated_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_risk_reviews_user_created ON agent_risk_reviews (user_id, created_at)`,
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_risk_events", "created_at"); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_risk_events",
+		"id", "user_id", "session_id", "job_id", "asset_id", "request_id", "ip_address",
+		"operation", "reason", "risk_level", "score_delta", "metadata", "created_at",
+	); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_risk_scores", "last_event_at", "updated_at"); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_risk_scores",
+		"subject_type", "subject_id", "score", "risk_level", "event_count", "last_event_at", "updated_at",
+	); err != nil {
 		return err
 	}
-	if err := s.ensureLifecycleConstraints(ctx); err != nil {
-		return err
-	}
-	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_risk_reviews", "created_at", "updated_at", "resolved_at")
-}
-
-func (s *SQLRiskStore) ensureLifecycleConstraints(ctx context.Context) error {
-	if s.dialect != SQLDialectPostgres {
-		return nil
-	}
-	for _, stmt := range []string{
-		`DELETE FROM agent_risk_reviews rv WHERE NOT EXISTS (
-			SELECT 1 FROM agent_risk_events e WHERE e.id = rv.risk_event_id
-		)`,
-		postgresAddForeignKeyIfMissing("fk_agent_risk_reviews_event",
-			"agent_risk_reviews",
-			"FOREIGN KEY (risk_event_id) REFERENCES agent_risk_events(id) ON DELETE CASCADE"),
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	return nil
+	return requireSQLColumns(ctx, s.db, "agent_risk_reviews",
+		"id", "risk_event_id", "user_id", "session_id", "job_id", "asset_id", "request_id", "ip_address",
+		"operation", "reason", "risk_level", "priority", "status", "assigned_to", "resolution", "note",
+		"metadata", "created_at", "updated_at", "resolved_at",
+	)
 }
 
 func (s *SQLRiskStore) RecordRiskEvent(ctx context.Context, event RiskEvent) error {
@@ -552,6 +482,35 @@ func (s *SQLRiskStore) RecordRiskEvent(ctx context.Context, event RiskEvent) err
 	metadata, err := json.Marshal(event.Metadata)
 	if err != nil {
 		return err
+	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		if err := s.queries.InsertRiskEvent(ctx, dbsqlc.InsertRiskEventParams{
+			ID:         event.ID,
+			UserID:     sqlNullString(event.UserID),
+			SessionID:  sqlNullString(event.SessionID),
+			JobID:      sqlNullString(event.JobID),
+			AssetID:    sqlNullString(event.AssetID),
+			RequestID:  sqlNullString(event.RequestID),
+			IpAddress:  sqlNullString(event.IPAddress),
+			Operation:  event.Operation,
+			Reason:     event.Reason,
+			RiskLevel:  event.RiskLevel,
+			ScoreDelta: int32(event.ScoreDelta),
+			Metadata:   string(metadata),
+			CreatedAt:  event.CreatedAt.UTC(),
+		}); err != nil {
+			return err
+		}
+		if err := s.upsertScore(ctx, "user", event.UserID, event); err != nil {
+			return err
+		}
+		if err := s.upsertScore(ctx, "session", event.SessionID, event); err != nil {
+			return err
+		}
+		if err := s.upsertScore(ctx, "ip", event.IPAddress, event); err != nil {
+			return err
+		}
+		return s.createReview(ctx, event)
 	}
 	if _, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_risk_events (id, user_id, session_id, job_id, asset_id, request_id, ip_address, operation, reason, risk_level, score_delta, metadata, created_at)
@@ -593,6 +552,34 @@ func (s *SQLRiskStore) createReview(ctx context.Context, event RiskEvent) error 
 	if err != nil {
 		return err
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		err = s.queries.InsertRiskReview(ctx, dbsqlc.InsertRiskReviewParams{
+			ID:          review.ID,
+			RiskEventID: review.RiskEventID,
+			UserID:      sqlNullString(review.UserID),
+			SessionID:   sqlNullString(review.SessionID),
+			JobID:       sqlNullString(review.JobID),
+			AssetID:     sqlNullString(review.AssetID),
+			RequestID:   sqlNullString(review.RequestID),
+			IpAddress:   sqlNullString(review.IPAddress),
+			Operation:   review.Operation,
+			Reason:      review.Reason,
+			RiskLevel:   review.RiskLevel,
+			Priority:    review.Priority,
+			Status:      review.Status,
+			AssignedTo:  sqlNullString(review.AssignedTo),
+			Resolution:  sqlNullString(review.Resolution),
+			Note:        sqlNullString(review.Note),
+			Metadata:    string(metadata),
+			CreatedAt:   review.CreatedAt.UTC(),
+			UpdatedAt:   review.UpdatedAt.UTC(),
+			ResolvedAt:  sqlNullTime(review.ResolvedAt),
+		})
+		if err != nil && strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return nil
+		}
+		return err
+	}
 	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_risk_reviews (id, risk_event_id, user_id, session_id, job_id, asset_id, request_id, ip_address, operation, reason, risk_level, priority, status, assigned_to, resolution, note, metadata, created_at, updated_at, resolved_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
@@ -629,6 +616,36 @@ func (s *SQLRiskStore) upsertScore(ctx context.Context, subjectType, subjectID s
 		return nil
 	}
 	now := time.Now().UTC()
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		scoreRow, err := s.queries.GetRiskScore(ctx, dbsqlc.GetRiskScoreParams{SubjectType: subjectType, SubjectID: subjectID})
+		switch {
+		case err == nil:
+			score := int(scoreRow.Score) + event.ScoreDelta
+			count := int(scoreRow.EventCount) + 1
+			return s.queries.UpdateRiskScore(ctx, dbsqlc.UpdateRiskScoreParams{
+				Score:       int32(score),
+				RiskLevel:   riskLevelForScore(score),
+				EventCount:  int32(count),
+				LastEventAt: event.CreatedAt.UTC(),
+				UpdatedAt:   now,
+				SubjectType: subjectType,
+				SubjectID:   subjectID,
+			})
+		case err == sql.ErrNoRows:
+			score := event.ScoreDelta
+			return s.queries.InsertRiskScore(ctx, dbsqlc.InsertRiskScoreParams{
+				SubjectType: subjectType,
+				SubjectID:   subjectID,
+				Score:       int32(score),
+				RiskLevel:   riskLevelForScore(score),
+				EventCount:  1,
+				LastEventAt: event.CreatedAt.UTC(),
+				UpdatedAt:   now,
+			})
+		default:
+			return err
+		}
+	}
 	row := s.db.QueryRowContext(ctx, s.dialect.Bind(`SELECT score, event_count FROM agent_risk_scores WHERE subject_type = ? AND subject_id = ?`), subjectType, subjectID)
 	var score, count int
 	switch err := row.Scan(&score, &count); {
@@ -653,6 +670,25 @@ func (s *SQLRiskStore) ListRiskEvents(ctx context.Context, filter RiskEventFilte
 		return RiskSummary{}, fmt.Errorf("sql risk store is not configured")
 	}
 	filter = normalizeRiskEventFilter(filter)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		eventRows, err := s.queries.ListRiskEvents(ctx, dbsqlc.ListRiskEventsParams{
+			Since:     filter.Since.UTC(),
+			UserID:    filter.UserID,
+			SessionID: filter.SessionID,
+			IpAddress: filter.IPAddress,
+			Operation: filter.Operation,
+			RiskLevel: filter.RiskLevel,
+		})
+		if err != nil {
+			return RiskSummary{}, err
+		}
+		subjectType, subjectID := riskScoreSubjectFilter(filter)
+		scoreRows, err := s.queries.ListRiskScores(ctx, dbsqlc.ListRiskScoresParams{SubjectType: subjectType, SubjectID: subjectID})
+		if err != nil {
+			return RiskSummary{}, err
+		}
+		return summarizeRiskEvents(riskEventsFromSQLC(eventRows), riskScoresFromSQLC(scoreRows), filter), nil
+	}
 	query := `SELECT id, user_id, session_id, job_id, asset_id, request_id, ip_address, operation, reason, risk_level, score_delta, metadata, created_at FROM agent_risk_events WHERE created_at >= ?`
 	args := []any{sqlTimeValue(filter.Since, s.dialect)}
 	if filter.UserID != "" {
@@ -729,6 +765,19 @@ func (s *SQLRiskStore) ListRiskReviews(ctx context.Context, filter RiskReviewFil
 		return RiskReviewSummary{}, fmt.Errorf("sql risk store is not configured")
 	}
 	filter = normalizeRiskReviewFilter(filter)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.ListRiskReviews(ctx, dbsqlc.ListRiskReviewsParams{
+			Since:     filter.Since.UTC(),
+			UserID:    filter.UserID,
+			Status:    filter.Status,
+			RiskLevel: filter.RiskLevel,
+			Operation: filter.Operation,
+		})
+		if err != nil {
+			return RiskReviewSummary{}, err
+		}
+		return summarizeRiskReviews(riskReviewsFromSQLC(rows), filter), nil
+	}
 	query := `SELECT id, risk_event_id, user_id, session_id, job_id, asset_id, request_id, ip_address, operation, reason, risk_level, priority, status, assigned_to, resolution, note, metadata, created_at, updated_at, resolved_at FROM agent_risk_reviews WHERE created_at >= ?`
 	args := []any{sqlTimeValue(filter.Since, s.dialect)}
 	if filter.UserID != "" {
@@ -781,6 +830,28 @@ func (s *SQLRiskStore) UpdateRiskReview(ctx context.Context, id string, update R
 	if riskReviewStatusTerminal(update.Status) {
 		resolvedAt = sqlTimeValue(now, s.dialect)
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		var resolved sql.NullTime
+		if riskReviewStatusTerminal(update.Status) {
+			resolved = sqlNullTime(&now)
+		}
+		rows, err := s.queries.UpdateRiskReview(ctx, dbsqlc.UpdateRiskReviewParams{
+			Status:     update.Status,
+			AssignedTo: sqlNullString(update.AssignedTo),
+			Resolution: sqlNullString(update.Resolution),
+			Note:       sqlNullString(update.Note),
+			UpdatedAt:  now,
+			ResolvedAt: resolved,
+			ID:         id,
+		})
+		if err != nil {
+			return RiskReviewItem{}, err
+		}
+		if rows == 0 {
+			return RiskReviewItem{}, sql.ErrNoRows
+		}
+		return s.scanRiskReview(ctx, id)
+	}
 	result, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_risk_reviews
 SET status = ?, assigned_to = ?, resolution = ?, note = ?, updated_at = ?, resolved_at = ?
@@ -803,6 +874,13 @@ WHERE id = ?`),
 }
 
 func (s *SQLRiskStore) scanRiskReview(ctx context.Context, id string) (RiskReviewItem, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		row, err := s.queries.GetRiskReview(ctx, id)
+		if err != nil {
+			return RiskReviewItem{}, err
+		}
+		return riskReviewFromSQLC(row), nil
+	}
 	return scanRiskReviewItem(s.db.QueryRowContext(ctx, s.dialect.Bind(`SELECT id, risk_event_id, user_id, session_id, job_id, asset_id, request_id, ip_address, operation, reason, risk_level, priority, status, assigned_to, resolution, note, metadata, created_at, updated_at, resolved_at FROM agent_risk_reviews WHERE id = ?`), id))
 }
 
@@ -938,6 +1016,118 @@ func scanRiskReviewItem(row riskEventScanner) (RiskReviewItem, error) {
 		item.ResolvedAt = parsed
 	}
 	return item, nil
+}
+
+func riskEventFromSQLC(row dbsqlc.AgentRiskEvent) RiskEvent {
+	event := RiskEvent{
+		ID:         row.ID,
+		UserID:     row.UserID.String,
+		SessionID:  row.SessionID.String,
+		JobID:      row.JobID.String,
+		AssetID:    row.AssetID.String,
+		RequestID:  row.RequestID.String,
+		IPAddress:  row.IpAddress.String,
+		Operation:  row.Operation,
+		Reason:     row.Reason,
+		RiskLevel:  row.RiskLevel,
+		ScoreDelta: int(row.ScoreDelta),
+		CreatedAt:  row.CreatedAt.UTC(),
+	}
+	if strings.TrimSpace(row.Metadata) != "" {
+		_ = json.Unmarshal([]byte(row.Metadata), &event.Metadata)
+	}
+	if event.Metadata == nil {
+		event.Metadata = map[string]any{}
+	}
+	return event
+}
+
+func riskEventsFromSQLC(rows []dbsqlc.AgentRiskEvent) []RiskEvent {
+	out := make([]RiskEvent, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, riskEventFromSQLC(row))
+	}
+	return out
+}
+
+func riskScoreFromSQLC(row dbsqlc.AgentRiskScore) RiskScore {
+	score := RiskScore{
+		SubjectType: row.SubjectType,
+		SubjectID:   row.SubjectID,
+		Score:       int(row.Score),
+		RiskLevel:   row.RiskLevel,
+		EventCount:  int(row.EventCount),
+		LastEventAt: row.LastEventAt.UTC(),
+		UpdatedAt:   row.UpdatedAt.UTC(),
+	}
+	if score.SubjectType == "user" {
+		score.UserID = score.SubjectID
+	} else if score.SubjectType == "session" {
+		score.SessionID = score.SubjectID
+	} else if score.SubjectType == "ip" {
+		score.IPAddress = score.SubjectID
+	}
+	return score
+}
+
+func riskScoresFromSQLC(rows []dbsqlc.AgentRiskScore) []RiskScore {
+	out := make([]RiskScore, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, riskScoreFromSQLC(row))
+	}
+	return out
+}
+
+func riskReviewFromSQLC(row dbsqlc.AgentRiskReview) RiskReviewItem {
+	item := RiskReviewItem{
+		ID:          row.ID,
+		RiskEventID: row.RiskEventID,
+		UserID:      row.UserID.String,
+		SessionID:   row.SessionID.String,
+		JobID:       row.JobID.String,
+		AssetID:     row.AssetID.String,
+		RequestID:   row.RequestID.String,
+		IPAddress:   row.IpAddress.String,
+		Operation:   row.Operation,
+		Reason:      row.Reason,
+		RiskLevel:   row.RiskLevel,
+		Priority:    row.Priority,
+		Status:      row.Status,
+		AssignedTo:  row.AssignedTo.String,
+		Resolution:  row.Resolution.String,
+		Note:        row.Note.String,
+		CreatedAt:   row.CreatedAt.UTC(),
+		UpdatedAt:   row.UpdatedAt.UTC(),
+		ResolvedAt:  timeFromNull(row.ResolvedAt),
+	}
+	if strings.TrimSpace(row.Metadata) != "" {
+		_ = json.Unmarshal([]byte(row.Metadata), &item.Metadata)
+	}
+	if item.Metadata == nil {
+		item.Metadata = map[string]any{}
+	}
+	return item
+}
+
+func riskReviewsFromSQLC(rows []dbsqlc.AgentRiskReview) []RiskReviewItem {
+	out := make([]RiskReviewItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, riskReviewFromSQLC(row))
+	}
+	return out
+}
+
+func riskScoreSubjectFilter(filter RiskEventFilter) (string, string) {
+	switch {
+	case filter.UserID != "":
+		return "user", filter.UserID
+	case filter.SessionID != "":
+		return "session", filter.SessionID
+	case filter.IPAddress != "":
+		return "ip", filter.IPAddress
+	default:
+		return "", ""
+	}
 }
 
 func normalizeRiskEvent(event RiskEvent) RiskEvent {

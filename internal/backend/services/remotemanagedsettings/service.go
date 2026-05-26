@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	appauth "claude-codex/internal/app/auth"
 	"claude-codex/internal/app/config"
 	appsettings "claude-codex/internal/app/settings"
+	"claude-codex/internal/backend/httpclient"
 )
 
 const endpointPath = "/api/claude_code/settings"
@@ -71,27 +71,25 @@ func (s *Service) Fetch(ctx context.Context, cachedChecksum string) FetchResult 
 		return FetchResult{Success: false, Error: "authentication required", SkipRetry: true}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(s.auth.BaseAPIURL(), "/")+endpointPath, nil)
-	if err != nil {
-		return FetchResult{Success: false, Error: err.Error()}
-	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	req.Header.Set("User-Agent", "claude-codex")
+	headers := make(http.Header)
+	headers.Set("Authorization", "Bearer "+accessToken)
+	headers.Set("anthropic-beta", "oauth-2025-04-20")
+	headers.Set("User-Agent", "claude-codex")
 	if cachedChecksum != "" {
-		req.Header.Set("If-None-Match", `"`+cachedChecksum+`"`)
+		headers.Set("If-None-Match", `"`+cachedChecksum+`"`)
 	}
 
-	resp, err := s.httpClient.Do(req)
+	status, body, _, err := httpclient.New(
+		httpclient.WithHTTPClient(s.httpClient),
+		httpclient.WithComponent("remote_managed_settings"),
+	).Bytes(ctx, http.MethodGet, strings.TrimRight(s.auth.BaseAPIURL(), "/")+endpointPath, nil,
+		httpclient.WithHeaders(headers),
+		httpclient.WithOKStatuses(http.StatusOK, http.StatusNotModified, http.StatusNoContent, http.StatusNotFound),
+	)
 	if err != nil {
 		return FetchResult{Success: false, Error: err.Error()}
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return FetchResult{Success: false, Error: err.Error()}
-	}
-	switch resp.StatusCode {
+	switch status {
 	case http.StatusNotModified:
 		return FetchResult{Success: true, NotModified: true, Checksum: cachedChecksum}
 	case http.StatusNoContent, http.StatusNotFound:
@@ -99,7 +97,7 @@ func (s *Service) Fetch(ctx context.Context, cachedChecksum string) FetchResult 
 		return FetchResult{Success: true, Settings: appsettings.Document{}}
 	case http.StatusOK:
 	default:
-		return FetchResult{Success: false, Error: fmt.Sprintf("remote managed settings fetch failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))}
+		return FetchResult{Success: false, Error: fmt.Sprintf("remote managed settings fetch failed (%d): %s", status, strings.TrimSpace(string(body)))}
 	}
 
 	var payload struct {

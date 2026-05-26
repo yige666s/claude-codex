@@ -1,11 +1,10 @@
 package agentruntime
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -13,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"claude-codex/internal/backend/httpclient"
+	workerlifecycle "claude-codex/internal/backend/workers"
 	"claude-codex/internal/harness/state"
 )
 
@@ -207,28 +208,26 @@ func (i *QdrantMessageVectorIndexer) ensureCollection(ctx context.Context, vecto
 	if i.collectionReady {
 		return nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, joinEndpointPath(i.endpoint, "collections", i.collection), nil)
-	if err != nil {
-		return err
-	}
+	headers := make(http.Header)
 	if i.apiKey != "" {
-		req.Header.Set("api-key", i.apiKey)
+		headers.Set("api-key", i.apiKey)
 	}
-	resp, err := i.client.Do(req)
+	status, bodyBytes, _, err := httpclient.New(
+		httpclient.WithHTTPClient(i.client),
+		httpclient.WithComponent("qdrant_message_vector"),
+	).Bytes(ctx, http.MethodGet, joinEndpointPath(i.endpoint, "collections", i.collection), nil,
+		httpclient.WithHeaders(headers),
+		httpclient.WithOKStatuses(http.StatusOK, http.StatusNotFound),
+	)
 	if err != nil {
 		return err
 	}
-	body := ""
-	if resp.StatusCode >= http.StatusBadRequest && resp.Body != nil {
-		body = readSmallResponse(resp.Body)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if status >= 200 && status < 300 {
 		i.collectionReady = true
 		return nil
 	}
-	if resp.StatusCode != http.StatusNotFound {
-		return fmt.Errorf("qdrant collection check failed: %s: %s", resp.Status, body)
+	if status != http.StatusNotFound {
+		return fmt.Errorf("qdrant collection check failed: status %d: %s", status, strings.TrimSpace(string(bodyBytes)))
 	}
 	createBody := map[string]any{
 		"vectors": map[string]any{
@@ -265,25 +264,20 @@ func (i *QdrantMessageVectorIndexer) postJSON(ctx context.Context, url string, p
 }
 
 func (i *QdrantMessageVectorIndexer) writeJSON(ctx context.Context, method, url string, payload any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	headers := make(http.Header)
 	if i.apiKey != "" {
-		req.Header.Set("api-key", i.apiKey)
+		headers.Set("api-key", i.apiKey)
 	}
-	resp, err := i.client.Do(req)
+	err := httpclient.New(
+		httpclient.WithHTTPClient(i.client),
+		httpclient.WithComponent("qdrant_message_vector"),
+	).JSON(ctx, method, url, payload, nil, httpclient.WithHeaders(headers))
 	if err != nil {
+		var statusErr *httpclient.StatusError
+		if errors.As(err, &statusErr) {
+			return fmt.Errorf("qdrant vector index write failed: %s: %s", statusErr.Status, strings.TrimSpace(statusErr.Body))
+		}
 		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("qdrant vector index write failed: %s: %s", resp.Status, readSmallResponse(resp.Body))
 	}
 	return nil
 }
@@ -292,27 +286,32 @@ type AsyncMessageVectorIndexPublisher struct {
 	indexer MessageVectorIndexer
 	queue   chan MessageEvent
 	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	group   *workerlifecycle.Group
+	logger  *slog.Logger
 }
 
 func NewAsyncMessageVectorIndexPublisher(indexer MessageVectorIndexer, workers, queueSize int) *AsyncMessageVectorIndexPublisher {
+	return NewAsyncMessageVectorIndexPublisherWithLogger(indexer, workers, queueSize, nil)
+}
+
+func NewAsyncMessageVectorIndexPublisherWithLogger(indexer MessageVectorIndexer, workers, queueSize int, logger *slog.Logger) *AsyncMessageVectorIndexPublisher {
 	if workers <= 0 {
 		workers = defaultMessageVectorIndexWorkers
 	}
 	if queueSize <= 0 {
 		queueSize = defaultMessageVectorIndexQueueSize
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	group := workerlifecycle.New(context.Background(), componentLogger(logger, "message_vector_index"))
 	publisher := &AsyncMessageVectorIndexPublisher{
 		indexer: indexer,
 		queue:   make(chan MessageEvent, queueSize),
-		ctx:     ctx,
-		cancel:  cancel,
+		ctx:     group.Context(),
+		group:   group,
+		logger:  componentLogger(logger, "message_vector_index"),
 	}
 	for worker := 0; worker < workers; worker++ {
-		publisher.wg.Add(1)
-		go publisher.run()
+		workerName := fmt.Sprintf("message_vector_index_%d", worker+1)
+		publisher.group.Start(workerName, publisher.run)
 	}
 	return publisher
 }
@@ -336,7 +335,9 @@ func (p *AsyncMessageVectorIndexPublisher) PublishMessageEvent(ctx context.Conte
 	case <-ctx.Done():
 	case <-p.ctx.Done():
 	default:
-		log.Printf("message vector index queue full: user=%s session=%s message=%s", event.UserID, event.SessionID, event.Message.ID)
+		attrs := contextLogAttrs(ctx, event.UserID, event.SessionID, "")
+		attrs = append(attrs, slog.String("message_id", event.Message.ID))
+		logWarn(ctx, p.logger, "message vector index queue full", attrs...)
 	}
 	return nil
 }
@@ -345,38 +346,28 @@ func (p *AsyncMessageVectorIndexPublisher) Close(ctx context.Context) error {
 	if p == nil {
 		return nil
 	}
-	p.cancel()
-	done := make(chan struct{})
-	go func() {
-		p.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return p.group.Stop(ctx)
 }
 
-func (p *AsyncMessageVectorIndexPublisher) run() {
-	defer p.wg.Done()
+func (p *AsyncMessageVectorIndexPublisher) run(ctx context.Context) error {
 	for {
 		select {
-		case <-p.ctx.Done():
-			return
+		case <-ctx.Done():
+			return ctx.Err()
 		case event := <-p.queue:
-			ctx, cancel := context.WithTimeout(p.ctx, 30*time.Second)
+			runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			var err error
 			if event.Type == MessageEventDeleted {
 				if deleter, ok := p.indexer.(MessageVectorDeleter); ok {
-					err = deleter.DeleteMessage(ctx, event.Message)
+					err = deleter.DeleteMessage(runCtx, event.Message)
 				}
 			} else {
-				err = p.indexer.IndexMessage(ctx, event.Message)
+				err = p.indexer.IndexMessage(runCtx, event.Message)
 			}
 			if err != nil {
-				log.Printf("message vector index failed: user=%s session=%s message=%s: %v", event.UserID, event.SessionID, event.Message.ID, err)
+				attrs := contextLogAttrs(runCtx, event.UserID, event.SessionID, "")
+				attrs = append(attrs, slog.String("message_id", event.Message.ID))
+				logError(runCtx, p.logger, "message vector index failed", err, attrs...)
 			}
 			cancel()
 		}

@@ -1,13 +1,14 @@
 package oauth
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
+
+	"claude-codex/internal/backend/httpclient"
 )
 
 // Client handles OAuth token operations
@@ -56,38 +57,20 @@ func (c *Client) ExchangeCodeForTokens(
 		requestBody["expires_in"] = expiresIn
 	}
 
-	// Marshal request body
-	bodyBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, "POST", c.config.TokenURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	// Send request
-	resp, err := c.httpClient.Do(req)
+	status, respBody, _, err := httpclient.New(
+		httpclient.WithHTTPClient(c.httpClient),
+		httpclient.WithComponent("oauth"),
+	).Bytes(ctx, http.MethodPost, c.config.TokenURL, requestBody, httpclient.WithAnyStatus())
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
-	defer resp.Body.Close()
-
-	// Read response body
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
 
 	// Check status code
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusUnauthorized {
+	if status != http.StatusOK {
+		if status == http.StatusUnauthorized {
 			return nil, fmt.Errorf("authentication failed: invalid authorization code")
 		}
-		return nil, fmt.Errorf("token exchange failed (%d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("token exchange failed (%d): %s", status, string(respBody))
 	}
 
 	// Parse response
@@ -117,35 +100,17 @@ func (c *Client) RefreshToken(
 		"scope":         joinScopes(scopes),
 	}
 
-	// Marshal request body
-	bodyBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, "POST", c.config.TokenURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	// Send request
-	resp, err := c.httpClient.Do(req)
+	status, respBody, _, err := httpclient.New(
+		httpclient.WithHTTPClient(c.httpClient),
+		httpclient.WithComponent("oauth"),
+	).Bytes(ctx, http.MethodPost, c.config.TokenURL, requestBody, httpclient.WithAnyStatus())
 	if err != nil {
 		return nil, fmt.Errorf("token refresh request failed: %w", err)
 	}
-	defer resp.Body.Close()
-
-	// Read response body
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
 
 	// Check status code
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed (%d): %s", resp.StatusCode, string(respBody))
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("token refresh failed (%d): %s", status, string(respBody))
 	}
 
 	// Parse response
@@ -175,28 +140,19 @@ func (c *Client) RefreshToken(
 func (c *Client) FetchProfile(ctx context.Context, accessToken string) (*ProfileResponse, error) {
 	endpoint := fmt.Sprintf("%s/api/oauth/profile", c.config.BaseAPIURL)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("profile request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("profile fetch failed (%d): %s", resp.StatusCode, string(body))
-	}
-
 	var profile ProfileResponse
-	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
-		return nil, fmt.Errorf("failed to parse profile: %w", err)
+	err := httpclient.New(
+		httpclient.WithHTTPClient(c.httpClient),
+		httpclient.WithComponent("oauth"),
+	).JSON(ctx, http.MethodGet, endpoint, nil, &profile,
+		httpclient.WithBearer(accessToken),
+	)
+	if err != nil {
+		var statusErr *httpclient.StatusError
+		if errors.As(err, &statusErr) {
+			return nil, fmt.Errorf("profile fetch failed (%d): %s", statusErr.StatusCode, statusErr.Body)
+		}
+		return nil, fmt.Errorf("profile request failed: %w", err)
 	}
 
 	return &profile, nil

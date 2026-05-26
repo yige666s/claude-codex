@@ -1,35 +1,37 @@
 package agentruntime
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"claude-codex/internal/backend/httpclient"
 )
 
 type ElasticsearchMessageIndexManager struct {
 	config MessageSearchConfig
 	client *http.Client
-	logger *log.Logger
+	logger *slog.Logger
 	now    func() time.Time
 }
 
 func NewElasticsearchMessageIndexManager(config MessageSearchConfig, logger *log.Logger) *ElasticsearchMessageIndexManager {
+	return NewElasticsearchMessageIndexManagerWithLogger(config, newStructuredLogger(logger))
+}
+
+func NewElasticsearchMessageIndexManagerWithLogger(config MessageSearchConfig, logger *slog.Logger) *ElasticsearchMessageIndexManager {
 	config = normalizeMessageSearchConfig(config)
-	if logger == nil {
-		logger = log.Default()
-	}
 	return &ElasticsearchMessageIndexManager{
 		config: config,
 		client: &http.Client{Timeout: config.Timeout},
-		logger: logger,
+		logger: componentLogger(logger, "message_search_index_manager"),
 		now:    func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -54,22 +56,19 @@ func (m *ElasticsearchMessageIndexManager) Run(ctx context.Context) error {
 	if m == nil {
 		return fmt.Errorf("elasticsearch index manager is not configured")
 	}
+	retryPolicy := m.bootstrapRetryPolicy()
+	attempt := 1
 	for {
 		if err := m.Bootstrap(ctx); err != nil {
 			if errorsIsContextDone(ctx, err) {
 				return err
 			}
-			m.logger.Printf("elasticsearch message index bootstrap failed: %v", err)
-			retryAfter := 30 * time.Second
-			if m.config.IndexMaintenanceInterval > 0 && m.config.IndexMaintenanceInterval < retryAfter {
-				retryAfter = m.config.IndexMaintenanceInterval
+			logError(ctx, m.logger, "elasticsearch message index bootstrap failed", err)
+			if err := retryPolicy.Sleep(ctx, attempt, err); err != nil {
+				return err
 			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(retryAfter):
-				continue
-			}
+			attempt++
+			continue
 		}
 		break
 	}
@@ -83,17 +82,28 @@ func (m *ElasticsearchMessageIndexManager) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ensureTicker.C:
 			if err := m.Bootstrap(ctx); err != nil && !errorsIsContextDone(ctx, err) {
-				m.logger.Printf("elasticsearch message index bootstrap failed: %v", err)
+				logError(ctx, m.logger, "elasticsearch message index bootstrap failed", err)
 			}
 		case <-maintenanceTicker.C:
 			if err := m.Bootstrap(ctx); err != nil && !errorsIsContextDone(ctx, err) {
-				m.logger.Printf("elasticsearch message index bootstrap failed: %v", err)
+				logError(ctx, m.logger, "elasticsearch message index bootstrap failed", err)
 				continue
 			}
 			if _, err := m.Maintain(ctx); err != nil && !errorsIsContextDone(ctx, err) {
-				m.logger.Printf("elasticsearch message index maintenance failed: %v", err)
+				logError(ctx, m.logger, "elasticsearch message index maintenance failed", err)
 			}
 		}
+	}
+}
+
+func (m *ElasticsearchMessageIndexManager) bootstrapRetryPolicy() RetryPolicy {
+	retryDelay := 30 * time.Second
+	if m != nil && m.config.IndexMaintenanceInterval > 0 && m.config.IndexMaintenanceInterval < retryDelay {
+		retryDelay = m.config.IndexMaintenanceInterval
+	}
+	return RetryPolicy{
+		BaseDelay: retryDelay,
+		MaxDelay:  retryDelay,
 	}
 }
 
@@ -335,34 +345,22 @@ func (m *ElasticsearchMessageIndexManager) getJSON(ctx context.Context, url stri
 }
 
 func (m *ElasticsearchMessageIndexManager) doRequest(ctx context.Context, method, url string, payload any) (int, []byte, error) {
-	var body io.Reader
+	headers := make(http.Header)
 	if payload != nil {
-		data, err := json.Marshal(payload)
-		if err != nil {
-			return 0, nil, err
-		}
-		body = bytes.NewReader(data)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
-	if err != nil {
-		return 0, nil, err
-	}
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
+		headers.Set("Content-Type", "application/json")
 	}
 	if strings.TrimSpace(m.config.APIKey) != "" {
-		req.Header.Set("Authorization", "ApiKey "+strings.TrimSpace(m.config.APIKey))
+		headers.Set("Authorization", "ApiKey "+strings.TrimSpace(m.config.APIKey))
 	}
 	if strings.TrimSpace(m.config.Username) != "" || strings.TrimSpace(m.config.Password) != "" {
-		req.SetBasicAuth(m.config.Username, m.config.Password)
+		headers.Set("Authorization", basicAuthHeader(m.config.Username, m.config.Password))
 	}
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return resp.StatusCode, data, nil
+	status, data, _, err := httpclient.New(
+		httpclient.WithHTTPClient(m.client),
+		httpclient.WithComponent("message_search_index_manager"),
+		httpclient.WithMaxBodyBytes(4096),
+	).Bytes(ctx, method, url, payload, httpclient.WithHeaders(headers), httpclient.WithAnyStatus())
+	return status, data, err
 }
 
 func (m *ElasticsearchMessageIndexManager) endpoint() string {

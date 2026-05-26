@@ -2088,6 +2088,45 @@ func TestJWTAuthenticatorRejectsInvalidSignature(t *testing.T) {
 	}
 }
 
+func TestJWTAuthenticatorValidatesRegisteredClaims(t *testing.T) {
+	authenticator := JWTAuthenticator{Secret: "secret", Issuer: "issuer-1", Audience: "aud-1"}
+	valid := signTestJWT(t, "secret", map[string]any{
+		"sub": "alice",
+		"iss": "issuer-1",
+		"aud": []string{"aud-1", "aud-2"},
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+valid)
+	if _, err := authenticator.Authenticate(req); err != nil {
+		t.Fatalf("valid registered claims rejected: %v", err)
+	}
+
+	expired := signTestJWT(t, "secret", map[string]any{
+		"sub": "alice",
+		"iss": "issuer-1",
+		"aud": "aud-1",
+		"exp": time.Now().Add(-time.Hour).Unix(),
+	})
+	req = httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+expired)
+	if _, err := authenticator.Authenticate(req); err == nil {
+		t.Fatal("expected expired JWT to be rejected")
+	}
+
+	wrongAudience := signTestJWT(t, "secret", map[string]any{
+		"sub": "alice",
+		"iss": "issuer-1",
+		"aud": "other",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	req = httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+wrongAudience)
+	if _, err := authenticator.Authenticate(req); err == nil {
+		t.Fatal("expected invalid audience to be rejected")
+	}
+}
+
 func TestServerCORSAllowsConfiguredOrigin(t *testing.T) {
 	server := NewServer(testRuntime(t), HeaderAuthenticator{}, NewRateLimiter(10, time.Minute), nil)
 	if err := server.SetWebSecurity(WebSecurityConfig{
@@ -2099,6 +2138,7 @@ func TestServerCORSAllowsConfiguredOrigin(t *testing.T) {
 	req := httptest.NewRequest(http.MethodOptions, "/v1/sessions", nil)
 	req.Header.Set("Origin", "https://app.example.com")
 	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "X-Admin-Token")
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
@@ -2110,8 +2150,8 @@ func TestServerCORSAllowsConfiguredOrigin(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
 		t.Fatalf("allow credentials = %q", got)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, "PATCH") {
-		t.Fatalf("allow methods missing PATCH: %q", got)
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "POST" {
+		t.Fatalf("allow methods = %q, want POST", got)
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, "X-Admin-Token") {
 		t.Fatalf("allow headers missing X-Admin-Token: %q", got)

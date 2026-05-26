@@ -21,7 +21,7 @@ func TestJobEventSinkPublishesFanout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create job: %v", err)
 	}
-	sink := &jobEventSink{store: runtime.jobs, broker: runtime.jobEvents, fanout: runtime.jobEventFanout, job: job}
+	sink := &jobEventSink{store: runtime.jobs, bus: runtime.jobEvents, fanout: runtime.jobEventFanout, job: job}
 	if err := sink.Send(context.Background(), Event{Type: "delta", Content: "hello"}); err != nil {
 		t.Fatalf("send event: %v", err)
 	}

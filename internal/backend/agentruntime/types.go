@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -416,6 +417,7 @@ type RuntimeConfig struct {
 	MessageSearch         MessageSearchConfig
 	MemoryVector          MemoryVectorConfig
 	Live                  LiveConfig
+	Logger                *slog.Logger `json:"-"`
 }
 
 type LiveConfig struct {

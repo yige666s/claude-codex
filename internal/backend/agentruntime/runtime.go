@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"mime"
 	"net/url"
 	"os"
@@ -68,12 +68,13 @@ type Runtime struct {
 	jobs             JobStore
 	jobQueue         JobQueue
 	jobEventFanout   JobEventPublisher
-	jobEvents        *jobEventBroker
+	jobEvents        JobEventBus
 	skills           SkillCatalog
 	skillExecutions  SkillExecutionStore
 	engineFactory    EngineFactory
 	riskScanner      RiskScanner
 	riskRecorder     func(context.Context, RiskEvent)
+	logger           *slog.Logger
 
 	mu                    sync.Mutex
 	wg                    sync.WaitGroup
@@ -127,6 +128,7 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		config.SkillShellTimeout = 90 * time.Second
 	}
 	config.SkillShellSandbox = config.SkillShellSandbox.normalized()
+	logger := componentLogger(config.Logger, "runtime")
 	runtime := &Runtime{
 		config:                config,
 		sessions:              sessions,
@@ -136,20 +138,21 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		memoryOrganizer:       NewRuleMemoryOrganizer(),
 		skills:                skills,
 		engineFactory:         engineFactory,
+		logger:                logger,
 		running:               make(map[string]context.CancelFunc),
 		runningJobTurns:       make(map[string]bool),
 		runningJobs:           make(map[string]context.CancelFunc),
 		hiddenJobUserMessages: make(map[string]bool),
-		jobEvents:             newJobEventBroker(128),
+		jobEvents:             NewLocalJobEventBus(128),
 		localVectorIndex:      true,
 	}
 	if memory != nil {
-		runtime.memory = NewMemoryVectorService(memory, config.MemoryVector, nil)
+		runtime.memory = NewMemoryVectorService(memory, config.MemoryVector, componentLogger(logger, "memory_vector"))
 	}
 	if _, ok := sessions.(MessageRepository); ok {
 		if metaStore, ok := sessions.(MessageEmbeddingMetaStore); ok && messageVectorIndexingEnabled(config.MessageSearch) {
 			indexer := NewQdrantMessageVectorIndexer(config.MessageSearch, metaStore)
-			runtime.vectorIndexer = NewAsyncMessageVectorIndexPublisher(indexer, defaultMessageVectorIndexWorkers, defaultMessageVectorIndexQueueSize)
+			runtime.vectorIndexer = NewAsyncMessageVectorIndexPublisherWithLogger(indexer, defaultMessageVectorIndexWorkers, defaultMessageVectorIndexQueueSize, componentLogger(logger, "message_vector_index"))
 		}
 		runtime.SetMessageContextCache(NewMemorySessionContextCache())
 	}
@@ -160,6 +163,13 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		runtime.live = NewVertexLiveService(config.Live, runtime, nil)
 	}
 	return runtime
+}
+
+func (r *Runtime) SetLogger(logger *slog.Logger) {
+	if r == nil {
+		return
+	}
+	r.logger = componentLogger(logger, "runtime")
 }
 
 func (r *Runtime) SetMessageWriteService(service *MessageWriteService) {
@@ -2054,7 +2064,7 @@ func (r *Runtime) publishSavedTurnMessageEvents(ctx context.Context, userID stri
 	if startMessageCount >= len(messages) {
 		saved, err := r.sessions.Get(ctx, userID, session.ID)
 		if err != nil {
-			log.Printf("load saved messages for event publishing failed: user=%s session=%s: %v", userID, session.ID, err)
+			logError(ctx, r.logger, "load saved messages for event publishing failed", err, contextLogAttrs(ctx, userID, session.ID, "")...)
 			return
 		}
 		if saved != nil {
@@ -2077,7 +2087,9 @@ func (r *Runtime) publishSavedTurnMessageEvents(ctx context.Context, userID stri
 		}
 		if r.messagePublisher != nil {
 			if err := r.messagePublisher.PublishMessageEvent(ctx, event); err != nil {
-				log.Printf("publish message event failed: user=%s session=%s message=%s: %v", event.UserID, event.SessionID, event.Message.ID, err)
+				attrs := contextLogAttrs(ctx, event.UserID, event.SessionID, "")
+				attrs = append(attrs, slog.String("message_id", event.Message.ID))
+				logError(ctx, r.logger, "publish message event failed", err, attrs...)
 			}
 		}
 		if r.localVectorIndex && r.vectorIndexer != nil {
@@ -2145,7 +2157,9 @@ func (r *Runtime) publishDeletedMessageEvents(ctx context.Context, userID string
 		}
 		if r.messagePublisher != nil {
 			if err := r.messagePublisher.PublishMessageEvent(ctx, event); err != nil {
-				log.Printf("publish deleted message event failed: user=%s session=%s message=%s: %v", event.UserID, event.SessionID, message.ID, err)
+				attrs := contextLogAttrs(ctx, event.UserID, event.SessionID, "")
+				attrs = append(attrs, slog.String("message_id", message.ID))
+				logError(ctx, r.logger, "publish deleted message event failed", err, attrs...)
 			}
 		}
 		if r.localVectorIndex && r.vectorIndexer != nil {
@@ -2395,7 +2409,7 @@ func (r *Runtime) runJob(ctx context.Context, job *Job) error {
 	if err := r.jobs.UpdateJobStatus(ctx, job.UserID, job.ID, JobStatusRunning, "", now); err != nil {
 		return err
 	}
-	sink := &jobEventSink{store: r.jobs, broker: r.jobEvents, fanout: r.jobEventFanout, job: job}
+	sink := &jobEventSink{store: r.jobs, bus: r.jobEvents, fanout: r.jobEventFanout, job: job, logger: componentLogger(r.logger, "job_event_fanout")}
 	ctx = withJobEventEmitter(ctx, sink.Send)
 	err := r.Chat(ctx, ChatRequest{UserID: job.UserID, SessionID: job.SessionID, Content: job.Content, AttachmentIDs: job.AttachmentIDs, AttachmentURLs: job.AttachmentURLs}, sink)
 	finishedAt := time.Now().UTC()
@@ -2489,7 +2503,7 @@ func (r *Runtime) CancelJob(ctx context.Context, userID, jobID string) error {
 	if err := r.jobs.UpdateJobStatus(ctx, userID, jobID, JobStatusCancelled, "cancelled before execution", now); err != nil {
 		return err
 	}
-	return (&jobEventSink{store: r.jobs, broker: r.jobEvents, fanout: r.jobEventFanout, job: job}).Send(ctx, Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
+	return (&jobEventSink{store: r.jobs, bus: r.jobEvents, fanout: r.jobEventFanout, job: job, logger: componentLogger(r.logger, "job_event_fanout")}).Send(ctx, Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
 }
 
 func (r *Runtime) Cancel(userID, sessionID string) bool {
@@ -3123,7 +3137,13 @@ func (r *Runtime) runSkill(ctx context.Context, userID string, session *state.Se
 			},
 		}
 		if err := r.skillExecutions.RecordSkillExecution(context.Background(), record); err != nil {
-			log.Printf("record skill execution failed: skill=%s user=%s session=%s job=%s request=%s: %v", skill.Name, userID, session.ID, record.JobID, record.RequestID, err)
+			logError(ctx, r.logger, "record skill execution failed", err,
+				slog.String("request_id", record.RequestID),
+				slog.String("user_id", userID),
+				slog.String("session_id", session.ID),
+				slog.String("job_id", record.JobID),
+				slog.String("skill", skill.Name),
+			)
 		}
 	}()
 	ctx = WithLLMScope(ctx, LLMScope{
@@ -3361,7 +3381,13 @@ func (r *Runtime) recordInlineSkillExecutions(ctx context.Context, userID string
 			skill, ok := r.skills.GetSkill(invocation.Name)
 			if !ok {
 				if err := r.skillExecutions.RecordSkillExecution(context.Background(), record); err != nil {
-					log.Printf("record LLM-selected skill execution failed: skill=%s user=%s session=%s job=%s request=%s: %v", invocation.Name, userID, session.ID, record.JobID, record.RequestID, err)
+					logError(ctx, r.logger, "record LLM-selected skill execution failed", err,
+						slog.String("request_id", record.RequestID),
+						slog.String("user_id", userID),
+						slog.String("session_id", session.ID),
+						slog.String("job_id", record.JobID),
+						slog.String("skill", invocation.Name),
+					)
 				}
 				continue
 			}
@@ -3374,7 +3400,13 @@ func (r *Runtime) recordInlineSkillExecutions(ctx context.Context, userID string
 			record.Metadata["run_as_job"] = skill.RunAsJob
 		}
 		if err := r.skillExecutions.RecordSkillExecution(context.Background(), record); err != nil {
-			log.Printf("record LLM-selected skill execution failed: skill=%s user=%s session=%s job=%s request=%s: %v", invocation.Name, userID, session.ID, record.JobID, record.RequestID, err)
+			logError(ctx, r.logger, "record LLM-selected skill execution failed", err,
+				slog.String("request_id", record.RequestID),
+				slog.String("user_id", userID),
+				slog.String("session_id", session.ID),
+				slog.String("job_id", record.JobID),
+				slog.String("skill", invocation.Name),
+			)
 		}
 	}
 }
@@ -3710,14 +3742,14 @@ func (r *Runtime) subscribeJobEvents(jobID string) (<-chan *JobEvent, func()) {
 		close(ch)
 		return ch, func() {}
 	}
-	return r.jobEvents.Subscribe(jobID)
+	return r.jobEvents.SubscribeJobEvents(jobID)
 }
 
 func (r *Runtime) PublishRemoteJobEvent(event *JobEvent) {
 	if r == nil || r.jobEvents == nil || event == nil {
 		return
 	}
-	r.jobEvents.Publish(event)
+	_ = r.jobEvents.PublishJobEvent(context.Background(), event)
 }
 
 func (r *Runtime) runningSessionIDs(userID string) []string {
@@ -3742,9 +3774,10 @@ type runnerResult struct {
 
 type jobEventSink struct {
 	store  JobStore
-	broker *jobEventBroker
+	bus    JobEventPublisher
 	fanout JobEventPublisher
 	job    *Job
+	logger *slog.Logger
 }
 
 func (s *jobEventSink) Send(ctx context.Context, event Event) error {
@@ -3767,10 +3800,14 @@ func (s *jobEventSink) Send(ctx context.Context, event Event) error {
 	if err := s.store.AddJobEvent(ctx, record); err != nil {
 		return err
 	}
-	s.broker.Publish(record)
+	if s.bus != nil {
+		_ = s.bus.PublishJobEvent(ctx, record)
+	}
 	if s.fanout != nil {
 		if err := s.fanout.PublishJobEvent(ctx, record); err != nil {
-			log.Printf("publish job event fanout failed: job=%s event=%s: %v", record.JobID, record.ID, err)
+			attrs := contextLogAttrs(ctx, record.UserID, record.SessionID, record.JobID)
+			attrs = append(attrs, slog.String("event_id", record.ID))
+			logError(ctx, s.logger, "publish job event fanout failed", err, attrs...)
 		}
 	}
 	return nil

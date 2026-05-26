@@ -1,14 +1,13 @@
 package agentruntime
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type CompositeAuthenticator []Authenticator
@@ -117,41 +116,22 @@ func (a SessionCookieAuthenticator) Authenticate(r *http.Request) (User, error) 
 	return a.authenticateToken(cookie.Value)
 }
 
-type jwtClaims map[string]any
-
 func (a JWTAuthenticator) authenticateToken(token string) (User, error) {
 	if strings.TrimSpace(a.Secret) == "" {
 		return User{}, fmt.Errorf("JWT secret is required")
 	}
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
+	claims := jwt.MapClaims{}
+	parsed, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (any, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unsupported JWT alg")
+		}
+		return []byte(a.Secret), nil
+	}, jwt.WithLeeway(a.leeway()), jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+	if err != nil {
 		return User{}, fmt.Errorf("invalid JWT")
 	}
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return User{}, fmt.Errorf("invalid JWT header")
-	}
-	var header map[string]any
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return User{}, fmt.Errorf("invalid JWT header")
-	}
-	if alg, _ := header["alg"].(string); alg != "HS256" {
-		return User{}, fmt.Errorf("unsupported JWT alg")
-	}
-	mac := hmac.New(sha256.New, []byte(a.Secret))
-	_, _ = mac.Write([]byte(parts[0] + "." + parts[1]))
-	want := mac.Sum(nil)
-	got, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil || !hmac.Equal(got, want) {
-		return User{}, fmt.Errorf("invalid JWT signature")
-	}
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return User{}, fmt.Errorf("invalid JWT payload")
-	}
-	var claims jwtClaims
-	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return User{}, fmt.Errorf("invalid JWT payload")
+	if parsed == nil || !parsed.Valid {
+		return User{}, fmt.Errorf("invalid JWT")
 	}
 	if err := a.validateClaims(claims); err != nil {
 		return User{}, err
@@ -167,18 +147,7 @@ func (a JWTAuthenticator) authenticateToken(token string) (User, error) {
 	return User{ID: userID}, nil
 }
 
-func (a JWTAuthenticator) validateClaims(claims jwtClaims) error {
-	now := time.Now().UTC()
-	leeway := a.Leeway
-	if leeway <= 0 {
-		leeway = 30 * time.Second
-	}
-	if exp, ok := numericClaim(claims, "exp"); ok && now.After(time.Unix(exp, 0).Add(leeway)) {
-		return fmt.Errorf("JWT is expired")
-	}
-	if nbf, ok := numericClaim(claims, "nbf"); ok && now.Add(leeway).Before(time.Unix(nbf, 0)) {
-		return fmt.Errorf("JWT is not valid yet")
-	}
+func (a JWTAuthenticator) validateClaims(claims jwt.MapClaims) error {
 	if a.Issuer != "" {
 		iss, _ := claims["iss"].(string)
 		if iss != a.Issuer {
@@ -191,16 +160,11 @@ func (a JWTAuthenticator) validateClaims(claims jwtClaims) error {
 	return nil
 }
 
-func numericClaim(claims jwtClaims, key string) (int64, bool) {
-	switch value := claims[key].(type) {
-	case float64:
-		return int64(value), true
-	case json.Number:
-		n, err := value.Int64()
-		return n, err == nil
-	default:
-		return 0, false
+func (a JWTAuthenticator) leeway() time.Duration {
+	if a.Leeway > 0 {
+		return a.Leeway
 	}
+	return 30 * time.Second
 }
 
 func audienceMatches(value any, want string) bool {
@@ -210,6 +174,12 @@ func audienceMatches(value any, want string) bool {
 	case []any:
 		for _, item := range aud {
 			if s, _ := item.(string); s == want {
+				return true
+			}
+		}
+	case []string:
+		for _, item := range aud {
+			if item == want {
 				return true
 			}
 		}

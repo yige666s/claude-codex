@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"claude-codex/internal/backend/agentruntime/dbsqlc"
 )
 
 type UserAccount struct {
@@ -94,6 +96,7 @@ type AdminUserStore interface {
 type SQLUserStore struct {
 	db      *sql.DB
 	dialect SQLDialect
+	queries *dbsqlc.Queries
 }
 
 func NewSQLUserStore(db *sql.DB) *SQLUserStore {
@@ -104,89 +107,48 @@ func NewSQLUserStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLUserStore {
 	if dialect == "" {
 		dialect = SQLDialectQuestion
 	}
-	return &SQLUserStore{db: db, dialect: dialect}
+	return &SQLUserStore{db: db, dialect: dialect, queries: dbsqlc.New(db)}
 }
 
 func (s *SQLUserStore) Init(ctx context.Context) error {
-	timeType := s.dialect.TimeType()
-	for _, stmt := range []string{
-		`CREATE TABLE IF NOT EXISTS agent_users (
-	user_id TEXT PRIMARY KEY,
-	email TEXT NOT NULL,
-	email_normalized TEXT NOT NULL UNIQUE,
-	password_hash TEXT NOT NULL,
-	display_name TEXT NOT NULL,
-	status TEXT NOT NULL,
-	email_verified_at ` + timeType + `,
-	created_at ` + timeType + ` NOT NULL,
-	updated_at ` + timeType + ` NOT NULL,
-	last_login_at ` + timeType + `
-)`,
-		`ALTER TABLE agent_users ADD COLUMN IF NOT EXISTS email_verified_at ` + timeType,
-		`CREATE INDEX IF NOT EXISTS idx_agent_users_status ON agent_users (status)`,
-		`CREATE TABLE IF NOT EXISTS agent_refresh_tokens (
-	token_hash TEXT PRIMARY KEY,
-	user_id TEXT NOT NULL REFERENCES agent_users(user_id) ON DELETE CASCADE,
-	created_at ` + timeType + ` NOT NULL,
-	expires_at ` + timeType + ` NOT NULL,
-	revoked_at ` + timeType + `,
-	user_agent TEXT NOT NULL DEFAULT '',
-	ip_address TEXT NOT NULL DEFAULT ''
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_refresh_tokens_user ON agent_refresh_tokens (user_id, expires_at)`,
-		`CREATE TABLE IF NOT EXISTS agent_email_verification_tokens (
-	token_hash TEXT PRIMARY KEY,
-	user_id TEXT NOT NULL REFERENCES agent_users(user_id) ON DELETE CASCADE,
-	email TEXT NOT NULL,
-	created_at ` + timeType + ` NOT NULL,
-	expires_at ` + timeType + ` NOT NULL,
-	used_at ` + timeType + `
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_email_verification_tokens_user ON agent_email_verification_tokens (user_id, expires_at)`,
-		`CREATE TABLE IF NOT EXISTS agent_password_reset_tokens (
-	token_hash TEXT PRIMARY KEY,
-	user_id TEXT NOT NULL REFERENCES agent_users(user_id) ON DELETE CASCADE,
-	email TEXT NOT NULL,
-	created_at ` + timeType + ` NOT NULL,
-	expires_at ` + timeType + ` NOT NULL,
-	used_at ` + timeType + `
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_password_reset_tokens_user ON agent_password_reset_tokens (user_id, expires_at)`,
-		`INSERT INTO agent_schema_migrations (version, applied_at)
-VALUES (2, ` + s.dialect.Placeholder(1) + `)
-ON CONFLICT(version) DO NOTHING`,
-	} {
-		if strings.HasPrefix(stmt, "ALTER TABLE agent_users ADD COLUMN") && s.dialect != SQLDialectPostgres {
-			continue
-		}
-		if strings.Contains(stmt, s.dialect.Placeholder(1)) {
-			if _, err := s.db.ExecContext(ctx, stmt, sqlTimeValue(time.Now(), s.dialect)); err != nil {
-				return err
-			}
-			continue
-		}
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_users", "created_at", "updated_at", "last_login_at"); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_users",
+		"user_id", "email", "email_normalized", "password_hash", "display_name", "status",
+		"email_verified_at", "created_at", "updated_at", "last_login_at",
+	); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_users", "email_verified_at"); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_refresh_tokens",
+		"token_hash", "user_id", "created_at", "expires_at", "revoked_at", "user_agent", "ip_address",
+	); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_refresh_tokens", "created_at", "expires_at", "revoked_at"); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_email_verification_tokens",
+		"token_hash", "user_id", "email", "created_at", "expires_at", "used_at",
+	); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_email_verification_tokens", "created_at", "expires_at", "used_at"); err != nil {
-		return err
-	}
-	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_password_reset_tokens", "created_at", "expires_at", "used_at")
+	return requireSQLColumns(ctx, s.db, "agent_password_reset_tokens",
+		"token_hash", "user_id", "email", "created_at", "expires_at", "used_at",
+	)
 }
 
 func (s *SQLUserStore) CreateUser(ctx context.Context, user *UserAccount) error {
 	if user == nil {
 		return fmt.Errorf("user is required")
+	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.InsertUser(ctx, dbsqlc.InsertUserParams{
+			UserID:          user.ID,
+			Email:           user.Email,
+			EmailNormalized: normalizeEmail(user.Email),
+			PasswordHash:    user.PasswordHash,
+			DisplayName:     user.DisplayName,
+			Status:          user.Status,
+			EmailVerifiedAt: sqlNullTime(user.EmailVerifiedAt),
+			CreatedAt:       user.CreatedAt.UTC(),
+			UpdatedAt:       user.UpdatedAt.UTC(),
+			LastLoginAt:     sqlNullTime(user.LastLoginAt),
+		})
 	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_users (user_id, email, email_normalized, password_hash, display_name, status, email_verified_at, created_at, updated_at, last_login_at)
@@ -206,12 +168,26 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 }
 
 func (s *SQLUserStore) GetUserByID(ctx context.Context, userID string) (*UserAccount, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		user, err := s.queries.GetUserByID(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		return userAccountFromSQLC(user), nil
+	}
 	return s.scanUser(s.db.QueryRowContext(ctx, s.dialect.Bind(`
 SELECT user_id, email, password_hash, display_name, status, email_verified_at, created_at, updated_at, last_login_at
 FROM agent_users WHERE user_id = ?`), userID))
 }
 
 func (s *SQLUserStore) GetUserByEmail(ctx context.Context, email string) (*UserAccount, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		user, err := s.queries.GetUserByEmail(ctx, normalizeEmail(email))
+		if err != nil {
+			return nil, err
+		}
+		return userAccountFromSQLC(user), nil
+	}
 	return s.scanUser(s.db.QueryRowContext(ctx, s.dialect.Bind(`
 SELECT user_id, email, password_hash, display_name, status, email_verified_at, created_at, updated_at, last_login_at
 FROM agent_users WHERE email_normalized = ?`), normalizeEmail(email)))
@@ -220,6 +196,19 @@ FROM agent_users WHERE email_normalized = ?`), normalizeEmail(email)))
 func (s *SQLUserStore) ListUsers(ctx context.Context, filter AdminUserFilter) ([]AdminUserRecord, error) {
 	filter = normalizeAdminUserFilter(filter)
 	now := time.Now().UTC()
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.ListAdminUsers(ctx, dbsqlc.ListAdminUsersParams{
+			NowAt:       now,
+			Status:      filter.Status,
+			Query:       filter.Query,
+			OffsetCount: int32(filter.Offset),
+			LimitCount:  int32(filter.Limit),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return adminUsersFromSQLC(rows), nil
+	}
 	query := `
 SELECT u.user_id, u.email, u.display_name, u.status, u.email_verified_at, u.created_at, u.updated_at, u.last_login_at,
 	COUNT(rt.token_hash) AS refresh_token_count,
@@ -270,6 +259,14 @@ LEFT JOIN agent_refresh_tokens rt ON rt.user_id = u.user_id`
 
 func (s *SQLUserStore) GetAdminUser(ctx context.Context, userID string) (*AdminUserRecord, error) {
 	now := time.Now().UTC()
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		row, err := s.queries.GetAdminUser(ctx, dbsqlc.GetAdminUserParams{NowAt: now, UserID: strings.TrimSpace(userID)})
+		if err != nil {
+			return nil, err
+		}
+		record := adminUserFromSQLC(row)
+		return &record, nil
+	}
 	row := s.db.QueryRowContext(ctx, s.dialect.Bind(`
 SELECT u.user_id, u.email, u.display_name, u.status, u.email_verified_at, u.created_at, u.updated_at, u.last_login_at,
 	COUNT(rt.token_hash) AS refresh_token_count,
@@ -290,6 +287,16 @@ func (s *SQLUserStore) UpdateUserStatus(ctx context.Context, userID string, stat
 	if status == "" {
 		return nil, fmt.Errorf("invalid user status")
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.UpdateUserStatus(ctx, dbsqlc.UpdateUserStatusParams{Status: status, UpdatedAt: at.UTC(), UserID: userID})
+		if err != nil {
+			return nil, err
+		}
+		if rows == 0 {
+			return nil, sql.ErrNoRows
+		}
+		return s.GetAdminUser(ctx, userID)
+	}
 	result, err := s.db.ExecContext(ctx, s.dialect.Bind(`UPDATE agent_users SET status = ?, updated_at = ? WHERE user_id = ?`), status, sqlTimeValue(at, s.dialect), userID)
 	if err != nil {
 		return nil, err
@@ -301,6 +308,9 @@ func (s *SQLUserStore) UpdateUserStatus(ctx context.Context, userID string, stat
 }
 
 func (s *SQLUserStore) UpdateLastLogin(ctx context.Context, userID string, at time.Time) error {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.UpdateLastLogin(ctx, dbsqlc.UpdateLastLoginParams{LastLoginAt: sqlNullTime(&at), UserID: userID})
+	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_users SET last_login_at = ?, updated_at = ? WHERE user_id = ?`),
 		sqlTimeValue(at, s.dialect), sqlTimeValue(at, s.dialect), userID)
@@ -310,6 +320,17 @@ UPDATE agent_users SET last_login_at = ?, updated_at = ? WHERE user_id = ?`),
 func (s *SQLUserStore) CreateRefreshToken(ctx context.Context, token *RefreshTokenRecord) error {
 	if token == nil {
 		return fmt.Errorf("refresh token is required")
+	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.InsertRefreshToken(ctx, dbsqlc.InsertRefreshTokenParams{
+			TokenHash: token.TokenHash,
+			UserID:    token.UserID,
+			CreatedAt: token.CreatedAt.UTC(),
+			ExpiresAt: token.ExpiresAt.UTC(),
+			RevokedAt: sqlNullTime(token.RevokedAt),
+			UserAgent: token.UserAgent,
+			IpAddress: token.IPAddress,
+		})
 	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_refresh_tokens (token_hash, user_id, created_at, expires_at, revoked_at, user_agent, ip_address)
@@ -326,6 +347,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`),
 }
 
 func (s *SQLUserStore) GetRefreshToken(ctx context.Context, tokenHash string) (*RefreshTokenRecord, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		token, err := s.queries.GetRefreshToken(ctx, tokenHash)
+		if err != nil {
+			return nil, err
+		}
+		return refreshTokenFromSQLC(token), nil
+	}
 	var createdAt, expiresAt, revokedAt any
 	var rec RefreshTokenRecord
 	err := s.db.QueryRowContext(ctx, s.dialect.Bind(`
@@ -355,6 +383,9 @@ FROM agent_refresh_tokens WHERE token_hash = ?`), tokenHash).Scan(
 }
 
 func (s *SQLUserStore) RevokeRefreshToken(ctx context.Context, tokenHash string, at time.Time) error {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.RevokeRefreshToken(ctx, dbsqlc.RevokeRefreshTokenParams{RevokedAt: sqlNullTime(&at), TokenHash: tokenHash})
+	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_refresh_tokens SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`),
 		sqlTimeValue(at, s.dialect), tokenHash)
@@ -362,6 +393,9 @@ UPDATE agent_refresh_tokens SET revoked_at = ? WHERE token_hash = ? AND revoked_
 }
 
 func (s *SQLUserStore) RevokeUserRefreshTokens(ctx context.Context, userID string, at time.Time) error {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.RevokeUserRefreshTokens(ctx, dbsqlc.RevokeUserRefreshTokensParams{RevokedAt: sqlNullTime(&at), UserID: userID})
+	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`),
 		sqlTimeValue(at, s.dialect), userID)
@@ -371,6 +405,16 @@ UPDATE agent_refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at 
 func (s *SQLUserStore) CreateEmailVerificationToken(ctx context.Context, token *EmailVerificationTokenRecord) error {
 	if token == nil {
 		return fmt.Errorf("email verification token is required")
+	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.InsertEmailVerificationToken(ctx, dbsqlc.InsertEmailVerificationTokenParams{
+			TokenHash: token.TokenHash,
+			UserID:    token.UserID,
+			Email:     token.Email,
+			CreatedAt: token.CreatedAt.UTC(),
+			ExpiresAt: token.ExpiresAt.UTC(),
+			UsedAt:    sqlNullTime(token.UsedAt),
+		})
 	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_email_verification_tokens (token_hash, user_id, email, created_at, expires_at, used_at)
@@ -395,6 +439,26 @@ func (s *SQLUserStore) ConsumeEmailVerificationToken(ctx context.Context, tokenH
 			_ = tx.Rollback()
 		}
 	}()
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		q := s.queries.WithTx(tx)
+		token, err := q.GetEmailVerificationTokenForConsume(ctx, tokenHash)
+		if err != nil {
+			return nil, err
+		}
+		if at.After(token.ExpiresAt) {
+			return nil, fmt.Errorf("email verification token expired")
+		}
+		if err = q.MarkEmailVerificationTokenUsed(ctx, dbsqlc.MarkEmailVerificationTokenUsedParams{UsedAt: sqlNullTime(&at), TokenHash: tokenHash}); err != nil {
+			return nil, err
+		}
+		if err = q.MarkUserEmailVerified(ctx, dbsqlc.MarkUserEmailVerifiedParams{Status: UserStatusActive, EmailVerifiedAt: sqlNullTime(&at), UserID: token.UserID}); err != nil {
+			return nil, err
+		}
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		return s.GetUserByID(ctx, token.UserID)
+	}
 	var userID string
 	var expiresAt any
 	err = tx.QueryRowContext(ctx, s.dialect.Bind(`
@@ -430,6 +494,16 @@ func (s *SQLUserStore) CreatePasswordResetToken(ctx context.Context, token *Pass
 	if strings.TrimSpace(token.TokenHash) == "" {
 		return fmt.Errorf("password reset token is required")
 	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.InsertPasswordResetToken(ctx, dbsqlc.InsertPasswordResetTokenParams{
+			TokenHash: token.TokenHash,
+			UserID:    token.UserID,
+			Email:     token.Email,
+			CreatedAt: token.CreatedAt.UTC(),
+			ExpiresAt: token.ExpiresAt.UTC(),
+			UsedAt:    sqlNullTime(token.UsedAt),
+		})
+	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_password_reset_tokens (token_hash, user_id, email, created_at, expires_at, used_at)
 VALUES (?, ?, ?, ?, ?, ?)`),
@@ -450,6 +524,30 @@ func (s *SQLUserStore) ConsumePasswordResetToken(ctx context.Context, tokenHash 
 	}
 	defer tx.Rollback()
 	tokenHash = strings.TrimSpace(tokenHash)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		q := s.queries.WithTx(tx)
+		token, err := q.GetPasswordResetTokenForConsume(ctx, tokenHash)
+		if err != nil {
+			return nil, err
+		}
+		if token.UsedAt.Valid || !at.Before(token.ExpiresAt) {
+			return nil, fmt.Errorf("password reset token expired")
+		}
+		rows, err := q.MarkPasswordResetTokenUsed(ctx, dbsqlc.MarkPasswordResetTokenUsedParams{UsedAt: sqlNullTime(&at), TokenHash: tokenHash})
+		if err != nil {
+			return nil, err
+		}
+		if rows == 0 {
+			return nil, fmt.Errorf("password reset token expired")
+		}
+		if err := q.UpdateUserPassword(ctx, dbsqlc.UpdateUserPasswordParams{PasswordHash: newPasswordHash, UpdatedAt: at.UTC(), UserID: token.UserID}); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return s.GetUserByID(ctx, token.UserID)
+	}
 	var userID string
 	var expiresAt any
 	var usedAt any
@@ -488,11 +586,18 @@ WHERE token_hash = ?`), tokenHash)
 }
 
 func (s *SQLUserStore) DeleteUser(ctx context.Context, userID string) error {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.DeleteUser(ctx, userID)
+	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`DELETE FROM agent_users WHERE user_id = ?`), userID)
 	return err
 }
 
 func (s *SQLUserStore) PruneExpiredRefreshTokens(ctx context.Context, cutoff time.Time) (int, error) {
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		rows, err := s.queries.PruneExpiredRefreshTokens(ctx, cutoff.UTC())
+		return int(rows), err
+	}
 	result, err := s.db.ExecContext(ctx, s.dialect.Bind(`DELETE FROM agent_refresh_tokens WHERE expires_at < ? OR revoked_at < ?`), sqlTimeValue(cutoff, s.dialect), sqlTimeValue(cutoff, s.dialect))
 	if err != nil {
 		return 0, err
@@ -531,6 +636,32 @@ func (s *SQLUserStore) scanUser(row *sql.Row) (*UserAccount, error) {
 		return nil, err
 	}
 	return &user, nil
+}
+
+func userAccountFromSQLC(row dbsqlc.AgentUser) *UserAccount {
+	return &UserAccount{
+		ID:              row.UserID,
+		Email:           row.Email,
+		PasswordHash:    row.PasswordHash,
+		DisplayName:     row.DisplayName,
+		Status:          row.Status,
+		EmailVerifiedAt: timeFromNull(row.EmailVerifiedAt),
+		CreatedAt:       row.CreatedAt.UTC(),
+		UpdatedAt:       row.UpdatedAt.UTC(),
+		LastLoginAt:     timeFromNull(row.LastLoginAt),
+	}
+}
+
+func refreshTokenFromSQLC(row dbsqlc.AgentRefreshToken) *RefreshTokenRecord {
+	return &RefreshTokenRecord{
+		TokenHash: row.TokenHash,
+		UserID:    row.UserID,
+		CreatedAt: row.CreatedAt.UTC(),
+		ExpiresAt: row.ExpiresAt.UTC(),
+		RevokedAt: timeFromNull(row.RevokedAt),
+		UserAgent: row.UserAgent,
+		IPAddress: row.IpAddress,
+	}
 }
 
 func normalizeEmail(email string) string {
@@ -607,4 +738,38 @@ func scanAdminUserRecord(row skillRegistryScanner) (AdminUserRecord, error) {
 		return AdminUserRecord{}, err
 	}
 	return record, nil
+}
+
+func adminUserFromSQLC(row dbsqlc.GetAdminUserRow) AdminUserRecord {
+	return AdminUserRecord{
+		ID:                      row.UserID,
+		Email:                   row.Email,
+		DisplayName:             row.DisplayName,
+		Status:                  row.Status,
+		EmailVerifiedAt:         timeFromNull(row.EmailVerifiedAt),
+		CreatedAt:               row.CreatedAt.UTC(),
+		UpdatedAt:               row.UpdatedAt.UTC(),
+		LastLoginAt:             timeFromNull(row.LastLoginAt),
+		RefreshTokenCount:       int(row.RefreshTokenCount),
+		ActiveRefreshTokenCount: int(row.ActiveRefreshTokenCount),
+	}
+}
+
+func adminUsersFromSQLC(rows []dbsqlc.ListAdminUsersRow) []AdminUserRecord {
+	out := make([]AdminUserRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, AdminUserRecord{
+			ID:                      row.UserID,
+			Email:                   row.Email,
+			DisplayName:             row.DisplayName,
+			Status:                  row.Status,
+			EmailVerifiedAt:         timeFromNull(row.EmailVerifiedAt),
+			CreatedAt:               row.CreatedAt.UTC(),
+			UpdatedAt:               row.UpdatedAt.UTC(),
+			LastLoginAt:             timeFromNull(row.LastLoginAt),
+			RefreshTokenCount:       int(row.RefreshTokenCount),
+			ActiveRefreshTokenCount: int(row.ActiveRefreshTokenCount),
+		})
+	}
+	return out
 }

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"claude-codex/internal/backend/agentruntime/dbsqlc"
 )
 
 const llmGovernanceConfigKey = "llm_governance"
@@ -381,33 +383,25 @@ func llmGovernanceConfigFromPayload(payload llmGovernanceConfigPayload) LLMGover
 type SQLRuntimeConfigStore struct {
 	db      *sql.DB
 	dialect SQLDialect
+	queries *dbsqlc.Queries
 }
 
 func NewSQLRuntimeConfigStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLRuntimeConfigStore {
 	if dialect == "" {
 		dialect = SQLDialectQuestion
 	}
-	return &SQLRuntimeConfigStore{db: db, dialect: dialect}
+	return &SQLRuntimeConfigStore{db: db, dialect: dialect, queries: dbsqlc.New(db)}
 }
 
 func (s *SQLRuntimeConfigStore) Init(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("sql runtime config store is not configured")
 	}
-	timeType := s.dialect.TimeType()
-	if err := RunSQLMigrations(ctx, s.db, s.dialect, []SQLMigration{{
-		Version: 6,
-		Statements: []string{
-			`CREATE TABLE IF NOT EXISTS agent_runtime_config (
-	config_key TEXT PRIMARY KEY,
-	payload TEXT NOT NULL,
-	updated_at ` + timeType + ` NOT NULL
-)`,
-		},
-	}}); err != nil {
-		return err
-	}
-	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_runtime_config", "updated_at")
+	return requireSQLColumns(ctx, s.db, "agent_runtime_config",
+		"config_key",
+		"payload",
+		"updated_at",
+	)
 }
 
 func (s *SQLRuntimeConfigStore) LoadLLMGovernanceConfig(ctx context.Context) (LLMGovernanceConfig, bool, error) {
@@ -415,7 +409,12 @@ func (s *SQLRuntimeConfigStore) LoadLLMGovernanceConfig(ctx context.Context) (LL
 		return LLMGovernanceConfig{}, false, fmt.Errorf("sql runtime config store is not configured")
 	}
 	var raw string
-	err := s.db.QueryRowContext(ctx, s.dialect.Bind(`SELECT payload FROM agent_runtime_config WHERE config_key = ?`), llmGovernanceConfigKey).Scan(&raw)
+	var err error
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		raw, err = s.queries.GetRuntimeConfig(ctx, llmGovernanceConfigKey)
+	} else {
+		err = s.db.QueryRowContext(ctx, s.dialect.Bind(`SELECT payload FROM agent_runtime_config WHERE config_key = ?`), llmGovernanceConfigKey).Scan(&raw)
+	}
 	if err == sql.ErrNoRows {
 		return LLMGovernanceConfig{}, false, nil
 	}
@@ -436,6 +435,13 @@ func (s *SQLRuntimeConfigStore) SaveLLMGovernanceConfig(ctx context.Context, con
 	raw, err := json.Marshal(llmGovernanceConfigToPayload(config))
 	if err != nil {
 		return err
+	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.UpsertRuntimeConfig(ctx, dbsqlc.UpsertRuntimeConfigParams{
+			ConfigKey: llmGovernanceConfigKey,
+			Payload:   string(raw),
+			UpdatedAt: time.Now().UTC(),
+		})
 	}
 	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_runtime_config (config_key, payload, updated_at)

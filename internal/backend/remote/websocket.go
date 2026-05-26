@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
+
+	backendretry "claude-codex/internal/backend/retry"
+	"claude-codex/internal/backend/workers"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -14,21 +18,22 @@ import (
 
 // SessionsWebSocket manages WebSocket connection to CCR sessions
 type SessionsWebSocket struct {
-	sessionID     string
-	orgUUID       string
+	sessionID      string
+	orgUUID        string
 	getAccessToken func() string
-	callbacks     SessionsWebSocketCallbacks
+	callbacks      SessionsWebSocketCallbacks
 
-	mu                      sync.RWMutex
-	conn                    *websocket.Conn
-	state                   WebSocketState
-	reconnectAttempts       int
-	sessionNotFoundRetries  int
-	pingTicker              *time.Ticker
-	reconnectTimer          *time.Timer
-	ctx                     context.Context
-	cancel                  context.CancelFunc
-	closeOnce               sync.Once
+	mu                     sync.RWMutex
+	conn                   *websocket.Conn
+	state                  WebSocketState
+	reconnectAttempts      int
+	sessionNotFoundRetries int
+	reconnectScheduled     bool
+	ctx                    context.Context
+	cancel                 context.CancelFunc
+	workers                *workers.Group
+	reconnectPolicy        backendretry.Policy
+	closeOnce              sync.Once
 }
 
 // NewSessionsWebSocket creates a new WebSocket client
@@ -39,6 +44,10 @@ func NewSessionsWebSocket(
 	callbacks SessionsWebSocketCallbacks,
 ) *SessionsWebSocket {
 	ctx, cancel := context.WithCancel(context.Background())
+	logger := slog.Default().With(
+		slog.String("component", "remote_websocket"),
+		slog.String("session_id", sessionID),
+	)
 	return &SessionsWebSocket{
 		sessionID:      sessionID,
 		orgUUID:        orgUUID,
@@ -47,13 +56,27 @@ func NewSessionsWebSocket(
 		state:          WebSocketStateClosed,
 		ctx:            ctx,
 		cancel:         cancel,
+		workers:        workers.New(ctx, logger),
+		reconnectPolicy: backendretry.Policy{
+			MaxAttempts: MaxReconnectAttempts,
+			BaseDelay:   ReconnectDelayMS * time.Millisecond,
+			MaxDelay:    ReconnectDelayMS * time.Millisecond,
+		},
 	}
 }
 
 // Connect establishes WebSocket connection
 func (ws *SessionsWebSocket) Connect() error {
 	ws.mu.Lock()
+	if err := ws.ctx.Err(); err != nil {
+		ws.mu.Unlock()
+		return err
+	}
 	if ws.state == WebSocketStateConnecting {
+		ws.mu.Unlock()
+		return nil
+	}
+	if ws.state == WebSocketStateConnected {
 		ws.mu.Unlock()
 		return nil
 	}
@@ -74,7 +97,7 @@ func (ws *SessionsWebSocket) Connect() error {
 	header.Set("anthropic-version", "2023-06-01")
 
 	// Connect
-	conn, _, err := websocket.DefaultDialer.Dial(url, header)
+	conn, _, err := websocket.DefaultDialer.DialContext(ws.ctx, url, header)
 	if err != nil {
 		ws.mu.Lock()
 		ws.state = WebSocketStateClosed
@@ -87,60 +110,54 @@ func (ws *SessionsWebSocket) Connect() error {
 	ws.state = WebSocketStateConnected
 	ws.reconnectAttempts = 0
 	ws.sessionNotFoundRetries = 0
+	ws.reconnectScheduled = false
 	ws.mu.Unlock()
-
-	// Start ping interval
-	ws.startPingInterval()
 
 	// Notify connected
 	if ws.callbacks.OnConnected != nil {
 		ws.callbacks.OnConnected()
 	}
 
-	// Start message reader
-	go ws.readMessages()
+	ws.startConnectionWorkers(conn)
 
 	return nil
 }
 
-// readMessages reads messages from WebSocket
-func (ws *SessionsWebSocket) readMessages() {
-	defer func() {
-		ws.mu.RLock()
-		conn := ws.conn
-		ws.mu.RUnlock()
+func (ws *SessionsWebSocket) startConnectionWorkers(conn *websocket.Conn) {
+	if ws == nil || conn == nil || ws.workers == nil {
+		return
+	}
+	ws.workers.Start("remote_websocket_reader", func(ctx context.Context) error {
+		return ws.readMessages(ctx, conn)
+	})
+	ws.workers.Start("remote_websocket_ping", func(ctx context.Context) error {
+		return ws.pingLoop(ctx, conn)
+	})
+}
 
-		if conn != nil {
-			conn.Close()
-		}
-	}()
-
+// readMessages reads messages from WebSocket.
+func (ws *SessionsWebSocket) readMessages(ctx context.Context, conn *websocket.Conn) error {
 	for {
 		select {
-		case <-ws.ctx.Done():
-			return
+		case <-ctx.Done():
+			return nil
 		default:
 		}
 
-		ws.mu.RLock()
-		conn := ws.conn
-		state := ws.state
-		ws.mu.RUnlock()
-
-		if conn == nil || state != WebSocketStateConnected {
-			return
+		if !ws.isCurrentConnection(conn) {
+			return nil
 		}
 
 		_, data, err := conn.ReadMessage()
 		if err != nil {
 			// Check if it's a close error
 			if closeErr, ok := err.(*websocket.CloseError); ok {
-				ws.handleClose(closeErr.Code)
+				ws.handleClose(closeErr.Code, conn)
 			} else {
 				// Network error
-				ws.handleClose(1006) // Abnormal closure
+				ws.handleClose(1006, conn) // Abnormal closure
 			}
-			return
+			return nil
 		}
 
 		ws.handleMessage(data)
@@ -163,10 +180,20 @@ func (ws *SessionsWebSocket) handleMessage(data []byte) {
 }
 
 // handleClose handles WebSocket closure
-func (ws *SessionsWebSocket) handleClose(code int) {
+func (ws *SessionsWebSocket) handleClose(code int, conn *websocket.Conn) {
 	ws.mu.Lock()
+	if conn != nil && ws.conn != conn {
+		ws.mu.Unlock()
+		return
+	}
 	ws.state = WebSocketStateClosed
-	ws.stopPingInterval()
+	if ws.conn == conn {
+		ws.conn = nil
+	}
+	if ws.ctx.Err() != nil {
+		ws.mu.Unlock()
+		return
+	}
 	ws.mu.Unlock()
 
 	// Check if it's a permanent close code
@@ -194,68 +221,108 @@ func (ws *SessionsWebSocket) handleClose(code int) {
 
 	// Attempt reconnection
 	ws.mu.Lock()
+	if ws.reconnectScheduled {
+		ws.mu.Unlock()
+		return
+	}
 	ws.reconnectAttempts++
 	attempts := ws.reconnectAttempts
-	ws.mu.Unlock()
-
-	if attempts >= MaxReconnectAttempts {
+	maxAttempts := ws.reconnectPolicy.Attempts()
+	if maxAttempts <= 0 {
+		maxAttempts = MaxReconnectAttempts
+	}
+	if attempts >= maxAttempts {
+		ws.mu.Unlock()
 		if ws.callbacks.OnClose != nil {
 			ws.callbacks.OnClose()
 		}
 		return
 	}
+	ws.reconnectScheduled = true
+	ws.mu.Unlock()
 
-	// Schedule reconnect
 	if ws.callbacks.OnReconnecting != nil {
 		ws.callbacks.OnReconnecting()
 	}
 
-	ws.mu.Lock()
-	ws.reconnectTimer = time.AfterFunc(ReconnectDelayMS*time.Millisecond, func() {
-		ws.Connect()
-	})
-	ws.mu.Unlock()
+	ws.scheduleReconnect(attempts)
 }
 
-// startPingInterval starts periodic ping messages
-func (ws *SessionsWebSocket) startPingInterval() {
+func (ws *SessionsWebSocket) scheduleReconnect(attempt int) {
+	if ws == nil || ws.workers == nil {
+		return
+	}
+	name := fmt.Sprintf("remote_websocket_reconnect_%d", attempt)
+	ws.workers.Start(name, func(ctx context.Context) error {
+		currentAttempt := attempt
+		for {
+			if err := ws.reconnectPolicy.Sleep(ctx, currentAttempt, nil); err != nil {
+				return nil
+			}
+			if err := ws.Connect(); err == nil {
+				return nil
+			} else if ws.callbacks.OnError != nil {
+				ws.callbacks.OnError(err)
+			}
+			nextAttempt, shouldContinue, notifyClose := ws.nextReconnectAttempt()
+			if !shouldContinue {
+				if notifyClose && ws.callbacks.OnClose != nil {
+					ws.callbacks.OnClose()
+				}
+				return nil
+			}
+			if ws.callbacks.OnReconnecting != nil {
+				ws.callbacks.OnReconnecting()
+			}
+			currentAttempt = nextAttempt
+		}
+	})
+}
+
+func (ws *SessionsWebSocket) nextReconnectAttempt() (int, bool, bool) {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
-
-	if ws.pingTicker != nil {
-		ws.pingTicker.Stop()
+	if ws.ctx.Err() != nil || ws.state == WebSocketStateConnected {
+		ws.reconnectScheduled = false
+		return 0, false, false
 	}
+	ws.reconnectAttempts++
+	attempts := ws.reconnectAttempts
+	maxAttempts := ws.reconnectPolicy.Attempts()
+	if maxAttempts <= 0 {
+		maxAttempts = MaxReconnectAttempts
+	}
+	if attempts >= maxAttempts {
+		ws.reconnectScheduled = false
+		return attempts, false, true
+	}
+	return attempts, true, false
+}
 
-	ws.pingTicker = time.NewTicker(PingIntervalMS * time.Millisecond)
-	go func() {
-		for {
-			select {
-			case <-ws.ctx.Done():
-				return
-			case <-ws.pingTicker.C:
-				ws.mu.RLock()
-				conn := ws.conn
-				state := ws.state
-				ws.mu.RUnlock()
-
-				if conn != nil && state == WebSocketStateConnected {
-					if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
-						if ws.callbacks.OnError != nil {
-							ws.callbacks.OnError(fmt.Errorf("ping failed: %w", err))
-						}
-					}
+func (ws *SessionsWebSocket) pingLoop(ctx context.Context, conn *websocket.Conn) error {
+	ticker := time.NewTicker(PingIntervalMS * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if !ws.isCurrentConnection(conn) {
+				return nil
+			}
+			if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
+				if ws.callbacks.OnError != nil {
+					ws.callbacks.OnError(fmt.Errorf("ping failed: %w", err))
 				}
 			}
 		}
-	}()
+	}
 }
 
-// stopPingInterval stops the ping ticker
-func (ws *SessionsWebSocket) stopPingInterval() {
-	if ws.pingTicker != nil {
-		ws.pingTicker.Stop()
-		ws.pingTicker = nil
-	}
+func (ws *SessionsWebSocket) isCurrentConnection(conn *websocket.Conn) bool {
+	ws.mu.RLock()
+	defer ws.mu.RUnlock()
+	return conn != nil && ws.conn == conn && ws.state == WebSocketStateConnected
 }
 
 // SendControlResponse sends a control response message
@@ -314,12 +381,6 @@ func (ws *SessionsWebSocket) Close() {
 	ws.closeOnce.Do(func() {
 		ws.mu.Lock()
 		ws.state = WebSocketStateClosed
-		ws.stopPingInterval()
-
-		if ws.reconnectTimer != nil {
-			ws.reconnectTimer.Stop()
-			ws.reconnectTimer = nil
-		}
 
 		if ws.conn != nil {
 			ws.conn.Close()
@@ -328,6 +389,9 @@ func (ws *SessionsWebSocket) Close() {
 		ws.mu.Unlock()
 
 		ws.cancel()
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = ws.workers.Stop(stopCtx)
 	})
 }
 
@@ -336,10 +400,19 @@ func (ws *SessionsWebSocket) Reconnect() {
 	ws.mu.Lock()
 	ws.reconnectAttempts = 0
 	ws.sessionNotFoundRetries = 0
+	ws.reconnectScheduled = false
+	conn := ws.conn
+	ws.conn = nil
+	ws.state = WebSocketStateClosed
 	ws.mu.Unlock()
 
-	ws.Close()
-
-	time.Sleep(500 * time.Millisecond)
-	ws.Connect()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err := backendretry.Sleep(ws.ctx, 500*time.Millisecond); err != nil {
+		return
+	}
+	if err := ws.Connect(); err != nil && ws.callbacks.OnError != nil {
+		ws.callbacks.OnError(err)
+	}
 }

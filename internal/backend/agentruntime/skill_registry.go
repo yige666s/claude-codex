@@ -91,85 +91,46 @@ func NewSQLSkillRegistryWithDialect(db *sql.DB, dialect SQLDialect) *SQLSkillReg
 }
 
 func (s *SQLSkillRegistry) Init(ctx context.Context) error {
-	for _, stmt := range []string{
-		`CREATE TABLE IF NOT EXISTS agent_skills (
-	name TEXT PRIMARY KEY,
-	display_name TEXT NOT NULL DEFAULT '',
-	description TEXT NOT NULL DEFAULT '',
-	category TEXT NOT NULL DEFAULT '',
-	icon TEXT NOT NULL DEFAULT '',
-	status TEXT NOT NULL DEFAULT 'unpublished',
-	version TEXT NOT NULL DEFAULT '',
-	source TEXT NOT NULL DEFAULT '',
-	skill_root TEXT NOT NULL DEFAULT '',
-	metadata TEXT NOT NULL DEFAULT '{}',
-	content_hash TEXT NOT NULL DEFAULT '',
-	created_at ` + s.dialect.TimeType() + ` NOT NULL,
-	updated_at ` + s.dialect.TimeType() + ` NOT NULL,
-	published_at ` + s.dialect.TimeType() + `
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_skills_status ON agent_skills (status, updated_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_skills_category ON agent_skills (category, status)`,
-		`CREATE TABLE IF NOT EXISTS agent_skill_versions (
-	skill_name TEXT NOT NULL,
-	version TEXT NOT NULL DEFAULT '',
-	content_hash TEXT NOT NULL DEFAULT '',
-	changelog TEXT NOT NULL DEFAULT '',
-	metadata TEXT NOT NULL DEFAULT '{}',
-	created_at ` + s.dialect.TimeType() + ` NOT NULL,
-	published_at ` + s.dialect.TimeType() + `,
-	PRIMARY KEY (skill_name, version, content_hash)
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_skill_versions_skill_created ON agent_skill_versions (skill_name, created_at)`,
-		`CREATE TABLE IF NOT EXISTS agent_skill_releases (
-	id TEXT PRIMARY KEY,
-	skill_name TEXT NOT NULL,
-	version TEXT NOT NULL DEFAULT '',
-	content_hash TEXT NOT NULL DEFAULT '',
-	status TEXT NOT NULL DEFAULT '',
-	changelog TEXT NOT NULL DEFAULT '',
-	actor TEXT NOT NULL DEFAULT '',
-	metadata TEXT NOT NULL DEFAULT '{}',
-	created_at ` + s.dialect.TimeType() + ` NOT NULL
-)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_skill_releases_skill_created ON agent_skill_releases (skill_name, created_at)`,
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skills", "created_at", "updated_at", "published_at"); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_skills",
+		"name",
+		"display_name",
+		"description",
+		"category",
+		"icon",
+		"status",
+		"version",
+		"source",
+		"skill_root",
+		"metadata",
+		"content_hash",
+		"created_at",
+		"updated_at",
+		"published_at",
+	); err != nil {
 		return err
 	}
-	if err := s.ensureLifecycleConstraints(ctx); err != nil {
+	if err := requireSQLColumns(ctx, s.db, "agent_skill_versions",
+		"skill_name",
+		"version",
+		"content_hash",
+		"changelog",
+		"metadata",
+		"created_at",
+		"published_at",
+	); err != nil {
 		return err
 	}
-	if err := ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skill_versions", "created_at", "published_at"); err != nil {
-		return err
-	}
-	return ensureReadableTimeColumns(ctx, s.db, s.dialect, "agent_skill_releases", "created_at")
-}
-
-func (s *SQLSkillRegistry) ensureLifecycleConstraints(ctx context.Context) error {
-	if s.dialect != SQLDialectPostgres {
-		return nil
-	}
-	for _, stmt := range []string{
-		`DELETE FROM agent_skill_versions v WHERE NOT EXISTS (
-			SELECT 1 FROM agent_skills s WHERE s.name = v.skill_name
-		)`,
-		postgresAddForeignKeyIfMissing("fk_agent_skill_versions_skill",
-			"agent_skill_versions",
-			"FOREIGN KEY (skill_name) REFERENCES agent_skills(name) ON DELETE CASCADE"),
-		postgresAddForeignKeyIfMissing("fk_agent_skill_releases_skill",
-			"agent_skill_releases",
-			"FOREIGN KEY (skill_name) REFERENCES agent_skills(name) ON DELETE CASCADE"),
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	return nil
+	return requireSQLColumns(ctx, s.db, "agent_skill_releases",
+		"id",
+		"skill_name",
+		"version",
+		"content_hash",
+		"status",
+		"changelog",
+		"actor",
+		"metadata",
+		"created_at",
+	)
 }
 
 func (s *SQLSkillRegistry) SyncLoadedSkills(ctx context.Context, loaded []*skills.SkillDefinition) error {

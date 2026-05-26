@@ -1,0 +1,33 @@
+package run
+
+import (
+	"github.com/spf13/cobra"
+
+	startupconfig "claude-codex/internal/backend/agentapi/config"
+)
+
+func NewCommand() *cobra.Command {
+	cfg := startupconfig.Default()
+	command := &cobra.Command{
+		Use:           "agentapi",
+		Short:         "Run the agent API server",
+		Args:          cobra.ArbitraryArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := cfg.Validate(); err != nil {
+				return err
+			}
+			Run(cmd.Context(), cfg)
+			return nil
+		},
+	}
+	startupconfig.BindFlags(command, &cfg)
+	return command
+}
+
+func Main() {
+	if err := NewCommand().Execute(); err != nil {
+		logFatal(err)
+	}
+}

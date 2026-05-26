@@ -7,9 +7,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
+
+	workerlifecycle "claude-codex/internal/backend/workers"
 )
 
 const EvaluationTriggerDailyIncremental = "daily_incremental"
@@ -44,10 +45,8 @@ func (s *Server) StartDailyEvaluationScheduler(config DailyEvaluationConfig) fun
 		return func() {}
 	}
 	config = normalizeDailyEvaluationConfig(config)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
+	group := workerlifecycle.New(context.Background(), componentLogger(s.logger, "daily_evaluation_scheduler"))
+	group.Start("daily_evaluation_scheduler", func(ctx context.Context) error {
 		for {
 			delay := durationUntilNextDailyEvaluation(time.Now(), config)
 			timer := time.NewTimer(delay)
@@ -71,13 +70,12 @@ func (s *Server) StartDailyEvaluationScheduler(config DailyEvaluationConfig) fun
 					default:
 					}
 				}
-				return
+				return ctx.Err()
 			}
 		}
-	}()
+	})
 	return func() {
-		cancel()
-		<-done
+		_ = group.Stop(context.Background())
 	}
 }
 
@@ -176,16 +174,27 @@ func (s *Server) dailyEvaluationUserIDs(ctx context.Context, config DailyEvaluat
 }
 
 func (s *Server) logDailyEvaluationReport(report DailyEvaluationReport, err error) {
-	logger := s.logger
-	if logger == nil {
-		logger = log.Default()
-	}
 	if err != nil {
-		logger.Printf("daily evaluation failed: day=%s from=%s to=%s err=%v", report.Day, report.From.Format(time.RFC3339), report.To.Format(time.RFC3339), err)
+		logFields(s.logger, map[string]any{
+			"event": "daily_evaluation_failed",
+			"day":   report.Day,
+			"from":  report.From.Format(time.RFC3339),
+			"to":    report.To.Format(time.RFC3339),
+			"error": err.Error(),
+		})
 		return
 	}
-	logger.Printf("daily evaluation complete: day=%s users=%d created=%d skipped=%d failed=%d total=%d passed=%d warning=%d",
-		report.Day, len(report.Users), report.Created, report.Skipped, report.Failed, report.Total, report.Passed, report.Warning)
+	logFields(s.logger, map[string]any{
+		"event":   "daily_evaluation_complete",
+		"day":     report.Day,
+		"users":   len(report.Users),
+		"created": report.Created,
+		"skipped": report.Skipped,
+		"failed":  report.Failed,
+		"total":   report.Total,
+		"passed":  report.Passed,
+		"warning": report.Warning,
+	})
 }
 
 func normalizeDailyEvaluationConfig(config DailyEvaluationConfig) DailyEvaluationConfig {

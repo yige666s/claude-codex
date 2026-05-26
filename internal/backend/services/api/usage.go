@@ -2,12 +2,13 @@ package api
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"time"
+
+	"claude-codex/internal/backend/httpclient"
 )
 
 // UsageClient handles API usage and rate limit queries
@@ -38,33 +39,20 @@ func (c *UsageClient) FetchUtilization(ctx context.Context, authToken string) (*
 
 	url := fmt.Sprintf("%s/api/oauth/usage", c.BaseURL)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", authToken))
-	req.Header.Set("User-Agent", getUserAgent())
-
-	// Execute request
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch utilization: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check status code
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response
 	var utilization Utilization
-	if err := json.NewDecoder(resp.Body).Decode(&utilization); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	err := httpclient.New(
+		httpclient.WithHTTPClient(c.HTTPClient),
+		httpclient.WithComponent("usage_api"),
+	).JSON(ctx, http.MethodGet, url, nil, &utilization,
+		httpclient.WithBearer(authToken),
+		httpclient.WithHeader("User-Agent", getUserAgent()),
+	)
+	if err != nil {
+		var statusErr *httpclient.StatusError
+		if errors.As(err, &statusErr) {
+			return nil, fmt.Errorf("API returned status %d: %s", statusErr.StatusCode, statusErr.Body)
+		}
+		return nil, fmt.Errorf("failed to fetch utilization: %w", err)
 	}
 
 	return &utilization, nil

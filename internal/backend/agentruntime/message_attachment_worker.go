@@ -12,6 +12,7 @@ import (
 	"image/png"
 	"io"
 	"log"
+	"log/slog"
 	"math"
 	"path/filepath"
 	"regexp"
@@ -43,15 +44,16 @@ type MessageAttachmentWorker struct {
 	artifacts      *ArtifactService
 	config         MessageAttachmentWorkerConfig
 	contentIndexer MessageAttachmentContentIndexer
-	logger         *log.Logger
+	logger         *slog.Logger
 }
 
 func NewMessageAttachmentWorker(queue MessageAttachmentProcessingQueue, artifacts *ArtifactService, config MessageAttachmentWorkerConfig, logger *log.Logger) *MessageAttachmentWorker {
+	return NewMessageAttachmentWorkerWithLogger(queue, artifacts, config, newStructuredLogger(logger))
+}
+
+func NewMessageAttachmentWorkerWithLogger(queue MessageAttachmentProcessingQueue, artifacts *ArtifactService, config MessageAttachmentWorkerConfig, logger *slog.Logger) *MessageAttachmentWorker {
 	config = normalizeMessageAttachmentWorkerConfig(config)
-	if logger == nil {
-		logger = log.Default()
-	}
-	return &MessageAttachmentWorker{queue: queue, artifacts: artifacts, config: config, contentIndexer: config.ContentIndexer, logger: logger}
+	return &MessageAttachmentWorker{queue: queue, artifacts: artifacts, config: config, contentIndexer: config.ContentIndexer, logger: componentLogger(logger, "message_attachment_worker")}
 }
 
 func normalizeMessageAttachmentWorkerConfig(config MessageAttachmentWorkerConfig) MessageAttachmentWorkerConfig {
@@ -78,7 +80,7 @@ func (w *MessageAttachmentWorker) Run(ctx context.Context) error {
 	defer ticker.Stop()
 	for {
 		if _, err := w.ProcessBatch(ctx); err != nil && !errorsIsContextDone(ctx, err) {
-			w.logger.Printf("message attachment worker batch failed: %v", err)
+			logError(ctx, w.logger, "message attachment worker batch failed", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -101,7 +103,12 @@ func (w *MessageAttachmentWorker) ProcessBatch(ctx context.Context) (int, error)
 		err := w.ProcessAttachment(processCtx, item)
 		cancel()
 		if err != nil {
-			w.logger.Printf("process message attachment failed: user=%s session=%s message=%s attachment=%s: %v", item.UserID, item.SessionID, item.MessageID, item.ID, err)
+			attrs := contextLogAttrs(ctx, item.UserID, item.SessionID, "")
+			attrs = append(attrs,
+				slog.String("message_id", item.MessageID),
+				slog.String("attachment_id", item.ID),
+			)
+			logError(ctx, w.logger, "process message attachment failed", err, attrs...)
 			_ = w.queue.UpdateMessageAttachmentProcessing(ctx, item.UserID, item.MessageID, item.ID, state.MessageAttachmentEmbeddingFailed, item.ThumbnailKey, item.ExtractedTextKey)
 		}
 	}

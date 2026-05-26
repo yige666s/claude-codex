@@ -1,11 +1,8 @@
 package agentruntime
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"claude-codex/internal/backend/httpclient"
 	"claude-codex/internal/public/fsutil"
 )
 
@@ -109,101 +107,76 @@ func (s *FileObjectStore) path(key string) string {
 type HTTPObjectStore struct {
 	BaseURL string
 	Token   string
-	Client  interface {
-		Do(req *http.Request) (*http.Response, error)
-	}
+	Client  *http.Client
 }
 
 func (s *HTTPObjectStore) Put(ctx context.Context, key string, data []byte, contentType string) error {
-	req, err := s.request(ctx, http.MethodPut, key, bytes.NewReader(data))
+	url, err := s.url(key)
 	if err != nil {
 		return err
 	}
+	headers := s.headers()
 	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
+		headers.Set("Content-Type", contentType)
 	}
-	return s.doNoBody(req)
+	_, _, _, err = s.client().Data(ctx, http.MethodPut, url, data, httpclient.WithHeaders(headers))
+	return err
 }
 
 func (s *HTTPObjectStore) Get(ctx context.Context, key string) ([]byte, error) {
-	req, err := s.request(ctx, http.MethodGet, key, nil)
+	url, err := s.url(key)
 	if err != nil {
 		return nil, err
 	}
-	client := s.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := client.Do(req)
+	_, body, _, err := s.client().Data(ctx, http.MethodGet, url, nil, httpclient.WithHeaders(s.headers()))
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("object get failed: %s", resp.Status)
-	}
-	return io.ReadAll(resp.Body)
+	return body, nil
 }
 
 func (s *HTTPObjectStore) List(ctx context.Context, prefix string) ([]string, error) {
-	req, err := s.request(ctx, http.MethodGet, strings.TrimRight(prefix, "/")+"/?list=1", nil)
+	url, err := s.url(strings.TrimRight(prefix, "/") + "/?list=1")
 	if err != nil {
 		return nil, err
-	}
-	client := s.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("object list failed: %s", resp.Status)
 	}
 	var keys []string
-	if err := json.NewDecoder(resp.Body).Decode(&keys); err != nil {
+	err = s.client().JSON(ctx, http.MethodGet, url, nil, &keys, httpclient.WithHeaders(s.headers()))
+	if err != nil {
 		return nil, err
 	}
 	return keys, nil
 }
 
 func (s *HTTPObjectStore) Delete(ctx context.Context, key string) error {
-	req, err := s.request(ctx, http.MethodDelete, key, nil)
+	url, err := s.url(key)
 	if err != nil {
 		return err
 	}
-	return s.doNoBody(req)
+	_, _, _, err = s.client().Data(ctx, http.MethodDelete, url, nil, httpclient.WithHeaders(s.headers()))
+	return err
 }
 
-func (s *HTTPObjectStore) request(ctx context.Context, method, key string, body io.Reader) (*http.Request, error) {
+func (s *HTTPObjectStore) url(key string) (string, error) {
 	base := strings.TrimRight(s.BaseURL, "/")
 	if base == "" {
-		return nil, fmt.Errorf("object store base URL is required")
+		return "", fmt.Errorf("object store base URL is required")
 	}
-	req, err := http.NewRequestWithContext(ctx, method, base+"/"+strings.TrimLeft(key, "/"), body)
-	if err != nil {
-		return nil, err
-	}
-	if s.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+s.Token)
-	}
-	return req, nil
+	return base + "/" + strings.TrimLeft(key, "/"), nil
 }
 
-func (s *HTTPObjectStore) doNoBody(req *http.Request) error {
+func (s *HTTPObjectStore) headers() http.Header {
+	headers := make(http.Header)
+	if s.Token != "" {
+		headers.Set("Authorization", "Bearer "+s.Token)
+	}
+	return headers
+}
+
+func (s *HTTPObjectStore) client() *httpclient.Client {
 	client := s.Client
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("object request failed: %s", resp.Status)
-	}
-	return nil
+	return httpclient.New(httpclient.WithHTTPClient(client), httpclient.WithComponent("object_store"))
 }

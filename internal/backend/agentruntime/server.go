@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"mime"
 	"net/http"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"claude-codex/internal/backend/httpjson"
 	skillpkg "claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 
@@ -28,10 +30,11 @@ const defaultRateLimitWindow = time.Minute
 
 type Server struct {
 	runtime          *Runtime
+	router           http.Handler
 	auth             Authenticator
 	authService      *AuthService
 	limiter          RateLimitPolicy
-	logger           *log.Logger
+	logger           *slog.Logger
 	upgrader         websocket.Upgrader
 	security         WebSecurityConfig
 	llmStatus        func() LLMGovernanceStatus
@@ -42,6 +45,7 @@ type Server struct {
 	risk             RiskStore
 	riskScanner      RiskScanner
 	evaluation       EvaluationStore
+	instrumentHTTP   func(http.Handler) http.Handler
 	operationLimiter *OperationRateLimiter
 	adminToken       string
 	skillRegistry    SkillRegistryAdminStore
@@ -52,14 +56,18 @@ type Server struct {
 }
 
 func NewServer(runtime *Runtime, auth Authenticator, limiter RateLimitPolicy, logger *log.Logger) *Server {
+	return NewServerWithLogger(runtime, auth, limiter, newStructuredLogger(logger))
+}
+
+func NewServerWithLogger(runtime *Runtime, auth Authenticator, limiter RateLimitPolicy, logger *slog.Logger) *Server {
 	if limiter == nil {
 		limiter = NewRateLimiter(60, defaultRateLimitWindow)
 	}
-	return &Server{
+	server := &Server{
 		runtime: runtime,
 		auth:    auth,
 		limiter: limiter,
-		logger:  logger,
+		logger:  componentLogger(logger, "http_server"),
 		metrics: NewMetricsRegistry(),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: sameHostOrigin,
@@ -67,6 +75,16 @@ func NewServer(runtime *Runtime, auth Authenticator, limiter RateLimitPolicy, lo
 		readyChecks: make(map[string]readinessCheck),
 		shutdownCh:  make(chan struct{}),
 	}
+	server.router = server.buildRouter()
+	return server
+}
+
+func (s *Server) SetHTTPInstrumentation(instrument func(http.Handler) http.Handler) {
+	if s == nil {
+		return
+	}
+	s.instrumentHTTP = instrument
+	s.router = s.buildRouter()
 }
 
 func (s *Server) BeginShutdown() {
@@ -159,240 +177,14 @@ func (s *Server) SetSkillRegistry(registry SkillRegistryAdminStore) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	started := time.Now()
-	reqID := requestID(r)
-	rec := &statusRecorder{ResponseWriter: w}
-	rec.Header().Set("X-Request-ID", reqID)
-	r = r.WithContext(withRequestID(r.Context(), reqID))
-	defer func() {
-		status := rec.status
-		if status == 0 {
-			status = http.StatusOK
-		}
-		duration := time.Since(started)
-		if s.metrics != nil {
-			s.metrics.RecordRequest(r.Method, r.URL.Path, status, duration)
-		}
-		logJSON(s.logger, map[string]any{
-			"event":       "request",
-			"request_id":  reqID,
-			"method":      r.Method,
-			"path":        r.URL.Path,
-			"status":      status,
-			"bytes":       rec.bytes,
-			"duration_ms": duration.Milliseconds(),
-		})
-	}()
-
-	if !s.applyCORS(rec, r) {
-		writeJSON(rec, http.StatusForbidden, map[string]string{"error": "origin is not allowed"})
+	if s == nil {
+		http.NotFound(w, r)
 		return
 	}
-	if r.Method == http.MethodOptions {
-		rec.WriteHeader(http.StatusNoContent)
-		return
+	if s.router == nil {
+		s.router = s.buildRouter()
 	}
-	if r.URL.Path == "/healthz" {
-		writeJSON(rec, http.StatusOK, map[string]string{"status": "ok"})
-		return
-	}
-	if r.URL.Path == "/readyz" {
-		s.handleReadyz(rec, r)
-		return
-	}
-	if s.isShuttingDown() {
-		writeJSON(rec, http.StatusServiceUnavailable, map[string]string{"error": "server is shutting down"})
-		return
-	}
-	if r.URL.Path == "/metrics" {
-		s.metrics.WritePrometheus(rec)
-		return
-	}
-	if r.Method == http.MethodGet && (r.URL.Path == "/" || r.URL.Path == "/app") {
-		s.handleApp(rec, r)
-		return
-	}
-
-	path := strings.Trim(r.URL.Path, "/")
-	parts := strings.Split(path, "/")
-	if len(parts) >= 2 && parts[0] == "v1" && parts[1] == "auth" {
-		if operation := publicAuthRiskOperation(r.Method, path); operation != "" && !s.allowPublicOperation(rec, r, operation) {
-			return
-		}
-		if s.handlePublicAuth(rec, r, path) {
-			return
-		}
-	}
-
-	user, ok := s.authenticate(rec, r)
-	if !ok {
-		return
-	}
-	if !s.requireCSRF(rec, r) {
-		return
-	}
-	if !s.limiter.Allow(user.ID) {
-		if s.metrics != nil {
-			s.metrics.IncRateLimited()
-		}
-		s.recordRiskEvent(r, RiskEvent{
-			UserID:     user.ID,
-			IPAddress:  clientIP(r),
-			Operation:  "global_rate_limit",
-			Reason:     "global_rate_limit",
-			RiskLevel:  RiskLevelMedium,
-			ScoreDelta: 8,
-		})
-		s.auditEvent(r, "risk_rate_limited", user, map[string]any{"operation": "global_rate_limit"})
-		writeJSON(rec, http.StatusTooManyRequests, map[string]string{"error": "rate limited"})
-		return
-	}
-	if operation := classifyRiskOperation(r.Method, path, parts); operation != "" && !s.allowUserOperation(rec, r, user, operation) {
-		return
-	}
-
-	switch {
-	case r.Method == http.MethodGet && path == "v1/auth/me":
-		s.handleAuthMe(rec, r, user)
-	case r.Method == http.MethodPost && path == "v1/auth/logout":
-		s.handleAuthLogout(rec, r, user)
-	case r.Method == http.MethodDelete && path == "v1/account":
-		s.handleAccountDelete(rec, r, user)
-	case r.Method == http.MethodGet && path == "v1/data/export":
-		s.handleDataExport(rec, r, user)
-	case path == "v1/admin/users" || (len(parts) >= 4 && parts[0] == "v1" && parts[1] == "admin" && parts[2] == "users"):
-		s.handleAdminUsers(rec, r, user, parts)
-	case path == "v1/admin/ops" || (len(parts) >= 4 && parts[0] == "v1" && parts[1] == "admin" && parts[2] == "ops"):
-		s.handleAdminOps(rec, r, user, parts)
-	case path == "v1/admin/skills" || (len(parts) >= 4 && parts[0] == "v1" && parts[1] == "admin" && parts[2] == "skills"):
-		s.handleAdminSkills(rec, r, user, parts)
-	case r.Method == http.MethodGet && path == "v1/personalization":
-		s.handleGetPersonalization(rec, r, user)
-	case r.Method == http.MethodPatch && path == "v1/personalization":
-		s.handleUpdatePersonalization(rec, r, user)
-	case r.Method == http.MethodPost && path == "v1/personalization/reset":
-		s.handleResetPersonalization(rec, r, user)
-	case r.Method == http.MethodPost && path == "v1/personalization/browser-memory":
-		s.handleCreateBrowserMemory(rec, r, user)
-	case r.Method == http.MethodGet && path == "v1/memory/settings":
-		s.handleGetMemorySettings(rec, r, user)
-	case r.Method == http.MethodPatch && path == "v1/memory/settings":
-		s.handleUpdateMemorySettings(rec, r, user)
-	case r.Method == http.MethodGet && path == "v1/memory":
-		s.handleListMemory(rec, r, user)
-	case r.Method == http.MethodGet && path == "v1/memory/maintenance":
-		s.handleListMemoryMaintenance(rec, r, user)
-	case r.Method == http.MethodPost && path == "v1/memory/maintenance/run":
-		s.handleRunMemoryMaintenance(rec, r, user)
-	case r.Method == http.MethodPost && len(parts) == 5 && parts[0] == "v1" && parts[1] == "memory" && parts[2] == "maintenance" && parts[4] == "apply":
-		s.handleApplyMemoryMaintenance(rec, r, user, parts[3])
-	case r.Method == http.MethodPost && len(parts) == 5 && parts[0] == "v1" && parts[1] == "memory" && parts[2] == "maintenance" && parts[4] == "dismiss":
-		s.handleDismissMemoryMaintenance(rec, r, user, parts[3])
-	case r.Method == http.MethodPost && path == "v1/memory/score":
-		s.handleScoreMemory(rec, r, user)
-	case r.Method == http.MethodPost && path == "v1/memory/rebuild":
-		s.handleRebuildMemory(rec, r, user)
-	case r.Method == http.MethodDelete && path == "v1/memory":
-		s.handleDeleteAllMemory(rec, r, user)
-	case r.Method == http.MethodPatch && len(parts) == 3 && parts[0] == "v1" && parts[1] == "memory":
-		s.handleUpdateMemoryItem(rec, r, user, parts[2])
-	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "v1" && parts[1] == "memory" && parts[3] == "feedback":
-		s.handleMemoryFeedback(rec, r, user, parts[2])
-	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "v1" && parts[1] == "memory" && parts[3] == "resolve":
-		s.handleResolveMemory(rec, r, user, parts[2])
-	case r.Method == http.MethodDelete && len(parts) == 3 && parts[0] == "v1" && parts[1] == "memory":
-		s.handleDeleteMemoryItem(rec, r, user, parts[2])
-	case r.Method == http.MethodPost && path == "v1/attachments":
-		s.handleCreateAttachment(rec, r, user)
-	case r.Method == http.MethodPost && path == "v1/attachments/presign":
-		s.handleCreateAttachmentPresign(rec, r, user)
-	case r.Method == http.MethodGet && path == "v1/attachments":
-		s.handleListAttachments(rec, r, user)
-	case r.Method == http.MethodGet && path == "v1/artifacts":
-		s.handleListArtifacts(rec, r, user)
-	case r.Method == http.MethodGet && path == "v1/search/messages":
-		s.handleSearchMessages(rec, r, user)
-	case r.Method == http.MethodPost && path == "v1/jobs":
-		s.handleCreateJob(rec, r, user)
-	case r.Method == http.MethodGet && path == "v1/jobs":
-		s.handleListJobs(rec, r, user)
-	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "v1" && parts[1] == "jobs":
-		s.handleGetJob(rec, r, user, parts[2])
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "v1" && parts[1] == "jobs" && parts[3] == "events":
-		s.handleJobEvents(rec, r, user, parts[2])
-	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "v1" && parts[1] == "jobs" && parts[3] == "cancel":
-		s.handleCancelJob(rec, r, user, parts[2])
-	case r.Method == http.MethodPost && path == "v1/sessions":
-		s.handleCreateSession(rec, r, user)
-	case r.Method == http.MethodGet && path == "v1/sessions":
-		s.handleListSessions(rec, r, user)
-	case r.Method == http.MethodGet && path == "v1/sessions/summary":
-		s.handleListSessionSummaries(rec, r, user)
-	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "v1" && parts[1] == "sessions":
-		s.handleGetSession(rec, r, user, parts[2])
-	case r.Method == http.MethodDelete && len(parts) == 3 && parts[0] == "v1" && parts[1] == "sessions":
-		s.handleDeleteSession(rec, r, user, parts[2])
-	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "v1" && parts[1] == "attachments":
-		s.handleDownloadAttachment(rec, r, user, parts[2])
-	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "v1" && parts[1] == "attachments" && parts[3] == "confirm":
-		s.handleConfirmAttachmentUpload(rec, r, user, parts[2])
-	case r.Method == http.MethodPost && len(parts) == 5 && parts[0] == "v1" && parts[1] == "attachments" && parts[3] == "memory" && parts[4] == "extract":
-		s.handleExtractAssetMemory(rec, r, user, AssetKindAttachment, parts[2])
-	case r.Method == http.MethodDelete && len(parts) == 3 && parts[0] == "v1" && parts[1] == "attachments":
-		s.handleDeleteAttachment(rec, r, user, parts[2])
-	case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "v1" && parts[1] == "artifacts":
-		s.handleDownloadArtifact(rec, r, user, parts[2])
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "v1" && parts[1] == "artifacts" && parts[3] == "preview":
-		s.handlePreviewArtifact(rec, r, user, parts[2])
-	case r.Method == http.MethodPost && len(parts) == 5 && parts[0] == "v1" && parts[1] == "artifacts" && parts[3] == "memory" && parts[4] == "extract":
-		s.handleExtractAssetMemory(rec, r, user, AssetKindArtifact, parts[2])
-	case r.Method == http.MethodDelete && len(parts) == 3 && parts[0] == "v1" && parts[1] == "artifacts":
-		s.handleDeleteArtifact(rec, r, user, parts[2])
-	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "v1" && parts[1] == "sessions" && parts[3] == "messages":
-		s.handleMessage(rec, r, user, parts[2])
-	case r.Method == http.MethodDelete && len(parts) == 4 && parts[0] == "v1" && parts[1] == "sessions" && parts[3] == "memory":
-		s.handleDeleteSessionMemory(rec, r, user, parts[2])
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "v1" && parts[1] == "sessions" && parts[3] == "ws":
-		s.handleWebSocket(rec, r, user, parts[2])
-	case r.Method == http.MethodGet && len(parts) == 5 && parts[0] == "v1" && parts[1] == "sessions" && parts[3] == "live" && parts[4] == "ws":
-		s.handleLiveWebSocket(rec, r, user, parts[2])
-	case r.Method == http.MethodPost && len(parts) == 4 && parts[0] == "v1" && parts[1] == "sessions" && parts[3] == "cancel":
-		s.handleCancel(rec, r, user, parts[2])
-	case r.Method == http.MethodGet && path == "v1/skills":
-		s.handleListSkills(rec, r)
-	case r.Method == http.MethodGet && path == "v1/llm/status":
-		s.handleLLMStatus(rec, r)
-	default:
-		writeJSON(rec, http.StatusNotFound, map[string]string{"error": "not found"})
-	}
-}
-
-func (s *Server) handlePublicAuth(w http.ResponseWriter, r *http.Request, path string) bool {
-	switch {
-	case r.Method == http.MethodPost && path == "v1/auth/register":
-		s.handleAuthRegister(w, r)
-		return true
-	case r.Method == http.MethodGet && path == "v1/auth/verify-email":
-		s.handleAuthVerifyEmail(w, r)
-		return true
-	case r.Method == http.MethodPost && path == "v1/auth/verify-email":
-		s.handleAuthVerifyEmail(w, r)
-		return true
-	case r.Method == http.MethodPost && path == "v1/auth/login":
-		s.handleAuthLogin(w, r)
-		return true
-	case r.Method == http.MethodPost && path == "v1/auth/password-reset/request":
-		s.handleAuthPasswordResetRequest(w, r)
-		return true
-	case r.Method == http.MethodPost && path == "v1/auth/password-reset/confirm":
-		s.handleAuthPasswordResetConfirm(w, r)
-		return true
-	case r.Method == http.MethodPost && path == "v1/auth/refresh":
-		s.handleAuthRefresh(w, r)
-		return true
-	default:
-		return false
-	}
+	s.router.ServeHTTP(w, r)
 }
 
 func (s *Server) handleApp(w http.ResponseWriter, _ *http.Request) {
@@ -414,12 +206,12 @@ func (s *Server) handleLLMStatus(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleAuthRegister(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Email       string `json:"email"`
-		Password    string `json:"password"`
+		Email       string `json:"email" validate:"required,email"`
+		Password    string `json:"password" validate:"notblank"`
 		DisplayName string `json:"display_name"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	if s.authService == nil {
@@ -436,7 +228,7 @@ func (s *Server) handleAuthRegister(w http.ResponseWriter, r *http.Request) {
 			ScoreDelta: 3,
 			Metadata:   map[string]any{"email": body.Email, "error": err.Error()},
 		})
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	if registration != nil && registration.VerificationRequired {
@@ -464,10 +256,10 @@ func (s *Server) handleAuthVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
 	if token == "" && r.Method == http.MethodPost {
 		var body struct {
-			Token string `json:"token"`
+			Token string `json:"token" validate:"notblank"`
 		}
 		if err := readJSON(r, &body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSONError(w, err)
 			return
 		}
 		token = strings.TrimSpace(body.Token)
@@ -484,7 +276,7 @@ func (s *Server) handleAuthVerifyEmail(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`<html><body><h1>Email verification failed</h1><p>The verification link is invalid or expired.</p></body></html>`))
 			return
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.logEvent("auth_email_verified", map[string]any{"user_id": profile.ID, "request_id": requestIDFromContext(r.Context())})
@@ -499,11 +291,11 @@ func (s *Server) handleAuthVerifyEmail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email    string `json:"email" validate:"required,email"`
+		Password string `json:"password" validate:"notblank"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	if s.authService == nil {
@@ -531,10 +323,10 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAuthPasswordResetRequest(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Email string `json:"email"`
+		Email string `json:"email" validate:"required,email"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	if s.authService == nil {
@@ -550,7 +342,7 @@ func (s *Server) handleAuthPasswordResetRequest(w http.ResponseWriter, r *http.R
 			ScoreDelta: 3,
 			Metadata:   map[string]any{"email": body.Email, "error": err.Error()},
 		})
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"sent": true})
@@ -558,11 +350,11 @@ func (s *Server) handleAuthPasswordResetRequest(w http.ResponseWriter, r *http.R
 
 func (s *Server) handleAuthPasswordResetConfirm(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Token    string `json:"token"`
-		Password string `json:"password"`
+		Token    string `json:"token" validate:"notblank"`
+		Password string `json:"password" validate:"notblank"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	if s.authService == nil {
@@ -578,7 +370,7 @@ func (s *Server) handleAuthPasswordResetConfirm(w http.ResponseWriter, r *http.R
 			RiskLevel:  RiskLevelMedium,
 			ScoreDelta: 8,
 		})
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.logEvent("auth_password_reset", map[string]any{"user_id": profile.ID, "request_id": requestIDFromContext(r.Context())})
@@ -588,10 +380,10 @@ func (s *Server) handleAuthPasswordResetConfirm(w http.ResponseWriter, r *http.R
 
 func (s *Server) handleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		RefreshToken string `json:"refresh_token"`
+		RefreshToken string `json:"refresh_token" validate:"notblank"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	if s.authService == nil {
@@ -633,7 +425,7 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request, user U
 		RefreshToken string `json:"refresh_token"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	if s.authService != nil {
@@ -664,44 +456,6 @@ func (s *Server) handleDataExport(w http.ResponseWriter, r *http.Request, user U
 	writeJSON(w, http.StatusOK, export)
 }
 
-func (s *Server) handleAdminSkills(w http.ResponseWriter, r *http.Request, user User, parts []string) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	if s.skillRegistry == nil {
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "skill registry is not configured"})
-		return
-	}
-	switch {
-	case r.Method == http.MethodGet && len(parts) == 3:
-		s.handleAdminListSkills(w, r)
-	case r.Method == http.MethodPost && len(parts) == 3:
-		s.handleAdminImportSkill(w, r, user)
-	case r.Method == http.MethodPatch && len(parts) == 4:
-		s.handleAdminUpdateSkill(w, r, user, parts[3])
-	case r.Method == http.MethodGet && len(parts) == 5 && parts[4] == "versions":
-		s.handleAdminListSkillVersions(w, r, parts[3])
-	case r.Method == http.MethodGet && len(parts) == 5 && parts[4] == "releases":
-		s.handleAdminListSkillReleases(w, r, parts[3])
-	case r.Method == http.MethodPost && len(parts) == 5 && parts[4] == "review":
-		s.handleAdminReviewSkill(w, r, parts[3])
-	case r.Method == http.MethodPost && len(parts) == 5 && parts[4] == "submit-review":
-		s.handleAdminSubmitSkillReview(w, r, user, parts[3])
-	case r.Method == http.MethodPost && len(parts) == 5 && parts[4] == "rollback":
-		s.handleAdminRollbackSkill(w, r, user, parts[3])
-	case r.Method == http.MethodGet && len(parts) == 5 && parts[4] == "executions":
-		s.handleAdminListSkillExecutions(w, r, parts[3])
-	case r.Method == http.MethodGet && len(parts) == 5 && parts[4] == "analytics":
-		s.handleAdminSkillAnalytics(w, r, parts[3])
-	case r.Method == http.MethodGet && len(parts) == 6 && parts[4] == "versions" && parts[5] == "diff":
-		s.handleAdminSkillVersionDiff(w, r, parts[3])
-	case r.Method == http.MethodPost && len(parts) == 5:
-		s.handleAdminSetSkillStatus(w, r, user, parts[3], parts[4])
-	default:
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-	}
-}
-
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	if strings.TrimSpace(s.adminToken) == "" {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin API is not configured"})
@@ -725,58 +479,6 @@ func (s *Server) handleAdminListSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"skills": records})
-}
-
-func (s *Server) handleAdminOps(w http.ResponseWriter, r *http.Request, user User, parts []string) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	if s.runtime == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runtime is not configured"})
-		return
-	}
-	switch {
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "sessions":
-		s.handleAdminOpsListSessions(w, r)
-	case r.Method == http.MethodGet && len(parts) == 5 && parts[3] == "sessions":
-		s.handleAdminOpsGetSession(w, r, parts[4])
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "jobs":
-		s.handleAdminOpsListJobs(w, r)
-	case r.Method == http.MethodGet && len(parts) == 5 && parts[3] == "jobs":
-		s.handleAdminOpsGetJob(w, r, parts[4])
-	case r.Method == http.MethodGet && len(parts) == 6 && parts[3] == "jobs" && parts[5] == "events":
-		s.handleAdminOpsListJobEvents(w, r, parts[4])
-	case r.Method == http.MethodPost && len(parts) == 6 && parts[3] == "jobs" && parts[5] == "cancel":
-		s.handleAdminOpsCancelJob(w, r, user, parts[4])
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "assets":
-		s.handleAdminOpsListAssets(w, r)
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "health":
-		s.handleAdminOpsHealth(w, r)
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "llm-usage":
-		s.handleAdminOpsLLMUsage(w, r)
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "llm-config":
-		s.handleAdminOpsLLMConfig(w, r)
-	case r.Method == http.MethodPatch && len(parts) == 4 && parts[3] == "llm-config":
-		s.handleAdminOpsUpdateLLMConfig(w, r, user)
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "quota":
-		s.handleAdminOpsQuota(w, r)
-	case r.Method == http.MethodPost && len(parts) == 5 && parts[3] == "quota" && parts[4] == "reset":
-		s.handleAdminOpsQuotaReset(w, r, user)
-	case r.Method == http.MethodPost && len(parts) == 5 && parts[3] == "quota" && parts[4] == "refund":
-		s.handleAdminOpsQuotaRefund(w, r, user)
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "audit":
-		s.handleAdminOpsAudit(w, r)
-	case r.Method == http.MethodGet && len(parts) == 5 && parts[3] == "risk" && parts[4] == "reviews":
-		s.handleAdminOpsRiskReviews(w, r)
-	case r.Method == http.MethodPatch && len(parts) == 6 && parts[3] == "risk" && parts[4] == "reviews":
-		s.handleAdminOpsUpdateRiskReview(w, r, user, parts[5])
-	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "risk":
-		s.handleAdminOpsRisk(w, r)
-	case len(parts) >= 5 && parts[3] == "eval":
-		s.handleAdminOpsEval(w, r, user, parts)
-	default:
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-	}
 }
 
 func (s *Server) adminOpsUserID(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -891,7 +593,7 @@ func (s *Server) handleAdminOpsCancelJob(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if err := s.runtime.CancelJob(r.Context(), userID, jobID); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.auditEvent(r, "admin_job_cancel", user, map[string]any{"target_user_id": userID, "job_id": jobID})
@@ -981,12 +683,12 @@ func (s *Server) handleAdminOpsUpdateLLMConfig(w http.ResponseWriter, r *http.Re
 	}
 	var patch LLMGovernanceConfigPatch
 	if err := readJSON(r, &patch); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	updated, err := s.llmConfig.Update(r.Context(), patch)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.auditEvent(r, "admin_llm_config_update", actor, map[string]any{
@@ -1050,19 +752,12 @@ func (s *Server) handleAdminOpsQuotaReset(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "llm usage store is not configured"})
 		return
 	}
-	var body struct {
-		UserID string `json:"user_id"`
-		Reason string `json:"reason"`
-	}
+	var body adminOpsQuotaResetRequest
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	userID := strings.TrimSpace(body.UserID)
-	if userID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
-		return
-	}
 	since := startOfUTCDay(time.Now())
 	current, err := s.llmUsage.SummarizeLLMQuota(r.Context(), userID, since, 20)
 	if err != nil {
@@ -1105,30 +800,12 @@ func (s *Server) handleAdminOpsQuotaRefund(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "llm usage store is not configured"})
 		return
 	}
-	var body struct {
-		UserID        string  `json:"user_id"`
-		RequestRefund int     `json:"request_refund"`
-		TokenRefund   int     `json:"token_refund"`
-		CostRefundUSD float64 `json:"cost_refund_usd"`
-		Reason        string  `json:"reason"`
-	}
+	var body adminOpsQuotaRefundRequest
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	userID := strings.TrimSpace(body.UserID)
-	if userID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
-		return
-	}
-	if body.RequestRefund < 0 || body.TokenRefund < 0 || body.CostRefundUSD < 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "refund values must be positive"})
-		return
-	}
-	if body.RequestRefund == 0 && body.TokenRefund == 0 && body.CostRefundUSD == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one refund value is required"})
-		return
-	}
 	adjustment := LLMQuotaAdjustment{
 		UserID:                userID,
 		ActorUserID:           actor.ID,
@@ -1283,7 +960,7 @@ func (s *Server) handleAdminOpsUpdateRiskReview(w http.ResponseWriter, r *http.R
 		Note       string `json:"note"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	item, err := store.UpdateRiskReview(r.Context(), reviewID, RiskReviewUpdate{
@@ -1350,29 +1027,6 @@ func containsLowerAny(query string, values ...string) bool {
 	return false
 }
 
-func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request, user User, parts []string) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	store, ok := s.adminUserStore()
-	if !ok {
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "admin user store is not configured"})
-		return
-	}
-	switch {
-	case r.Method == http.MethodGet && len(parts) == 3:
-		s.handleAdminListUsers(w, r, store)
-	case r.Method == http.MethodGet && len(parts) == 4:
-		s.handleAdminGetUser(w, r, store, parts[3])
-	case r.Method == http.MethodPatch && len(parts) == 4:
-		s.handleAdminUpdateUser(w, r, user, store, parts[3])
-	case r.Method == http.MethodPost && len(parts) == 5:
-		s.handleAdminUserAction(w, r, user, store, parts[3], parts[4])
-	default:
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-	}
-}
-
 func (s *Server) adminUserStore() (AdminUserStore, bool) {
 	if s == nil || s.authService == nil || s.authService.Store == nil {
 		return nil, false
@@ -1406,14 +1060,10 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request, stor
 
 func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request, actor User, store AdminUserStore, userID string) {
 	var body struct {
-		Status *string `json:"status"`
+		Status *string `json:"status" validate:"required"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if body.Status == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status is required"})
+		writeJSONError(w, err)
 		return
 	}
 	status := normalizeOptionalUserStatus(*body.Status)
@@ -1505,7 +1155,7 @@ func (s *Server) handleAdminImportSkill(w http.ResponseWriter, r *http.Request, 
 		Changelog string              `json:"changelog"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	record := body.Skill
@@ -1533,7 +1183,7 @@ func (s *Server) handleAdminImportSkill(w http.ResponseWriter, r *http.Request, 
 	}
 	updated, err := s.skillRegistry.ImportSkill(r.Context(), record, body.Changelog)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	if updated.Status == SkillStatusPublished {
@@ -1560,7 +1210,7 @@ func (s *Server) handleAdminUpdateSkill(w http.ResponseWriter, r *http.Request, 
 		Metadata    map[string]any `json:"metadata"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	record, err := s.skillRegistry.GetSkill(r.Context(), name)
@@ -1677,7 +1327,7 @@ func (s *Server) handleAdminSetSkillStatus(w http.ResponseWriter, r *http.Reques
 		Changelog string `json:"changelog"`
 	}
 	if err := readOptionalJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	status := ""
@@ -1772,7 +1422,7 @@ func (s *Server) handleAdminSubmitSkillReview(w http.ResponseWriter, r *http.Req
 		Changelog string `json:"changelog"`
 	}
 	if err := readOptionalJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	record, err := s.skillRegistry.GetSkill(r.Context(), name)
@@ -1821,7 +1471,7 @@ func (s *Server) handleAdminRollbackSkill(w http.ResponseWriter, r *http.Request
 		Changelog   string `json:"changelog"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	current, err := s.skillRegistry.GetSkill(r.Context(), name)
@@ -2092,7 +1742,7 @@ func stableJSONMap(value map[string]any) string {
 func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, user User) {
 	maxBytes := s.runtime.MaxAssetBytes()
 	if err := r.ParseMultipartForm(maxBytes); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	file, header, err := r.FormFile("file")
@@ -2103,7 +1753,7 @@ func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, 
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	if int64(len(data)) > maxBytes {
@@ -2117,7 +1767,7 @@ func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, 
 	}
 	attachment, err := s.runtime.CreateAttachment(r.Context(), user.ID, r.FormValue("session_id"), filename, contentType, data)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.auditEvent(r, "attachment_create", user, map[string]any{
@@ -2132,19 +1782,19 @@ func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, 
 func (s *Server) handleCreateAttachmentPresign(w http.ResponseWriter, r *http.Request, user User) {
 	var req struct {
 		SessionID   string `json:"session_id"`
-		Filename    string `json:"filename"`
+		Filename    string `json:"filename" validate:"notblank"`
 		ContentType string `json:"content_type"`
-		SizeBytes   int64  `json:"size_bytes"`
-		TTLSeconds  int64  `json:"ttl_seconds,omitempty"`
+		SizeBytes   int64  `json:"size_bytes" validate:"gt=0"`
+		TTLSeconds  int64  `json:"ttl_seconds,omitempty" validate:"gte=0"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	ttl := time.Duration(req.TTLSeconds) * time.Second
 	upload, err := s.runtime.CreatePresignedAttachmentUpload(r.Context(), user.ID, req.SessionID, req.Filename, req.ContentType, req.SizeBytes, ttl)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.auditEvent(r, "attachment_presign", user, map[string]any{
@@ -2159,17 +1809,17 @@ func (s *Server) handleCreateAttachmentPresign(w http.ResponseWriter, r *http.Re
 func (s *Server) handleConfirmAttachmentUpload(w http.ResponseWriter, r *http.Request, user User, attachmentID string) {
 	var req struct {
 		SessionID   string `json:"session_id"`
-		Filename    string `json:"filename"`
+		Filename    string `json:"filename" validate:"notblank"`
 		ContentType string `json:"content_type"`
-		SizeBytes   int64  `json:"size_bytes"`
+		SizeBytes   int64  `json:"size_bytes" validate:"gt=0"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	attachment, err := s.runtime.ConfirmAttachmentUpload(r.Context(), user.ID, req.SessionID, attachmentID, req.Filename, req.ContentType, req.SizeBytes)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.auditEvent(r, "attachment_confirm", user, map[string]any{
@@ -2229,7 +1879,7 @@ func (s *Server) handlePreviewArtifact(w http.ResponseWriter, r *http.Request, u
 	}
 	preview, err := renderDOCXPreviewHTML(artifact, data)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -2266,13 +1916,13 @@ func (s *Server) handleExtractAssetMemory(w http.ResponseWriter, r *http.Request
 	var body MemoryAssetExtractionOptions
 	if r.Body != nil {
 		if err := readOptionalJSON(r, &body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSONError(w, err)
 			return
 		}
 	}
 	items, err := s.runtime.ExtractMemoryFromAsset(r.Context(), user.ID, kind, assetID, body)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.auditEvent(r, "memory_extract_asset", user, map[string]any{
@@ -2295,15 +1945,9 @@ func writeAssetDownload(w http.ResponseWriter, asset *Artifact, data []byte) {
 }
 
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, user User) {
-	var body struct {
-		SessionID      string              `json:"session_id"`
-		Content        string              `json:"content"`
-		Type           string              `json:"type"`
-		AttachmentIDs  []string            `json:"attachment_ids"`
-		AttachmentURLs []ChatAttachmentURL `json:"attachment_urls"`
-	}
+	var body createJobRequest
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.scanAndRecordRisk(r, RiskScanTarget{
@@ -2314,7 +1958,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, user Us
 	})
 	job, err := s.runtime.CreateJob(r.Context(), ChatRequest{UserID: user.ID, SessionID: body.SessionID, Content: body.Content, AttachmentIDs: body.AttachmentIDs, AttachmentURLs: body.AttachmentURLs}, body.Type)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	if err := s.runtime.StartJob(r.Context(), job); err != nil {
@@ -2481,7 +2125,7 @@ func (s *Server) handleAccountDelete(w http.ResponseWriter, r *http.Request, use
 		RefreshToken string `json:"refresh_token"`
 	}
 	if err := readOptionalJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	if err := s.runtime.DeleteUserData(r.Context(), user.ID); err != nil {
@@ -2764,7 +2408,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request, use
 		WorkingDir string `json:"working_dir"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	session, err := s.runtime.CreateSession(r.Context(), user.ID, body.WorkingDir)
@@ -2951,7 +2595,7 @@ func (s *Server) handleUpdateMemorySettings(w http.ResponseWriter, r *http.Reque
 		ContextEnabled *bool `json:"context_enabled"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	if body.Enabled != nil {
@@ -3007,7 +2651,7 @@ func (s *Server) handleUpdatePersonalization(w http.ResponseWriter, r *http.Requ
 		FeatureFlags       map[string]*bool   `json:"feature_flags"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	previous := settings
@@ -3056,12 +2700,12 @@ func (s *Server) handleResetPersonalization(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleCreateBrowserMemory(w http.ResponseWriter, r *http.Request, user User) {
 	var body BrowserMemoryRequest
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	item, err := s.runtime.SaveBrowserMemory(r.Context(), user.ID, body)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.auditEvent(r, "personalization_browser_memory_create", user, map[string]any{
@@ -3173,7 +2817,7 @@ func (s *Server) handleUpdateMemoryItem(w http.ResponseWriter, r *http.Request, 
 		Status     *string  `json:"status"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	before := existing.Content
@@ -3229,15 +2873,15 @@ func (s *Server) handleMemoryFeedback(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 	var body struct {
-		Type string `json:"type"`
+		Type string `json:"type" validate:"oneof=important incorrect not_relevant"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	updated, err := s.runtime.ApplyMemoryFeedback(r.Context(), user.ID, itemID, body.Type)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.auditEvent(r, "memory_feedback", user, map[string]any{"memory_id": itemID, "type": body.Type})
@@ -3252,15 +2896,15 @@ func (s *Server) handleResolveMemory(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 	var body struct {
-		Action string `json:"action"`
+		Action string `json:"action" validate:"oneof=accept reject keep_both"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	updated, err := s.runtime.ResolveMemoryConflict(r.Context(), user.ID, itemID, body.Action)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.auditEvent(r, "memory_resolve_conflict", user, map[string]any{"memory_id": itemID, "action": body.Action})
@@ -3317,7 +2961,7 @@ func (s *Server) handleRunMemoryMaintenance(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleApplyMemoryMaintenance(w http.ResponseWriter, r *http.Request, user User, actionID string) {
 	action, err := s.runtime.ApplyMemoryMaintenance(r.Context(), user.ID, actionID)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.auditEvent(r, "memory_apply_maintenance", user, map[string]any{"action_id": action.ID, "type": action.Type})
@@ -3328,7 +2972,7 @@ func (s *Server) handleApplyMemoryMaintenance(w http.ResponseWriter, r *http.Req
 func (s *Server) handleDismissMemoryMaintenance(w http.ResponseWriter, r *http.Request, user User, actionID string) {
 	action, err := s.runtime.DismissMemoryMaintenance(r.Context(), user.ID, actionID)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.auditEvent(r, "memory_dismiss_maintenance", user, map[string]any{"action_id": action.ID, "type": action.Type})
@@ -3362,14 +3006,9 @@ func (s *Server) handleDeleteAllMemory(w http.ResponseWriter, r *http.Request, u
 }
 
 func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request, user User, sessionID string) {
-	var body struct {
-		Content        string              `json:"content"`
-		AttachmentIDs  []string            `json:"attachment_ids"`
-		AttachmentURLs []ChatAttachmentURL `json:"attachment_urls"`
-		ThinkingMode   bool                `json:"thinking_mode,omitempty"`
-	}
+	var body chatMessageRequest
 	if err := readJSON(r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSONError(w, err)
 		return
 	}
 	s.scanAndRecordRisk(r, RiskScanTarget{
@@ -3463,7 +3102,7 @@ func (s *Server) handleListSkills(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) logf(format string, args ...any) {
 	if s.logger != nil {
-		s.logger.Printf(format, args...)
+		s.logger.Info(fmt.Sprintf(format, args...))
 	}
 }
 
@@ -3472,7 +3111,13 @@ func (s *Server) logEvent(event string, fields map[string]any) {
 		fields = map[string]any{}
 	}
 	fields["event"] = event
-	logJSON(s.logger, fields)
+	if _, ok := fields["request_id"]; !ok {
+		fields["request_id"] = ""
+	}
+	if _, ok := fields["user_id"]; !ok {
+		fields["user_id"] = ""
+	}
+	logFields(s.logger, fields)
 }
 
 func (s *Server) recordGovernanceEvent(event string) {
@@ -3611,29 +3256,15 @@ func sameHostOrigin(r *http.Request) bool {
 }
 
 func readJSON(r *http.Request, v any) error {
-	defer r.Body.Close()
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(v); err != nil {
-		return err
-	}
-	return nil
+	return httpjson.Decode(r, v)
 }
 
 func readOptionalJSON(r *http.Request, v any) error {
-	defer r.Body.Close()
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(v); err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	return nil
+	return httpjson.DecodeOptional(r, v)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(normalizeAPIResponse(w, status, value))
+	httpjson.WriteWithOptions(w, status, value, httpjson.WriteOptions{Normalize: normalizeAPIResponse})
 }
 
 func parseBoundedInt(value string, fallback, minValue, maxValue int) int {

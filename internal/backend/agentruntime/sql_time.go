@@ -1,8 +1,6 @@
 package agentruntime
 
 import (
-	"context"
-	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -83,52 +81,6 @@ func parseSQLTimeString(value string) (time.Time, error) {
 		return parsed.UTC(), nil
 	}
 	return time.Time{}, fmt.Errorf("invalid SQL time %q", value)
-}
-
-func ensureReadableTimeColumns(ctx context.Context, db *sql.DB, dialect SQLDialect, table string, columns ...string) error {
-	if dialect != SQLDialectPostgres || db == nil {
-		return nil
-	}
-	for _, column := range columns {
-		dataType, err := postgresColumnType(ctx, db, table, column)
-		if err != nil {
-			return err
-		}
-		if dataType == "" || dataType == "timestamp with time zone" {
-			continue
-		}
-		if _, err := db.ExecContext(ctx, postgresReadableTimeAlter(table, column, dataType)); err != nil {
-			return fmt.Errorf("convert %s.%s to timestamptz: %w", table, column, err)
-		}
-	}
-	return nil
-}
-
-func postgresColumnType(ctx context.Context, db *sql.DB, table, column string) (string, error) {
-	var dataType string
-	err := db.QueryRowContext(ctx, `
-SELECT data_type
-FROM information_schema.columns
-WHERE table_schema = current_schema()
-  AND table_name = $1
-  AND column_name = $2`, table, column).Scan(&dataType)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	return strings.ToLower(dataType), err
-}
-
-func postgresReadableTimeAlter(table, column, dataType string) string {
-	quotedTable := quotePostgresIdent(table)
-	quotedColumn := quotePostgresIdent(column)
-	switch dataType {
-	case "bigint", "integer", "smallint", "numeric", "double precision", "real":
-		return fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN %s TYPE TIMESTAMPTZ USING to_timestamp(%s::double precision / 1000.0)`, quotedTable, quotedColumn, quotedColumn)
-	case "text", "character varying", "character":
-		return fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN %s TYPE TIMESTAMPTZ USING NULLIF(%s, '')::timestamptz`, quotedTable, quotedColumn, quotedColumn)
-	default:
-		return fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN %s TYPE TIMESTAMPTZ USING %s::timestamptz`, quotedTable, quotedColumn, quotedColumn)
-	}
 }
 
 func quotePostgresIdent(value string) string {
