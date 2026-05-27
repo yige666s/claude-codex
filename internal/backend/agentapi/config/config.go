@@ -85,6 +85,8 @@ type Config struct {
 	Workspace                               string
 	UserWorkspaceRoot                       string
 	AllowCustomWorkingDir                   bool
+	Timezone                                string
+	Locale                                  string
 	LLMProvider                             string
 	APIKey                                  string
 	APIToken                                string
@@ -301,6 +303,8 @@ func Default() Config {
 		Workspace:                               MustWorkingDir(),
 		UserWorkspaceRoot:                       os.Getenv("AGENT_API_USER_WORKSPACE_ROOT"),
 		AllowCustomWorkingDir:                   EnvBool("AGENT_API_ALLOW_CUSTOM_WORKING_DIR", false),
+		Timezone:                                os.Getenv("AGENT_API_TIMEZONE"),
+		Locale:                                  os.Getenv("AGENT_API_LOCALE"),
 		LLMProvider:                             FirstNonEmpty(os.Getenv("AGENT_API_LLM_PROVIDER"), os.Getenv("CLAUDE_CODE_PROVIDER"), "anthropic"),
 		APIKey:                                  "",
 		APIToken:                                "",
@@ -518,6 +522,8 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.StringVar(&cfg.Workspace, "workspace", cfg.Workspace, "default working directory")
 	flags.StringVar(&cfg.UserWorkspaceRoot, "user-workspace-root", cfg.UserWorkspaceRoot, "root directory for per-user sandboxed workspaces")
 	flags.BoolVar(&cfg.AllowCustomWorkingDir, "allow-custom-working-dir", cfg.AllowCustomWorkingDir, "allow request-provided working_dir when no user workspace root is configured")
+	flags.StringVar(&cfg.Timezone, "timezone", cfg.Timezone, "IANA timezone used for current date/time context; empty uses server local time")
+	flags.StringVar(&cfg.Locale, "locale", cfg.Locale, "BCP 47 locale tag used for locale context; empty lets the model infer from the latest user message")
 	flags.StringVar(&cfg.LLMProvider, "llm-provider", cfg.LLMProvider, "LLM provider: anthropic, openai, qwen, gemini, vertex, or custom")
 	flags.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "LLM API key; env fallback depends on -llm-provider")
 	flags.StringVar(&cfg.APIToken, "api-token", cfg.APIToken, "LLM bearer/OAuth token; env fallback depends on -llm-provider")

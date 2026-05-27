@@ -75,6 +75,7 @@ type Runtime struct {
 	riskScanner      RiskScanner
 	riskRecorder     func(context.Context, RiskEvent)
 	logger           *slog.Logger
+	clock            Clock
 
 	mu                    sync.Mutex
 	wg                    sync.WaitGroup
@@ -139,6 +140,7 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		skills:                skills,
 		engineFactory:         engineFactory,
 		logger:                logger,
+		clock:                 systemClock{},
 		running:               make(map[string]context.CancelFunc),
 		runningJobTurns:       make(map[string]bool),
 		runningJobs:           make(map[string]context.CancelFunc),
@@ -1455,14 +1457,7 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 		return err
 	}
 	startMessageCount := len(session.Messages)
-	ensureConsumerSecurityContext(session)
-	if err := r.injectPersonalization(ctx, req.UserID, session); err != nil {
-		return err
-	}
-	if err := r.injectBrowserMemory(ctx, req.UserID, session); err != nil {
-		return err
-	}
-	if err := r.injectMemory(ctx, req.UserID, session); err != nil {
+	if err := r.injectSessionRuntimeContexts(ctx, req.UserID, session); err != nil {
 		return err
 	}
 
@@ -1545,9 +1540,10 @@ func (r *Runtime) LiveSystemInstruction(ctx context.Context, userID, sessionID s
 	var parts []string
 	session, err := r.GetSession(ctx, userID, sessionID)
 	if err != nil || session == nil {
-		return consumerSecuritySystemContext
+		parts = append(parts, r.baseLiveRuntimeContextParts()...)
+		return strings.Join(parts, "\n\n")
 	}
-	parts = append(parts, consumerSecuritySystemContext)
+	parts = append(parts, r.baseLiveRuntimeContextParts()...)
 	parts = append(parts, "Live voice language policy: preserve the user's spoken language; if the utterance is ambiguous, prefer Chinese for this product unless recent conversation context is clearly in another language. Treat short repeated fillers, obvious ASR noise, and accidental wake words as non-actionable. Never trigger artifact-producing skills from vague live speech; require an explicit slash command or a clear confirmation-quality request.")
 	if skillContext := r.liveSkillContext(); strings.TrimSpace(skillContext) != "" {
 		parts = append(parts, "<skills>\n"+skillContext+"\n</skills>")
@@ -2690,6 +2686,7 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	if err != nil {
 		return runnerResult{}, err
 	}
+	r.injectTransientRuntimeContexts(llmSession)
 	llmPrompt, err := r.materializeContentBlocks(ctx, userID, prompt)
 	if err != nil {
 		return runnerResult{}, err
@@ -2706,12 +2703,15 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	if errors.Is(err, skilltool.ErrRunAsJobRequired) {
 		selection, ok := selectedRunAsJobSkill(result.Session, startMessageCount)
 		if !ok {
+			stripTransientRuntimeContexts(result.Session)
 			return runnerResult{Output: result.Output, Session: result.Session}, err
 		}
 		job, jobErr := r.createSelectedSkillJob(ctx, req, session.ID, selection)
 		if jobErr != nil {
+			stripTransientRuntimeContexts(result.Session)
 			return runnerResult{Output: result.Output, Session: result.Session}, jobErr
 		}
+		stripTransientRuntimeContexts(result.Session)
 		return runnerResult{
 			Session:   result.Session,
 			Job:       job,
@@ -2719,6 +2719,7 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 		}, nil
 	}
 	r.recordInlineSkillExecutions(ctx, userID, result.Session, startMessageCount, startedAt, err)
+	stripTransientRuntimeContexts(result.Session)
 	return runnerResult{Output: result.Output, Session: result.Session}, err
 }
 

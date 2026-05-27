@@ -11,6 +11,8 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	t.Setenv("AGENT_API_SQL_MAX_OPEN_CONNS", "37")
 	t.Setenv("AGENT_API_LLM_PROVIDER", "openai")
 	t.Setenv("AGENT_API_OBJECT_TIMEOUT", "3s")
+	t.Setenv("AGENT_API_TIMEZONE", "Asia/Shanghai")
+	t.Setenv("AGENT_API_LOCALE", "zh-CN")
 
 	cfg := Default()
 
@@ -22,6 +24,12 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	}
 	if cfg.ObjectTimeout != 3*time.Second {
 		t.Fatalf("ObjectTimeout = %s, want 3s", cfg.ObjectTimeout)
+	}
+	if cfg.Timezone != "Asia/Shanghai" {
+		t.Fatalf("Timezone = %q, want Asia/Shanghai", cfg.Timezone)
+	}
+	if cfg.Locale != "zh-CN" {
+		t.Fatalf("Locale = %q, want zh-CN", cfg.Locale)
 	}
 }
 
@@ -39,6 +47,8 @@ func TestBindFlagsOverridesConfig(t *testing.T) {
 		"--sql-max-open-conns", "11",
 		"--live-enabled",
 		"--object-timeout", "4s",
+		"--timezone", "UTC",
+		"--locale", "en-US",
 	})
 
 	if err := command.Execute(); err != nil {
@@ -55,6 +65,12 @@ func TestBindFlagsOverridesConfig(t *testing.T) {
 	}
 	if cfg.ObjectTimeout != 4*time.Second {
 		t.Fatalf("ObjectTimeout = %s, want 4s", cfg.ObjectTimeout)
+	}
+	if cfg.Timezone != "UTC" {
+		t.Fatalf("Timezone = %q, want UTC", cfg.Timezone)
+	}
+	if cfg.Locale != "en-US" {
+		t.Fatalf("Locale = %q, want en-US", cfg.Locale)
 	}
 }
 

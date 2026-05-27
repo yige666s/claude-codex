@@ -76,6 +76,8 @@ func runtimeConfigFromStartup(cfg startupconfig.Config, skillShellSandboxConfig 
 		DefaultWorkingDir:     cfg.Workspace,
 		UserWorkspaceRoot:     cfg.UserWorkspaceRoot,
 		AllowCustomWorkingDir: cfg.AllowCustomWorkingDir,
+		Timezone:              cfg.Timezone,
+		Locale:                cfg.Locale,
 		TurnTimeout:           cfg.TurnTimeout,
 		SkillShellTimeout:     cfg.SkillShellTimeout,
 		MessageSearch:         messageSearchConfigFromStartup(cfg),

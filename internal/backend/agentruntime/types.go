@@ -411,6 +411,8 @@ type RuntimeConfig struct {
 	DefaultWorkingDir     string
 	UserWorkspaceRoot     string
 	AllowCustomWorkingDir bool
+	Timezone              string
+	Locale                string
 	TurnTimeout           time.Duration
 	SkillShellTimeout     time.Duration
 	SkillShellSandbox     SkillShellSandboxConfig

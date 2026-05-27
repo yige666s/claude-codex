@@ -1277,6 +1277,77 @@ func TestRuntimeUsesConfiguredMemoryExtractor(t *testing.T) {
 	}
 }
 
+func TestRuntimeInjectsTransientContextsForLLMOnly(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	runner := &temporalCaptureRunner{}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute, Timezone: "Asia/Shanghai", Locale: "zh-CN"},
+		NewFileSessionStore(root),
+		nil,
+		nil,
+		func(Scope) Runner { return runner },
+	)
+	runtime.SetClock(fixedClock{at: time.Date(2026, 5, 27, 14, 30, 0, 0, location)})
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	if err := runtime.Chat(ctx, ChatRequest{UserID: "alice", SessionID: session.ID, Content: "What is today's date?"}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+
+	if !messagesContainRuntimeContext(runner.sessionMessages, temporalContextMarker) {
+		t.Fatalf("runner session did not receive temporal context: %#v", runner.sessionMessages)
+	}
+	if !messagesContainRuntimeContext(runner.sessionMessages, localeContextMarker) {
+		t.Fatalf("runner session did not receive locale context: %#v", runner.sessionMessages)
+	}
+	persisted, err := runtime.GetSession(ctx, "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if messagesContainRuntimeContext(persisted.Messages, temporalContextMarker) || messagesContainRuntimeContext(persisted.Messages, localeContextMarker) {
+		t.Fatalf("transient contexts should not be persisted: %#v", persisted.Messages)
+	}
+}
+
+func TestRuntimeLiveSystemInstructionIncludesTemporalContext(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute, Timezone: "Asia/Shanghai", Locale: "zh-CN"},
+		NewFileSessionStore(root),
+		nil,
+		nil,
+		func(Scope) Runner { return echoRunner{} },
+	)
+	runtime.SetClock(fixedClock{at: time.Date(2026, 5, 27, 14, 30, 0, 0, location)})
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	instruction := runtime.LiveSystemInstruction(ctx, "alice", session.ID)
+
+	if !strings.Contains(instruction, "<temporal-context>") ||
+		!strings.Contains(instruction, "Current date: 2026-05-27") ||
+		!strings.Contains(instruction, "<locale-context>") ||
+		!strings.Contains(instruction, "Locale: zh-CN") ||
+		!strings.Contains(instruction, "Timezone: Asia/Shanghai") {
+		t.Fatalf("live instruction missing runtime context:\n%s", instruction)
+	}
+}
+
 func TestFileSessionStoreSearchMessages(t *testing.T) {
 	store := NewFileSessionStore(t.TempDir())
 	ctx := context.Background()
@@ -4981,6 +5052,38 @@ func (r *captureContentRunner) RunContent(_ context.Context, session *state.Sess
 	})
 	session.AddAssistantMessage("ok")
 	return engine.Result{Output: "ok", Session: session}, nil
+}
+
+type fixedClock struct {
+	at time.Time
+}
+
+func (c fixedClock) Now() time.Time {
+	return c.at
+}
+
+type temporalCaptureRunner struct {
+	sessionMessages []state.Message
+}
+
+func (r *temporalCaptureRunner) Run(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	r.sessionMessages = append([]state.Message(nil), session.Messages...)
+	session.AddUserMessage(prompt)
+	session.AddAssistantMessage("ok")
+	return engine.Result{Output: "ok", Session: session}, nil
+}
+
+func (r *temporalCaptureRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return r.Run(context.Background(), session, prompt)
+}
+
+func messagesContainRuntimeContext(messages []state.Message, marker string) bool {
+	for _, message := range messages {
+		if message.Hidden && strings.Contains(message.Content, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 type presignObjectStore struct {
