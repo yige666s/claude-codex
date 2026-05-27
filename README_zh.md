@@ -1,119 +1,70 @@
-# AgentAPI
+# claude-codex
 
-AgentAPI 是一个面向 C 端用户的 Agent 工作区产品，由 Go 后端和
-React Web 前端组成。它支持用户认证、会话对话、长任务、Skill、附件、
-生成产物、Memory、Admin 运维、Audit Log、风控，以及基于 Docker
-Compose 的生产部署。
+本仓库包含两个相关但定位不同的项目：
 
-仓库中仍保留本地 TUI/CLI harness，但当前主要产品面是
-`cmd/agentapi` + `apps/web`。
+1. **AgentAPI**：主项目。面向消费者/产品形态的 Agent 工作区，包含 Go 后端、React Web 前端、生产运行时和部署方案。
+2. **claudecode Go 重构**：副项目。将 Claude Code 的 TypeScript CLI/TUI、编排、工具、运行时和外围能力逐步重构为 Go，主要代码位于 `internal/app`、`internal/ui`、`internal/harness` 和部分 `internal/backend`。
 
-## 目录
+English documentation is available in [README.md](README.md).
 
-- [当前状态](#当前状态)
-- [目录结构](#目录结构)
-- [核心能力](#核心能力)
-- [快速启动](#快速启动)
-- [配置说明](#配置说明)
-- [部署](#部署)
-- [运维](#运维)
-- [开发命令](#开发命令)
-- [安全注意事项](#安全注意事项)
-- [相关文档](#相关文档)
+---
 
-## 当前状态
+## 第一部分：AgentAPI 主项目
 
-当前生产路径：
+AgentAPI 是当前仓库的主要产品面。它由 `cmd/agentapi` 后端和 `apps/web` 前端组成，提供登录注册、会话聊天、长任务、技能、附件、生成物、记忆、管理后台、审计、风控和生产部署能力。
 
-- 后端：`cmd/agentapi`
-- 前端：`apps/web`
-- 数据库：Postgres
-- 缓存和限流：Redis
-- 对象存储：Cloudflare R2，使用 S3-compatible API
-- LLM provider：Vertex AI，使用 service account 凭据
-- 邮件服务：Resend，用于注册邮箱验证
-- 部署：Docker Compose，并支持 GitHub Actions push-to-main 自动部署
+### 当前定位
 
-已经实现的产品模块：
+- **后端入口**：`cmd/agentapi`
+- **前端入口**：`apps/web`
+- **核心后端运行时**：`internal/backend/agentruntime`
+- **生产装配层**：`internal/backend/agentapi`
+- **默认数据库**：Postgres
+- **缓存和限流**：Redis
+- **对象存储**：S3 兼容接口，当前生产模板面向 Cloudflare R2
+- **默认 LLM 提供方**：Vertex AI，也保留多 provider 抽象
+- **部署方式**：Docker Compose，本仓库包含本地和生产模板
 
-- JWT 用户系统、refresh token、可选邮箱验证。
-- 会话对话、流式响应、断线恢复/回放、带附件消息。
-- Job 执行和 Job Timeline 事件回放。
-- 附件和生成产物通过 R2 存储。
-- Skill Registry、产品化 Skill 列表、执行历史、Review Checks、Admin 管理 API/UI。
-- Memory 捕获、治理、用户控制、删除/导出、维护、质量反馈。
-- Admin Console：Skill、用户、Session/Job/Artifact、Health/Cost、Audit、Risk、Agent Evaluation。
-- 风控和滥用防护基础设施：限流、风险事件、Admin Review、审计日志。
+### 主要能力
 
-暂缓内容：
+- 用户注册、登录、刷新令牌、邮箱验证、退出登录和账号删除。
+- 会话列表、聊天记录、SSE 流式响应、断线重连和事件回放。
+- 长任务创建、取消、事件时间线和任务状态管理。
+- 附件上传、下载、删除、预览，以及消息附件发送。
+- 生成物 artifact 的登记、列表、预览、下载和删除。
+- Skills 注册表、技能浏览、技能执行历史、策略控制和后台管理。
+- 记忆抽取、整理、评分、维护、删除、导出和用户级开关。
+- 管理后台：用户、技能、会话、任务、artifact、健康、成本、审计和风险处理。
+- 生产基础设施集成：Postgres、Redis、Kafka、S3/R2、Qdrant/Elastic、Prometheus。
 
-- Product Analytics 的完整产品分析面板。
-- 更高级的向量/多模态 Memory 检索增强。
-- 一部分偏 To B 的深度治理流程。
+### 目录结构
 
-## 目录结构
-
-| 路径 | 作用 |
+| 路径 | 说明 |
 | --- | --- |
-| `cmd/agentapi` | 产品后端入口。 |
-| `apps/web` | React/Vite C 端前端和 Admin 控制台。 |
-| `internal/backend/agentruntime` | Web Agent Runtime：认证、会话、Memory、Job、Skill、Artifact、Admin/Risk API。 |
-| `internal/backend/googleauth` | Vertex AI service account OAuth token exchange。 |
-| `internal/harness` | 本地 agent harness、provider、tool、state、skill 和 CLI 运行时。 |
-| `.claude/skills` | AgentAPI 暴露的本地 skills，包括 docx 和 Vertex image artifact。 |
-| `deploy/local` | 本地 Docker Compose 栈。 |
-| `deploy/production` | 生产部署示例、前端 nginx 配置、备份恢复文档。 |
-| `.github/workflows/deploy-main.yml` | main 分支自动部署 workflow。 |
+| `cmd/agentapi` | AgentAPI 后端二进制入口。 |
+| `apps/web` | React/Vite 前端和 `/admin` 管理后台。 |
+| `internal/backend/agentapi` | AgentAPI 的配置、依赖装配、运行生命周期和 workers。 |
+| `internal/backend/agentruntime` | 核心 Web Agent Runtime，负责 HTTP API、WebSocket、sessions、jobs、memory、skills、artifacts、admin/risk 等。 |
+| `internal/backend/services` | 产品服务层，例如 analytics、api、compact、context、cost、history、mcp、oauth、tasks、tokens、tools、voice、x402。 |
+| `internal/backend/googleauth` | Google service account 到 Vertex AI 访问令牌的辅助实现。 |
+| `.claude/skills` | 本地 skills 目录，AgentAPI 可以加载这里的技能。 |
+| `deploy/local` | 本地 Docker Compose 开发栈。 |
+| `deploy/production` | 生产部署示例、前端 nginx 配置、发布、扩容和备份恢复文档。 |
+| `docs/api/agentapi.openapi.yaml` | AgentAPI OpenAPI 描述。 |
 
-## 核心能力
+### 技术栈
 
-### Web 产品
+- **后端**：Go 1.24.4、chi、gorilla/websocket、pgx、goose、Prometheus client、Redis、Kafka、MinIO S3 client、JWT。
+- **前端**：React 18、Vite、TypeScript、Tailwind CSS 4、Radix UI、lucide-react、Framer Motion、Vitest、Playwright。
+- **部署**：Docker Compose，可扩展到拆分 API/worker、托管 Postgres/Redis/object storage 和 Kubernetes 风格部署。
 
-- 登录、注册、邮箱验证、登出、删除账号。
-- 会话列表、聊天记录、流式响应、全局搜索、桌面/移动端响应式布局。
-- 附件上传进度、预览、下载、删除，以及随消息发送附件。
-- Artifact 列表、预览、下载、删除，以及生成产物入口。
-- Skill 分类、搜索、详情弹窗、插入到对话/Job 流程。
-- 设置弹窗、Memory 开关、Memory 管理、导出/删除数据、账号操作。
+### 快速启动：本地完整栈
 
-网站 logo 位于 `apps/web/public/logo.png`，用于浏览器图标和应用内品牌标识。
-
-### Agent Runtime
-
-- SQL 持久化用户、会话、消息、Memory、Skill、Job、Artifact、Audit、Risk。
-- SSE Chat Stream 和 Job Stream replay。
-- Governed LLM：重试、请求/Token 配额、用量/成本统计、fallback hooks。
-- Skill 执行：policy merge、sandbox 设置、allowed env/tool、产物注册、执行遥测。
-- Memory：抽取、抽象、评分/维护、敏感信息脱敏、用户 opt-in/out。
-
-### Admin 与运维
-
-- `/admin` 控制台，使用 Admin Token 保护。
-- Skill Registry 和 Policy 管理。
-- 用户状态管理。
-- Session / Job / Artifact 排障台。
-- Runtime Health、Readiness、Cost 面板。
-- Audit Log 和 Risk Review Console。
-- Agent Evaluation 页面：基于真实运行数据创建 eval run，按用户、时间窗口、session、job、skill、provider/model 过滤，查看通过率、失败 findings、review 队列和阈值状态。
-- Agent Evaluation 日增量任务：默认每天 UTC+8 05:00 汇总前一个 UTC+8 自然日的数据，写入 `daily_incremental` eval run，重复触发同一天同一用户会跳过，避免重复累计。
-
-## 快速启动
-
-### 前置要求
-
-- Go `1.24.4`，或与 `go.mod` 兼容。
-- Node.js `22`，用于 `apps/web`。
-- Docker 和 Docker Compose。
-- Postgres、Redis、Cloudflare R2 凭据。
-- Vertex AI service account JSON。
-
-### 本地 Web 栈
-
-推荐使用 Docker Compose：
+推荐用 Docker Compose 跑完整 AgentAPI 栈：
 
 ```bash
 mkdir -p secrets
-# 将有 Vertex 权限的 service account JSON 放到：
+# 放入具备 Vertex AI 权限的 service account JSON:
 # secrets/vertex-service-account.json
 
 export GOOGLE_APPLICATION_CREDENTIALS="secrets/vertex-service-account.json"
@@ -125,16 +76,16 @@ export AGENT_API_ARTIFACT_S3_SECRET_KEY="REPLACE_WITH_R2_SECRET_ACCESS_KEY"
 docker compose -f deploy/local/docker-compose.yml up --build
 ```
 
-访问：
+打开：
 
-- Web App：`http://localhost:8080`
-- AgentAPI：`http://localhost:8081`
-- Health：`http://localhost:8081/healthz`
-- Readiness：`http://localhost:8081/readyz`
+- Web App: `http://localhost:8080`
+- AgentAPI: `http://localhost:8081`
+- Health: `http://localhost:8081/healthz`
+- Readiness: `http://localhost:8081/readyz`
 
-更多说明见 [deploy/local/README.md](deploy/local/README.md)。
+更多本地配置见 [deploy/local/README.md](deploy/local/README.md)。
 
-### 前端开发服务器
+### 前端开发
 
 先启动后端，然后运行：
 
@@ -144,10 +95,13 @@ npm ci
 npm run dev
 ```
 
-Vite 默认将 `/v1`、`/healthz`、`/readyz`、`/metrics` 代理到
-`http://localhost:8081`。
+Vite 默认把 `/v1`、`/healthz`、`/readyz` 和 `/metrics` 代理到 `http://localhost:8081`。需要换后端地址时：
 
-### 不使用 Compose 启动后端
+```bash
+AGENT_API_DEV_TARGET=http://localhost:8082 npm run dev
+```
+
+### 直接运行后端
 
 ```bash
 go run ./cmd/agentapi \
@@ -163,27 +117,20 @@ go run ./cmd/agentapi \
   -model gemini-2.5-flash
 ```
 
-## 配置说明
+### 生产配置
 
-生产环境模板见 [deploy/production/.env.example](deploy/production/.env.example)。
-不要提交真实 `.env`、service account JSON 或任何密钥。
+生产配置模板在 [deploy/production/.env.example](deploy/production/.env.example)。重要配置分组：
 
-关键配置组：
-
-| 配置组 | 关键变量 |
+| 分组 | 关键变量 |
 | --- | --- |
 | Auth | `AGENT_API_JWT_SECRET`、`AGENT_API_ADMIN_TOKEN`、JWT/session 设置 |
-| Email | `AGENT_API_EMAIL_PROVIDER=resend`、`AGENT_API_RESEND_API_KEY`、`AGENT_API_EMAIL_FROM`、`AGENT_API_EMAIL_PUBLIC_BASE_URL` |
-| Storage | `AGENT_API_ARTIFACT_S3_ENDPOINT`、`AGENT_API_ARTIFACT_S3_ACCESS_KEY`、`AGENT_API_ARTIFACT_S3_SECRET_KEY`、`AGENT_API_ARTIFACT_S3_BUCKET`、`AGENT_API_ARTIFACT_S3_PREFIX` |
+| Email | `AGENT_API_EMAIL_PROVIDER=resend`、`AGENT_API_RESEND_API_KEY`、`AGENT_API_EMAIL_FROM` |
+| Storage | `AGENT_API_ARTIFACT_S3_ENDPOINT`、`AGENT_API_ARTIFACT_S3_ACCESS_KEY`、`AGENT_API_ARTIFACT_S3_SECRET_KEY`、`AGENT_API_ARTIFACT_S3_BUCKET` |
 | Vertex | `GOOGLE_APPLICATION_CREDENTIALS`、`VERTEX_PROJECT_ID`、`GOOGLE_CLOUD_PROJECT`、`VERTEX_LOCATION` |
 | Runtime | `AGENT_API_SKILL_DIRS`、`AGENT_API_SKILL_POLICY`、`AGENT_API_OPERATION_RATE_LIMITS`、`AGENT_API_RETENTION_DAYS` |
-| Frontend | `VITE_AGENT_API_BASE_URL`，用于前端/API 分离部署 |
+| Frontend | `VITE_AGENT_API_BASE_URL`，用于前后端分离域名 |
 
-### Vertex AI 凭据
-
-生产环境应使用 service account JSON，不要依赖短期 access token。
-
-Docker Compose 中推荐挂载宿主机 secrets 目录，并让容器读取挂载后的路径：
+生产环境建议使用 service account JSON，而不是短期 access token：
 
 ```env
 AGENT_API_SECRETS_DIR=/opt/agentapi/secrets
@@ -193,36 +140,14 @@ GOOGLE_CLOUD_PROJECT=your-gcp-project
 VERTEX_LOCATION=us-central1
 ```
 
-该 service account 至少需要能够调用 Vertex AI，例如目标项目上的
-`roles/aiplatform.user`。
+### 部署与运维
 
-## 部署
-
-当前测试环境部署模型是在服务器上运行 Docker Compose：
+测试服务器上的 Compose 部署示例：
 
 ```bash
 cd /opt/agentapi/repo
 docker compose --env-file /opt/agentapi/.env -f deploy/local/docker-compose.yml up -d --build
 ```
-
-`.github/workflows/deploy-main.yml` 支持 main 分支 push 后自动部署。
-Workflow 会 SSH 到服务器，更新仓库，然后重建/重启 Compose 栈。
-
-前端生产部署有两种方式：
-
-- 同源部署：服务 `apps/web/dist`，并将 `/v1`、`/healthz`、`/readyz`、
-  `/metrics` 反代到 AgentAPI。
-- 前后端分离：构建时设置
-  `VITE_AGENT_API_BASE_URL=https://api.example.com`，并在 AgentAPI 配置 CORS。
-
-见 [deploy/production/FRONTEND.md](deploy/production/FRONTEND.md)。
-
-多实例生产环境部署方案见
-[deploy/production/README.md](deploy/production/README.md)。其中包含
-API/Worker 拆分、托管 Postgres/Redis/对象存储、Kubernetes 参考配置、
-发布流程、运维 runbook 和上线检查清单。
-
-## 运维
 
 常用检查：
 
@@ -230,39 +155,127 @@ API/Worker 拆分、托管 Postgres/Redis/对象存储、Kubernetes 参考配置
 curl -fsS http://localhost:8081/healthz
 curl -fsS http://localhost:8081/readyz
 curl -fsS http://localhost:8081/metrics
-```
 
-Agent Evaluation 常用导出：
-
-```bash
-curl -fsS -H "X-User-ID: admin" -H "X-Admin-Token: $AGENT_API_ADMIN_TOKEN" \
-  "http://localhost:8081/v1/admin/ops/eval/summary?format=markdown"
-
-curl -fsS -H "X-User-ID: admin" -H "X-Admin-Token: $AGENT_API_ADMIN_TOKEN" \
-  "http://localhost:8081/v1/admin/ops/eval/results?run_id=EVAL_RUN_ID&status=failed&format=csv"
-```
-
-Agent Evaluation 日增量任务配置：
-
-```bash
-AGENT_API_EVAL_DAILY_ENABLED=true
-AGENT_API_EVAL_DAILY_HOUR=5
-AGENT_API_EVAL_DAILY_MINUTE=0
-AGENT_API_EVAL_DAILY_BATCH_LIMIT=200
-AGENT_API_EVAL_DAILY_TIMEOUT=10m
-# 可选：没有内置用户系统时显式指定评估用户
-AGENT_API_EVAL_DAILY_USER_IDS="user_a,user_b"
-```
-
-服务器常用命令：
-
-```bash
 docker ps
 docker logs --tail=100 claude-codex-agentapi
 docker logs --tail=100 claude-codex-agentweb
 ```
 
-备份恢复见 [deploy/production/BACKUP_RESTORE.md](deploy/production/BACKUP_RESTORE.md)。
+更多部署文档：
+
+- [deploy/production/README.md](deploy/production/README.md)
+- [deploy/production/FRONTEND.md](deploy/production/FRONTEND.md)
+- [deploy/production/RELEASE_FLOW.md](deploy/production/RELEASE_FLOW.md)
+- [deploy/production/SIZING.md](deploy/production/SIZING.md)
+- [deploy/production/BACKUP_RESTORE.md](deploy/production/BACKUP_RESTORE.md)
+
+---
+
+## 第二部分：claudecode Go 重构副项目
+
+claudecode Go 重构是仓库里的第二条主线：把 Claude Code 的 TypeScript 实现迁移到 Go。它不是当前主要产品入口，但为 AgentAPI 和本地开发代理提供了大量可复用的 agent runtime、工具、权限、skills、memory、MCP、provider 和 orchestration 能力。
+
+### 当前定位
+
+- **本地 TUI 入口**：`cmd/tui`
+- **应用装配层**：`internal/app`
+- **终端 UI**：`internal/ui/tui`
+- **核心 harness**：`internal/harness`
+- **远程/服务端边界**：`internal/backend/bridge`、`internal/backend/remote`、`internal/backend/upstreamproxy`
+- **公共基础包**：`internal/public`
+
+默认本地执行链是：
+
+```text
+cmd/tui
+  -> internal/app/cli
+  -> internal/harness/engine
+  -> queryRuntime
+  -> internal/harness/queryengine
+  -> internal/harness/query
+```
+
+### 核心模块地图
+
+| 模块域 | 说明 |
+| --- | --- |
+| `internal/app/cli` | Cobra 命令树、slash 命令、运行模式选择、TUI registry、MCP stdio、bridge continuation、engine 构建。 |
+| `internal/app/config`、`settings` | 本地配置、环境变量覆盖、settings schema、MDM/managed settings、工具权限配置。 |
+| `internal/app/bootstrap`、`entrypoints`、`migrations` | 启动生命周期、session/worktree/tmux 初始化、迁移、关闭流程。 |
+| `internal/app/auth`、`securestorage` | OAuth、trusted device、keychain/plaintext secret store。 |
+| `internal/ui/tui` | Bubble Tea TUI，包含 model/update/view、overlay、permission broker、markdown 渲染和命令适配。 |
+| `internal/harness/engine` | 本地执行 facade，连接 planner、tools registry、permission checker、session 和 query runtime。 |
+| `internal/harness/queryengine`、`query` | TS 对齐的 query runtime，负责 turn loop、模型调用、工具执行、预算、auto compact、SDK 形态事件。 |
+| `internal/harness/tools`、`tool` | 工具注册表、simple tool、rich tool、ToolUseContext、StreamingExecutor，以及 bash/file/search/web/mcp/lsp/tasks/team/worktree 等工具族。 |
+| `internal/harness/permissions` | default/plan/bypass/auto 权限模式、规则解析、审批请求和 TUI/bridge 决策通道。 |
+| `internal/harness/agent`、`coordinator`、`swarm` | 子 agent、team、worker、tmux/iTerm2/in-process teammate backend 和协作编排。 |
+| `internal/harness/plugins`、`skills` | 插件 manifest、skills、agents、hooks、MCP 配置加载和 runtime 消费。 |
+| `internal/harness/state`、`storage` | session 状态、messages、usage、JSONL transcript、snapshot。 |
+| `internal/harness/memory`、`memdir`、`compact`、`budget` | 记忆、上下文压缩、token 预算和兼容层。 |
+| `internal/harness/provider`、`api`、`anthropic` | Anthropic/OpenAI/Qwen/Gemini/Bedrock/Vertex/custom provider 抽象。 |
+| `internal/harness/mcp` | MCP server/client/resource 支持，包含 stdio、HTTP 和 SSE 面。 |
+| `internal/public` | 公共类型、schema、错误、文件系统工具和限流基础。 |
+
+### 需要单独关注的能力模块
+
+这些能力不是简单工具子目录，而是影响运行时安全、后台执行、平台能力或可观测性的独立模块：
+
+- `internal/harness/analysis`：命令/工具分析、只读判断和安全提示基础。
+- `internal/harness/sandboxadapter`：沙箱策略和工具执行适配边界。
+- `internal/harness/websandbox`：Web/浏览器沙箱相关能力。
+- `internal/harness/computeruse`：计算机/浏览器控制能力。
+- `internal/harness/hooks`：生命周期 hook 和插件扩展点。
+- `internal/harness/background`：后台作业和长期任务基础。
+- `internal/harness/tasks`：任务状态、输出、停止、快照和工具面。
+- `internal/harness/telemetry`：事件、trace、运行时观测。
+- `internal/harness/powershell`：Windows PowerShell 执行支持。
+
+外围能力目前合并看待：
+
+- `internal/harness/github`
+- `internal/harness/deeplink`
+- `internal/harness/teleport`
+- `internal/harness/dxt`
+- `internal/harness/nativeinstaller`
+- `internal/harness/vim`
+- `internal/harness/buddy`
+- `internal/harness/ultraplan`
+
+### 运行本地 TUI
+
+```bash
+make run-tui
+```
+
+或直接运行：
+
+```bash
+go run ./cmd/tui
+```
+
+常见 provider 相关配置可以通过环境变量或 `~/.claude-codex/config.json` 设置。配置 home 可用 `CLAUDE_GO_HOME` 覆盖。provider 支持包括 Anthropic、OpenAI、Qwen、Gemini、Bedrock、Vertex 和 custom OpenAI-compatible endpoint。
+
+### 重构状态
+
+整体判断：
+
+- 核心执行链已经形成闭环，`engine` 已经收敛为薄适配层，默认 runtime 切到 `queryengine -> query`。
+- tools、permissions、skills、tasks、memory、compact、provider、MCP、storage 等主链已具备较高完成度。
+- CLI 命令矩阵已经成型，但命令覆盖和 TS 细节仍在补齐。
+- TUI 具备基本骨架，但与 TypeScript 版本相比仍是最大差距。
+- bridge/remote/server、插件管理 UI、GitHub/git、computer/browser 等外围能力仍有迁移和体验完善空间。
+
+详细迁移文档：
+
+- [docs/REFACTORING_MODULES.md](docs/REFACTORING_MODULES.md)
+- [docs/MIGRATION_STATUS.md](docs/MIGRATION_STATUS.md)
+- [docs/REFACTORING_SUMMARY.md](docs/REFACTORING_SUMMARY.md)
+- [docs/REFACTOR_PROGRESS.md](docs/REFACTOR_PROGRESS.md)
+- [docs/refactor/CORE_REFACTOR_STATUS.md](docs/refactor/CORE_REFACTOR_STATUS.md)
+- [docs/Architecture-diagram/claudecode Go 重构子项目完整架构图.drawio_副本.pdf](docs/Architecture-diagram/claudecode%20Go%20重构子项目完整架构图.drawio_副本.pdf)
+- [docs/Architecture-diagram/claudecode Go 重构：internal 全模块地图.drawio_副本.pdf](docs/Architecture-diagram/claudecode%20Go%20重构：internal%20全模块地图.drawio_副本.pdf)
+
+---
 
 ## 开发命令
 
@@ -271,43 +284,24 @@ make fmt
 make test
 go test ./internal/backend/agentruntime ./internal/backend/googleauth ./internal/harness/provider ./cmd/agentapi
 go build ./cmd/agentapi
+go build ./cmd/tui
 
 cd apps/web
+npm ci
 npm run build
 npm run test
 npm run e2e
 ```
 
-仓库仍保留本地 TUI：
-
-```bash
-make run-tui
-```
-
 ## 安全注意事项
 
-- 不要提交 `.env`、R2 key、Resend key、Admin Token、service account JSON。
-- `secrets/` 已加入 gitignore，只用于本地 secret。
-- Vertex AI 优先使用 service account 凭据。
-- 容器中的 `/run/agentapi/secrets` 应保持只读挂载。
-- 前后端分离部署时，CORS 只允许精确的前端 origin。
-- Cookie Auth 上生产前必须启用 HTTPS。
-- Cloudflare R2 S3 key 与 Cloudflare API token 分开管理。
-
-## 相关文档
-
-- [README.md](README.md)
-- [apps/web/README.md](apps/web/README.md)
-- [deploy/local/README.md](deploy/local/README.md)
-- [deploy/production/.env.example](deploy/production/.env.example)
-- [deploy/production/README.md](deploy/production/README.md)
-- [deploy/production/ARCHITECTURE.md](deploy/production/ARCHITECTURE.md)
-- [deploy/production/RELEASE_FLOW.md](deploy/production/RELEASE_FLOW.md)
-- [deploy/production/SIZING.md](deploy/production/SIZING.md)
-- [deploy/production/FRONTEND.md](deploy/production/FRONTEND.md)
-- [deploy/production/BACKUP_RESTORE.md](deploy/production/BACKUP_RESTORE.md)
-- [internal/backend/agentruntime/README.md](internal/backend/agentruntime/README.md)
-- [internal/backend/agentruntime/PRODUCTION_PROGRESS.md](internal/backend/agentruntime/PRODUCTION_PROGRESS.md)
+- 不要提交 `.env`、R2 keys、Resend keys、admin token、JWT secret 或 service account JSON。
+- `secrets/` 只用于本地密钥材料，并应保持 gitignored。
+- 生产环境优先使用 service account 调用 Vertex AI。
+- 容器内 `/run/agentapi/secrets` 建议只读挂载。
+- 前后端分离部署时，CORS 必须限制到明确域名。
+- 开启 cookie auth 前必须使用 HTTPS。
+- R2 S3 key 应和 Cloudflare API token 分离管理。
 
 ## 许可证
 
