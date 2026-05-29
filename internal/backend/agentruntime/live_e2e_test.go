@@ -61,6 +61,7 @@ func TestLiveBackendE2EAudioTranscriptionAndPersistence(t *testing.T) {
 	expectLiveEvent(t, conn, func(event Event) bool {
 		return event.Type == "message" && event.Role == state.MessageRoleAssistant && event.Content == "你好，我在。"
 	}, "persisted assistant message event")
+	expectLiveEvent(t, conn, func(event Event) bool { return event.Type == "live_response_end" }, "live response end")
 
 	sentAudio := upstream.ExpectClientRealtimeInput(t, func(input map[string]any) bool {
 		audio, _ := input["audio"].(map[string]any)

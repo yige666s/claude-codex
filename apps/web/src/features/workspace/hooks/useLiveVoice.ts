@@ -5,7 +5,7 @@ import type { RuntimeEvent } from "../../../types";
 import type { Status } from "../workspaceTypes";
 
 export type InputMode = "text" | "live";
-export type LiveStatus = "idle" | "connecting" | "listening" | "speaking" | "thinking" | "paused" | "reconnecting" | "error";
+export type LiveStatus = "idle" | "connecting" | "listening" | "speaking" | "thinking" | "responding" | "paused" | "reconnecting" | "error";
 
 type UseLiveVoiceOptions = {
   api: ApiClient;
@@ -67,6 +67,7 @@ export function useLiveVoice({
   const livePlaybackQueueRef = useRef(Promise.resolve());
   const liveManualStopRef = useRef(false);
   const liveExpectedCloseRef = useRef(false);
+  const liveInputPausedRef = useRef(false);
   const liveReconnectAttemptsRef = useRef(0);
   const liveReconnectTimerRef = useRef<number | null>(null);
   const liveResumeCaptureTimerRef = useRef<number | null>(null);
@@ -188,6 +189,7 @@ export function useLiveVoice({
     liveSetupCompleteRef.current = false;
     liveManualStopRef.current = false;
     liveExpectedCloseRef.current = false;
+    liveInputPausedRef.current = false;
     liveReconnectAttemptsRef.current = 0;
     liveSessionStartedAtRef.current = performance.now();
     liveSetupAtRef.current = 0;
@@ -252,6 +254,7 @@ export function useLiveVoice({
     }
     liveManualStopRef.current = true;
     liveExpectedCloseRef.current = true;
+    liveInputPausedRef.current = false;
     clearLiveReconnectTimer();
     clearLiveResumeCaptureTimer();
     clearLivePrewarmTimer();
@@ -339,11 +342,20 @@ export function useLiveVoice({
       if (!liveFirstOutputTranscriptAtRef.current) {
         liveFirstOutputTranscriptAtRef.current = performance.now();
       }
+      pauseLiveInput();
       onAssistantDraftChange((current) => appendLiveTranscript(current, event.content || ""));
-      updateLiveStatus("thinking");
+      return;
+    }
+    if (event.type === "live_response_start") {
+      pauseLiveInput();
+      return;
+    }
+    if (event.type === "live_response_end") {
+      resumeLiveInputAfterPlayback(socket, generation);
       return;
     }
     if (event.type === "live_audio") {
+      pauseLiveInput();
       liveAudioChunkCountRef.current += 1;
       if (!liveFirstAudioAtRef.current) {
         liveFirstAudioAtRef.current = performance.now();
@@ -355,15 +367,18 @@ export function useLiveVoice({
       return;
     }
     if (event.type === "live_interrupted") {
+      liveInputPausedRef.current = false;
+      clearLiveResumeCaptureTimer();
       onAssistantDraftChange("");
       setLiveUserDraft("");
       liveAudioChunkCountRef.current = 0;
       stopLivePlayback();
+      updateLiveStatus("listening");
       onStatus({ tone: "idle", text: "Voice interrupted" });
-      scheduleLiveCaptureResume(socket, generation);
       return;
     }
     if (event.type === "live_skill_start") {
+      pauseLiveInput();
       stopLivePlayback();
       onAssistantDraftChange("");
       setLiveUserDraft("");
@@ -373,7 +388,7 @@ export function useLiveVoice({
     }
     if (event.type === "live_skill_result") {
       onStatus({ tone: "ok", text: "Skill completed" });
-      scheduleLiveCaptureResume(socket, generation);
+      resumeLiveInputAfterPlayback(socket, generation);
       return;
     }
     if (event.type === "error") {
@@ -407,7 +422,7 @@ export function useLiveVoice({
       onStatus(liveAudioChunkCountRef.current > 0
         ? { tone: "ok", text: total ? `Voice response played in ${total} ms` : "Voice response played" }
         : { tone: "ok", text: "Voice transcript received" });
-      scheduleLiveCaptureResume(socket, generation);
+      resumeLiveInputAfterPlayback(socket, generation);
     }
   }
 
@@ -506,6 +521,14 @@ export function useLiveVoice({
     };
     processor.onaudioprocess = (event) => {
       if (!isCurrentLiveSession(socket, generation) || socket.readyState !== WebSocket.OPEN) return;
+      if (liveInputPausedRef.current) {
+        if (speechActive) {
+          speechActive = false;
+          sendActivity("activity_end");
+        }
+        preSpeechFrames.length = 0;
+        return;
+      }
       const input = event.inputBuffer.getChannelData(0);
       const metrics = audioFrameMetrics(input);
       const now = performance.now();
@@ -550,7 +573,6 @@ export function useLiveVoice({
           sendActivity("activity_end");
           updateLiveStatus("thinking");
           onStatus({ tone: "busy", text: "Processing voice" });
-          pauseLiveCaptureForResponse(socket, generation, captureGeneration);
         }
         return;
       }
@@ -577,11 +599,32 @@ export function useLiveVoice({
     onStatus({ tone: "busy", text: deviceSummary.label ? `Listening on ${deviceSummary.label}` : "Listening" });
   }
 
-  function pauseLiveCaptureForResponse(socket: WebSocket, generation: number, captureGeneration: number) {
-    if (!isCurrentLiveCapture(socket, generation, captureGeneration)) return;
-    stopLiveCapture(false);
-    updateLiveStatus("thinking");
+  function pauseLiveInput() {
+    clearLiveResumeCaptureTimer();
+    liveInputPausedRef.current = true;
+    updateLiveStatus("responding");
     onStatus({ tone: "busy", text: "Processing voice" });
+  }
+
+  function resumeLiveInputAfterPlayback(socket: WebSocket, generation: number) {
+    clearLiveResumeCaptureTimer();
+    void livePlaybackQueueRef.current.catch(() => {}).then(() => {
+      if (!isCurrentLiveSession(socket, generation)) return;
+      const playbackContext = livePlaybackContextRef.current;
+      const remainingMs = playbackContext
+        ? Math.max(0, Math.ceil((livePlaybackTimeRef.current - playbackContext.currentTime) * 1000))
+        : 0;
+      liveResumeCaptureTimerRef.current = window.setTimeout(() => {
+        liveResumeCaptureTimerRef.current = null;
+        if (!isCurrentLiveSession(socket, generation)) return;
+        liveInputPausedRef.current = false;
+        if (liveCaptureRequestedRef.current && liveMediaRef.current) {
+          updateLiveStatus("listening");
+        } else {
+          scheduleLiveCaptureResume(socket, generation);
+        }
+      }, remainingMs + 80);
+    });
   }
 
   function stopLiveCapture(sendEnd = true) {
@@ -716,6 +759,7 @@ export function useLiveVoice({
       liveResumeCaptureTimerRef.current = null;
       if (!isCurrentLiveSession(socket, generation)) return;
       if (!liveCaptureRequestedRef.current || liveMediaRef.current || liveStatusRef.current === "speaking") return;
+      liveInputPausedRef.current = false;
       void startLiveCapture(socket, generation).catch((error) => {
         if (!isCurrentLiveSession(socket, generation)) return;
         onError(errorMessage(error));

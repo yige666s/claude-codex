@@ -20,7 +20,7 @@ export function LiveVoiceControls({
 }: LiveVoiceControlsProps) {
   const liveActive = liveStatus !== "idle" && liveStatus !== "error";
   const disabled = !sessionId || (!liveActive && busyChat);
-  const responseInProgress = liveStatus === "thinking";
+  const responseInProgress = liveStatus === "thinking" || liveStatus === "responding";
   const tooltip = responseInProgress ? "Live response in progress" : liveActive ? "Stop Live voice" : "Start Live voice";
   const endDisabled = !sessionId;
 

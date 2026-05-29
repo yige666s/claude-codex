@@ -35,6 +35,7 @@ func (p *vertexLiveAccessTokenProvider) AccessToken(ctx context.Context) (string
 		return "", fmt.Errorf("live vertex access token provider is nil")
 	}
 	if token := strings.TrimSpace(firstNonEmpty(
+		envString("GOCLAW_VERTEX_ACCESS_TOKEN"),
 		envString("VERTEX_ACCESS_TOKEN"),
 		envString("GOOGLE_OAUTH_ACCESS_TOKEN"),
 		envString("GOOGLE_ACCESS_TOKEN"),

@@ -329,7 +329,7 @@ func Default() Config {
 		LiveEnabled:                             EnvBool("AGENT_API_LIVE_ENABLED", false),
 		LiveProvider:                            FirstNonEmpty(os.Getenv("AGENT_API_LIVE_PROVIDER"), "vertex"),
 		LiveModel:                               FirstNonEmpty(os.Getenv("AGENT_API_LIVE_MODEL"), "gemini-live-2.5-flash-preview-native-audio-09-2025"),
-		LiveVertexProjectID:                     FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_PROJECT_ID"), os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")),
+		LiveVertexProjectID:                     FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_PROJECT_ID"), os.Getenv("GOCLAW_VERTEX_PROJECT_ID"), os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")),
 		LiveVertexLocation:                      FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_LOCATION"), os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "us-central1"),
 		LiveVertexBaseURL:                       os.Getenv("AGENT_API_LIVE_VERTEX_BASE_URL"),
 		LiveVertexAPIVersion:                    FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_API_VERSION"), "v1beta1"),

@@ -399,6 +399,7 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 					_ = sink.Send(ctx, Event{Type: "message", SessionID: req.SessionID, Role: "assistant", Content: assistantText})
 				}
 			}
+			_ = sink.Send(ctx, Event{Type: "live_response_end", SessionID: req.SessionID})
 		}
 	}
 }
@@ -421,6 +422,7 @@ type liveTurnAccumulator struct {
 	input            strings.Builder
 	output           strings.Builder
 	outputSuppressed bool
+	outputActive     bool
 }
 
 func (a *liveTurnAccumulator) consume(message map[string]any, outputMIME string) ([]Event, bool, error) {
@@ -439,6 +441,7 @@ func (a *liveTurnAccumulator) consume(message map[string]any, outputMIME string)
 	if interrupted, _ := content["interrupted"].(bool); interrupted {
 		a.output.Reset()
 		a.outputSuppressed = true
+		a.outputActive = false
 		events = append(events, Event{Type: "live_interrupted"})
 	}
 	if input := liveTranscriptionText(content, "inputTranscription"); input != "" && !liveIsNoisyInputTranscript(input) {
@@ -446,11 +449,22 @@ func (a *liveTurnAccumulator) consume(message map[string]any, outputMIME string)
 		events = append(events, Event{Type: "live_transcript", Role: state.MessageRoleUser, Content: input, Data: liveJSON(map[string]any{"source": "input", "final": false})})
 	}
 	if !a.outputSuppressed {
+		outputEventStart := len(events)
+		outputStarted := false
 		if output := liveTranscriptionText(content, "outputTranscription"); output != "" {
 			a.output.WriteString(output)
+			outputStarted = true
 			events = append(events, Event{Type: "live_transcript", Role: state.MessageRoleAssistant, Content: output, Data: liveJSON(map[string]any{"source": "output", "final": false})})
 		}
-		for _, audio := range liveOutputAudioParts(content, outputMIME) {
+		audioParts := liveOutputAudioParts(content, outputMIME)
+		if len(audioParts) > 0 {
+			outputStarted = true
+		}
+		if outputStarted && !a.outputActive {
+			a.outputActive = true
+			events = append(events[:outputEventStart], append([]Event{{Type: "live_response_start"}}, events[outputEventStart:]...)...)
+		}
+		for _, audio := range audioParts {
 			events = append(events, Event{Type: "live_audio", Role: state.MessageRoleAssistant, Data: liveJSON(audio)})
 		}
 	}
@@ -464,6 +478,7 @@ func (a *liveTurnAccumulator) flush() (string, string) {
 	a.input.Reset()
 	a.output.Reset()
 	a.outputSuppressed = false
+	a.outputActive = false
 	return userText, assistantText
 }
 

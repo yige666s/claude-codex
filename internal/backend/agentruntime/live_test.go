@@ -203,17 +203,20 @@ func TestLiveTurnAccumulatorEmitsAudioAndTranscripts(t *testing.T) {
 	if !complete {
 		t.Fatal("expected turn complete")
 	}
-	if len(events) != 3 {
-		t.Fatalf("events = %d, want 3: %#v", len(events), events)
+	if len(events) != 4 {
+		t.Fatalf("events = %d, want 4: %#v", len(events), events)
 	}
 	if events[0].Type != "live_transcript" || events[0].Role != state.MessageRoleUser || events[0].Content != "你好" {
 		t.Fatalf("unexpected input transcript event: %#v", events[0])
 	}
-	if events[2].Type != "live_audio" {
-		t.Fatalf("unexpected audio event: %#v", events[2])
+	if events[1].Type != "live_response_start" {
+		t.Fatalf("unexpected response start event: %#v", events[1])
+	}
+	if events[3].Type != "live_audio" {
+		t.Fatalf("unexpected audio event: %#v", events[3])
 	}
 	var audio map[string]string
-	if err := json.Unmarshal(events[2].Data, &audio); err != nil {
+	if err := json.Unmarshal(events[3].Data, &audio); err != nil {
 		t.Fatalf("decode audio payload: %v", err)
 	}
 	if audio["mime_type"] != "audio/pcm;rate=24000" || audio["data"] != "AQID" {
@@ -240,11 +243,11 @@ func TestLiveTurnAccumulatorAcceptsSnakeCaseInlineAudio(t *testing.T) {
 	if err != nil {
 		t.Fatalf("consume: %v", err)
 	}
-	if len(events) != 1 || events[0].Type != "live_audio" {
+	if len(events) != 2 || events[0].Type != "live_response_start" || events[1].Type != "live_audio" {
 		t.Fatalf("unexpected events: %#v", events)
 	}
 	var audio map[string]string
-	if err := json.Unmarshal(events[0].Data, &audio); err != nil {
+	if err := json.Unmarshal(events[1].Data, &audio); err != nil {
 		t.Fatalf("decode audio payload: %v", err)
 	}
 	if audio["mime_type"] != "audio/L16;rate=24000" || audio["data"] != "AQID" {
@@ -270,8 +273,8 @@ func TestLiveTurnAccumulatorSuppressesInterruptedOutput(t *testing.T) {
 	if complete {
 		t.Fatal("initial output should not complete the turn")
 	}
-	if len(events) != 2 {
-		t.Fatalf("initial events = %d, want transcript and audio: %#v", len(events), events)
+	if len(events) != 3 {
+		t.Fatalf("initial events = %d, want response start, transcript and audio: %#v", len(events), events)
 	}
 
 	events, complete, err = turn.consume(map[string]any{
@@ -329,7 +332,7 @@ func TestLiveTurnAccumulatorSuppressesInterruptedOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("consume new output: %v", err)
 	}
-	if !complete || len(events) != 1 || events[0].Content != "new answer" {
+	if !complete || len(events) != 2 || events[0].Type != "live_response_start" || events[1].Content != "new answer" {
 		t.Fatalf("new turn should emit normally after interrupted turn completes, complete=%t events=%#v", complete, events)
 	}
 }

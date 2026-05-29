@@ -651,7 +651,7 @@ export type RuntimeEvent = {
 };
 
 export type LiveClientEvent = {
-  type: "audio" | "audio_end" | "activity_start" | "activity_end" | "text" | "close";
+  type: "audio" | "audio_end" | "activity_start" | "activity_end" | "text" | "client_trace" | "close";
   mime_type?: string;
   data?: string;
   content?: string;
