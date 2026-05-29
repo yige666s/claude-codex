@@ -240,6 +240,7 @@ services:
       AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL: ${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL:-24h}
       AGENT_API_OPERATION_RATE_LIMITS: ${AGENT_API_OPERATION_RATE_LIMITS:-auth_login=20/m,auth_register=10/h,chat_message=60/m,job_create=20/m,attachment_upload=30/m,asset_download=120/m,memory_extract=30/h,data_export=5/h,account_delete=3/h,admin_action=120/m}
       AGENT_API_CORS_ALLOWED_ORIGINS: ${AGENT_API_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:8081,http://127.0.0.1:8081,http://localhost:5173,http://127.0.0.1:5173}
+      AGENT_API_STORE_BACKEND: ${AGENT_API_STORE_BACKEND:-sql}
       AGENT_API_LLM_PROVIDER: ${AGENT_API_LLM_PROVIDER:-vertex}
       AGENT_API_LLM_API_KEY: ${AGENT_API_LLM_API_KEY:-}
       AGENT_API_LLM_BASE_URL: ${AGENT_API_LLM_BASE_URL:-}
