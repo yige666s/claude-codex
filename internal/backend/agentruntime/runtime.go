@@ -251,6 +251,13 @@ func (r *Runtime) SetLiveService(service *VertexLiveService) {
 	r.live = service
 }
 
+func (r *Runtime) SetLiveSetupPromptCache(cache LiveSetupPromptCache) {
+	if r == nil || r.live == nil {
+		return
+	}
+	r.live.SetSetupPromptCache(cache)
+}
+
 func (r *Runtime) WriteMessage(ctx context.Context, req MessageWriteRequest) (state.Message, error) {
 	if r == nil || r.messageWriter == nil {
 		return state.Message{}, fmt.Errorf("message write service is not configured")
@@ -1568,8 +1575,8 @@ func (r *Runtime) LiveSystemInstruction(ctx context.Context, userID, sessionID s
 	}
 	if r.sessionLoader != nil {
 		messages, err := r.sessionLoader.LoadContext(ctx, userID, sessionID, SessionLoadOptions{
-			MaxMessages:  30,
-			MaxTokens:    12000,
+			MaxMessages:  12,
+			MaxTokens:    6000,
 			LoadStrategy: SessionLoadStrategySlidingWindow,
 		})
 		if err == nil && len(messages) > 0 {

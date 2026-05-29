@@ -8,13 +8,15 @@ type LiveVoiceControlsProps = {
   busyChat: boolean;
   sessionId: string;
   onToggleLive: () => void;
+  onPrewarmLive: () => void;
 };
 
 export function LiveVoiceControls({
   liveStatus,
   busyChat,
   sessionId,
-  onToggleLive
+  onToggleLive,
+  onPrewarmLive
 }: LiveVoiceControlsProps) {
   const liveActive = liveStatus !== "idle" && liveStatus !== "error";
   const disabled = !sessionId || (!liveActive && busyChat);
@@ -29,6 +31,7 @@ export function LiveVoiceControls({
           variant={liveActive ? "destructive" : "outline"}
           size="icon-lg"
           onClick={onToggleLive}
+          onPointerDown={onPrewarmLive}
           disabled={disabled}
           aria-label={tooltip}
           aria-pressed={liveActive}

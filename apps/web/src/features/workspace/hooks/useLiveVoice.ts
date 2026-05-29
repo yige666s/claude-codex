@@ -26,6 +26,8 @@ const liveEndOfSpeechMs = 500;
 const liveCalibrationFrameCount = 16;
 const liveReconnectDelayMs = 700;
 const liveMaxReconnectAttempts = 2;
+const livePrewarmDelayMs = 1500;
+const livePrewarmIdleMs = 75_000;
 const liveAudioConstraints: MediaTrackConstraints = {
   channelCount: 1,
   echoCancellation: true,
@@ -67,6 +69,10 @@ export function useLiveVoice({
   const liveExpectedCloseRef = useRef(false);
   const liveReconnectAttemptsRef = useRef(0);
   const liveReconnectTimerRef = useRef<number | null>(null);
+  const livePrewarmTimerRef = useRef<number | null>(null);
+  const livePrewarmIdleTimerRef = useRef<number | null>(null);
+  const liveCaptureRequestedRef = useRef(false);
+  const liveSetupCompleteRef = useRef(false);
   const liveSwitchLockedUntilRef = useRef(0);
   const liveSessionStartedAtRef = useRef(0);
   const liveSetupAtRef = useRef(0);
@@ -102,9 +108,25 @@ export function useLiveVoice({
   }, []);
 
   useEffect(() => {
+    clearLivePrewarmTimer();
+    if (!sessionId) return;
+    livePrewarmTimerRef.current = window.setTimeout(() => {
+      livePrewarmTimerRef.current = null;
+      if (document.visibilityState !== "visible") return;
+      if (inputModeRef.current !== "text" || liveSocketRef.current || liveStatusRef.current !== "idle") return;
+      void prewarmLiveMode();
+    }, livePrewarmDelayMs);
+    return () => {
+      clearLivePrewarmTimer();
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
     return () => {
       clearLiveReconnectTimer();
-      stopLiveMode(false);
+      clearLivePrewarmTimer();
+      clearLivePrewarmIdleTimer();
+      stopLiveMode(false, false);
     };
   }, []);
 
@@ -115,21 +137,53 @@ export function useLiveVoice({
 
   async function startLiveMode() {
     if (performance.now() < liveSwitchLockedUntilRef.current) return;
-    if (!sessionId || liveStatusRef.current !== "idle") return;
-    if (typeof WebSocket === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      onError("Live voice is unavailable in this browser.");
-      updateLiveStatus("error");
+    liveCaptureRequestedRef.current = true;
+    await connectLiveSocket(true);
+  }
+
+  async function prewarmLiveMode() {
+    if (performance.now() < liveSwitchLockedUntilRef.current) return;
+    if (inputModeRef.current === "live") return;
+    await connectLiveSocket(false);
+  }
+
+  async function connectLiveSocket(captureRequested: boolean) {
+    if (!sessionId) return;
+    liveCaptureRequestedRef.current = captureRequested || liveCaptureRequestedRef.current;
+    if (typeof WebSocket === "undefined" || (captureRequested && !navigator.mediaDevices?.getUserMedia)) {
+      if (captureRequested) {
+        onError("Live voice is unavailable in this browser.");
+        updateLiveStatus("error");
+      }
       return;
     }
-    const permission = await microphonePermissionState();
-    if (permission === "denied") {
-      onError("Microphone permission is blocked. Allow microphone access in the browser and try Live again.");
-      updateLiveStatus("error");
-      onStatus({ tone: "error", text: "Microphone permission blocked" });
+    if (captureRequested) {
+      const permission = await microphonePermissionState();
+      if (permission === "denied") {
+        onError("Microphone permission is blocked. Allow microphone access in the browser and try Live again.");
+        updateLiveStatus("error");
+        onStatus({ tone: "error", text: "Microphone permission blocked" });
+        return;
+      }
+      enterLiveCaptureMode();
+      const existing = liveSocketRef.current;
+      const generation = liveSessionGenerationRef.current;
+      if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+        clearLivePrewarmIdleTimer();
+        if (liveSetupCompleteRef.current && existing.readyState === WebSocket.OPEN) {
+          await startLiveCaptureWhenReady(existing, generation);
+        } else {
+          updateLiveStatus("connecting");
+          onStatus({ tone: "busy", text: "Connecting live voice" });
+        }
+        return;
+      }
+    } else if (liveSocketRef.current || liveStatusRef.current !== "idle") {
       return;
     }
-    stopLiveMode(false);
+    closeLiveSocket(false);
     const generation = ++liveSessionGenerationRef.current;
+    liveSetupCompleteRef.current = false;
     liveManualStopRef.current = false;
     liveExpectedCloseRef.current = false;
     liveReconnectAttemptsRef.current = 0;
@@ -138,33 +192,16 @@ export function useLiveVoice({
     liveFirstInputTranscriptAtRef.current = 0;
     liveFirstOutputTranscriptAtRef.current = 0;
     liveFirstAudioAtRef.current = 0;
-    setInputMode("live");
-    inputModeRef.current = "live";
-    onError("");
-    onAssistantDraftChange("");
-    setLiveUserDraft("");
     liveAudioChunkCountRef.current = 0;
     liveAudioBytesSentRef.current = 0;
-    stopLivePlayback();
-    try {
-      await ensureLivePlaybackContext();
-    } catch {
-      if (!isCurrentLiveGeneration(generation)) return;
-      onError("Audio playback is unavailable in this browser.");
-      updateLiveStatus("error");
-      return;
+    if (captureRequested) {
+      updateLiveStatus("connecting");
+      onStatus({ tone: "busy", text: "Connecting live voice" });
     }
-    if (!isCurrentLiveGeneration(generation)) return;
-    updateLiveStatus("connecting");
-    onStatus({ tone: "busy", text: "Connecting live voice" });
     const socket = new WebSocket(api.liveSessionURL(sessionId), api.webSocketProtocols());
-    if (!isCurrentLiveGeneration(generation)) {
-      socket.close();
-      return;
-    }
     liveSocketRef.current = socket;
     socket.onmessage = (message) => {
-      if (!isCurrentLiveSession(socket, generation)) return;
+      if (!isCurrentLiveSocket(socket, generation)) return;
       try {
         void handleLiveRuntimeEvent(JSON.parse(message.data) as RuntimeEvent, socket, generation);
       } catch {
@@ -172,41 +209,58 @@ export function useLiveVoice({
       }
     };
     socket.onerror = () => {
-      if (!isCurrentLiveSession(socket, generation)) return;
-      onStatus({ tone: "error", text: "Live voice connection interrupted" });
+      if (!isCurrentLiveSocket(socket, generation)) return;
+      if (inputModeRef.current === "live" || liveCaptureRequestedRef.current) {
+        onStatus({ tone: "error", text: "Live voice connection interrupted" });
+      }
     };
     socket.onclose = () => {
-      if (!isCurrentLiveSession(socket, generation)) return;
+      if (!isCurrentLiveSocket(socket, generation)) return;
       cleanupLiveAudio();
       liveSocketRef.current = null;
-      if (!liveManualStopRef.current && !liveExpectedCloseRef.current && inputModeRef.current === "live") {
+      liveSetupCompleteRef.current = false;
+      clearLivePrewarmIdleTimer();
+      const shouldReconnect = !liveManualStopRef.current && !liveExpectedCloseRef.current && inputModeRef.current === "live" && liveCaptureRequestedRef.current;
+      if (shouldReconnect) {
         void scheduleLiveReconnect(generation);
         return;
       }
-      updateLiveStatus("idle");
-      onStatus((current) => current.tone === "error" ? current : { tone: "idle", text: "Live voice stopped" });
+      liveCaptureRequestedRef.current = false;
+      if (inputModeRef.current === "live") {
+        updateLiveStatus("idle");
+        onStatus((current) => current.tone === "error" ? current : { tone: "idle", text: "Live voice stopped" });
+      }
     };
   }
 
-  function stopLiveMode(sendEnd = true) {
-    liveSwitchLockedUntilRef.current = performance.now() + liveModeSwitchCooldownMs;
+  function enterLiveCaptureMode() {
+    clearLivePrewarmTimer();
+    clearLivePrewarmIdleTimer();
+    setInputMode("live");
+    inputModeRef.current = "live";
+    onError("");
+    onAssistantDraftChange("");
+    setLiveUserDraft("");
+    stopLivePlayback();
+  }
+
+  function stopLiveMode(sendEnd = true, lockSwitch = true) {
+    if (lockSwitch) {
+      liveSwitchLockedUntilRef.current = performance.now() + liveModeSwitchCooldownMs;
+    }
     liveManualStopRef.current = true;
     liveExpectedCloseRef.current = true;
     clearLiveReconnectTimer();
+    clearLivePrewarmTimer();
+    clearLivePrewarmIdleTimer();
+    liveCaptureRequestedRef.current = false;
+    liveSetupCompleteRef.current = false;
     liveSessionGenerationRef.current += 1;
     liveCaptureGenerationRef.current += 1;
     setInputMode("text");
     inputModeRef.current = "text";
-    const socket = liveSocketRef.current;
     cleanupLiveAudio();
-    liveSocketRef.current = null;
-    if (socket) {
-      if (sendEnd && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "audio_end" }));
-        socket.send(JSON.stringify({ type: "close" }));
-      }
-      socket.close();
-    }
+    closeLiveSocket(sendEnd);
     liveStatusRef.current = "idle";
     updateLiveStatus("idle");
     setLiveUserDraft("");
@@ -244,27 +298,29 @@ export function useLiveVoice({
   }
 
   async function handleLiveRuntimeEvent(event: RuntimeEvent, socket: WebSocket, generation: number) {
-    if (!isCurrentLiveSession(socket, generation)) return;
+    if (!isCurrentLiveSocket(socket, generation)) return;
     if (event.type === "live_ready") {
-      onStatus({ tone: "busy", text: "Live voice connected" });
+      if (inputModeRef.current === "live" || liveCaptureRequestedRef.current) {
+        onStatus({ tone: "busy", text: "Live voice connected" });
+      }
       return;
     }
     if (event.type === "live_setup_complete") {
       liveSetupAtRef.current = performance.now();
-      try {
-        await startLiveCapture(socket, generation);
-      } catch (error) {
-        if (!isCurrentLiveSession(socket, generation)) return;
-        onError(errorMessage(error));
-        updateLiveStatus("error");
-        onStatus({ tone: "error", text: "Microphone unavailable" });
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: "close" }));
-        }
-        socket.close();
+      liveSetupCompleteRef.current = true;
+      if (liveCaptureRequestedRef.current) {
+        await startLiveCaptureWhenReady(socket, generation);
+      } else {
+        scheduleLivePrewarmIdleClose();
       }
       return;
     }
+    if (event.type === "error" && inputModeRef.current !== "live" && !liveCaptureRequestedRef.current) {
+      liveExpectedCloseRef.current = true;
+      closeLiveSocket(false);
+      return;
+    }
+    if (!isCurrentLiveSession(socket, generation)) return;
     if (event.type === "live_transcript" && event.role === "user") {
       if (!liveFirstInputTranscriptAtRef.current) {
         liveFirstInputTranscriptAtRef.current = performance.now();
@@ -322,12 +378,10 @@ export function useLiveVoice({
       setInputMode("text");
       inputModeRef.current = "text";
       liveExpectedCloseRef.current = true;
+      liveCaptureRequestedRef.current = false;
       updateLiveStatus("error");
       cleanupLiveAudio();
-      liveSocketRef.current = null;
-      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-        socket.close();
-      }
+      closeLiveSocket(false);
       return;
     }
     if (event.type === "done") {
@@ -348,6 +402,32 @@ export function useLiveVoice({
       onStatus(liveAudioChunkCountRef.current > 0
         ? { tone: "ok", text: total ? `Voice response played in ${total} ms` : "Voice response played" }
         : { tone: "ok", text: "Voice transcript received" });
+    }
+  }
+
+  async function startLiveCaptureWhenReady(socket: WebSocket, generation: number) {
+    if (!isCurrentLiveSocket(socket, generation)) return;
+    if (!liveCaptureRequestedRef.current) return;
+    enterLiveCaptureMode();
+    try {
+      await ensureLivePlaybackContext();
+    } catch {
+      if (!isCurrentLiveSocket(socket, generation)) return;
+      onError("Audio playback is unavailable in this browser.");
+      updateLiveStatus("error");
+      liveCaptureRequestedRef.current = false;
+      closeLiveSocket(true);
+      return;
+    }
+    try {
+      await startLiveCapture(socket, generation);
+    } catch (error) {
+      if (!isCurrentLiveSocket(socket, generation)) return;
+      onError(errorMessage(error));
+      updateLiveStatus("error");
+      onStatus({ tone: "error", text: "Microphone unavailable" });
+      liveCaptureRequestedRef.current = false;
+      closeLiveSocket(true);
     }
   }
 
@@ -514,7 +594,11 @@ export function useLiveVoice({
   }
 
   function isCurrentLiveSession(socket: WebSocket, generation: number) {
-    return liveSocketRef.current === socket && liveSessionGenerationRef.current === generation && inputModeRef.current === "live";
+    return isCurrentLiveSocket(socket, generation) && inputModeRef.current === "live";
+  }
+
+  function isCurrentLiveSocket(socket: WebSocket, generation: number) {
+    return liveSocketRef.current === socket && liveSessionGenerationRef.current === generation;
   }
 
   function isCurrentLiveGeneration(generation: number) {
@@ -539,6 +623,41 @@ export function useLiveVoice({
       window.clearTimeout(liveReconnectTimerRef.current);
       liveReconnectTimerRef.current = null;
     }
+  }
+
+  function clearLivePrewarmTimer() {
+    if (livePrewarmTimerRef.current !== null) {
+      window.clearTimeout(livePrewarmTimerRef.current);
+      livePrewarmTimerRef.current = null;
+    }
+  }
+
+  function clearLivePrewarmIdleTimer() {
+    if (livePrewarmIdleTimerRef.current !== null) {
+      window.clearTimeout(livePrewarmIdleTimerRef.current);
+      livePrewarmIdleTimerRef.current = null;
+    }
+  }
+
+  function scheduleLivePrewarmIdleClose() {
+    clearLivePrewarmIdleTimer();
+    livePrewarmIdleTimerRef.current = window.setTimeout(() => {
+      livePrewarmIdleTimerRef.current = null;
+      if (inputModeRef.current === "live" || liveCaptureRequestedRef.current) return;
+      closeLiveSocket(true);
+    }, livePrewarmIdleMs);
+  }
+
+  function closeLiveSocket(sendEnd: boolean) {
+    const socket = liveSocketRef.current;
+    liveSocketRef.current = null;
+    liveSetupCompleteRef.current = false;
+    if (!socket) return;
+    if (sendEnd && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "audio_end" }));
+      socket.send(JSON.stringify({ type: "close" }));
+    }
+    socket.close();
   }
 
   async function scheduleLiveReconnect(generation: number) {
@@ -642,6 +761,7 @@ export function useLiveVoice({
     liveStatus,
     liveUserDraft,
     startLiveMode,
+    prewarmLiveMode,
     stopLiveMode,
     switchToTextMode,
     switchToLiveMode,

@@ -98,6 +98,31 @@ func TestLiveSetupMessageUsesMinimalThinkingFor31Model(t *testing.T) {
 	}
 }
 
+func TestLiveSetupMessageUsesPromptCache(t *testing.T) {
+	recorder := &countingLiveRecorder{instruction: "cached instruction"}
+	cache := NewMemoryLiveSetupPromptCache(time.Minute)
+	service := NewVertexLiveService(LiveConfig{
+		Enabled:         true,
+		VertexProjectID: "project-1",
+		Model:           defaultLiveModel,
+	}, recorder, nil)
+	service.SetSetupPromptCache(cache)
+	req := LiveRequest{UserID: "alice", SessionID: "session-1"}
+	first := service.setupMessage(context.Background(), req)
+	second := service.setupMessage(context.Background(), req)
+	if recorder.calls != 1 {
+		t.Fatalf("LiveSystemInstruction calls = %d, want 1", recorder.calls)
+	}
+	for _, message := range []map[string]any{first, second} {
+		setup := message["setup"].(map[string]any)
+		systemInstruction := setup["systemInstruction"].(map[string]any)
+		parts := systemInstruction["parts"].([]map[string]any)
+		if parts[0]["text"] != "cached instruction" {
+			t.Fatalf("unexpected system instruction: %#v", systemInstruction)
+		}
+	}
+}
+
 func TestLiveClientAudioEventToVertexPayload(t *testing.T) {
 	payload, err := liveClientEventToVertexPayload(LiveClientEvent{Type: "audio", Data: "AAEC"}, "audio/pcm;rate=16000")
 	if err != nil {
@@ -108,6 +133,20 @@ func TestLiveClientAudioEventToVertexPayload(t *testing.T) {
 	if audio["mimeType"] != "audio/pcm;rate=16000" || audio["data"] != "AAEC" {
 		t.Fatalf("unexpected audio payload: %#v", payload)
 	}
+}
+
+type countingLiveRecorder struct {
+	instruction string
+	calls       int
+}
+
+func (r *countingLiveRecorder) LiveSystemInstruction(context.Context, string, string) string {
+	r.calls++
+	return r.instruction
+}
+
+func (r *countingLiveRecorder) RecordLiveTurn(context.Context, string, string, string, string, string) error {
+	return nil
 }
 
 func TestLiveClientTraceEventIsIgnoredUpstream(t *testing.T) {

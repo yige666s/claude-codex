@@ -34,6 +34,7 @@ type MessageComposerProps = {
   onCancelChat: () => void;
   onSelectTool: (toolId: ComposerToolID) => void;
   onToggleLive: () => void;
+  onPrewarmLive: () => void;
   formatNumber: (value: number) => string;
 };
 
@@ -62,6 +63,7 @@ export function MessageComposer({
   onCancelChat,
   onSelectTool,
   onToggleLive,
+  onPrewarmLive,
   formatNumber
 }: MessageComposerProps) {
   const canUseText = true;
@@ -111,6 +113,7 @@ export function MessageComposer({
               busyChat={busyChat}
               sessionId={sessionId}
               onToggleLive={onToggleLive}
+              onPrewarmLive={onPrewarmLive}
             />
             <SendButton busyChat={busyChat} canSend={canSend} onSend={onSendMessage} onCancel={onCancelChat} />
           </div>

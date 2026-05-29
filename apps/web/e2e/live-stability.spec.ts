@@ -8,11 +8,10 @@ test("Live mode releases microphone capture when rapidly switching back to text"
   await page.goto("/");
   await login(page);
 
-  await page.getByRole("button", { name: "Choose mode" }).click();
-  await page.getByRole("menuitem", { name: "Live" }).click();
-  await expect(page.getByRole("button", { name: "Mute microphone" })).toBeVisible({ timeout: 10_000 });
-  await page.getByRole("button", { name: "Choose mode" }).click();
-  await page.getByRole("menuitem", { name: "Chat" }).click();
+  await page.getByRole("button", { name: "Start Live voice" }).click();
+  await expect(page.getByRole("button", { name: "Stop Live voice" })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => window.__liveTest.getUserMediaCalls)).toBe(1);
+  await page.getByRole("button", { name: "Stop Live voice" }).click();
 
   await expect.poll(() => page.evaluate(() => window.__liveTest.stoppedTracks)).toBeGreaterThan(0);
   const sentFrames = await page.evaluate(() => window.__liveTest.sentFrames.join("\n"));
@@ -20,19 +19,21 @@ test("Live mode releases microphone capture when rapidly switching back to text"
   await expect(page.getByRole("textbox", { name: "Message" })).not.toHaveAttribute("placeholder", "Live mode is active");
 });
 
-test("Live microphone volume can recover after mute", async ({ page }) => {
+test("Live microphone capture can restart after stopping", async ({ page }) => {
   await installLiveBrowserFakes(page);
   await mockLiveAPI(page);
   await page.goto("/");
   await login(page);
 
-  await page.getByRole("button", { name: "Choose mode" }).click();
-  await page.getByRole("menuitem", { name: "Live" }).click();
-  await expect(page.getByRole("button", { name: "Mute microphone" })).toBeVisible({ timeout: 10_000 });
-  await page.getByRole("button", { name: "Mute microphone" }).click();
-  await expect(page.getByRole("button", { name: "Unmute microphone" })).toBeVisible();
-  await page.getByRole("button", { name: "Unmute microphone" }).click();
-  await expect(page.getByRole("button", { name: "Mute microphone" })).toBeVisible();
+  await page.getByRole("button", { name: "Start Live voice" }).click();
+  await expect(page.getByRole("button", { name: "Stop Live voice" })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => window.__liveTest.getUserMediaCalls)).toBe(1);
+  await page.getByRole("button", { name: "Stop Live voice" }).click();
+  await expect(page.getByRole("button", { name: "Start Live voice" })).toBeVisible();
+  await page.waitForTimeout(500);
+  await page.getByRole("button", { name: "Start Live voice" }).click();
+  await expect(page.getByRole("button", { name: "Stop Live voice" })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => window.__liveTest.getUserMediaCalls)).toBe(2);
 });
 
 test("Live permission denial is shown without internal details", async ({ page }) => {
@@ -41,8 +42,7 @@ test("Live permission denial is shown without internal details", async ({ page }
   await page.goto("/");
   await login(page);
 
-  await page.getByRole("button", { name: "Choose mode" }).click();
-  await page.getByRole("menuitem", { name: "Live" }).click();
+  await page.getByRole("button", { name: "Start Live voice" }).click();
   await expect(page.getByText("Microphone unavailable")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText(/\/run\/agentapi|GOOGLE_APPLICATION_CREDENTIALS|VERTEX_ACCESS_TOKEN|vertex-service-account/i)).toHaveCount(0);
 });
@@ -58,17 +58,30 @@ test("Live credential errors are converted to user-safe copy", async ({ page }) 
   await page.goto("/");
   await login(page);
 
-  await page.getByRole("button", { name: "Choose mode" }).click();
-  await page.getByRole("menuitem", { name: "Live" }).click();
+  await page.getByRole("button", { name: "Start Live voice" }).click();
   await expect(page.getByText("Live mode is not configured for this environment. Ask an administrator to finish voice setup.")).toBeVisible();
   await expect(page.getByText(/\/run\/agentapi|GOOGLE_APPLICATION_CREDENTIALS|VERTEX_ACCESS_TOKEN|vertex-service-account/i)).toHaveCount(0);
+});
+
+test("Live prewarm click intent starts microphone capture after setup completes", async ({ page }) => {
+  await installLiveBrowserFakes(page);
+  await mockLiveAPI(page);
+  await page.goto("/");
+  await login(page);
+
+  const liveButton = page.getByRole("button", { name: "Start Live voice" });
+  await liveButton.dispatchEvent("pointerdown");
+  await liveButton.click();
+
+  await expect.poll(() => page.evaluate(() => window.__liveTest.sockets)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.__liveTest.getUserMediaCalls)).toBe(1);
 });
 
 async function login(page: Page) {
   await page.getByLabel("Email").fill("live@example.com");
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Login" }).last().click();
-  await expect(page.getByRole("heading", { name: /Hello Live User/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Hi Live User/i })).toBeVisible();
   await page.getByRole("button", { name: "新聊天" }).click();
 }
 
@@ -99,7 +112,7 @@ async function mockLiveAPI(page: Page) {
 
 async function installLiveBrowserFakes(page: Page, options: { denyMicrophone?: boolean; firstFrame?: Record<string, unknown> } = {}) {
   await page.addInitScript((config) => {
-    window.__liveTest = { stoppedTracks: 0, sentFrames: [] };
+    window.__liveTest = { stoppedTracks: 0, sentFrames: [], getUserMediaCalls: 0, sockets: 0 };
     class FakeWebSocket {
       static CONNECTING = 0;
       static OPEN = 1;
@@ -109,6 +122,7 @@ async function installLiveBrowserFakes(page: Page, options: { denyMicrophone?: b
       onclose: (() => void) | null = null;
       onerror: (() => void) | null = null;
       constructor() {
+        window.__liveTest.sockets += 1;
         setTimeout(() => {
           this.readyState = FakeWebSocket.OPEN;
           const frame = config.firstFrame || { type: "live_setup_complete" };
@@ -128,17 +142,31 @@ async function installLiveBrowserFakes(page: Page, options: { denyMicrophone?: b
       configurable: true,
       value: {
       getUserMedia: async () => {
+        window.__liveTest.getUserMediaCalls += 1;
         if (config.denyMicrophone) throw new DOMException("Permission denied", "NotAllowedError");
+        const track = {
+          enabled: true,
+          label: "Fake microphone",
+          getSettings: () => ({}),
+          stop: () => {
+            window.__liveTest.stoppedTracks += 1;
+          },
+          onended: null,
+          onmute: null,
+          onunmute: null
+        };
         return {
-          getTracks: () => [{
-            enabled: true,
-            stop: () => {
-              window.__liveTest.stoppedTracks += 1;
-            }
-          }]
+          getTracks: () => [track],
+          getAudioTracks: () => [track]
         } as unknown as MediaStream;
       }
       } as MediaDevices
+    });
+    Object.defineProperty(navigator, "permissions", {
+      configurable: true,
+      value: {
+        query: async () => ({ state: config.denyMicrophone ? "denied" : "granted" })
+      }
     });
     class FakeAudioContext {
       sampleRate = 48000;
@@ -196,6 +224,8 @@ declare global {
     __liveTest: {
       stoppedTracks: number;
       sentFrames: string[];
+      getUserMediaCalls: number;
+      sockets: number;
     };
   }
 }

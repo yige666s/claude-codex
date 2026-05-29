@@ -237,6 +237,7 @@ export function AgentWorkspace() {
   const {
     liveStatus,
     liveUserDraft,
+    prewarmLiveMode,
     stopLiveMode,
     switchToTextMode,
     toggleLiveMode
@@ -310,7 +311,7 @@ export function AgentWorkspace() {
     }
     return () => {
       closeJobStream();
-      stopLiveMode(false);
+      stopLiveMode(false, false);
       api.dispose();
     };
   }, [api]);
@@ -376,7 +377,7 @@ export function AgentWorkspace() {
     selectedSessionIdRef.current = sessionId;
     resetSessionScopedFeedback();
     refreshSessionData(sessionId).catch((error) => showError(error));
-    stopLiveMode(false);
+    stopLiveMode(false, false);
   }, [sessionId]);
 
   useEffect(() => {
@@ -1235,6 +1236,10 @@ export function AgentWorkspace() {
     composerInputRef.current?.focus();
   }
 
+  function prewarmLiveVoice() {
+    void prewarmLiveMode();
+  }
+
   async function deleteAsset(kind: "attachment" | "artifact", id: string) {
     const confirmed = await requestConfirmation({
       title: `Delete ${kind}?`,
@@ -1651,6 +1656,7 @@ export function AgentWorkspace() {
                 onCancelChat={cancelChat}
                 onSelectTool={selectComposerTool}
                 onToggleLive={toggleLiveVoice}
+                onPrewarmLive={prewarmLiveVoice}
                 formatNumber={formatNumber}
               />
             )}

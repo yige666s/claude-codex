@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"claude-codex/internal/backend/googleauth"
 	"claude-codex/internal/harness/state"
 
 	"github.com/gorilla/websocket"
@@ -29,10 +28,12 @@ const (
 )
 
 type VertexLiveService struct {
-	config   LiveConfig
-	recorder LiveTurnRecorder
-	dialer   *websocket.Dialer
-	logger   *log.Logger
+	config           LiveConfig
+	recorder         LiveTurnRecorder
+	dialer           *websocket.Dialer
+	logger           *log.Logger
+	tokenProvider    *vertexLiveAccessTokenProvider
+	setupPromptCache LiveSetupPromptCache
 }
 
 type LiveTurnRecorder interface {
@@ -48,11 +49,19 @@ type LiveSkillHandler interface {
 func NewVertexLiveService(config LiveConfig, recorder LiveTurnRecorder, logger *log.Logger) *VertexLiveService {
 	config = normalizeLiveConfig(config)
 	return &VertexLiveService{
-		config:   config,
-		recorder: recorder,
-		dialer:   websocket.DefaultDialer,
-		logger:   logger,
+		config:        config,
+		recorder:      recorder,
+		dialer:        websocket.DefaultDialer,
+		logger:        logger,
+		tokenProvider: newVertexLiveAccessTokenProvider(&http.Client{Timeout: 30 * time.Second}),
 	}
+}
+
+func (s *VertexLiveService) SetSetupPromptCache(cache LiveSetupPromptCache) {
+	if s == nil {
+		return
+	}
+	s.setupPromptCache = cache
 }
 
 func normalizeLiveConfig(config LiveConfig) LiveConfig {
@@ -169,17 +178,14 @@ func (s *VertexLiveService) Run(ctx context.Context, req LiveRequest, input Live
 }
 
 func (s *VertexLiveService) connect(ctx context.Context, req LiveRequest) (*websocket.Conn, error) {
-	token := strings.TrimSpace(firstNonEmpty(
-		envString("VERTEX_ACCESS_TOKEN"),
-		envString("GOOGLE_OAUTH_ACCESS_TOKEN"),
-		envString("GOOGLE_ACCESS_TOKEN"),
-	))
-	if token == "" {
-		var err error
-		token, err = googleauth.AccessTokenFromEnvOrGcloud(ctx, &http.Client{Timeout: 30 * time.Second})
-		if err != nil {
-			return nil, fmt.Errorf("live vertex access token is required: %w", err)
-		}
+	tokenProvider := s.tokenProvider
+	if tokenProvider == nil {
+		tokenProvider = newVertexLiveAccessTokenProvider(&http.Client{Timeout: 30 * time.Second})
+		s.tokenProvider = tokenProvider
+	}
+	token, err := tokenProvider.AccessToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("live vertex access token is required: %w", err)
 	}
 	u, err := liveVertexWebSocketURL(s.config)
 	if err != nil {
@@ -225,13 +231,46 @@ func (s *VertexLiveService) setupMessage(ctx context.Context, req LiveRequest) m
 		setup["outputAudioTranscription"] = map[string]any{}
 	}
 	if s.recorder != nil {
-		if instruction := strings.TrimSpace(s.recorder.LiveSystemInstruction(ctx, req.UserID, req.SessionID)); instruction != "" {
+		if instruction := strings.TrimSpace(s.liveSystemInstruction(ctx, req)); instruction != "" {
 			setup["systemInstruction"] = map[string]any{
 				"parts": []map[string]any{{"text": instruction}},
 			}
 		}
 	}
 	return map[string]any{"setup": setup}
+}
+
+func (s *VertexLiveService) liveSystemInstruction(ctx context.Context, req LiveRequest) string {
+	if s == nil || s.recorder == nil {
+		return ""
+	}
+	key := s.liveSetupPromptCacheKey(req)
+	if s.setupPromptCache != nil && key != "" {
+		if instruction, ok, err := s.setupPromptCache.GetLiveSetupPrompt(ctx, key); err == nil && ok {
+			return instruction
+		}
+	}
+	instruction := strings.TrimSpace(s.recorder.LiveSystemInstruction(ctx, req.UserID, req.SessionID))
+	if instruction != "" && s.setupPromptCache != nil && key != "" {
+		_ = s.setupPromptCache.SetLiveSetupPrompt(ctx, key, instruction)
+	}
+	return instruction
+}
+
+func (s *VertexLiveService) liveSetupPromptCacheKey(req LiveRequest) string {
+	if s == nil {
+		return ""
+	}
+	userID := strings.TrimSpace(req.UserID)
+	sessionID := strings.TrimSpace(req.SessionID)
+	if userID == "" || sessionID == "" {
+		return ""
+	}
+	model := strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(strings.TrimSpace(s.config.Model))
+	if model == "" {
+		model = "default"
+	}
+	return fmt.Sprintf("%s:%s:%s", model, userPathID(userID), sessionID)
 }
 
 func liveThinkingConfig(model string) map[string]any {

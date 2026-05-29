@@ -123,6 +123,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	var messageContextRedisClient bootstrap.RedisHealthCloser
 	var sessionListRedisClient bootstrap.RedisHealthCloser
 	var messageSequenceRedisClient bootstrap.RedisHealthCloser
+	var liveSetupPromptRedisClient bootstrap.RedisHealthCloser
 	if setter, ok := sessionStore.(interface {
 		SetMessageSequenceAllocator(agentruntime.MessageSequenceAllocator)
 	}); ok {
@@ -159,6 +160,18 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 			defer func() {
 				if err := messageContextRedisClient.Close(); err != nil {
 					logInfof("close message context redis client: %v", err)
+				}
+			}()
+		}
+	}
+	if cfg.LiveEnabled {
+		cache, redisClient := bootstrap.BuildLiveSetupPromptCache(cfg.LiveSetupPromptCacheBackend, cfg.LiveSetupPromptCacheRedisURL, cfg.LiveSetupPromptCacheTTL)
+		liveSetupPromptRedisClient = redisClient
+		runtime.SetLiveSetupPromptCache(cache)
+		if liveSetupPromptRedisClient != nil {
+			defer func() {
+				if err := liveSetupPromptRedisClient.Close(); err != nil {
+					logInfof("close live setup prompt redis client: %v", err)
 				}
 			}()
 		}
@@ -309,6 +322,9 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.MessageSequenceBackend), "redis") && messageSequenceRedisClient != nil {
 		server.AddReadinessCheck("message_sequence", agentruntime.RedisClientReadinessCheck(messageSequenceRedisClient))
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.LiveSetupPromptCacheBackend), "redis") && liveSetupPromptRedisClient != nil {
+		server.AddReadinessCheck("live_setup_prompt_cache", agentruntime.RedisClientReadinessCheck(liveSetupPromptRedisClient))
 	}
 	server.AddReadinessCheck("job_queue", agentruntime.RedisClientReadinessCheck(jobQueueRedisClient))
 	if publishKafkaEvents || cfg.MessageEventsKafkaConsumerEnabled {

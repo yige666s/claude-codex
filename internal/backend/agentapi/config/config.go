@@ -121,6 +121,9 @@ type Config struct {
 	LiveVADPrefixPadding                    time.Duration
 	LiveVADSilenceDuration                  time.Duration
 	LiveSessionTimeout                      time.Duration
+	LiveSetupPromptCacheBackend             string
+	LiveSetupPromptCacheRedisURL            string
+	LiveSetupPromptCacheTTL                 time.Duration
 	AuthMode                                string
 	AuthToken                               string
 	UserHeader                              string
@@ -339,6 +342,9 @@ func Default() Config {
 		LiveVADPrefixPadding:                    EnvDuration("AGENT_API_LIVE_VAD_PREFIX_PADDING", 150*time.Millisecond),
 		LiveVADSilenceDuration:                  EnvDuration("AGENT_API_LIVE_VAD_SILENCE_DURATION", 350*time.Millisecond),
 		LiveSessionTimeout:                      EnvDuration("AGENT_API_LIVE_SESSION_TIMEOUT", 10*time.Minute),
+		LiveSetupPromptCacheBackend:             FirstNonEmpty(os.Getenv("AGENT_API_LIVE_SETUP_PROMPT_CACHE_BACKEND"), "memory"),
+		LiveSetupPromptCacheRedisURL:            FirstNonEmpty(os.Getenv("AGENT_API_LIVE_SETUP_PROMPT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
+		LiveSetupPromptCacheTTL:                 EnvDuration("AGENT_API_LIVE_SETUP_PROMPT_CACHE_TTL", time.Minute),
 		AuthMode:                                FirstNonEmpty(os.Getenv("AGENT_API_AUTH_MODE"), "auto"),
 		AuthToken:                               os.Getenv("AGENT_API_AUTH_TOKEN"),
 		UserHeader:                              "X-User-ID",
@@ -558,6 +564,9 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.DurationVar(&cfg.LiveVADPrefixPadding, "live-vad-prefix-padding", cfg.LiveVADPrefixPadding, "Gemini Live VAD detected speech duration before confirming speech start")
 	flags.DurationVar(&cfg.LiveVADSilenceDuration, "live-vad-silence-duration", cfg.LiveVADSilenceDuration, "Gemini Live VAD silence duration before confirming speech end")
 	flags.DurationVar(&cfg.LiveSessionTimeout, "live-session-timeout", cfg.LiveSessionTimeout, "max duration for one Gemini Live websocket session")
+	flags.StringVar(&cfg.LiveSetupPromptCacheBackend, "live-setup-prompt-cache-backend", cfg.LiveSetupPromptCacheBackend, "live setup prompt cache backend: memory, redis, or none")
+	flags.StringVar(&cfg.LiveSetupPromptCacheRedisURL, "live-setup-prompt-cache-redis-url", cfg.LiveSetupPromptCacheRedisURL, "Redis URL for live setup prompt cache")
+	flags.DurationVar(&cfg.LiveSetupPromptCacheTTL, "live-setup-prompt-cache-ttl", cfg.LiveSetupPromptCacheTTL, "live setup prompt cache TTL")
 	flags.StringVar(&cfg.AuthMode, "auth-mode", cfg.AuthMode, "auth mode: auto, jwt, cookie, trusted-header, header, none")
 	flags.StringVar(&cfg.AuthToken, "auth-token", cfg.AuthToken, "optional bearer token required for API requests")
 	flags.StringVar(&cfg.UserHeader, "user-header", cfg.UserHeader, "header containing authenticated consumer user ID")

@@ -58,6 +58,21 @@ func BuildSessionListCache(backend, redisURL string, ttl time.Duration) (agentru
 	}
 }
 
+func BuildLiveSetupPromptCache(backend, redisURL string, ttl time.Duration) (agentruntime.LiveSetupPromptCache, RedisHealthCloser) {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "redis":
+		client, err := agentruntime.NewRedisClientFromURL(redisURL)
+		if err != nil {
+			logFatalf("init redis live setup prompt cache: %v", err)
+		}
+		return agentruntime.NewRedisLiveSetupPromptCacheWithPrefix(client, ttl, agentruntime.RedisPrefixFromURL(redisURL)), client
+	case "none", "off", "disabled":
+		return agentruntime.NoopLiveSetupPromptCache{}, nil
+	default:
+		return agentruntime.NewMemoryLiveSetupPromptCache(ttl), nil
+	}
+}
+
 func BuildMessageSequenceAllocator(backend, redisURL string) (agentruntime.MessageSequenceAllocator, RedisHealthCloser) {
 	switch strings.ToLower(strings.TrimSpace(backend)) {
 	case "redis":
