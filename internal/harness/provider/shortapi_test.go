@@ -67,6 +67,53 @@ func TestShortAPIProviderUsesOpenAICompatibleEndpoint(t *testing.T) {
 	}
 }
 
+func TestShortAPIProviderNormalizesBareModelAliases(t *testing.T) {
+	provider, err := NewShortAPIProvider(Config{
+		Provider: "shortapi",
+		APIKey:   "test-key",
+		BaseURL:  "https://api.shortapi.ai/v1",
+		Model:    "gemini-3.1-pro-preview",
+	})
+	if err != nil {
+		t.Fatalf("NewShortAPIProvider: %v", err)
+	}
+	if provider.config.Model != "google/gemini-3.1-pro-preview" {
+		t.Fatalf("provider model = %q", provider.config.Model)
+	}
+	provider.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read request body: %v", err)
+			}
+			text := string(body)
+			if !strings.Contains(text, `"model":"google/gemini-2.5-flash"`) {
+				t.Fatalf("bare request model was not normalized: %s", text)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body: io.NopCloser(strings.NewReader(`{
+					"id":"chatcmpl-shortapi",
+					"model":"google/gemini-2.5-flash",
+					"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+					"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+				}`)),
+				Header: make(http.Header),
+			}, nil
+		}),
+	}
+	if _, err := provider.CreateMessage(context.Background(), MessageRequest{
+		Model: "gemini-2.5-flash",
+		Messages: []Message{
+			{Role: "user", Content: "hello"},
+		},
+		MaxTokens: 64,
+	}); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+}
+
 func TestShortAPIProviderRealRequest(t *testing.T) {
 	if os.Getenv("SHORTAPI_REAL_TEST") != "1" {
 		t.Skip("set SHORTAPI_REAL_TEST=1 and SHORTAPI_KEY to run the ShortAPI integration test")

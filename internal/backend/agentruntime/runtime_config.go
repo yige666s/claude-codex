@@ -242,10 +242,15 @@ func applyLLMGovernanceConfigPatchWithOptions(config LLMGovernanceConfig, patch 
 		if !ok {
 			return LLMGovernanceConfig{}, fmt.Errorf("model %q is not allowed", model)
 		}
+		providerChanged := canonicalLLMModelProvider(next.Provider) != canonicalLLMModelProvider(option.Provider)
 		next.Provider = option.Provider
 		next.Model = option.ID
 		next.VertexLocation = option.VertexLocation
-		next.ModelRoutes = setDefaultModelRoute(next.ModelRoutes, option.ID)
+		if providerChanged {
+			next.ModelRoutes = resetModelRoutes(next.ModelRoutes, option.ID)
+		} else {
+			next.ModelRoutes = setDefaultModelRoute(next.ModelRoutes, option.ID)
+		}
 	}
 	if patch.VertexLocation != nil {
 		location := strings.TrimSpace(*patch.VertexLocation)
@@ -378,6 +383,59 @@ func setDefaultModelRoute(routes, model string) string {
 		out = append([]string{"default=" + model}, out...)
 	}
 	return strings.Join(out, ",")
+}
+
+func resetModelRoutes(routes, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return strings.TrimSpace(routes)
+	}
+	items := splitRuntimeConfigCSV(routes)
+	out := make([]string, 0, len(items)+1)
+	foundDefault := false
+	for _, item := range items {
+		key, _, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if key == "default" {
+			foundDefault = true
+		}
+		out = append(out, key+"="+model)
+	}
+	if !foundDefault {
+		out = append([]string{"default=" + model}, out...)
+	}
+	if len(out) == 0 {
+		return "default=" + model
+	}
+	return strings.Join(out, ",")
+}
+
+func modelRoutesCompatibleWithProvider(routes, provider string, options []LLMModelOption) bool {
+	provider = canonicalLLMModelProvider(provider)
+	if provider == "" || strings.TrimSpace(routes) == "" {
+		return true
+	}
+	options = normalizeLLMModelOptions(options)
+	for _, item := range splitRuntimeConfigCSV(routes) {
+		_, model, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		option, ok := llmModelOptionFor(strings.TrimSpace(model), options)
+		if !ok {
+			continue
+		}
+		if canonicalLLMModelProvider(option.Provider) != provider {
+			return false
+		}
+	}
+	return true
 }
 
 func splitRuntimeConfigCSV(value string) []string {

@@ -45,8 +45,26 @@ func TestLLMGovernanceConfigModelPatchCanSwitchToShortAPI(t *testing.T) {
 	if updated.Provider != "shortapi" || updated.Model != model || updated.VertexLocation != "" {
 		t.Fatalf("unexpected shortapi runtime model config: %#v", updated)
 	}
-	if updated.ModelRoutes != "default=google/gemini-3.1-pro-preview,chat:complex=gemini-2.5-pro" {
+	if updated.ModelRoutes != "default=google/gemini-3.1-pro-preview,chat:complex=google/gemini-3.1-pro-preview" {
 		t.Fatalf("model routes = %q", updated.ModelRoutes)
+	}
+}
+
+func TestLLMGovernanceConfigLoadResetsRoutesForProviderSwitch(t *testing.T) {
+	manager := NewLLMGovernanceConfigManager(LLMGovernanceConfig{}, &memoryRuntimeConfigStore{
+		config: LLMGovernanceConfig{
+			Provider:    "shortapi",
+			Model:       "google/gemini-3.1-pro-preview",
+			ModelRoutes: "default=google/gemini-3.1-pro-preview,chat=gemini-2.5-flash,chat:complex=gemini-2.5-pro",
+		},
+	})
+	if err := manager.Load(context.Background()); err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	got := manager.Get()
+	want := "default=google/gemini-3.1-pro-preview,chat=google/gemini-3.1-pro-preview,chat:complex=google/gemini-3.1-pro-preview"
+	if got.ModelRoutes != want {
+		t.Fatalf("model routes = %q, want %q", got.ModelRoutes, want)
 	}
 }
 

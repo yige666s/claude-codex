@@ -65,7 +65,8 @@ func (c LLMGovernanceConfig) normalized() LLMGovernanceConfig {
 }
 
 func (c LLMGovernanceConfig) normalizedWithOptions(options []LLMModelOption) LLMGovernanceConfig {
-	if option, ok := llmModelOptionFor(c.Model, normalizeLLMModelOptions(options)); ok {
+	options = normalizeLLMModelOptions(options)
+	if option, ok := llmModelOptionFor(c.Model, options); ok {
 		if c.Provider == "" {
 			c.Provider = option.Provider
 		}
@@ -74,6 +75,8 @@ func (c LLMGovernanceConfig) normalizedWithOptions(options []LLMModelOption) LLM
 		}
 		if c.ModelRoutes == "" {
 			c.ModelRoutes = LLMModelRoutesWithDefault("", option.ID)
+		} else if !modelRoutesCompatibleWithProvider(c.ModelRoutes, c.Provider, options) {
+			c.ModelRoutes = resetModelRoutes(c.ModelRoutes, option.ID)
 		}
 	}
 	if c.MaxAttempts <= 0 {

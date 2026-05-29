@@ -1,6 +1,9 @@
 package provider
 
-import "strings"
+import (
+	"context"
+	"strings"
+)
 
 const (
 	defaultShortAPIBaseURL = "https://api.shortapi.ai/v1"
@@ -23,12 +26,18 @@ func NewShortAPIProvider(cfg Config) (*ShortAPIProvider, error) {
 	if cfg.Model == "" {
 		cfg.Model = defaultShortAPIModel
 	}
+	cfg.Model = normalizeShortAPIModel(cfg.Model)
 	cfg.Provider = "shortapi"
 	openai, err := NewOpenAIProvider(cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &ShortAPIProvider{OpenAIProvider: openai}, nil
+}
+
+func (p *ShortAPIProvider) CreateMessage(ctx context.Context, request MessageRequest) (*MessageResponse, error) {
+	request.Model = normalizeShortAPIModel(request.Model)
+	return p.OpenAIProvider.CreateMessage(ctx, request)
 }
 
 func (p *ShortAPIProvider) Name() string {
@@ -46,5 +55,26 @@ func (p *ShortAPIProvider) SupportedModels() []string {
 		"anthropic/claude-opus-4.6",
 		"deepseek/deepseek-v3.2",
 		"qwen/qwen-3.6-plus",
+	}
+}
+
+func normalizeShortAPIModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || strings.Contains(model, "/") {
+		return model
+	}
+	switch {
+	case strings.HasPrefix(model, "gemini-"):
+		return "google/" + model
+	case strings.HasPrefix(model, "gpt-"):
+		return "openai/" + model
+	case strings.HasPrefix(model, "claude-"):
+		return "anthropic/" + model
+	case strings.HasPrefix(model, "deepseek-"):
+		return "deepseek/" + model
+	case strings.HasPrefix(model, "qwen-"):
+		return "qwen/" + model
+	default:
+		return model
 	}
 }
