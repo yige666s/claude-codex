@@ -107,7 +107,7 @@ type Usage struct {
 
 // Config represents provider configuration
 type Config struct {
-	Provider                string `json:"provider"` // anthropic, openai, qwen, gemini, vertex, custom
+	Provider                string `json:"provider"` // anthropic, openai, qwen, gemini, vertex, shortapi, custom
 	APIKey                  string `json:"api_key,omitempty"`
 	BaseURL                 string `json:"base_url,omitempty"`
 	Token                   string `json:"token,omitempty"` // Alternative to APIKey for some providers

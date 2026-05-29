@@ -110,7 +110,52 @@ type openAIUsage struct {
 
 // CreateMessage sends a message request to OpenAI API
 func (p *OpenAIProvider) CreateMessage(ctx context.Context, request MessageRequest) (*MessageResponse, error) {
-	// Convert unified request to OpenAI format
+	openAIReq := openAIRequestFromMessageRequest(request)
+
+	// Marshal request
+	body, err := json.Marshal(openAIReq)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create HTTP request
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	// Send request
+	resp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("openai request failed: %s: %s", resp.Status, string(data))
+	}
+
+	// Parse response
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil, fmt.Errorf("openai request failed: %s: empty response body", resp.Status)
+	}
+	var openAIResp openAIResponse
+	if err := json.Unmarshal(data, &openAIResp); err != nil {
+		return nil, err
+	}
+
+	return messageResponseFromOpenAI(openAIResp)
+}
+
+func openAIRequestFromMessageRequest(request MessageRequest) openAIRequest {
 	openAIReq := openAIRequest{
 		Model:       request.Model,
 		MaxTokens:   request.MaxTokens,
@@ -185,46 +230,10 @@ func (p *OpenAIProvider) CreateMessage(ctx context.Context, request MessageReque
 		}
 	}
 
-	// Marshal request
-	body, err := json.Marshal(openAIReq)
-	if err != nil {
-		return nil, err
-	}
+	return openAIReq
+}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-
-	// Send request
-	resp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= http.StatusBadRequest {
-		data, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai request failed: %s: %s", resp.Status, string(data))
-	}
-
-	// Parse response
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return nil, fmt.Errorf("openai request failed: %s: empty response body", resp.Status)
-	}
-	var openAIResp openAIResponse
-	if err := json.Unmarshal(data, &openAIResp); err != nil {
-		return nil, err
-	}
-
+func messageResponseFromOpenAI(openAIResp openAIResponse) (*MessageResponse, error) {
 	if len(openAIResp.Choices) == 0 {
 		return nil, fmt.Errorf("no choices in response")
 	}

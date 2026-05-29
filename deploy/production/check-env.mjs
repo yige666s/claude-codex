@@ -16,6 +16,7 @@ checkRequired("core", [
 ]);
 checkValue("core", "AGENT_API_SQL_DRIVER", (value) => value === "pgx", "must be pgx for Postgres deployments");
 checkValue("core", "AGENT_API_SQL_DIALECT", (value) => value === "postgres", "must be postgres");
+checkValue("core", "AGENT_API_STORE_BACKEND", (value) => (value || "").toLowerCase() === "sql", "must be sql for test deployments");
 
 checkRequired("security", [
   "AGENT_API_CORS_ALLOWED_ORIGINS",
@@ -84,6 +85,8 @@ if (provider === "vertex") {
   checkAny("llm", "Gemini key", ["GEMINI_API_KEY", "GOOGLE_API_KEY", "AGENT_API_LLM_API_KEY"]);
 } else if (provider === "openai") {
   checkAny("llm", "OpenAI key", ["OPENAI_API_KEY", "AGENT_API_LLM_API_KEY"]);
+} else if (provider === "shortapi" || provider === "short") {
+  checkAny("llm", "ShortAPI key", ["SHORTAPI_KEY", "AGENT_API_LLM_API_KEY"]);
 } else if (provider === "anthropic") {
   checkAny("llm", "Anthropic key", ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "AGENT_API_LLM_API_KEY"]);
 }

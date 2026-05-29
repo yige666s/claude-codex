@@ -9,6 +9,7 @@ import (
 
 func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	t.Setenv("AGENT_API_SQL_MAX_OPEN_CONNS", "37")
+	t.Setenv("AGENT_API_STORE_BACKEND", "sql")
 	t.Setenv("AGENT_API_LLM_PROVIDER", "openai")
 	t.Setenv("AGENT_API_OBJECT_TIMEOUT", "3s")
 	t.Setenv("AGENT_API_TIMEZONE", "Asia/Shanghai")
@@ -18,6 +19,9 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 
 	if cfg.SQLMaxOpen != 37 {
 		t.Fatalf("SQLMaxOpen = %d, want 37", cfg.SQLMaxOpen)
+	}
+	if cfg.StoreBackend != "sql" {
+		t.Fatalf("StoreBackend = %q, want sql", cfg.StoreBackend)
 	}
 	if cfg.LLMProvider != "openai" {
 		t.Fatalf("LLMProvider = %q, want openai", cfg.LLMProvider)

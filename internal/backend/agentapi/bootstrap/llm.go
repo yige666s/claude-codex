@@ -125,16 +125,52 @@ func NewGovernedPlannerForScope(primary LLMConfig, fallbackSpec, modelRoutes str
 }
 
 func ApplyRuntimeLLMConfig(base LLMConfig, runtimeConfig agentruntime.LLMGovernanceConfig) LLMConfig {
-	if strings.TrimSpace(runtimeConfig.Provider) != "" {
-		base.Provider = strings.TrimSpace(runtimeConfig.Provider)
+	runtimeProvider := strings.ToLower(strings.TrimSpace(runtimeConfig.Provider))
+	if runtimeProvider != "" && !strings.EqualFold(runtimeProvider, base.Provider) {
+		if providerConfig, ok := runtimeProviderLLMConfig(runtimeProvider, base.Timeout); ok {
+			base = providerConfig
+		} else {
+			base.Provider = runtimeProvider
+			base.APIKey = ""
+			base.Token = ""
+			base.BaseURL = ""
+			base.VertexLocation = ""
+		}
+	} else if runtimeProvider != "" {
+		base.Provider = runtimeProvider
 	}
 	if strings.TrimSpace(runtimeConfig.Model) != "" {
 		base.Model = strings.TrimSpace(runtimeConfig.Model)
 	}
 	if strings.TrimSpace(runtimeConfig.VertexLocation) != "" {
 		base.VertexLocation = strings.TrimSpace(runtimeConfig.VertexLocation)
+	} else if option, ok := agentruntime.LLMModelOptionFor(base.Model); ok {
+		base.VertexLocation = option.VertexLocation
 	}
 	return base
+}
+
+func runtimeProviderLLMConfig(providerName string, timeout int) (LLMConfig, bool) {
+	providerName = strings.ToLower(strings.TrimSpace(providerName))
+	defaults, err := providerbackend.NewFactory().DefaultConfig(providerName)
+	if err != nil {
+		return LLMConfig{}, false
+	}
+	cfg := LLMConfig{
+		Provider: defaults.Provider,
+		Model:    defaults.Model,
+		BaseURL:  startupconfig.FirstNonEmpty(providerEnvBaseURL(providerName), defaults.BaseURL),
+		APIKey:   providerEnvAPIKey(providerName),
+		Token:    providerEnvToken(providerName),
+		Timeout:  timeout,
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = defaults.Timeout
+	}
+	if strings.EqualFold(cfg.Provider, "vertex") || strings.EqualFold(cfg.Provider, "gcp") {
+		cfg.VertexLocation = startupconfig.FirstNonEmpty(os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "us-central1")
+	}
+	return cfg, true
 }
 
 func ParseLLMFallbacks(value string, timeout int) []LLMConfig {
@@ -236,6 +272,8 @@ func providerEnvAPIKey(providerName string) string {
 		return startupconfig.FirstNonEmpty(os.Getenv("DASHSCOPE_API_KEY"), os.Getenv("QWEN_API_KEY"), os.Getenv("ALIBABA_CLOUD_API_KEY"), os.Getenv("AGENT_API_LLM_API_KEY"))
 	case "gemini", "google":
 		return startupconfig.FirstNonEmpty(os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_API_KEY"))
+	case "shortapi", "short":
+		return startupconfig.FirstNonEmpty(os.Getenv("SHORTAPI_KEY"), os.Getenv("AGENT_API_LLM_API_KEY"))
 	case "vertex", "gcp":
 		return ""
 	default:
@@ -273,6 +311,8 @@ func providerEnvBaseURL(providerName string) string {
 		return os.Getenv("GEMINI_BASE_URL")
 	case "vertex", "gcp":
 		return os.Getenv("VERTEX_BASE_URL")
+	case "shortapi", "short":
+		return startupconfig.FirstNonEmpty(os.Getenv("SHORTAPI_BASE_URL"), os.Getenv("AGENT_API_LLM_BASE_URL"))
 	case "custom", "openai-compatible", "baseurl":
 		return startupconfig.FirstNonEmpty(os.Getenv("AGENT_API_LLM_BASE_URL"), os.Getenv("OPENAI_BASE_URL"))
 	default:

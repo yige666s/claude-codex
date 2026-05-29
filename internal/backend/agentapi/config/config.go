@@ -235,7 +235,7 @@ func Default() Config {
 	return Config{
 		Addr:                                    ":8081",
 		DataDir:                                 DefaultDataDir(),
-		StoreBackend:                            "file",
+		StoreBackend:                            FirstNonEmpty(os.Getenv("AGENT_API_STORE_BACKEND"), "file"),
 		ObjectBaseURL:                           os.Getenv("AGENT_API_OBJECT_BASE_URL"),
 		ObjectToken:                             os.Getenv("AGENT_API_OBJECT_TOKEN"),
 		ObjectTimeout:                           EnvDuration("AGENT_API_OBJECT_TIMEOUT", 10*time.Second),
@@ -530,7 +530,7 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.BoolVar(&cfg.AllowCustomWorkingDir, "allow-custom-working-dir", cfg.AllowCustomWorkingDir, "allow request-provided working_dir when no user workspace root is configured")
 	flags.StringVar(&cfg.Timezone, "timezone", cfg.Timezone, "IANA timezone used for current date/time context; empty uses server local time")
 	flags.StringVar(&cfg.Locale, "locale", cfg.Locale, "BCP 47 locale tag used for locale context; empty lets the model infer from the latest user message")
-	flags.StringVar(&cfg.LLMProvider, "llm-provider", cfg.LLMProvider, "LLM provider: anthropic, openai, qwen, gemini, vertex, or custom")
+	flags.StringVar(&cfg.LLMProvider, "llm-provider", cfg.LLMProvider, "LLM provider: anthropic, openai, qwen, gemini, vertex, shortapi, or custom")
 	flags.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "LLM API key; env fallback depends on -llm-provider")
 	flags.StringVar(&cfg.APIToken, "api-token", cfg.APIToken, "LLM bearer/OAuth token; env fallback depends on -llm-provider")
 	flags.StringVar(&cfg.APIBaseURL, "api-base-url", cfg.APIBaseURL, "LLM API base URL; use with openai-compatible custom providers")

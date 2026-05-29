@@ -1,6 +1,6 @@
 # Provider Module
 
-The provider module provides a unified interface for multiple LLM providers (Anthropic Claude, OpenAI GPT, Qwen, Google Gemini).
+The provider module provides a unified interface for multiple LLM providers (Anthropic Claude, OpenAI GPT, Qwen, Google Gemini, ShortAPI).
 
 ## Supported Providers
 
@@ -55,6 +55,13 @@ The provider module provides a unified interface for multiple LLM providers (Ant
   - gemini-1.5-pro
   - gemini-1.5-flash
   - gemini-2.0-flash-exp
+
+### 5. ShortAPI
+- **Provider name**: `shortapi` or `short`
+- **Default base URL**: `https://api.shortapi.ai/v1`
+- **Authentication**: API Key (Bearer token)
+- **Default model**: `google/gemini-3.1-pro-preview`
+- **Protocol**: OpenAI-compatible chat completions
 
 ## Configuration
 
@@ -149,6 +156,17 @@ claude /config set api_token your-token-here
 }
 ```
 
+### Example 5: ShortAPI
+
+```json
+{
+  "provider": "shortapi",
+  "model": "google/gemini-3.1-pro-preview",
+  "api_key": "your-shortapi-key",
+  "api_base_url": "https://api.shortapi.ai/v1"
+}
+```
+
 ## Environment Variables
 
 You can also set credentials via environment variables:
@@ -162,6 +180,9 @@ export OPENAI_API_KEY=sk-xxxxx
 
 # For Gemini
 export GEMINI_API_KEY=AIzaSyxxxxx
+
+# For ShortAPI
+export SHORTAPI_KEY=your-shortapi-key
 ```
 
 ## Programmatic Usage

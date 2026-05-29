@@ -34,6 +34,8 @@ func (f *Factory) CreateProvider(cfg Config) (Provider, error) {
 		return NewBedrockProvider(cfg)
 	case "vertex", "gcp":
 		return NewVertexProvider(cfg)
+	case "shortapi", "short":
+		return NewShortAPIProvider(cfg)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
 	}
@@ -41,7 +43,7 @@ func (f *Factory) CreateProvider(cfg Config) (Provider, error) {
 
 // ListProviders returns a list of supported providers
 func (f *Factory) ListProviders() []string {
-	return []string{"anthropic", "openai", "qwen", "gemini", "bedrock", "vertex", "custom"}
+	return []string{"anthropic", "openai", "qwen", "gemini", "bedrock", "vertex", "shortapi", "custom"}
 }
 
 // GetProviderInfo returns information about a specific provider
@@ -70,6 +72,9 @@ func (f *Factory) GetProviderInfo(providerName string) (string, []string, error)
 	case "vertex", "gcp":
 		p := &VertexProvider{}
 		return p.Name(), p.SupportedModels(), nil
+	case "shortapi", "short":
+		p := &ShortAPIProvider{}
+		return p.Name(), p.SupportedModels(), nil
 	default:
 		return "", nil, fmt.Errorf("unsupported provider: %s", providerName)
 	}
@@ -88,7 +93,8 @@ func (f *Factory) ValidateConfig(cfg Config) error {
 		provider != "qwen" && provider != "dashscope" && provider != "aliyun" &&
 		provider != "gemini" && provider != "google" &&
 		provider != "bedrock" && provider != "aws" &&
-		provider != "vertex" && provider != "gcp" {
+		provider != "vertex" && provider != "gcp" &&
+		provider != "shortapi" && provider != "short" {
 		return fmt.Errorf("unsupported provider: %s", cfg.Provider)
 	}
 
@@ -140,6 +146,13 @@ func (f *Factory) DefaultConfig(providerName string) (Config, error) {
 		return Config{
 			Provider: "vertex",
 			Model:    "gemini-1.5-pro",
+			Timeout:  600,
+		}, nil
+	case "shortapi", "short":
+		return Config{
+			Provider: "shortapi",
+			BaseURL:  defaultShortAPIBaseURL,
+			Model:    defaultShortAPIModel,
 			Timeout:  600,
 		}, nil
 	case "custom", "openai-compatible", "baseurl":

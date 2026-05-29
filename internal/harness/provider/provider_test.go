@@ -23,6 +23,8 @@ func TestFactory(t *testing.T) {
 		{"dashscope", "dashscope", false},
 		{"gemini", "gemini", false},
 		{"google", "google", false},
+		{"shortapi", "shortapi", false},
+		{"short", "short", false},
 		{"invalid", "invalid", true},
 	}
 
@@ -57,6 +59,7 @@ func TestProviderInfo(t *testing.T) {
 		{"openai", "openai", "openai", 9, false},
 		{"qwen", "qwen", "qwen", 7, false},
 		{"gemini", "gemini", "gemini", 5, false},
+		{"shortapi", "shortapi", "shortapi", 9, false},
 		{"invalid", "invalid", "", 0, true},
 	}
 
@@ -111,6 +114,15 @@ func TestValidateConfig(t *testing.T) {
 				Provider: "qwen",
 				APIKey:   "test-key",
 				Model:    "qwen-plus",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid shortapi",
+			cfg: provider.Config{
+				Provider: "shortapi",
+				APIKey:   "test-key",
+				Model:    "google/gemini-3.1-pro-preview",
 			},
 			wantErr: false,
 		},
@@ -173,6 +185,7 @@ func TestDefaultConfig(t *testing.T) {
 		{"openai", "openai", "openai", "gpt-4o", false},
 		{"qwen", "qwen", "qwen", "qwen-plus", false},
 		{"gemini", "gemini", "gemini", "gemini-1.5-pro", false},
+		{"shortapi", "shortapi", "shortapi", "google/gemini-3.1-pro-preview", false},
 		{"invalid", "invalid", "", "", true},
 	}
 

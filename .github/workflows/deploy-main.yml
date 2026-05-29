@@ -91,9 +91,11 @@ jobs:
           GHCR_TOKEN: ${{ github.token }}
           AGENT_API_IMAGE: ${{ env.IMAGE_NAMESPACE }}/agentapi:${{ env.IMAGE_TAG }}
           AGENT_WEB_IMAGE: ${{ env.IMAGE_NAMESPACE }}/agentweb:${{ env.IMAGE_TAG }}
+          SHORTAPI_KEY: ${{ secrets.SHORTAPI_KEY }}
         run: |
           set -euo pipefail
-          printf '%s\n' "$GHCR_TOKEN" | ssh \
+          payload="$GHCR_TOKEN"$'\n'"$SHORTAPI_KEY"$'\n'
+          printf '%s' "$payload" | ssh \
             -i ~/.ssh/deploy_key \
             -p "$DEPLOY_PORT" \
             -o IdentitiesOnly=yes \
@@ -104,8 +106,29 @@ jobs:
             "$DEPLOY_USER@$DEPLOY_HOST" \
             "set -euo pipefail
              read -r ghcr_token
+             read -r shortapi_key
              printf '%s' \"\$ghcr_token\" | docker login ghcr.io -u '$GHCR_USER' --password-stdin >/dev/null
              unset ghcr_token
+             env_file='/opt/agentapi/.env'
+             touch \"\$env_file\"
+             chmod 600 \"\$env_file\"
+             upsert_env() {
+               key=\"\$1\"
+               value=\"\$2\"
+               if grep -q \"^\${key}=\" \"\$env_file\"; then
+                 tmp=\"\$(mktemp)\"
+                 awk -v key=\"\$key\" -v value=\"\$value\" 'BEGIN{prefix=key\"=\"} index(\$0,prefix)==1{\$0=prefix value} {print}' \"\$env_file\" > \"\$tmp\"
+                 cat \"\$tmp\" > \"\$env_file\"
+                 rm -f \"\$tmp\"
+               else
+                 printf '%s=%s\n' \"\$key\" \"\$value\" >> \"\$env_file\"
+               fi
+             }
+             upsert_env AGENT_API_STORE_BACKEND sql
+             if [ -n \"\$shortapi_key\" ]; then
+               upsert_env SHORTAPI_KEY \"\$shortapi_key\"
+             fi
+             unset shortapi_key
              if [ ! -d /opt/agentapi/repo/.git ]; then
                rm -rf /opt/agentapi/repo
                git clone --branch main https://github.com/yige666s/claude-codex.git /opt/agentapi/repo

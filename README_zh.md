@@ -212,7 +212,7 @@ cmd/tui
 | `internal/harness/plugins`、`skills` | 插件 manifest、skills、agents、hooks、MCP 配置加载和 runtime 消费。 |
 | `internal/harness/state`、`storage` | session 状态、messages、usage、JSONL transcript、snapshot。 |
 | `internal/harness/memory`、`memdir`、`compact`、`budget` | 记忆、上下文压缩、token 预算和兼容层。 |
-| `internal/harness/provider`、`api`、`anthropic` | Anthropic/OpenAI/Qwen/Gemini/Bedrock/Vertex/custom provider 抽象。 |
+| `internal/harness/provider`、`api`、`anthropic` | Anthropic/OpenAI/Qwen/Gemini/Bedrock/Vertex/ShortAPI/custom provider 抽象。 |
 | `internal/harness/mcp` | MCP server/client/resource 支持，包含 stdio、HTTP 和 SSE 面。 |
 | `internal/public` | 公共类型、schema、错误、文件系统工具和限流基础。 |
 
@@ -253,7 +253,7 @@ make run-tui
 go run ./cmd/tui
 ```
 
-常见 provider 相关配置可以通过环境变量或 `~/.claude-codex/config.json` 设置。配置 home 可用 `CLAUDE_GO_HOME` 覆盖。provider 支持包括 Anthropic、OpenAI、Qwen、Gemini、Bedrock、Vertex 和 custom OpenAI-compatible endpoint。
+常见 provider 相关配置可以通过环境变量或 `~/.claude-codex/config.json` 设置。配置 home 可用 `CLAUDE_GO_HOME` 覆盖。provider 支持包括 Anthropic、OpenAI、Qwen、Gemini、Bedrock、Vertex、ShortAPI 和 custom OpenAI-compatible endpoint。
 
 ### 重构状态
 

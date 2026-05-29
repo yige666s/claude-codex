@@ -12,7 +12,10 @@ import (
 	"claude-codex/internal/backend/agentruntime/dbsqlc"
 )
 
-const llmGovernanceConfigKey = "llm_governance"
+const (
+	llmGovernanceConfigKey = "llm_governance"
+	llmModelCatalogKey     = "llm_model_catalog"
+)
 
 type LLMGovernanceConfigPatch struct {
 	Provider               *string  `json:"provider,omitempty"`
@@ -35,6 +38,8 @@ type LLMGovernanceConfigPatch struct {
 type LLMGovernanceConfigStore interface {
 	LoadLLMGovernanceConfig(ctx context.Context) (LLMGovernanceConfig, bool, error)
 	SaveLLMGovernanceConfig(ctx context.Context, config LLMGovernanceConfig) error
+	LoadLLMModelCatalog(ctx context.Context) ([]LLMModelOption, bool, error)
+	SaveLLMModelCatalog(ctx context.Context, options []LLMModelOption) error
 }
 
 type LLMModelOption struct {
@@ -48,17 +53,26 @@ var allowedLLMModelOptions = []LLMModelOption{
 	{ID: "gemini-3.1-flash-lite", Label: "Gemini 3.1 Flash Lite", Provider: "vertex", VertexLocation: "global"},
 	{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro", Provider: "vertex", VertexLocation: "us-central1"},
 	{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash", Provider: "vertex", VertexLocation: "us-central1"},
+	{ID: "google/gemini-3.1-pro-preview", Label: "Gemini 3.1 Pro Preview (ShortAPI)", Provider: "shortapi"},
 }
 
 func AllowedLLMModelOptions() []LLMModelOption {
+	return defaultLLMModelOptions()
+}
+
+func defaultLLMModelOptions() []LLMModelOption {
 	out := make([]LLMModelOption, len(allowedLLMModelOptions))
 	copy(out, allowedLLMModelOptions)
 	return out
 }
 
 func LLMModelOptionFor(model string) (LLMModelOption, bool) {
+	return llmModelOptionFor(model, allowedLLMModelOptions)
+}
+
+func llmModelOptionFor(model string, options []LLMModelOption) (LLMModelOption, bool) {
 	model = strings.TrimSpace(model)
-	for _, option := range allowedLLMModelOptions {
+	for _, option := range options {
 		if option.ID == model {
 			return option, true
 		}
@@ -66,34 +80,72 @@ func LLMModelOptionFor(model string) (LLMModelOption, bool) {
 	return LLMModelOption{}, false
 }
 
+func canonicalLLMModelProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "short":
+		return "shortapi"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
+func isAllowedLLMModelProvider(provider string, options []LLMModelOption) bool {
+	provider = canonicalLLMModelProvider(provider)
+	if provider == "" {
+		return true
+	}
+	for _, option := range options {
+		if option.Provider == provider {
+			return true
+		}
+	}
+	return false
+}
+
 func LLMModelRoutesWithDefault(routes, model string) string {
 	return setDefaultModelRoute(routes, model)
 }
 
 type LLMGovernanceConfigManager struct {
-	mu     sync.RWMutex
-	config LLMGovernanceConfig
-	store  LLMGovernanceConfigStore
+	mu            sync.RWMutex
+	config        LLMGovernanceConfig
+	allowedModels []LLMModelOption
+	store         LLMGovernanceConfigStore
 }
 
 func NewLLMGovernanceConfigManager(config LLMGovernanceConfig, store LLMGovernanceConfigStore) *LLMGovernanceConfigManager {
-	return &LLMGovernanceConfigManager{config: config.normalized(), store: store}
+	allowedModels := defaultLLMModelOptions()
+	return &LLMGovernanceConfigManager{config: config.normalizedWithOptions(allowedModels), allowedModels: allowedModels, store: store}
 }
 
 func (m *LLMGovernanceConfigManager) Load(ctx context.Context) error {
 	if m == nil || m.store == nil {
 		return nil
 	}
+	allowedModels := m.allowedModels
+	models, modelsOK, err := m.store.LoadLLMModelCatalog(ctx)
+	if err != nil {
+		return err
+	}
+	if modelsOK {
+		allowedModels = normalizeLLMModelOptions(models)
+	} else {
+		if err := m.store.SaveLLMModelCatalog(ctx, allowedModels); err != nil {
+			return err
+		}
+	}
 	config, ok, err := m.store.LoadLLMGovernanceConfig(ctx)
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return nil
-	}
 	m.mu.Lock()
-	config = mergeLLMGovernanceConfigDefaults(m.config, config)
-	m.config = config.normalized()
+	m.allowedModels = allowedModels
+	if ok {
+		config = mergeLLMGovernanceConfigDefaults(m.config, config)
+		m.config = config.normalizedWithOptions(allowedModels)
+	} else {
+		m.config = m.config.normalizedWithOptions(allowedModels)
+	}
 	m.mu.Unlock()
 	return nil
 }
@@ -108,7 +160,14 @@ func (m *LLMGovernanceConfigManager) Get() LLMGovernanceConfig {
 }
 
 func (m *LLMGovernanceConfigManager) StatusMap() map[string]any {
-	return llmGovernanceConfigStatusMap(m.Get())
+	if m == nil {
+		return llmGovernanceConfigStatusMapWithModels(LLMGovernanceConfig{}.normalized(), defaultLLMModelOptions())
+	}
+	m.mu.RLock()
+	config := m.config
+	allowedModels := copyLLMModelOptions(m.allowedModels)
+	m.mu.RUnlock()
+	return llmGovernanceConfigStatusMapWithModels(config, allowedModels)
 }
 
 func (m *LLMGovernanceConfigManager) Update(ctx context.Context, patch LLMGovernanceConfigPatch) (LLMGovernanceConfig, error) {
@@ -117,8 +176,9 @@ func (m *LLMGovernanceConfigManager) Update(ctx context.Context, patch LLMGovern
 	}
 	m.mu.RLock()
 	current := m.config
+	allowedModels := copyLLMModelOptions(m.allowedModels)
 	m.mu.RUnlock()
-	next, err := applyLLMGovernanceConfigPatch(current, patch)
+	next, err := applyLLMGovernanceConfigPatchWithOptions(current, patch, allowedModels)
 	if err != nil {
 		return LLMGovernanceConfig{}, err
 	}
@@ -134,13 +194,18 @@ func (m *LLMGovernanceConfigManager) Update(ctx context.Context, patch LLMGovern
 }
 
 func llmGovernanceConfigStatusMap(config LLMGovernanceConfig) map[string]any {
-	config = config.normalized()
+	return llmGovernanceConfigStatusMapWithModels(config, defaultLLMModelOptions())
+}
+
+func llmGovernanceConfigStatusMapWithModels(config LLMGovernanceConfig, allowedModels []LLMModelOption) map[string]any {
+	allowedModels = normalizeLLMModelOptions(allowedModels)
+	config = config.normalizedWithOptions(allowedModels)
 	return map[string]any{
 		"provider":                 config.Provider,
 		"model":                    config.Model,
 		"vertex_location":          config.VertexLocation,
 		"model_routes":             config.ModelRoutes,
-		"allowed_models":           AllowedLLMModelOptions(),
+		"allowed_models":           allowedModels,
 		"max_attempts":             config.MaxAttempts,
 		"retry_backoff_ms":         config.RetryBackoff.Milliseconds(),
 		"chat_timeout_ms":          config.ChatTimeout.Milliseconds(),
@@ -156,11 +221,16 @@ func llmGovernanceConfigStatusMap(config LLMGovernanceConfig) map[string]any {
 }
 
 func applyLLMGovernanceConfigPatch(config LLMGovernanceConfig, patch LLMGovernanceConfigPatch) (LLMGovernanceConfig, error) {
+	return applyLLMGovernanceConfigPatchWithOptions(config, patch, defaultLLMModelOptions())
+}
+
+func applyLLMGovernanceConfigPatchWithOptions(config LLMGovernanceConfig, patch LLMGovernanceConfigPatch, allowedModels []LLMModelOption) (LLMGovernanceConfig, error) {
+	allowedModels = normalizeLLMModelOptions(allowedModels)
 	next := config
 	if patch.Provider != nil {
-		provider := strings.ToLower(strings.TrimSpace(*patch.Provider))
-		if provider != "" && provider != "vertex" {
-			return LLMGovernanceConfig{}, fmt.Errorf("provider must be vertex")
+		provider := canonicalLLMModelProvider(*patch.Provider)
+		if !isAllowedLLMModelProvider(provider, allowedModels) {
+			return LLMGovernanceConfig{}, fmt.Errorf("provider %q is not in the model catalog", provider)
 		}
 		if provider != "" {
 			next.Provider = provider
@@ -168,7 +238,7 @@ func applyLLMGovernanceConfigPatch(config LLMGovernanceConfig, patch LLMGovernan
 	}
 	if patch.Model != nil {
 		model := strings.TrimSpace(*patch.Model)
-		option, ok := LLMModelOptionFor(model)
+		option, ok := llmModelOptionFor(model, allowedModels)
 		if !ok {
 			return LLMGovernanceConfig{}, fmt.Errorf("model %q is not allowed", model)
 		}
@@ -180,8 +250,8 @@ func applyLLMGovernanceConfigPatch(config LLMGovernanceConfig, patch LLMGovernan
 	if patch.VertexLocation != nil {
 		location := strings.TrimSpace(*patch.VertexLocation)
 		if next.Model != "" {
-			option, ok := LLMModelOptionFor(next.Model)
-			if ok && location != "" && location != option.VertexLocation {
+			option, ok := llmModelOptionFor(next.Model, allowedModels)
+			if ok && option.VertexLocation != "" && location != "" && location != option.VertexLocation {
 				return LLMGovernanceConfig{}, fmt.Errorf("vertex_location for %s must be %s", next.Model, option.VertexLocation)
 			}
 		}
@@ -261,7 +331,7 @@ func applyLLMGovernanceConfigPatch(config LLMGovernanceConfig, patch LLMGovernan
 		}
 		next.CircuitBreakerCooldown = time.Duration(*patch.CircuitCooldownSeconds) * time.Second
 	}
-	return next.normalized(), nil
+	return next.normalizedWithOptions(allowedModels), nil
 }
 
 func mergeLLMGovernanceConfigDefaults(defaults, loaded LLMGovernanceConfig) LLMGovernanceConfig {
@@ -321,6 +391,41 @@ func splitRuntimeConfigCSV(value string) []string {
 	return out
 }
 
+func normalizeLLMModelOptions(options []LLMModelOption) []LLMModelOption {
+	if len(options) == 0 {
+		return defaultLLMModelOptions()
+	}
+	out := make([]LLMModelOption, 0, len(options))
+	seen := map[string]struct{}{}
+	for _, option := range options {
+		option.ID = strings.TrimSpace(option.ID)
+		option.Label = strings.TrimSpace(option.Label)
+		option.Provider = canonicalLLMModelProvider(option.Provider)
+		option.VertexLocation = strings.TrimSpace(option.VertexLocation)
+		if option.ID == "" || option.Provider == "" {
+			continue
+		}
+		if option.Label == "" {
+			option.Label = option.ID
+		}
+		if _, ok := seen[option.ID]; ok {
+			continue
+		}
+		seen[option.ID] = struct{}{}
+		out = append(out, option)
+	}
+	if len(out) == 0 {
+		return defaultLLMModelOptions()
+	}
+	return out
+}
+
+func copyLLMModelOptions(options []LLMModelOption) []LLMModelOption {
+	out := make([]LLMModelOption, len(options))
+	copy(out, options)
+	return out
+}
+
 type llmGovernanceConfigPayload struct {
 	Provider               string  `json:"provider,omitempty"`
 	Model                  string  `json:"model,omitempty"`
@@ -339,8 +444,11 @@ type llmGovernanceConfigPayload struct {
 	CircuitCooldownSeconds int     `json:"circuit_cooldown_seconds"`
 }
 
+type llmModelCatalogPayload struct {
+	Models []LLMModelOption `json:"models"`
+}
+
 func llmGovernanceConfigToPayload(config LLMGovernanceConfig) llmGovernanceConfigPayload {
-	config = config.normalized()
 	return llmGovernanceConfigPayload{
 		Provider:               config.Provider,
 		Model:                  config.Model,
@@ -377,7 +485,55 @@ func llmGovernanceConfigFromPayload(payload llmGovernanceConfigPayload) LLMGover
 		OutputCostPerMillion:   payload.OutputCostPerMillion,
 		FailureThreshold:       payload.FailureThreshold,
 		CircuitBreakerCooldown: time.Duration(payload.CircuitCooldownSeconds) * time.Second,
-	}.normalized()
+	}
+}
+
+func llmModelCatalogToPayload(options []LLMModelOption) llmModelCatalogPayload {
+	return llmModelCatalogPayload{Models: normalizeLLMModelOptions(options)}
+}
+
+func llmModelCatalogFromPayload(payload llmModelCatalogPayload) []LLMModelOption {
+	return normalizeLLMModelOptions(payload.Models)
+}
+
+func (s *SQLRuntimeConfigStore) loadRuntimeConfigPayload(ctx context.Context, key string) (string, bool, error) {
+	if s == nil || s.db == nil {
+		return "", false, fmt.Errorf("sql runtime config store is not configured")
+	}
+	var raw string
+	var err error
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		raw, err = s.queries.GetRuntimeConfig(ctx, key)
+	} else {
+		err = s.db.QueryRowContext(ctx, s.dialect.Bind(`SELECT payload FROM agent_runtime_config WHERE config_key = ?`), key).Scan(&raw)
+	}
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return raw, true, nil
+}
+
+func (s *SQLRuntimeConfigStore) saveRuntimeConfigPayload(ctx context.Context, key, raw string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("sql runtime config store is not configured")
+	}
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		return s.queries.UpsertRuntimeConfig(ctx, dbsqlc.UpsertRuntimeConfigParams{
+			ConfigKey: key,
+			Payload:   raw,
+			UpdatedAt: time.Now().UTC(),
+		})
+	}
+	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
+INSERT INTO agent_runtime_config (config_key, payload, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT (config_key) DO UPDATE SET
+	payload = excluded.payload,
+	updated_at = excluded.updated_at`), key, raw, sqlTimeValue(time.Now().UTC(), s.dialect))
+	return err
 }
 
 type SQLRuntimeConfigStore struct {
@@ -405,21 +561,12 @@ func (s *SQLRuntimeConfigStore) Init(ctx context.Context) error {
 }
 
 func (s *SQLRuntimeConfigStore) LoadLLMGovernanceConfig(ctx context.Context) (LLMGovernanceConfig, bool, error) {
-	if s == nil || s.db == nil {
-		return LLMGovernanceConfig{}, false, fmt.Errorf("sql runtime config store is not configured")
-	}
-	var raw string
-	var err error
-	if s.dialect == SQLDialectPostgres && s.queries != nil {
-		raw, err = s.queries.GetRuntimeConfig(ctx, llmGovernanceConfigKey)
-	} else {
-		err = s.db.QueryRowContext(ctx, s.dialect.Bind(`SELECT payload FROM agent_runtime_config WHERE config_key = ?`), llmGovernanceConfigKey).Scan(&raw)
-	}
-	if err == sql.ErrNoRows {
-		return LLMGovernanceConfig{}, false, nil
-	}
+	raw, ok, err := s.loadRuntimeConfigPayload(ctx, llmGovernanceConfigKey)
 	if err != nil {
 		return LLMGovernanceConfig{}, false, err
+	}
+	if !ok {
+		return LLMGovernanceConfig{}, false, nil
 	}
 	var payload llmGovernanceConfigPayload
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
@@ -429,25 +576,32 @@ func (s *SQLRuntimeConfigStore) LoadLLMGovernanceConfig(ctx context.Context) (LL
 }
 
 func (s *SQLRuntimeConfigStore) SaveLLMGovernanceConfig(ctx context.Context, config LLMGovernanceConfig) error {
-	if s == nil || s.db == nil {
-		return fmt.Errorf("sql runtime config store is not configured")
-	}
 	raw, err := json.Marshal(llmGovernanceConfigToPayload(config))
 	if err != nil {
 		return err
 	}
-	if s.dialect == SQLDialectPostgres && s.queries != nil {
-		return s.queries.UpsertRuntimeConfig(ctx, dbsqlc.UpsertRuntimeConfigParams{
-			ConfigKey: llmGovernanceConfigKey,
-			Payload:   string(raw),
-			UpdatedAt: time.Now().UTC(),
-		})
+	return s.saveRuntimeConfigPayload(ctx, llmGovernanceConfigKey, string(raw))
+}
+
+func (s *SQLRuntimeConfigStore) LoadLLMModelCatalog(ctx context.Context) ([]LLMModelOption, bool, error) {
+	raw, ok, err := s.loadRuntimeConfigPayload(ctx, llmModelCatalogKey)
+	if err != nil {
+		return nil, false, err
 	}
-	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
-INSERT INTO agent_runtime_config (config_key, payload, updated_at)
-VALUES (?, ?, ?)
-ON CONFLICT (config_key) DO UPDATE SET
-	payload = excluded.payload,
-	updated_at = excluded.updated_at`), llmGovernanceConfigKey, string(raw), sqlTimeValue(time.Now().UTC(), s.dialect))
-	return err
+	if !ok {
+		return nil, false, nil
+	}
+	var payload llmModelCatalogPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, false, err
+	}
+	return llmModelCatalogFromPayload(payload), true, nil
+}
+
+func (s *SQLRuntimeConfigStore) SaveLLMModelCatalog(ctx context.Context, options []LLMModelOption) error {
+	raw, err := json.Marshal(llmModelCatalogToPayload(options))
+	if err != nil {
+		return err
+	}
+	return s.saveRuntimeConfigPayload(ctx, llmModelCatalogKey, string(raw))
 }

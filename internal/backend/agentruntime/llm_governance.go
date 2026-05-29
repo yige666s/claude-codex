@@ -61,7 +61,11 @@ type LLMGovernanceConfig struct {
 }
 
 func (c LLMGovernanceConfig) normalized() LLMGovernanceConfig {
-	if option, ok := LLMModelOptionFor(c.Model); ok {
+	return c.normalizedWithOptions(defaultLLMModelOptions())
+}
+
+func (c LLMGovernanceConfig) normalizedWithOptions(options []LLMModelOption) LLMGovernanceConfig {
+	if option, ok := llmModelOptionFor(c.Model, normalizeLLMModelOptions(options)); ok {
 		if c.Provider == "" {
 			c.Provider = option.Provider
 		}

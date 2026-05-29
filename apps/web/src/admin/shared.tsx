@@ -74,9 +74,11 @@ export function llmConfigFromDraft(draft: Record<string, string>): LLMGovernance
   return next;
 }
 
-export function modelOptionLocation(config: LLMGovernanceConfig | undefined, model: string | undefined): string {
+export function modelOptionRuntime(config: LLMGovernanceConfig | undefined, model: string | undefined): string {
   const selected = String(model || "").trim();
-  return config?.allowed_models?.find((option) => option.id === selected)?.vertex_location || "";
+  const option = config?.allowed_models?.find((item) => item.id === selected);
+  if (!option) return "";
+  return [option.provider, option.vertex_location].filter(Boolean).join(" / ");
 }
 
 export function AdminMetric({ label, value }: { label: string; value: string }) {

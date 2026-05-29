@@ -297,7 +297,7 @@ services:
       - -addr
       - :8081
       - -store-backend
-      - sql
+      - "${AGENT_API_STORE_BACKEND:-sql}"
       - -sql-driver
       - pgx
       - -sql-dialect

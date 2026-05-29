@@ -372,6 +372,9 @@ frequency and per-pass work.
 - Quotas: `-llm-daily-token-quota`, `-llm-daily-request-quota`, and `-llm-daily-cost-quota-usd`.
 - Estimated cost: `-llm-input-cost-per-million` and `-llm-output-cost-per-million`.
 - Runtime model selection: Admin UI updates SQL-backed runtime config; CLI model flags are only startup defaults.
+- Runtime model catalog: Admin UI model options are loaded from the SQL-backed
+  `agent_runtime_config` row keyed by `llm_model_catalog`; first startup seeds
+  this row from built-in defaults when it is missing.
 - Health: retryable failures update per-backend health and open a temporary circuit breaker after `-llm-failure-threshold`; cooldown is controlled by `-llm-circuit-cooldown`.
 
 When SQL storage is enabled, successful and failed provider attempts are stored
@@ -581,6 +584,9 @@ go run ./cmd/agentapi \
   `VERTEX_ANTHROPIC_LOCATION`, which defaults to the global endpoint.
   Local runs also try `gcloud auth print-access-token` when no token is set or
   when Vertex returns `401 Unauthorized`, then retry the request once.
+- `shortapi` uses ShortAPI's OpenAI-compatible `/v1/chat/completions`
+  endpoint with `SHORTAPI_KEY`; the default model is
+  `google/gemini-3.1-pro-preview`.
 - `custom` uses the OpenAI-compatible provider with `-api-base-url`.
 
 Examples:
@@ -589,6 +595,7 @@ Examples:
 go run ./cmd/agentapi -llm-provider openai -model gpt-4o-mini
 go run ./cmd/agentapi -llm-provider qwen -model qwen-plus
 go run ./cmd/agentapi -llm-provider gemini -model gemini-1.5-flash
+go run ./cmd/agentapi -llm-provider shortapi -model google/gemini-3.1-pro-preview
 go run ./cmd/agentapi -llm-provider custom -api-base-url http://localhost:11434/v1 -api-key local -model llama3.1
 go run ./cmd/agentapi -llm-provider vertex -model gemini-1.5-pro
 go run ./cmd/agentapi -llm-provider vertex -model claude-sonnet-4-5@20250929

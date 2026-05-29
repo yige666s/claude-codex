@@ -29,7 +29,7 @@ import {
   metricNumber,
   llmConfigDraftFromConfig,
   llmConfigFromDraft,
-  modelOptionLocation,
+  modelOptionRuntime,
   riskEventSummary,
   selectedRunPassRate,
   terminalJobs,
@@ -305,8 +305,8 @@ export function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; admi
                 </select>
               </label>
               <label className="admin-field">
-                <span>Vertex location</span>
-                <Input value={modelOptionLocation(llm?.config, configDraft.model) || configDraft.vertex_location || ""} readOnly aria-label="Selected model Vertex location" />
+                <span>Provider / location</span>
+                <Input value={modelOptionRuntime(llm?.config, configDraft.model) || [configDraft.provider, configDraft.vertex_location].filter(Boolean).join(" / ")} readOnly aria-label="Selected model provider and location" />
               </label>
               <label className="admin-field">
                 <span>Daily token quota</span>

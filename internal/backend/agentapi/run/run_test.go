@@ -90,6 +90,45 @@ func TestBuildLLMConfigQwenUsesDashScopeEnv(t *testing.T) {
 	}
 }
 
+func TestBuildLLMConfigShortAPIUsesShortAPIEnv(t *testing.T) {
+	t.Setenv("SHORTAPI_KEY", "shortapi-key")
+	cfg, err := bootstrap.BuildLLMConfig("shortapi", "", "", "", "", 30)
+	if err != nil {
+		t.Fatalf("build shortapi config: %v", err)
+	}
+	if cfg.Provider != "shortapi" || cfg.APIKey != "shortapi-key" || cfg.Model != "google/gemini-3.1-pro-preview" {
+		t.Fatalf("unexpected shortapi config: %#v", cfg)
+	}
+	if cfg.BaseURL != "https://api.shortapi.ai/v1" {
+		t.Fatalf("unexpected shortapi base url: %q", cfg.BaseURL)
+	}
+}
+
+func TestApplyRuntimeLLMConfigReloadsProviderCredentials(t *testing.T) {
+	t.Setenv("SHORTAPI_KEY", "shortapi-key")
+	base := bootstrap.LLMConfig{
+		Provider:       "vertex",
+		Model:          "gemini-2.5-flash",
+		Token:          "vertex-token",
+		BaseURL:        "https://vertex.example",
+		Timeout:        45,
+		VertexLocation: "us-central1",
+	}
+	got := bootstrap.ApplyRuntimeLLMConfig(base, agentruntime.LLMGovernanceConfig{
+		Provider: "shortapi",
+		Model:    "google/gemini-3.1-pro-preview",
+	})
+	if got.Provider != "shortapi" || got.Model != "google/gemini-3.1-pro-preview" {
+		t.Fatalf("unexpected runtime config identity: %#v", got)
+	}
+	if got.APIKey != "shortapi-key" || got.Token != "" || got.BaseURL != "https://api.shortapi.ai/v1" {
+		t.Fatalf("runtime provider credentials were not reloaded: %#v", got)
+	}
+	if got.VertexLocation != "" || got.Timeout != 45 {
+		t.Fatalf("unexpected runtime provider details: %#v", got)
+	}
+}
+
 func TestLLMConfigReadinessCheckValidatesVertexProject(t *testing.T) {
 	t.Setenv("VERTEX_ACCESS_TOKEN", "vertex-token")
 	t.Setenv("VERTEX_PROJECT_ID", "")

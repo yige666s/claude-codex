@@ -687,15 +687,14 @@ func (s *Server) handleAdminOpsUpdateLLMConfig(w http.ResponseWriter, r *http.Re
 		writeJSONError(w, err)
 		return
 	}
-	updated, err := s.llmConfig.Update(r.Context(), patch)
-	if err != nil {
+	if _, err := s.llmConfig.Update(r.Context(), patch); err != nil {
 		writeJSONError(w, err)
 		return
 	}
 	s.auditEvent(r, "admin_llm_config_update", actor, map[string]any{
-		"config": llmGovernanceConfigStatusMap(updated),
+		"config": s.llmConfig.StatusMap(),
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"config": llmGovernanceConfigStatusMap(updated)})
+	writeJSON(w, http.StatusOK, map[string]any{"config": s.llmConfig.StatusMap()})
 }
 
 func (s *Server) handleAdminOpsLLMUsage(w http.ResponseWriter, r *http.Request) {

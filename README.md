@@ -212,7 +212,7 @@ cmd/tui
 | `internal/harness/plugins`, `skills` | Plugin manifests, skills, agents, hooks, MCP config loading, and runtime consumption. |
 | `internal/harness/state`, `storage` | Session state, messages, usage, JSONL transcripts, and snapshots. |
 | `internal/harness/memory`, `memdir`, `compact`, `budget` | Memory, context compaction, token budgets, and compatibility layers. |
-| `internal/harness/provider`, `api`, `anthropic` | Provider abstraction for Anthropic, OpenAI, Qwen, Gemini, Bedrock, Vertex, and custom endpoints. |
+| `internal/harness/provider`, `api`, `anthropic` | Provider abstraction for Anthropic, OpenAI, Qwen, Gemini, Bedrock, Vertex, ShortAPI, and custom endpoints. |
 | `internal/harness/mcp` | MCP server/client/resource support over stdio, HTTP, and SSE. |
 | `internal/public` | Shared types, schemas, errors, filesystem helpers, and rate-limit foundations. |
 
@@ -253,7 +253,7 @@ Or run it directly:
 go run ./cmd/tui
 ```
 
-Provider configuration can be supplied through environment variables or `~/.claude-codex/config.json`. The config home can be overridden with `CLAUDE_GO_HOME`. Supported provider families include Anthropic, OpenAI, Qwen, Gemini, Bedrock, Vertex, and custom OpenAI-compatible endpoints.
+Provider configuration can be supplied through environment variables or `~/.claude-codex/config.json`. The config home can be overridden with `CLAUDE_GO_HOME`. Supported provider families include Anthropic, OpenAI, Qwen, Gemini, Bedrock, Vertex, ShortAPI, and custom OpenAI-compatible endpoints.
 
 ### Refactor Status
 
