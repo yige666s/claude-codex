@@ -77,6 +77,38 @@ test("Live prewarm click intent starts microphone capture after setup completes"
   await expect.poll(() => page.evaluate(() => window.__liveTest.getUserMediaCalls)).toBe(1);
 });
 
+test("Live stops capture while assistant responds and can end input mode", async ({ page }) => {
+  await installLiveBrowserFakes(page);
+  await mockLiveAPI(page);
+  await page.goto("/");
+  await login(page);
+
+  await page.getByRole("button", { name: "Start Live voice" }).click();
+  await expect.poll(() => page.evaluate(() => window.__liveTest.getUserMediaCalls)).toBe(1);
+
+  await page.evaluate(() => {
+    const processor = window.__liveTest.processors[window.__liveTest.processors.length - 1];
+    processor?.onaudioprocess?.({
+      inputBuffer: { getChannelData: () => new Float32Array(1024).fill(0.2) }
+    });
+  });
+  await page.waitForTimeout(650);
+  await page.evaluate(() => {
+    const processor = window.__liveTest.processors[window.__liveTest.processors.length - 1];
+    processor?.onaudioprocess?.({
+      inputBuffer: { getChannelData: () => new Float32Array(1024) }
+    });
+  });
+
+  await expect.poll(() => page.evaluate(() => window.__liveTest.stoppedTracks)).toBeGreaterThan(0);
+  await expect(page.getByRole("button", { name: "End Live voice" })).toBeVisible();
+  const sentFrames = await page.evaluate(() => window.__liveTest.sentFrames.join("\n"));
+  expect(sentFrames).toContain("activity_end");
+
+  await page.getByRole("button", { name: "End Live voice" }).click();
+  await expect(page.getByRole("button", { name: "Start Live voice" })).toBeVisible();
+});
+
 async function login(page: Page) {
   await page.getByLabel("Email").fill("live@example.com");
   await page.getByLabel("Password").fill("password123");
@@ -112,7 +144,7 @@ async function mockLiveAPI(page: Page) {
 
 async function installLiveBrowserFakes(page: Page, options: { denyMicrophone?: boolean; firstFrame?: Record<string, unknown> } = {}) {
   await page.addInitScript((config) => {
-    window.__liveTest = { stoppedTracks: 0, sentFrames: [], getUserMediaCalls: 0, sockets: 0 };
+    window.__liveTest = { stoppedTracks: 0, sentFrames: [], getUserMediaCalls: 0, sockets: 0, processors: [] };
     class FakeWebSocket {
       static CONNECTING = 0;
       static OPEN = 1;
@@ -123,6 +155,7 @@ async function installLiveBrowserFakes(page: Page, options: { denyMicrophone?: b
       onerror: (() => void) | null = null;
       constructor() {
         window.__liveTest.sockets += 1;
+        window.__liveTest.latestSocket = this;
         setTimeout(() => {
           this.readyState = FakeWebSocket.OPEN;
           const frame = config.firstFrame || { type: "live_setup_complete" };
@@ -177,7 +210,9 @@ async function installLiveBrowserFakes(page: Page, options: { denyMicrophone?: b
         return { connect() {}, disconnect() {} };
       }
       createScriptProcessor() {
-        return { onaudioprocess: null, connect() {}, disconnect() {} };
+        const processor = { onaudioprocess: null, connect() {}, disconnect() {} };
+        window.__liveTest.processors.push(processor);
+        return processor;
       }
       createGain() {
         return { gain: { value: 1 }, connect() {}, disconnect() {} };
@@ -226,6 +261,12 @@ declare global {
       sentFrames: string[];
       getUserMediaCalls: number;
       sockets: number;
+      latestSocket?: {
+        onmessage: ((event: MessageEvent) => void) | null;
+      };
+      processors: Array<{
+        onaudioprocess: ((event: { inputBuffer: { getChannelData: () => Float32Array } }) => void) | null;
+      }>;
     };
   }
 }
