@@ -163,8 +163,23 @@ func TestLiveInputNoiseFilterKeepsShortChinese(t *testing.T) {
 	if liveIsNoisyInputTranscript("你好") {
 		t.Fatal("short Chinese greeting should not be treated as noise")
 	}
+	for _, text := range []string{"喂", "hello", "hi"} {
+		if liveIsNoisyInputTranscript(text) {
+			t.Fatalf("%q should be kept as a meaningful greeting or wake word", text)
+		}
+	}
+	for _, text := range []string{"嗯", "嗯嗯嗯", "呃", "那个", "ummm", "you know", "I mean", "调调调调"} {
+		if !liveIsNoisyInputTranscript(text) {
+			t.Fatalf("%q should be treated as noise", text)
+		}
+	}
 	if !liveIsNoisyInputTranscript("调调调调") {
 		t.Fatal("repeated ASR noise should be filtered")
+	}
+	for _, text := range []string{"帮我生成图片", "这个功能怎么用", "hello world"} {
+		if liveIsNoisyInputTranscript(text) {
+			t.Fatalf("%q should not be treated as noise", text)
+		}
 	}
 }
 

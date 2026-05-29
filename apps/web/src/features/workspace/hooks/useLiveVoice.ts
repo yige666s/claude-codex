@@ -3,6 +3,7 @@ import { ApiClient, ApiError } from "../../../api/client";
 import { userFacingErrorMessage } from "../../../api/errorMessages";
 import type { RuntimeEvent } from "../../../types";
 import type { Status } from "../workspaceTypes";
+import { liveTranscriptNoise } from "../liveTranscriptNoiseConfig";
 
 export type InputMode = "text" | "live";
 export type LiveStatus = "idle" | "connecting" | "listening" | "speaking" | "thinking" | "responding" | "paused" | "reconnecting" | "error";
@@ -922,13 +923,31 @@ function appendLiveTranscript(current: string, next: string): string {
 }
 
 function isNoisyLiveTranscript(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return true;
-  const compact = normalized.replace(/\s+/g, "");
-  if (Array.from(compact).length <= 1) return true;
-  if (/^(嗯+|啊+|呃+|额+|唔+|alo+|hello+|喂+)$/.test(compact)) return true;
-  if (/^([\p{L}\p{Script=Han}])\1{3,}$/u.test(compact)) return true;
-  if (compact.length <= 8 && /(调){3,}|孤独/.test(compact)) return true;
+  const compact = compactLiveTranscriptNoiseText(text);
+  const runes = Array.from(compact);
+  if (liveTranscriptNoise.meaningfulShortUtterances.includes(compact)) return false;
+  if (!compact || runes.length < liveTranscriptNoise.minMeaningfulRunes) return true;
+  if (liveTranscriptNoise.standaloneFillers.includes(compact)) return true;
+  if (liveTranscriptNoise.repeatableFillers.some((filler) => isExtendedLiveTranscriptFiller(compact, filler))) return true;
+  if (runes.length >= liveTranscriptNoise.repeatedSingleRuneMinRunes && runes.every((rune) => rune === runes[0])) return true;
+  if (liveTranscriptNoise.shortContains.some((item) => runes.length <= item.maxRunes && compact.includes(item.value))) return true;
+  return false;
+}
+
+function compactLiveTranscriptNoiseText(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function isExtendedLiveTranscriptFiller(compact: string, filler: string): boolean {
+  if (!compact || !filler) return false;
+  if (compact === filler) return true;
+  const fillerRunes = Array.from(filler);
+  const lastRune = fillerRunes[fillerRunes.length - 1] || "";
+  if (compact.startsWith(filler)) {
+    const suffix = compact.slice(filler.length);
+    if (suffix && Array.from(suffix).every((rune) => rune === lastRune)) return true;
+  }
+  if (compact.length > filler.length && compact.split(filler).join("") === "") return true;
   return false;
 }
 

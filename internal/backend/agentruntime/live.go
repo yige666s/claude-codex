@@ -652,16 +652,23 @@ func liveTranscriptionText(content map[string]any, key string) string {
 }
 
 func liveIsNoisyInputTranscript(text string) bool {
-	compact := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), ""))
-	if compact == "" || len([]rune(compact)) <= 1 {
-		return true
-	}
-	switch compact {
-	case "嗯", "嗯嗯", "啊", "啊啊", "呃", "额", "喂", "alo", "hello":
-		return true
-	}
+	compact := liveCompactTranscriptNoiseText(text)
 	runes := []rune(compact)
-	if len(runes) >= 4 {
+	if liveTranscriptNoiseContains(liveTranscriptNoise.MeaningfulShortUtterances, compact) {
+		return false
+	}
+	if compact == "" || len(runes) < liveTranscriptNoise.MinMeaningfulRunes {
+		return true
+	}
+	if liveTranscriptNoiseContains(liveTranscriptNoise.StandaloneFillers, compact) {
+		return true
+	}
+	for _, filler := range liveTranscriptNoise.RepeatableFillers {
+		if liveTranscriptNoiseIsExtendedFiller(compact, filler) {
+			return true
+		}
+	}
+	if len(runes) >= liveTranscriptNoise.RepeatedSingleRuneMinRunes {
 		same := true
 		for _, r := range runes[1:] {
 			if r != runes[0] {
@@ -673,7 +680,12 @@ func liveIsNoisyInputTranscript(text string) bool {
 			return true
 		}
 	}
-	return len(runes) <= 8 && (strings.Contains(compact, "调调调") || strings.Contains(compact, "孤独"))
+	for _, item := range liveTranscriptNoise.ShortContains {
+		if len(runes) <= item.MaxRunes && strings.Contains(compact, item.Value) {
+			return true
+		}
+	}
+	return false
 }
 
 func liveOutputAudioParts(content map[string]any, fallbackMIME string) []map[string]any {
