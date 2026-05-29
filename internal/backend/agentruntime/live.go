@@ -46,6 +46,10 @@ type LiveSkillHandler interface {
 	ExecuteLiveSkillCommand(ctx context.Context, userID, sessionID, text string, sink EventSink) (bool, error)
 }
 
+type LiveSkillFunctionHandler interface {
+	ExecuteLiveSkillFunctionCall(ctx context.Context, userID, sessionID, skillName, args, displayText string, sink EventSink) (bool, string, error)
+}
+
 func NewVertexLiveService(config LiveConfig, recorder LiveTurnRecorder, logger *log.Logger) *VertexLiveService {
 	config = normalizeLiveConfig(config)
 	return &VertexLiveService{
@@ -162,7 +166,7 @@ func (s *VertexLiveService) Run(ctx context.Context, req LiveRequest, input Live
 	errCh := make(chan error, 2)
 	var writeMu sync.Mutex
 	go func() {
-		errCh <- s.receiveLoop(ctx, req, conn, sink)
+		errCh <- s.receiveLoop(ctx, req, conn, &writeMu, sink)
 	}()
 	go func() {
 		errCh <- s.sendLoop(ctx, req, input, conn, &writeMu, sink)
@@ -236,8 +240,34 @@ func (s *VertexLiveService) setupMessage(ctx context.Context, req LiveRequest) m
 				"parts": []map[string]any{{"text": instruction}},
 			}
 		}
+		setup["tools"] = []map[string]any{{"functionDeclarations": []map[string]any{liveRunSkillFunctionDeclaration()}}}
 	}
 	return map[string]any{"setup": setup}
+}
+
+func liveRunSkillFunctionDeclaration() map[string]any {
+	return map[string]any{
+		"name":        "run_skill",
+		"description": "Run one published backend skill for the current user session. Use this whenever the user asks to create, generate, transform, fetch, analyze, or process something that matches an available skill, especially images or other artifacts. Do not claim the skill has run before calling this function.",
+		"parameters": map[string]any{
+			"type": "OBJECT",
+			"properties": map[string]any{
+				"skill": map[string]any{
+					"type":        "STRING",
+					"description": "The published skill name from the system instruction skill list, without a leading slash.",
+				},
+				"args": map[string]any{
+					"type":        "STRING",
+					"description": "The user's concrete request to pass to the skill. Preserve important visual, file, style, and content details.",
+				},
+				"reason": map[string]any{
+					"type":        "STRING",
+					"description": "A short reason why this skill is the right one.",
+				},
+			},
+			"required": []string{"skill", "args"},
+		},
+	}
 }
 
 func (s *VertexLiveService) liveSystemInstruction(ctx context.Context, req LiveRequest) string {
@@ -348,14 +378,25 @@ func liveClientEventToVertexPayload(event LiveClientEvent, defaultMIME string) (
 	}
 }
 
-func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, conn *websocket.Conn, sink EventSink) error {
+func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, conn *websocket.Conn, writeMu *sync.Mutex, sink EventSink) error {
 	var turn liveTurnAccumulator
 	skillHandler, _ := s.recorder.(LiveSkillHandler)
+	functionHandler, _ := s.recorder.(LiveSkillFunctionHandler)
 	skillTurn := false
 	for {
 		var message map[string]any
 		if err := conn.ReadJSON(&message); err != nil {
 			return err
+		}
+		if calls := liveToolFunctionCalls(message); len(calls) > 0 {
+			result, err := s.handleToolFunctionCalls(ctx, req, calls, functionHandler, conn, writeMu, sink, turn.inputText())
+			if err != nil {
+				return err
+			}
+			if result.handledSkill {
+				turn.clearInput()
+			}
+			continue
 		}
 		events, complete, err := turn.consume(message, s.config.OutputAudioMIMEType)
 		if err != nil {
@@ -414,6 +455,106 @@ func liveSkillVisibleEvents(events []Event) []Event {
 			continue
 		}
 		out = append(out, event)
+	}
+	return out
+}
+
+type liveFunctionCall struct {
+	ID   string
+	Name string
+	Args map[string]any
+}
+
+type liveToolFunctionResult struct {
+	handledSkill bool
+}
+
+func (s *VertexLiveService) handleToolFunctionCalls(ctx context.Context, req LiveRequest, calls []liveFunctionCall, handler LiveSkillFunctionHandler, conn *websocket.Conn, writeMu *sync.Mutex, sink EventSink, displayText string) (liveToolFunctionResult, error) {
+	responses := make([]map[string]any, 0, len(calls))
+	var result liveToolFunctionResult
+	for _, call := range calls {
+		response := map[string]any{}
+		if !strings.EqualFold(strings.TrimSpace(call.Name), "run_skill") {
+			response["error"] = fmt.Sprintf("unsupported live function %q", call.Name)
+			responses = append(responses, liveFunctionResponse(call, response))
+			continue
+		}
+		if handler == nil {
+			response["error"] = "live skill function handler is not configured"
+			responses = append(responses, liveFunctionResponse(call, response))
+			continue
+		}
+		skillName := firstLiveString(call.Args["skill"], call.Args["skill_name"], call.Args["skillName"], call.Args["name"])
+		args := firstLiveString(call.Args["args"], call.Args["arguments"], call.Args["prompt"], call.Args["request"])
+		if skillName == "" {
+			response["error"] = "run_skill requires a skill name"
+			responses = append(responses, liveFunctionResponse(call, response))
+			continue
+		}
+		handled, output, err := handler.ExecuteLiveSkillFunctionCall(ctx, req.UserID, req.SessionID, skillName, args, displayText, sink)
+		if err != nil {
+			response["error"] = liveToolResponseText(err.Error())
+		} else if !handled {
+			response["error"] = "skill was not found or is not user-invocable"
+		} else {
+			result.handledSkill = true
+			response["result"] = liveToolResponseText(output)
+		}
+		responses = append(responses, liveFunctionResponse(call, response))
+	}
+	if len(responses) == 0 {
+		return result, nil
+	}
+	payload := map[string]any{"toolResponse": map[string]any{"functionResponses": responses}}
+	if writeMu != nil {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+	}
+	if err := conn.WriteJSON(payload); err != nil {
+		return result, fmt.Errorf("send live tool response: %w", err)
+	}
+	return result, nil
+}
+
+func liveFunctionResponse(call liveFunctionCall, response map[string]any) map[string]any {
+	out := map[string]any{
+		"name":     call.Name,
+		"response": response,
+	}
+	if strings.TrimSpace(call.ID) != "" {
+		out["id"] = call.ID
+	}
+	return out
+}
+
+func liveToolResponseText(text string) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	const limit = 2000
+	if len([]rune(text)) <= limit {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:limit]) + "..."
+}
+
+func liveToolFunctionCalls(message map[string]any) []liveFunctionCall {
+	toolCall, _ := firstLiveMap(message["toolCall"], message["tool_call"])
+	if len(toolCall) == 0 {
+		return nil
+	}
+	rawCalls, _ := firstLiveSlice(toolCall["functionCalls"], toolCall["function_calls"])
+	out := make([]liveFunctionCall, 0, len(rawCalls))
+	for _, raw := range rawCalls {
+		callMap, _ := firstLiveMap(raw)
+		if len(callMap) == 0 {
+			continue
+		}
+		args, _ := firstLiveMap(callMap["args"], callMap["arguments"])
+		out = append(out, liveFunctionCall{
+			ID:   firstLiveString(callMap["id"], callMap["functionCallId"], callMap["function_call_id"]),
+			Name: firstLiveString(callMap["name"], callMap["functionName"], callMap["function_name"]),
+			Args: args,
+		})
 	}
 	return out
 }
@@ -489,6 +630,13 @@ func (a *liveTurnAccumulator) inputText() string {
 	return strings.TrimSpace(a.input.String())
 }
 
+func (a *liveTurnAccumulator) clearInput() {
+	if a == nil {
+		return
+	}
+	a.input.Reset()
+}
+
 func (a *liveTurnAccumulator) suppressOutput() {
 	if a == nil {
 		return
@@ -555,6 +703,15 @@ func firstLiveMap(values ...any) (map[string]any, bool) {
 	for _, value := range values {
 		if mapped, ok := value.(map[string]any); ok && len(mapped) > 0 {
 			return mapped, true
+		}
+	}
+	return nil, false
+}
+
+func firstLiveSlice(values ...any) ([]any, bool) {
+	for _, value := range values {
+		if items, ok := value.([]any); ok && len(items) > 0 {
+			return items, true
 		}
 	}
 	return nil, false

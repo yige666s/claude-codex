@@ -1614,7 +1614,7 @@ func (r *Runtime) liveSkillContext() string {
 	}
 	var out strings.Builder
 	out.WriteString(formatSkillList(items))
-	out.WriteString("\n\nLive mode can explain these published product skills and guide the user to run one with its slash command in text chat. Artifact-producing work, including image generation, must be performed by backend skill/job events. Do not say you are generating an artifact, ask the user to wait for generation, or claim that a skill has run unless explicit skill/job results are present in the conversation.")
+	out.WriteString("\n\nLive mode has access to a `run_skill` function. When the user asks to create, generate, transform, fetch, analyze, or process something that matches one published skill, call `run_skill` with the exact skill name and the user's concrete arguments. Artifact-producing work, including image generation, must be performed by `run_skill` backend skill/job events. Do not say you are generating an artifact, ask the user to wait for generation, or claim that a skill has run unless you have called `run_skill` or explicit skill/job results are present in the conversation.")
 	return out.String()
 }
 
@@ -1631,60 +1631,92 @@ func (r *Runtime) ExecuteLiveSkillCommand(ctx context.Context, userID, sessionID
 	if !ok {
 		return false, nil
 	}
+	handled, _, err := r.executeLiveSkillCommand(ctx, userID, sessionID, text, command, sink)
+	return handled, err
+}
+
+func (r *Runtime) ExecuteLiveSkillFunctionCall(ctx context.Context, userID, sessionID, skillName, args, displayText string, sink EventSink) (bool, string, error) {
+	if r == nil || r.skills == nil {
+		return false, "", nil
+	}
+	skillName = strings.TrimPrefix(strings.TrimSpace(skillName), "/")
+	if skillName == "" {
+		return false, "", nil
+	}
+	skill, ok := r.skills.GetSkill(skillName)
+	if !ok || skill == nil || !skill.UserInvocable || skill.IsHidden {
+		return false, "", nil
+	}
+	args = strings.TrimSpace(args)
+	command := "/" + skill.Name
+	if args != "" {
+		command += " " + args
+	}
+	if strings.TrimSpace(displayText) == "" {
+		displayText = command
+	}
+	return r.executeLiveSkillCommand(ctx, userID, sessionID, displayText, command, sink)
+}
+
+func (r *Runtime) executeLiveSkillCommand(ctx context.Context, userID, sessionID, displayText, command string, sink EventSink) (bool, string, error) {
 	if sink == nil {
-		return true, fmt.Errorf("event sink is required")
+		return true, "", fmt.Errorf("event sink is required")
 	}
 	session, err := r.GetSession(ctx, userID, sessionID)
 	if err != nil {
-		return true, err
+		return true, "", err
 	}
 	ensureConsumerSecurityContext(session)
 	if err := r.injectPersonalization(ctx, userID, session); err != nil {
-		return true, err
+		return true, "", err
 	}
 	if err := r.injectBrowserMemory(ctx, userID, session); err != nil {
-		return true, err
+		return true, "", err
 	}
 	if err := r.injectMemory(ctx, userID, session); err != nil {
-		return true, err
+		return true, "", err
 	}
 	startMessageCount := len(session.Messages)
-	displayText := strings.TrimSpace(text)
+	displayText = strings.TrimSpace(displayText)
 	if displayText == "" {
 		displayText = command
 	}
 	session.AddUserMessage(displayText)
 	if err := sink.Send(ctx, Event{Type: "message", SessionID: session.ID, Role: state.MessageRoleUser, Content: displayText}); err != nil {
-		return true, err
+		return true, "", err
 	}
 	if err := sink.Send(ctx, Event{Type: "live_skill_start", SessionID: session.ID, Role: state.MessageRoleTool, Content: command, Data: liveJSON(map[string]any{"command": command})}); err != nil {
-		return true, err
+		return true, "", err
 	}
 
 	req := ChatRequest{UserID: userID, SessionID: session.ID, Content: command}
 	if decision := r.RouteChat(req); decision.RunAsJob {
 		if err := r.persistChatSession(ctx, userID, session, startMessageCount); err != nil {
-			return true, err
+			return true, "", err
 		}
 		job, err := r.CreateJob(ctx, req, firstNonEmptyString(decision.JobType, "skill"))
 		if err != nil {
-			return true, err
+			return true, "", err
 		}
 		r.markJobUserMessageHidden(job.ID)
 		if err := r.StartJob(ctx, job); err != nil {
-			return true, err
+			return true, "", err
 		}
 		if err := sink.Send(ctx, Event{Type: "job", SessionID: session.ID, JobID: job.ID, Job: job, JobReason: decision.Reason}); err != nil {
-			return true, err
+			return true, "", err
 		}
-		return true, sink.Send(ctx, Event{Type: "live_skill_result", SessionID: session.ID, Role: state.MessageRoleTool, Content: "Skill job started.", Data: liveJSON(map[string]any{"command": command, "job_id": job.ID})})
+		output := "Skill job started."
+		if err := sink.Send(ctx, Event{Type: "live_skill_result", SessionID: session.ID, Role: state.MessageRoleTool, Content: output, Data: liveJSON(map[string]any{"command": command, "job_id": job.ID})}); err != nil {
+			return true, "", err
+		}
+		return true, fmt.Sprintf("%s job_id=%s command=%s", output, job.ID, command), nil
 	}
 
 	turnCtx, cancel := context.WithTimeout(ctx, r.config.TurnTimeout)
 	turnKey := sessionKey(userID, session.ID)
 	if err := r.start(turnKey, cancel, jobIDFromContext(ctx) != ""); err != nil {
 		cancel()
-		return true, err
+		return true, "", err
 	}
 	turnFinished := false
 	finishTurn := func() {
@@ -1702,31 +1734,34 @@ func (r *Runtime) ExecuteLiveSkillCommand(ctx context.Context, userID, sessionID
 		r.appendFailedTurn(session, displayText, err)
 		if saveErr := r.persistChatSession(ctx, userID, session, startMessageCount); saveErr != nil {
 			_ = sink.Send(ctx, Event{Type: "error", SessionID: session.ID, Error: err.Error()})
-			return true, errors.Join(err, saveErr)
+			return true, "", errors.Join(err, saveErr)
 		}
 		_ = sink.Send(ctx, Event{Type: "error", SessionID: session.ID, Error: err.Error()})
-		return true, err
+		return true, "", err
 	}
 	if result.Session == nil {
-		return true, fmt.Errorf("skill runner returned no session")
+		return true, "", fmt.Errorf("skill runner returned no session")
 	}
 	session = result.Session
 	r.sanitizeSessionAttachmentBlocks(session)
 	if err := r.persistChatSession(ctx, userID, session, startMessageCount); err != nil {
-		return true, err
+		return true, "", err
 	}
 	if r.memory != nil {
 		if err := r.afterTurnMemory(ctx, userID, session); err != nil {
-			return true, err
+			return true, "", err
 		}
 	}
 	if err := sink.Send(ctx, Event{Type: "live_skill_result", SessionID: session.ID, Role: state.MessageRoleTool, Content: result.Output, Data: liveJSON(map[string]any{"command": command})}); err != nil {
-		return true, err
+		return true, "", err
 	}
 	if err := sink.Send(ctx, Event{Type: "message", SessionID: session.ID, Role: state.MessageRoleAssistant, Content: result.Output, Data: liveJSON(map[string]any{"source": "live_skill", "command": command})}); err != nil {
-		return true, err
+		return true, "", err
 	}
-	return true, sink.Send(ctx, Event{Type: "done", SessionID: session.ID})
+	if err := sink.Send(ctx, Event{Type: "done", SessionID: session.ID}); err != nil {
+		return true, "", err
+	}
+	return true, result.Output, nil
 }
 
 func (r *Runtime) liveExplicitSkillCommand(text string) (string, bool) {

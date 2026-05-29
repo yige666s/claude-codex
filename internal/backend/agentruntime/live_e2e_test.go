@@ -139,6 +139,110 @@ func TestLiveBackendE2ESkillRouting(t *testing.T) {
 	writeLiveClientEvent(t, conn, LiveClientEvent{Type: "close"})
 }
 
+func TestLiveBackendE2ENativeFunctionCallingRoutesSkill(t *testing.T) {
+	t.Setenv("VERTEX_ACCESS_TOKEN", "test-token")
+	upstream := newFakeGeminiLiveServer(t,
+		fakeGeminiScenario{
+			onAudioEnd: []map[string]any{
+				fakeGeminiServerContent(map[string]any{
+					"inputTranscription": map[string]any{"text": "帮我画一只橙色的中华田园猫"},
+				}),
+				{
+					"toolCall": map[string]any{
+						"functionCalls": []any{
+							map[string]any{
+								"id":   "call-1",
+								"name": "run_skill",
+								"args": map[string]any{
+									"skill": "vertex-image-artifact",
+									"args":  "一只橙色的中华田园猫",
+								},
+							},
+						},
+					},
+				},
+			},
+			onToolResponse: []map[string]any{
+				fakeGeminiServerContent(map[string]any{
+					"outputTranscription": map[string]any{"text": "已开始生成图片。"},
+					"turnComplete":        true,
+				}),
+			},
+		},
+	)
+	defer upstream.Close()
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "vertex-image-artifact",
+		DisplayName:   "图片生成",
+		Description:   "Generate images from natural language prompts.",
+		UserInvocable: true,
+		RunAsJob:      true,
+		Metadata: map[string]any{
+			"agentapi": map[string]any{"produces_artifacts": true},
+		},
+		GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+			return []skills.ContentBlock{{Type: "text", Text: "image prompt: " + args}}, nil
+		},
+	}}}
+	runtime, store, sessionID := newLiveE2ERuntime(t, upstream.URL(), catalog)
+	jobs := NewMemoryJobStore()
+	runtime.SetJobStore(jobs)
+	server := httptest.NewServer(NewServer(runtime, HeaderAuthenticator{UserHeader: "X-User-ID"}, NoopRateLimiter{}, nil))
+	defer server.Close()
+	conn := dialLiveBackend(t, server.URL, sessionID)
+	defer conn.Close()
+
+	expectLiveEvent(t, conn, func(event Event) bool { return event.Type == "live_setup_complete" }, "live_setup_complete")
+	upstream.ExpectClientSetup(t, func(setup map[string]any) bool {
+		return liveSetupHasRunSkillTool(setup)
+	})
+	writeLiveClientEvent(t, conn, LiveClientEvent{Type: "audio", Data: "AAEC"})
+	writeLiveClientEvent(t, conn, LiveClientEvent{Type: "audio_end"})
+
+	expectLiveEvent(t, conn, func(event Event) bool {
+		return event.Type == "live_transcript" && event.Role == state.MessageRoleUser && strings.Contains(event.Content, "中华田园猫")
+	}, "function-call input transcript")
+	start := expectLiveEvent(t, conn, func(event Event) bool {
+		return event.Type == "live_skill_start" && strings.HasPrefix(event.Content, "/vertex-image-artifact ")
+	}, "native function live skill start")
+	if !strings.Contains(start.Content, "中华田园猫") {
+		t.Fatalf("skill command lost args: %q", start.Content)
+	}
+	jobEvent := expectLiveEvent(t, conn, func(event Event) bool {
+		return event.Type == "job" && event.Job != nil && event.Job.Type == "skill"
+	}, "native function skill job")
+	waitForLiveTestJob(t, jobs, "alice", jobEvent.Job.ID)
+	upstream.ExpectClientToolResponse(t, func(toolResponse map[string]any) bool {
+		responses, _ := toolResponse["functionResponses"].([]any)
+		if len(responses) != 1 {
+			return false
+		}
+		response, _ := responses[0].(map[string]any)
+		body, _ := response["response"].(map[string]any)
+		result, _ := body["result"].(string)
+		return response["id"] == "call-1" && response["name"] == "run_skill" && strings.Contains(result, "Skill job started.")
+	})
+	expectLiveEvent(t, conn, func(event Event) bool {
+		return event.Type == "message" && event.Role == state.MessageRoleAssistant && event.Content == "已开始生成图片。"
+	}, "native function assistant acknowledgement")
+
+	saved, err := store.Get(context.Background(), "alice", sessionID)
+	if err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	var sawOriginalUser bool
+	for _, message := range saved.Messages {
+		if !message.Hidden && message.Role == state.MessageRoleUser && strings.Contains(message.Content, "中华田园猫") {
+			sawOriginalUser = true
+			break
+		}
+	}
+	if !sawOriginalUser {
+		t.Fatalf("expected original live utterance to be persisted, messages=%#v", saved.Messages)
+	}
+	writeLiveClientEvent(t, conn, LiveClientEvent{Type: "close"})
+}
+
 func TestLiveBackendE2EDisconnectReconnectsSameSession(t *testing.T) {
 	t.Setenv("VERTEX_ACCESS_TOKEN", "test-token")
 	upstream := newFakeGeminiLiveServer(t,
@@ -182,6 +286,7 @@ func TestLiveBackendE2EDisconnectReconnectsSameSession(t *testing.T) {
 
 type fakeGeminiScenario struct {
 	onAudioEnd      []map[string]any
+	onToolResponse  []map[string]any
 	closeAfterSetup bool
 }
 
@@ -232,6 +337,38 @@ func (s *fakeGeminiLiveServer) ExpectClientRealtimeInput(t *testing.T, match fun
 	}
 }
 
+func (s *fakeGeminiLiveServer) ExpectClientSetup(t *testing.T, match func(map[string]any) bool) map[string]any {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case message := <-s.received:
+			setup, _ := message["setup"].(map[string]any)
+			if setup != nil && match(setup) {
+				return setup
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for matching Gemini setup")
+		}
+	}
+}
+
+func (s *fakeGeminiLiveServer) ExpectClientToolResponse(t *testing.T, match func(map[string]any) bool) map[string]any {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case message := <-s.received:
+			toolResponse, _ := message["toolResponse"].(map[string]any)
+			if toolResponse != nil && match(toolResponse) {
+				return toolResponse
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for matching Gemini toolResponse")
+		}
+	}
+}
+
 func (s *fakeGeminiLiveServer) handle(w http.ResponseWriter, r *http.Request) {
 	scenario, ok := <-s.scenarios
 	if !ok {
@@ -277,11 +414,34 @@ func (s *fakeGeminiLiveServer) handle(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		if _, ok := message["toolResponse"].(map[string]any); ok {
+			for _, response := range scenario.onToolResponse {
+				if err := conn.WriteJSON(response); err != nil {
+					s.t.Errorf("write Gemini tool response follow-up: %v", err)
+					return
+				}
+			}
+		}
 	}
 }
 
 func fakeGeminiServerContent(content map[string]any) map[string]any {
 	return map[string]any{"serverContent": content}
+}
+
+func liveSetupHasRunSkillTool(setup map[string]any) bool {
+	tools, _ := setup["tools"].([]any)
+	for _, item := range tools {
+		tool, _ := item.(map[string]any)
+		declarations, _ := tool["functionDeclarations"].([]any)
+		for _, raw := range declarations {
+			declaration, _ := raw.(map[string]any)
+			if declaration["name"] == "run_skill" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func newLiveE2ERuntime(t *testing.T, upstreamURL string, catalog SkillCatalog) (*Runtime, *FileSessionStore, string) {

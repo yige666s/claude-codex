@@ -386,7 +386,8 @@ func TestRuntimeLiveSystemInstructionIncludesPublishedSkills(t *testing.T) {
 		"<skills>",
 		"# Available Skills",
 		"`/diagram`: Create a diagram from a brief.",
-		"guide the user to run one with its slash command in text chat",
+		"Live mode has access to a `run_skill` function",
+		"call `run_skill` with the exact skill name",
 	} {
 		if !strings.Contains(instruction, want) {
 			t.Fatalf("LiveSystemInstruction missing %q:\n%s", want, instruction)
@@ -435,7 +436,7 @@ func TestRuntimeLiveSkillCommandUsesModelSelection(t *testing.T) {
 		if scope.SkillScoped {
 			return echoRunner{}
 		}
-		return liveSkillSelectorRunner{output: `{"action":"skill_call","skill":"diagram","args":"登录流程图","confidence":0.91,"reason":"user asked to create a diagram"}`}
+		return liveSkillSelectorRunner{output: `{"action":"skill_call","skill":"diagram","args":"登录流程方案","confidence":0.91,"reason":"user asked for a process plan"}`}
 	})
 	session, err := runtime.CreateSession(context.Background(), "alice", root)
 	if err != nil {
@@ -443,7 +444,7 @@ func TestRuntimeLiveSkillCommandUsesModelSelection(t *testing.T) {
 	}
 	sink := &collectSink{}
 
-	handled, err := runtime.ExecuteLiveSkillCommand(context.Background(), "alice", session.ID, "帮我画一个登录流程图", sink)
+	handled, err := runtime.ExecuteLiveSkillCommand(context.Background(), "alice", session.ID, "我需要一个登录流程方案", sink)
 	if err != nil {
 		t.Fatalf("ExecuteLiveSkillCommand: %v", err)
 	}
@@ -452,7 +453,7 @@ func TestRuntimeLiveSkillCommandUsesModelSelection(t *testing.T) {
 	}
 	var sawAssistant bool
 	for _, event := range sink.events {
-		if event.Type == "message" && event.Role == state.MessageRoleAssistant && strings.Contains(event.Content, "diagram prompt: 登录流程图") {
+		if event.Type == "message" && event.Role == state.MessageRoleAssistant && strings.Contains(event.Content, "diagram prompt: 登录流程方案") {
 			sawAssistant = true
 			break
 		}
@@ -460,6 +461,60 @@ func TestRuntimeLiveSkillCommandUsesModelSelection(t *testing.T) {
 	if !sawAssistant {
 		t.Fatalf("expected model-selected skill result message, events=%#v", sink.events)
 	}
+}
+
+func TestRuntimeExecuteLiveSkillFunctionCallRunsArtifactJob(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	jobs := NewMemoryJobStore()
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{
+		{
+			Name:          "vertex-image-artifact",
+			DisplayName:   "图片生成",
+			Description:   "Generate images from natural language prompts.",
+			UserInvocable: true,
+			RunAsJob:      true,
+			Metadata: map[string]any{
+				"agentapi": map[string]any{"produces_artifacts": true},
+			},
+			GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+				return []skills.ContentBlock{{Type: "text", Text: "image prompt: " + args}}, nil
+			},
+		},
+	}}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, catalog, func(Scope) Runner { return echoRunner{} })
+	runtime.SetJobStore(jobs)
+	session, err := runtime.CreateSession(context.Background(), "alice", root)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	sink := &collectSink{}
+
+	utterance := "帮我画一只橙色的中华田园猫，在院子里"
+	handled, output, err := runtime.ExecuteLiveSkillFunctionCall(context.Background(), "alice", session.ID, "vertex-image-artifact", utterance, utterance, sink)
+	if err != nil {
+		t.Fatalf("ExecuteLiveSkillFunctionCall: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected live function artifact request to be handled")
+	}
+	if !strings.Contains(output, "Skill job started.") {
+		t.Fatalf("output = %q", output)
+	}
+	var routedJob *Job
+	for _, event := range sink.events {
+		if event.Type == "job" {
+			routedJob = event.Job
+			break
+		}
+	}
+	if routedJob == nil {
+		t.Fatalf("expected routed skill job, events=%#v", sink.events)
+	}
+	if routedJob.Content != "/vertex-image-artifact "+utterance {
+		t.Fatalf("job content = %q", routedJob.Content)
+	}
+	waitForLiveTestJob(t, jobs, "alice", routedJob.ID)
 }
 
 func TestRuntimeLiveSkillCommandUsesRecentContextForArtifactFollowup(t *testing.T) {
@@ -525,6 +580,25 @@ func TestRuntimeLiveSkillCommandUsesRecentContextForArtifactFollowup(t *testing.
 	}
 	if routedJob.Type != "skill" || routedJob.Content != "/vertex-image-artifact 一张狗的图片，风格由系统决定" {
 		t.Fatalf("unexpected routed job: %#v", routedJob)
+	}
+	waitForLiveTestJob(t, jobs, "alice", routedJob.ID)
+}
+
+func waitForLiveTestJob(t *testing.T, jobs *MemoryJobStore, userID, jobID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		stored, err := jobs.GetJob(context.Background(), userID, jobID)
+		if err != nil {
+			t.Fatalf("GetJob: %v", err)
+		}
+		if stored.Status == JobStatusSucceeded || stored.Status == JobStatusFailed || stored.Status == JobStatusCancelled {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job did not finish: %#v", stored)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
