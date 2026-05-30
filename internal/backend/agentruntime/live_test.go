@@ -11,6 +11,7 @@ import (
 	"claude-codex/internal/harness/engine"
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
+	toolkit "claude-codex/internal/harness/tools"
 )
 
 func TestLiveVertexWebSocketURL(t *testing.T) {
@@ -480,7 +481,7 @@ func TestRuntimeLiveSystemInstructionIncludesPublishedSkills(t *testing.T) {
 		"# Available Skills",
 		"`/diagram`: Create a diagram from a brief.",
 		"Live mode has access to a `run_skill` function",
-		"call `run_skill` with the exact skill name",
+		"Call `run_skill` only when",
 	} {
 		if !strings.Contains(instruction, want) {
 			t.Fatalf("LiveSystemInstruction missing %q:\n%s", want, instruction)
@@ -519,6 +520,102 @@ func TestRuntimeLiveInitialHistoryUsesLargerSlidingWindow(t *testing.T) {
 	instruction := runtime.LiveSystemInstruction(context.Background(), "alice", session.ID)
 	if strings.Contains(instruction, "Recent conversation context") || strings.Contains(instruction, "user-19") {
 		t.Fatalf("live instruction should not inline recent history after clientContent migration:\n%s", instruction)
+	}
+}
+
+func TestRuntimeLiveToolFunctionDeclarationsExposeSafeHarnessToolsAndRunSkill(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{
+		{Name: "diagram", Description: "Create a diagram.", UserInvocable: true},
+	}}
+	runner := &liveHarnessRunner{descriptors: []toolkit.Descriptor{
+		{Name: "WebSearch", Description: "Search the web.", InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`)},
+		{Name: "WebFetch", Description: "Fetch a URL.", InputSchema: json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}`)},
+		{Name: "Bash", Description: "Run a shell command.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "Skill", Description: "Execute a skill.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, catalog, func(Scope) Runner { return runner })
+	session, err := runtime.CreateSession(context.Background(), "alice", root)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	declarations, err := runtime.LiveToolFunctionDeclarations(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("LiveToolFunctionDeclarations: %v", err)
+	}
+	names := make(map[string]map[string]any)
+	for _, declaration := range declarations {
+		names[fmt.Sprint(declaration["name"])] = declaration
+	}
+	for _, want := range []string{"WebSearch", "WebFetch", "run_skill"} {
+		if _, ok := names[want]; !ok {
+			t.Fatalf("missing live function %q in %#v", want, names)
+		}
+	}
+	for _, blocked := range []string{"Bash", "Skill"} {
+		if _, ok := names[blocked]; ok {
+			t.Fatalf("live should not expose %s directly: %#v", blocked, declarations)
+		}
+	}
+	parameters := names["WebSearch"]["parameters"].(map[string]any)
+	if parameters["type"] != "OBJECT" {
+		t.Fatalf("live schema type should be normalized for Vertex Live: %#v", parameters)
+	}
+}
+
+func TestRuntimeExecuteLiveToolFunctionCallRunsHarnessTool(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	runner := &liveHarnessRunner{
+		descriptors: []toolkit.Descriptor{{Name: "WebSearch", Description: "Search the web.", InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`)}},
+		output:      "answer: sunny",
+	}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, nil, func(Scope) Runner { return runner })
+	session, err := runtime.CreateSession(context.Background(), "alice", root)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	sink := &collectSink{}
+
+	handled, output, err := runtime.ExecuteLiveToolFunctionCall(context.Background(), "alice", session.ID, "call-1", "WebSearch", json.RawMessage(`{"query":"北京天气"}`), "查一下北京天气", sink)
+	if err != nil {
+		t.Fatalf("ExecuteLiveToolFunctionCall: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected WebSearch to be handled")
+	}
+	if output != "answer: sunny" {
+		t.Fatalf("output = %q", output)
+	}
+	if runner.calledName != "WebSearch" || string(runner.calledInput) != `{"query":"北京天气"}` {
+		t.Fatalf("unexpected runner call: name=%q input=%s", runner.calledName, runner.calledInput)
+	}
+	saved, err := store.Get(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("Get saved session: %v", err)
+	}
+	if len(saved.Messages) != 2 {
+		t.Fatalf("saved messages = %d, want assistant tool call + tool result: %#v", len(saved.Messages), saved.Messages)
+	}
+	if saved.Messages[0].Role != state.MessageRoleAssistant || len(saved.Messages[0].ToolCalls) != 1 || saved.Messages[0].ToolCalls[0].Name != "WebSearch" {
+		t.Fatalf("unexpected tool call message: %#v", saved.Messages[0])
+	}
+	if saved.Messages[1].Role != state.MessageRoleTool || saved.Messages[1].ToolName != "WebSearch" || saved.Messages[1].ToolOutput != "answer: sunny" {
+		t.Fatalf("unexpected tool result message: %#v", saved.Messages[1])
+	}
+	var sawStart, sawResult bool
+	for _, event := range sink.events {
+		if event.Type == "live_tool_start" {
+			sawStart = true
+		}
+		if event.Type == "live_tool_result" {
+			sawResult = true
+		}
+	}
+	if !sawStart || !sawResult {
+		t.Fatalf("expected live tool events, got %#v", sink.events)
 	}
 }
 
@@ -715,6 +812,33 @@ type contextAwareLiveSkillSelectorRunner struct {
 
 func (r contextAwareLiveSkillSelectorRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
 	return r.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+type liveHarnessRunner struct {
+	descriptors []toolkit.Descriptor
+	output      string
+	calledName  string
+	calledInput json.RawMessage
+}
+
+func (r *liveHarnessRunner) Run(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	session.AddUserMessage(prompt)
+	return engine.Result{Session: session}, nil
+}
+
+func (r *liveHarnessRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	session.AddSystemContext(prompt)
+	return engine.Result{Session: session}, nil
+}
+
+func (r *liveHarnessRunner) Descriptors() []toolkit.Descriptor {
+	return append([]toolkit.Descriptor(nil), r.descriptors...)
+}
+
+func (r *liveHarnessRunner) ExecuteTool(_ context.Context, name string, input json.RawMessage) (toolkit.Result, error) {
+	r.calledName = name
+	r.calledInput = append(json.RawMessage(nil), input...)
+	return toolkit.Result{Output: r.output}, nil
 }
 
 func (r contextAwareLiveSkillSelectorRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {

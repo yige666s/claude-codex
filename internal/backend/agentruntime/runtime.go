@@ -22,6 +22,7 @@ import (
 	providerbackend "claude-codex/internal/harness/provider"
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
+	toolkit "claude-codex/internal/harness/tools"
 	skilltool "claude-codex/internal/harness/tools/skill"
 	publictypes "claude-codex/internal/public/types"
 )
@@ -34,6 +35,16 @@ const (
 )
 
 type hiddenUserMessageContextKey struct{}
+
+type liveHarnessToolRunner interface {
+	Descriptors() []toolkit.Descriptor
+	ExecuteTool(ctx context.Context, name string, input json.RawMessage) (toolkit.Result, error)
+}
+
+var liveHarnessToolAllowlist = map[string]struct{}{
+	"WebSearch": {},
+	"WebFetch":  {},
+}
 
 const consumerSecuritySystemContext = `<consumer-security>
 You are serving a consumer web user. Do not expose internal server tools, tool names, file paths, workspace paths, shell commands, environment variables, credentials, stack traces, or raw provider errors.
@@ -1623,6 +1634,228 @@ func (r *Runtime) LiveInitialHistory(ctx context.Context, userID, sessionID stri
 	return out, nil
 }
 
+func (r *Runtime) LiveToolFunctionDeclarations(ctx context.Context, userID, sessionID string) ([]map[string]any, error) {
+	if r == nil {
+		return nil, nil
+	}
+	var declarations []map[string]any
+	runner, _, err := r.liveHarnessToolRunner(ctx, userID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if runner != nil {
+		for _, descriptor := range runner.Descriptors() {
+			if !liveHarnessToolAllowed(descriptor.Name) {
+				continue
+			}
+			declaration, err := liveFunctionDeclarationFromDescriptor(descriptor)
+			if err != nil {
+				return nil, err
+			}
+			declarations = append(declarations, declaration)
+		}
+	}
+	if r.liveHasUserInvocableSkills() {
+		declarations = append(declarations, liveRunSkillFunctionDeclaration())
+	}
+	return declarations, nil
+}
+
+func (r *Runtime) ExecuteLiveToolFunctionCall(ctx context.Context, userID, sessionID, callID, toolName string, args json.RawMessage, displayText string, sink EventSink) (bool, string, error) {
+	toolName = strings.TrimSpace(toolName)
+	if r == nil || toolName == "" {
+		return false, "", nil
+	}
+	if liveSkillFunctionName(toolName) {
+		skillName, skillArgs := liveSkillFunctionArgs(toolName, args)
+		return r.ExecuteLiveSkillFunctionCall(ctx, userID, sessionID, skillName, skillArgs, displayText, sink)
+	}
+	if !liveHarnessToolAllowed(toolName) {
+		return false, "", nil
+	}
+
+	runner, session, err := r.liveHarnessToolRunner(ctx, userID, sessionID)
+	if err != nil {
+		return true, "", err
+	}
+	if runner == nil || session == nil {
+		return true, "", fmt.Errorf("live tool runner is not configured")
+	}
+	if len(args) == 0 {
+		args = json.RawMessage(`{}`)
+	}
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		callID = fmt.Sprintf("live-call-%d", time.Now().UnixNano())
+	}
+	startMessageCount := len(session.Messages)
+	if sink != nil {
+		_ = sink.Send(ctx, Event{Type: "live_tool_start", SessionID: session.ID, Role: state.MessageRoleTool, Content: toolName, Data: liveJSON(map[string]any{"tool": toolName, "call_id": callID})})
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, r.config.TurnTimeout)
+	defer cancel()
+	callCtx = WithLLMScope(callCtx, LLMScope{
+		UserID:    userID,
+		SessionID: session.ID,
+		RequestID: requestIDFromContext(ctx),
+	})
+	result, err := runner.ExecuteTool(callCtx, toolName, args)
+	output := result.Output
+	if err != nil {
+		output = formatLiveToolExecutionError(toolName, err)
+	}
+	session.AddAssistantMessageWithTools("", []state.ToolCall{{
+		ID:    callID,
+		Name:  toolName,
+		Input: args,
+	}})
+	session.AddToolResult(callID, toolName, args, output)
+	if persistErr := r.persistChatSession(ctx, userID, session, startMessageCount); persistErr != nil {
+		if err != nil {
+			return true, output, errors.Join(err, persistErr)
+		}
+		return true, output, persistErr
+	}
+	if sink != nil {
+		eventType := "live_tool_result"
+		if err != nil {
+			eventType = "live_tool_error"
+		}
+		_ = sink.Send(ctx, Event{Type: eventType, SessionID: session.ID, Role: state.MessageRoleTool, Content: output, Data: liveJSON(map[string]any{"tool": toolName, "call_id": callID})})
+	}
+	if err != nil {
+		return true, output, err
+	}
+	return true, output, nil
+}
+
+func (r *Runtime) liveHarnessToolRunner(ctx context.Context, userID, sessionID string) (liveHarnessToolRunner, *state.Session, error) {
+	if r == nil || r.engineFactory == nil {
+		return nil, nil, nil
+	}
+	session, err := r.GetSession(ctx, userID, sessionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if session == nil {
+		return nil, nil, nil
+	}
+	runner := r.runnerForScope(Scope{UserID: userID, SessionID: session.ID, WorkingDir: session.WorkingDir})
+	toolRunner, ok := runner.(liveHarnessToolRunner)
+	if !ok {
+		return nil, session, nil
+	}
+	return toolRunner, session, nil
+}
+
+func liveHarnessToolAllowed(name string) bool {
+	_, ok := liveHarnessToolAllowlist[strings.TrimSpace(name)]
+	return ok
+}
+
+func (r *Runtime) liveHasUserInvocableSkills() bool {
+	return r != nil && len(r.ListSkills()) > 0
+}
+
+func liveFunctionDeclarationFromDescriptor(descriptor toolkit.Descriptor) (map[string]any, error) {
+	var parameters map[string]any
+	if len(descriptor.InputSchema) > 0 {
+		if err := json.Unmarshal(descriptor.InputSchema, &parameters); err != nil {
+			return nil, fmt.Errorf("decode %s input schema: %w", descriptor.Name, err)
+		}
+	}
+	if len(parameters) == 0 {
+		parameters = map[string]any{"type": "OBJECT"}
+	}
+	parameters = liveNormalizeFunctionSchema(parameters).(map[string]any)
+	return map[string]any{
+		"name":        descriptor.Name,
+		"description": liveHarnessToolDescription(descriptor),
+		"parameters":  parameters,
+	}, nil
+}
+
+func liveHarnessToolDescription(descriptor toolkit.Descriptor) string {
+	description := strings.TrimSpace(descriptor.Description)
+	switch strings.TrimSpace(descriptor.Name) {
+	case "WebSearch":
+		return strings.TrimSpace(description + " Use this only when the user asks for current, recent, public, or externally verifiable information that is not already in the conversation.")
+	case "WebFetch":
+		return strings.TrimSpace(description + " Use this only when the user provides a specific URL or when a fetched page is needed after search.")
+	default:
+		return description
+	}
+}
+
+func liveNormalizeFunctionSchema(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if strings.EqualFold(key, "type") {
+				if text, ok := item.(string); ok {
+					out[key] = strings.ToUpper(strings.TrimSpace(text))
+					continue
+				}
+			}
+			out[key] = liveNormalizeFunctionSchema(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = liveNormalizeFunctionSchema(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func liveSkillFunctionArgs(toolName string, raw json.RawMessage) (string, string) {
+	var payload map[string]any
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &payload)
+	}
+	skillName := firstStringValue(payload, "skill", "skill_name", "skillName", "name")
+	args := firstStringValue(payload, "args", "arguments", "prompt", "request")
+	if strings.EqualFold(strings.TrimSpace(toolName), "Skill") {
+		skillName = firstNonEmptyString(skillName, firstStringValue(payload, "commandName", "command_name"))
+	}
+	return strings.TrimPrefix(strings.TrimSpace(skillName), "/"), strings.TrimSpace(args)
+}
+
+func firstStringValue(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if values == nil {
+			return ""
+		}
+		value, ok := values[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				return strings.TrimSpace(typed)
+			}
+		case fmt.Stringer:
+			if strings.TrimSpace(typed.String()) != "" {
+				return strings.TrimSpace(typed.String())
+			}
+		}
+	}
+	return ""
+}
+
+func formatLiveToolExecutionError(toolName string, err error) string {
+	if err == nil {
+		return ""
+	}
+	return fmt.Sprintf("tool_error: %s failed: %s", strings.TrimSpace(toolName), err.Error())
+}
+
 func (r *Runtime) liveSkillContext() string {
 	if r == nil {
 		return ""
@@ -1633,7 +1866,7 @@ func (r *Runtime) liveSkillContext() string {
 	}
 	var out strings.Builder
 	out.WriteString(formatSkillList(items))
-	out.WriteString("\n\nLive mode has access to a `run_skill` function. When the user asks to create, generate, transform, fetch, analyze, or process something that matches one published skill, call `run_skill` with the exact skill name and the user's concrete arguments. Artifact-producing work, including image generation, must be performed by `run_skill` backend skill/job events. Do not say you are generating an artifact, ask the user to wait for generation, or claim that a skill has run unless you have called `run_skill` or explicit skill/job results are present in the conversation.")
+	out.WriteString("\n\nLive mode has access to a `run_skill` function for published skills. Call `run_skill` only when the current user turn is an explicit slash command or a clear, unambiguous request for one listed skill. Artifact-producing work, including image generation, must be performed by `run_skill` backend skill/job events. Do not say you are generating an artifact, ask the user to wait for generation, or claim that a skill has run unless you have called `run_skill` or explicit skill/job results are present in the conversation.")
 	return out.String()
 }
 

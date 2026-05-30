@@ -56,6 +56,11 @@ type LiveSkillFunctionHandler interface {
 	ExecuteLiveSkillFunctionCall(ctx context.Context, userID, sessionID, skillName, args, displayText string, sink EventSink) (bool, string, error)
 }
 
+type LiveToolFunctionHandler interface {
+	LiveToolFunctionDeclarations(ctx context.Context, userID, sessionID string) ([]map[string]any, error)
+	ExecuteLiveToolFunctionCall(ctx context.Context, userID, sessionID, callID, toolName string, args json.RawMessage, displayText string, sink EventSink) (bool, string, error)
+}
+
 func NewVertexLiveService(config LiveConfig, recorder LiveTurnRecorder, logger *log.Logger) *VertexLiveService {
 	config = normalizeLiveConfig(config)
 	return &VertexLiveService{
@@ -251,9 +256,30 @@ func (s *VertexLiveService) setupMessage(ctx context.Context, req LiveRequest) m
 				"parts": []map[string]any{{"text": instruction}},
 			}
 		}
-		setup["tools"] = []map[string]any{{"functionDeclarations": []map[string]any{liveRunSkillFunctionDeclaration()}}}
+		if declarations := s.liveToolFunctionDeclarations(ctx, req); len(declarations) > 0 {
+			setup["tools"] = []map[string]any{{"functionDeclarations": declarations}}
+		}
 	}
 	return map[string]any{"setup": setup}
+}
+
+func (s *VertexLiveService) liveToolFunctionDeclarations(ctx context.Context, req LiveRequest) []map[string]any {
+	if s == nil || s.recorder == nil {
+		return nil
+	}
+	if handler, ok := s.recorder.(LiveToolFunctionHandler); ok && handler != nil {
+		declarations, err := handler.LiveToolFunctionDeclarations(ctx, req.UserID, req.SessionID)
+		if err == nil && len(declarations) > 0 {
+			return declarations
+		}
+		if err != nil && s.logger != nil {
+			s.logger.Printf("live tool declarations unavailable: %v", err)
+		}
+	}
+	if _, ok := s.recorder.(LiveSkillFunctionHandler); ok {
+		return []map[string]any{liveRunSkillFunctionDeclaration()}
+	}
+	return nil
 }
 
 func liveRunSkillFunctionDeclaration() map[string]any {
@@ -393,6 +419,7 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 	var turn liveTurnAccumulator
 	skillHandler, _ := s.recorder.(LiveSkillHandler)
 	functionHandler, _ := s.recorder.(LiveSkillFunctionHandler)
+	toolFunctionHandler, _ := s.recorder.(LiveToolFunctionHandler)
 	skillTurn := false
 	initialHistorySent := false
 	for {
@@ -401,7 +428,7 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 			return err
 		}
 		if calls := liveToolFunctionCalls(message); len(calls) > 0 {
-			result, err := s.handleToolFunctionCalls(ctx, req, calls, functionHandler, conn, writeMu, sink, turn.inputText())
+			result, err := s.handleToolFunctionCalls(ctx, req, calls, toolFunctionHandler, functionHandler, conn, writeMu, sink, turn.inputText())
 			if err != nil {
 				return err
 			}
@@ -552,37 +579,62 @@ type liveToolFunctionResult struct {
 	handledSkill bool
 }
 
-func (s *VertexLiveService) handleToolFunctionCalls(ctx context.Context, req LiveRequest, calls []liveFunctionCall, handler LiveSkillFunctionHandler, conn *websocket.Conn, writeMu *sync.Mutex, sink EventSink, displayText string) (liveToolFunctionResult, error) {
+func (s *VertexLiveService) handleToolFunctionCalls(ctx context.Context, req LiveRequest, calls []liveFunctionCall, toolHandler LiveToolFunctionHandler, skillHandler LiveSkillFunctionHandler, conn *websocket.Conn, writeMu *sync.Mutex, sink EventSink, displayText string) (liveToolFunctionResult, error) {
 	responses := make([]map[string]any, 0, len(calls))
 	var result liveToolFunctionResult
 	for _, call := range calls {
 		response := map[string]any{}
-		if !strings.EqualFold(strings.TrimSpace(call.Name), "run_skill") {
-			response["error"] = fmt.Sprintf("unsupported live function %q", call.Name)
-			responses = append(responses, liveFunctionResponse(call, response))
-			continue
-		}
-		if handler == nil {
-			response["error"] = "live skill function handler is not configured"
-			responses = append(responses, liveFunctionResponse(call, response))
-			continue
-		}
-		skillName := firstLiveString(call.Args["skill"], call.Args["skill_name"], call.Args["skillName"], call.Args["name"])
-		args := firstLiveString(call.Args["args"], call.Args["arguments"], call.Args["prompt"], call.Args["request"])
-		if skillName == "" {
-			response["error"] = "run_skill requires a skill name"
-			responses = append(responses, liveFunctionResponse(call, response))
-			continue
-		}
-		handled, output, err := handler.ExecuteLiveSkillFunctionCall(ctx, req.UserID, req.SessionID, skillName, args, displayText, sink)
+		rawArgs, err := liveFunctionCallArgsJSON(call)
 		if err != nil {
 			response["error"] = liveToolResponseText(err.Error())
-		} else if !handled {
-			response["error"] = "skill was not found or is not user-invocable"
-		} else {
-			result.handledSkill = true
-			response["result"] = liveToolResponseText(output)
+			responses = append(responses, liveFunctionResponse(call, response))
+			continue
 		}
+
+		if toolHandler != nil {
+			handled, output, err := toolHandler.ExecuteLiveToolFunctionCall(ctx, req.UserID, req.SessionID, call.ID, call.Name, rawArgs, displayText, sink)
+			if err != nil {
+				response["error"] = liveToolResponseText(err.Error())
+				responses = append(responses, liveFunctionResponse(call, response))
+				continue
+			}
+			if handled {
+				if liveSkillFunctionName(call.Name) {
+					result.handledSkill = true
+				}
+				response["result"] = liveToolResponseText(output)
+				responses = append(responses, liveFunctionResponse(call, response))
+				continue
+			}
+		}
+
+		if strings.EqualFold(strings.TrimSpace(call.Name), "run_skill") {
+			if skillHandler == nil {
+				response["error"] = "live skill function handler is not configured"
+				responses = append(responses, liveFunctionResponse(call, response))
+				continue
+			}
+			skillName := firstLiveString(call.Args["skill"], call.Args["skill_name"], call.Args["skillName"], call.Args["name"])
+			args := firstLiveString(call.Args["args"], call.Args["arguments"], call.Args["prompt"], call.Args["request"])
+			if skillName == "" {
+				response["error"] = "run_skill requires a skill name"
+				responses = append(responses, liveFunctionResponse(call, response))
+				continue
+			}
+			handled, output, err := skillHandler.ExecuteLiveSkillFunctionCall(ctx, req.UserID, req.SessionID, skillName, args, displayText, sink)
+			if err != nil {
+				response["error"] = liveToolResponseText(err.Error())
+			} else if !handled {
+				response["error"] = "skill was not found or is not user-invocable"
+			} else {
+				result.handledSkill = true
+				response["result"] = liveToolResponseText(output)
+			}
+			responses = append(responses, liveFunctionResponse(call, response))
+			continue
+		}
+
+		response["error"] = fmt.Sprintf("unsupported live function %q", call.Name)
 		responses = append(responses, liveFunctionResponse(call, response))
 	}
 	if len(responses) == 0 {
@@ -597,6 +649,25 @@ func (s *VertexLiveService) handleToolFunctionCalls(ctx context.Context, req Liv
 		return result, fmt.Errorf("send live tool response: %w", err)
 	}
 	return result, nil
+}
+
+func liveFunctionCallArgsJSON(call liveFunctionCall) (json.RawMessage, error) {
+	if len(call.Args) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+	data, err := json.Marshal(call.Args)
+	if err != nil {
+		return nil, fmt.Errorf("encode live function args: %w", err)
+	}
+	if len(data) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+	return json.RawMessage(data), nil
+}
+
+func liveSkillFunctionName(name string) bool {
+	name = strings.TrimSpace(name)
+	return strings.EqualFold(name, "run_skill") || strings.EqualFold(name, "Skill")
 }
 
 func liveFunctionResponse(call liveFunctionCall, response map[string]any) map[string]any {
