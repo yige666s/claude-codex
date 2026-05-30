@@ -305,8 +305,9 @@ type Event struct {
 }
 
 type LiveRequest struct {
-	UserID    string
-	SessionID string
+	UserID       string
+	SessionID    string
+	ResumeHandle string
 }
 
 type LiveClientEvent struct {

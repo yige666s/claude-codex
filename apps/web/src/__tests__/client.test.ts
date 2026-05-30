@@ -76,6 +76,7 @@ describe("ApiClient auth refresh", () => {
 
     expect(api.jobStreamURL("job-1", "event-1")).toBe("/v1/jobs/job-1/events?stream=1&after_id=event-1");
     expect(api.liveSessionURL("session-1")).toBe("/v1/sessions/session-1/live/ws");
+    expect(api.liveSessionURL("session-1", "resume/1")).toBe("/v1/sessions/session-1/live/ws?resume_handle=resume%2F1");
     expect(api.webSocketProtocols()[0]).toBe("agentapi.bearer");
   });
 

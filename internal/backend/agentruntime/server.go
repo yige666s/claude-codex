@@ -2230,7 +2230,11 @@ func (s *Server) handleLiveWebSocket(w http.ResponseWriter, r *http.Request, use
 	}
 	sink := &observedLiveEventSink{sink: &websocketEventSink{conn: conn}, stats: stats}
 	stream := &observedLiveClientStream{stream: &websocketLiveClientStream{conn: conn}, stats: stats}
-	err = s.runtime.Live(ctx, LiveRequest{UserID: user.ID, SessionID: sessionID}, stream, sink)
+	err = s.runtime.Live(ctx, LiveRequest{
+		UserID:       user.ID,
+		SessionID:    sessionID,
+		ResumeHandle: strings.TrimSpace(r.URL.Query().Get("resume_handle")),
+	}, stream, sink)
 	if s.metrics != nil {
 		s.metrics.RecordLiveSession(stats.metrics(err))
 	}

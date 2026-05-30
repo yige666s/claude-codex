@@ -40,7 +40,7 @@ func TestNormalizeLiveConfigUsesLowLatencyVADDefaults(t *testing.T) {
 	}
 }
 
-func TestLiveSetupMessageConfiguresConservativeVAD(t *testing.T) {
+func TestLiveSetupMessageDisablesProviderVADAndEnablesResumption(t *testing.T) {
 	service := NewVertexLiveService(LiveConfig{
 		Enabled:                   true,
 		VertexProjectID:           "project-1",
@@ -50,21 +50,19 @@ func TestLiveSetupMessageConfiguresConservativeVAD(t *testing.T) {
 		LiveVADEndSensitivity:     "end_sensitivity_low",
 		InputTranscriptionEnabled: true,
 	}, nil, nil)
-	message := service.setupMessage(context.Background(), LiveRequest{UserID: "alice", SessionID: "session-1"})
+	message := service.setupMessage(context.Background(), LiveRequest{UserID: "alice", SessionID: "session-1", ResumeHandle: "resume-1"})
 	setup := message["setup"].(map[string]any)
 	realtime := setup["realtimeInputConfig"].(map[string]any)
 	detection := realtime["automaticActivityDetection"].(map[string]any)
-	if detection["startOfSpeechSensitivity"] != "START_SENSITIVITY_LOW" {
-		t.Fatalf("unexpected start sensitivity: %#v", detection)
-	}
-	if detection["endOfSpeechSensitivity"] != "END_SENSITIVITY_LOW" {
-		t.Fatalf("unexpected end sensitivity: %#v", detection)
-	}
-	if detection["prefixPaddingMs"] != 650 || detection["silenceDurationMs"] != 1200 {
-		t.Fatalf("unexpected VAD timing: %#v", detection)
+	if detection["disabled"] != true {
+		t.Fatalf("provider VAD should be disabled when frontend sends activity events: %#v", detection)
 	}
 	if realtime["turnCoverage"] != "TURN_INCLUDES_ONLY_ACTIVITY" {
 		t.Fatalf("unexpected realtime input config: %#v", realtime)
+	}
+	resumption := setup["sessionResumption"].(map[string]any)
+	if resumption["handle"] != "resume-1" {
+		t.Fatalf("unexpected session resumption config: %#v", resumption)
 	}
 }
 
@@ -159,6 +157,17 @@ func TestLiveClientTraceEventIsIgnoredUpstream(t *testing.T) {
 	}
 }
 
+func TestLiveClientDoneEventEndsAudioStream(t *testing.T) {
+	payload, err := liveClientEventToVertexPayload(LiveClientEvent{Type: "audio_end_and_close"}, "audio/pcm;rate=16000")
+	if err != nil {
+		t.Fatalf("liveClientEventToVertexPayload: %v", err)
+	}
+	realtime := payload["realtimeInput"].(map[string]any)
+	if realtime["audioStreamEnd"] != true {
+		t.Fatalf("unexpected audio end payload: %#v", payload)
+	}
+}
+
 func TestLiveInputNoiseFilterKeepsShortChinese(t *testing.T) {
 	if liveIsNoisyInputTranscript("你好") {
 		t.Fatal("short Chinese greeting should not be treated as noise")
@@ -240,6 +249,43 @@ func TestLiveTurnAccumulatorEmitsAudioAndTranscripts(t *testing.T) {
 	userText, assistantText := turn.flush()
 	if userText != "你好" || assistantText != "你好，有什么可以帮你？" {
 		t.Fatalf("flush = %q/%q", userText, assistantText)
+	}
+}
+
+func TestLiveTurnAccumulatorForwardsResumptionAndGoAway(t *testing.T) {
+	var turn liveTurnAccumulator
+	events, complete, err := turn.consume(map[string]any{
+		"sessionResumptionUpdate": map[string]any{"newHandle": "handle-1"},
+	}, "")
+	if err != nil {
+		t.Fatalf("consume resumption: %v", err)
+	}
+	if complete || len(events) != 1 || events[0].Type != "live_resumption_token" {
+		t.Fatalf("unexpected resumption events complete=%t events=%#v", complete, events)
+	}
+	var resumption map[string]string
+	if err := json.Unmarshal(events[0].Data, &resumption); err != nil {
+		t.Fatalf("decode resumption payload: %v", err)
+	}
+	if resumption["handle"] != "handle-1" {
+		t.Fatalf("unexpected resumption payload: %#v", resumption)
+	}
+
+	events, complete, err = turn.consume(map[string]any{
+		"goAway": map[string]any{"timeLeft": "30s"},
+	}, "")
+	if err != nil {
+		t.Fatalf("consume goAway: %v", err)
+	}
+	if complete || len(events) != 1 || events[0].Type != "live_go_away" {
+		t.Fatalf("unexpected goAway events complete=%t events=%#v", complete, events)
+	}
+	var goAway map[string]string
+	if err := json.Unmarshal(events[0].Data, &goAway); err != nil {
+		t.Fatalf("decode goAway payload: %v", err)
+	}
+	if goAway["time_left"] != "30s" {
+		t.Fatalf("unexpected goAway payload: %#v", goAway)
 	}
 }
 

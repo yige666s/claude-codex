@@ -82,6 +82,7 @@ export function useLiveVoice({
   const liveFirstInputTranscriptAtRef = useRef(0);
   const liveFirstOutputTranscriptAtRef = useRef(0);
   const liveFirstAudioAtRef = useRef(0);
+  const liveResumptionHandleRef = useRef<string | null>(null);
 
   useEffect(() => {
     inputModeRef.current = inputMode;
@@ -109,6 +110,12 @@ export function useLiveVoice({
     navigator.mediaDevices.addEventListener("devicechange", handleDeviceChange);
     return () => navigator.mediaDevices.removeEventListener("devicechange", handleDeviceChange);
   }, []);
+
+  useEffect(() => {
+    liveResumptionHandleRef.current = null;
+    if (!sessionId || typeof sessionStorage === "undefined") return;
+    liveResumptionHandleRef.current = sessionStorage.getItem(liveResumptionStorageKey(sessionId));
+  }, [sessionId]);
 
   useEffect(() => {
     clearLivePrewarmTimer();
@@ -203,7 +210,8 @@ export function useLiveVoice({
       updateLiveStatus("connecting");
       onStatus({ tone: "busy", text: "Connecting live voice" });
     }
-    const socket = new WebSocket(api.liveSessionURL(sessionId), api.webSocketProtocols());
+    const resumeHandle = liveResumptionHandleRef.current;
+    const socket = new WebSocket(api.liveSessionURL(sessionId, resumeHandle), api.webSocketProtocols());
     liveSocketRef.current = socket;
     socket.onmessage = (message) => {
       if (!isCurrentLiveSocket(socket, generation)) return;
@@ -223,8 +231,19 @@ export function useLiveVoice({
       if (!isCurrentLiveSocket(socket, generation)) return;
       cleanupLiveAudio();
       liveSocketRef.current = null;
+      const setupCompleted = liveSetupCompleteRef.current;
       liveSetupCompleteRef.current = false;
       clearLivePrewarmIdleTimer();
+      if (resumeHandle && !setupCompleted && !liveManualStopRef.current && !liveExpectedCloseRef.current) {
+        liveResumptionHandleRef.current = null;
+        if (sessionId && typeof sessionStorage !== "undefined") {
+          sessionStorage.removeItem(liveResumptionStorageKey(sessionId));
+        }
+        liveStatusRef.current = "idle";
+        setLiveStatus("idle");
+        void connectLiveSocket(liveCaptureRequestedRef.current);
+        return;
+      }
       const shouldReconnect = !liveManualStopRef.current && !liveExpectedCloseRef.current && inputModeRef.current === "live" && liveCaptureRequestedRef.current;
       if (shouldReconnect) {
         void scheduleLiveReconnect(generation);
@@ -327,7 +346,31 @@ export function useLiveVoice({
       closeLiveSocket(false);
       return;
     }
+    if (event.type === "live_resumption_token") {
+      const handle = liveEventDataString(event.data, "handle");
+      liveResumptionHandleRef.current = handle;
+      if (sessionId && typeof sessionStorage !== "undefined") {
+        const key = liveResumptionStorageKey(sessionId);
+        if (handle) {
+          sessionStorage.setItem(key, handle);
+        } else {
+          sessionStorage.removeItem(key);
+        }
+      }
+      return;
+    }
     if (!isCurrentLiveSession(socket, generation)) return;
+    if (event.type === "live_go_away") {
+      onStatus({ tone: "busy", text: "Refreshing live voice" });
+      stopLiveCapture(false);
+      liveExpectedCloseRef.current = true;
+      closeLiveSocket(true);
+      liveExpectedCloseRef.current = false;
+      liveStatusRef.current = "idle";
+      setLiveStatus("idle");
+      await connectLiveSocket(liveCaptureRequestedRef.current);
+      return;
+    }
     if (event.type === "live_transcript" && event.role === "user") {
       if (!liveFirstInputTranscriptAtRef.current) {
         liveFirstInputTranscriptAtRef.current = performance.now();
@@ -336,7 +379,7 @@ export function useLiveVoice({
       }
       const content = event.content || "";
       if (isNoisyLiveTranscript(content)) return;
-      setLiveUserDraft((current) => appendLiveTranscript(current, content));
+      setLiveUserDraft((current) => mergeLiveTranscript(current, content));
       return;
     }
     if (event.type === "live_transcript" && event.role === "assistant") {
@@ -344,7 +387,7 @@ export function useLiveVoice({
         liveFirstOutputTranscriptAtRef.current = performance.now();
       }
       pauseLiveInput();
-      onAssistantDraftChange((current) => appendLiveTranscript(current, event.content || ""));
+      onAssistantDraftChange((current) => mergeLiveTranscript(current, event.content || ""));
       return;
     }
     if (event.type === "live_response_start") {
@@ -920,6 +963,26 @@ function appendLiveTranscript(current: string, next: string): string {
   if (!current) return text;
   if (/^[，。！？,.!?;；:：]/.test(text)) return `${current}${text}`;
   return `${current}${/[\s\n]$/.test(current) ? "" : " "}${text}`;
+}
+
+function mergeLiveTranscript(current: string, next: string): string {
+  const currentText = current.trim();
+  const nextText = next.trim();
+  if (!currentText) return nextText;
+  if (!nextText) return currentText;
+  if (nextText.startsWith(currentText)) return nextText;
+  if (currentText.startsWith(nextText)) return currentText;
+  return appendLiveTranscript(currentText, nextText);
+}
+
+function liveResumptionStorageKey(sessionId: string): string {
+  return `agentapi.live.resume.${sessionId}`;
+}
+
+function liveEventDataString(data: unknown, key: string): string | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const value = (data as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function isNoisyLiveTranscript(text: string): boolean {

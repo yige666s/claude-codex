@@ -768,10 +768,13 @@ export class ApiClient {
     return response;
   }
 
-  liveSessionURL(sessionId: string): string {
+  liveSessionURL(sessionId: string, resumeHandle?: string | null): string {
     const path = `/v1/sessions/${encodeURIComponent(sessionId)}/live/ws`;
     const url = this.apiURL(path);
-    return url.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+    const withResume = resumeHandle
+      ? `${url}${url.includes("?") ? "&" : "?"}resume_handle=${encodeURIComponent(resumeHandle)}`
+      : url;
+    return withResume.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
   }
 
   webSocketProtocols(): string[] {

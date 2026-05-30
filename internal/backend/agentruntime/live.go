@@ -113,10 +113,6 @@ func liveNormalizeEnum(value, fallback string) string {
 	return value
 }
 
-func durationMillis(value time.Duration) int {
-	return int(value / time.Millisecond)
-}
-
 func validateLiveConfig(config LiveConfig) error {
 	config = normalizeLiveConfig(config)
 	if config.Provider != "vertex" {
@@ -220,13 +216,14 @@ func (s *VertexLiveService) setupMessage(ctx context.Context, req LiveRequest) m
 		"generationConfig": generationConfig,
 		"realtimeInputConfig": map[string]any{
 			"automaticActivityDetection": map[string]any{
-				"startOfSpeechSensitivity": s.config.LiveVADStartSensitivity,
-				"endOfSpeechSensitivity":   s.config.LiveVADEndSensitivity,
-				"prefixPaddingMs":          durationMillis(s.config.LiveVADPrefixPadding),
-				"silenceDurationMs":        durationMillis(s.config.LiveVADSilenceDuration),
+				"disabled": true,
 			},
 			"turnCoverage": "TURN_INCLUDES_ONLY_ACTIVITY",
 		},
+		"sessionResumption": map[string]any{},
+	}
+	if handle := strings.TrimSpace(req.ResumeHandle); handle != "" {
+		setup["sessionResumption"] = map[string]any{"handle": handle}
 	}
 	if s.config.InputTranscriptionEnabled {
 		setup["inputAudioTranscription"] = map[string]any{}
@@ -357,7 +354,7 @@ func liveClientEventToVertexPayload(event LiveClientEvent, defaultMIME string) (
 				"audio": map[string]any{"mimeType": mimeType, "data": data},
 			},
 		}, nil
-	case "audio_end":
+	case "audio_end", "audio_end_and_close", "done":
 		return map[string]any{"realtimeInput": map[string]any{"audioStreamEnd": true}}, nil
 	case "activity_start":
 		return map[string]any{"realtimeInput": map[string]any{"activityStart": map[string]any{}}}, nil
@@ -571,11 +568,21 @@ func (a *liveTurnAccumulator) consume(message map[string]any, outputMIME string)
 		data, _ := json.Marshal(errValue)
 		return nil, false, fmt.Errorf("live server error: %s", data)
 	}
+	if _, ok := message["setupComplete"]; ok {
+		return []Event{{Type: "live_setup_complete"}}, false, nil
+	}
+	if update, _ := firstLiveMap(message["sessionResumptionUpdate"], message["session_resumption_update"]); len(update) > 0 {
+		if handle := firstLiveString(update["newHandle"], update["new_handle"], update["handle"]); handle != "" {
+			return []Event{{Type: "live_resumption_token", Data: liveJSON(map[string]any{"handle": handle})}}, false, nil
+		}
+		return nil, false, nil
+	}
+	if goAway, _ := firstLiveMap(message["goAway"], message["go_away"]); len(goAway) > 0 {
+		timeLeft := firstLiveString(goAway["timeLeft"], goAway["time_left"])
+		return []Event{{Type: "live_go_away", Data: liveJSON(map[string]any{"time_left": timeLeft})}}, false, nil
+	}
 	content, _ := message["serverContent"].(map[string]any)
 	if len(content) == 0 {
-		if _, ok := message["setupComplete"]; ok {
-			return []Event{{Type: "live_setup_complete"}}, false, nil
-		}
 		return nil, false, nil
 	}
 	var events []Event
