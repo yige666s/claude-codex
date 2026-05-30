@@ -1,24 +1,29 @@
 import { useEffect, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { Button } from "../../../components/ui/button";
+import type { ApiClient } from "../../../api/client";
 import { MarkdownContent } from "./messages/MarkdownContent";
-import { MessageAttachmentPreview, splitAttachedTextSections } from "./messages/MessageAttachmentPreview";
+import { MessageAssetAttachmentPreview, MessageAttachmentPreview, splitAttachedTextSections } from "./messages/MessageAttachmentPreview";
 import type { Message } from "../../../types";
 
 type MessageBubbleProps = {
   message: Message;
+  api: ApiClient;
   streaming?: boolean;
   highlighted?: boolean;
 };
 
 export function MessageBubble({
   message,
+  api,
   streaming = false,
   highlighted = false
 }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const text = message.content || message.tool_output || "";
-  const rendered = splitAttachedTextSections(text);
+  const attachments = message.attachments || [];
+  const rendered = splitAttachedTextSections(stripAttachmentSummary(text, message.role === "user"));
+  const visibleAttachments = attachments.filter((attachment) => !rendered.attachments.some((item) => item.filename === (attachment.file_name || attachment.id)));
   const isAssistant = message.role !== "user";
 
   useEffect(() => {
@@ -59,6 +64,13 @@ export function MessageBubble({
           ))}
         </div>
       )}
+      {visibleAttachments.length > 0 && (
+        <div className="message-attachment-previews">
+          {visibleAttachments.map((attachment) => (
+            <MessageAssetAttachmentPreview key={attachment.id} attachment={attachment} api={api} />
+          ))}
+        </div>
+      )}
       {isAssistant && !streaming && (
         <div className="message-actions" aria-label="Assistant message actions">
           <Button className={`message-action-button ${copied ? "copied" : ""}`} variant="ghost" size="icon" onClick={copyMessage} disabled={copied || !text} title={copied ? "Copied" : "Copy"} aria-label={copied ? "Copied" : "Copy"}>
@@ -68,4 +80,9 @@ export function MessageBubble({
       )}
     </article>
   );
+}
+
+function stripAttachmentSummary(text: string, shouldStrip: boolean): string {
+  if (!shouldStrip) return text;
+  return text.replace(/\n{2}(?:Attachments|Attached files):[^\n]+$/i, "").trim();
 }

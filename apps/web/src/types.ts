@@ -32,10 +32,20 @@ export type Message = {
   role: "user" | "assistant" | "tool" | string;
   message_index?: number;
   content?: string;
+  attachments?: MessageAttachment[];
   tool_name?: string;
   tool_output?: string;
   created_at?: string;
   hidden?: boolean;
+};
+
+export type MessageAttachment = {
+  id: string;
+  file_type?: string;
+  mime_type?: string;
+  file_name?: string;
+  file_size?: number;
+  thumbnail_key?: string;
 };
 
 export type MessageSearchResult = {

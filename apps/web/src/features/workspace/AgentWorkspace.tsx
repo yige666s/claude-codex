@@ -1048,7 +1048,12 @@ export function AgentWorkspace() {
     const thinkingMode = selectedComposerTool === "thinking";
     const requestContent = composerToolContent(selectedComposerTool, displayContent);
     setSelectedComposerTool("");
-    const sentMessage: Message = { role: "user", content: messageWithAttachmentNames(displayContent, pendingAttachments), created_at: new Date().toISOString() };
+    const sentMessage: Message = {
+      role: "user",
+      content: displayContent,
+      attachments: pendingAttachments.map(assetToMessageAttachment),
+      created_at: new Date().toISOString()
+    };
     setMessages((current) => appendRuntimeMessage(current, sentMessage));
     setSessions((current) => current.map((item) => {
       if (item.id !== requestSessionId || sessionTitle(item)) return item;
@@ -1629,7 +1634,7 @@ export function AgentWorkspace() {
             highlightedMessageIndex={highlightedMessageIndex}
             messagesRef={messagesRef}
             statusLine={(nextStatus) => <StatusLine status={nextStatus} />}
-            messageBubble={(props) => <MessageBubble {...props} />}
+            messageBubble={(props) => <MessageBubble {...props} api={api} />}
             onOpenMobileNav={() => setMobileNav(true)}
             onReconnectJob={reconnectSelectedJob}
             composer={(
@@ -1998,10 +2003,23 @@ function resourceTotalCount(tab: RightPanelTab, counts: Record<RightPanelTab, nu
   return counts[tab];
 }
 
-function messageWithAttachmentNames(content: string, assets: Asset[]): string {
-  if (assets.length === 0) return content;
-  const names = assets.map((asset) => asset.filename).join(", ");
-  return `${content}\n\nAttachments: ${names}`;
+function assetToMessageAttachment(asset: Asset) {
+  return {
+    id: asset.id,
+    file_type: assetFileType(asset),
+    mime_type: asset.content_type,
+    file_name: asset.filename,
+    file_size: asset.size_bytes
+  };
+}
+
+function assetFileType(asset: Asset): string {
+  const contentType = asset.content_type.toLowerCase();
+  if (contentType.startsWith("image/")) return "image";
+  if (contentType.startsWith("text/") || /\.(txt|md|csv|json|ya?ml|xml|log)$/i.test(asset.filename)) return "text";
+  if (contentType.startsWith("audio/")) return "audio";
+  if (contentType.startsWith("video/")) return "video";
+  return "file";
 }
 
 function StatusLine({ status }: { status: Status }) {

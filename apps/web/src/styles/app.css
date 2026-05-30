@@ -1709,6 +1709,50 @@ label.composer-upload {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.message-asset-attachment {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+  overflow: hidden;
+}
+.message-asset-attachment.file {
+  min-height: 42px;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+.message-asset-attachment.image {
+  max-width: min(360px, 100%);
+}
+.message-asset-attachment.image img,
+.message-image-placeholder {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: #f6faf9;
+}
+.message-image-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.message-asset-attachment.image > div:last-child {
+  padding: 8px 10px;
+}
+.message-asset-attachment strong,
+.message-asset-attachment small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-asset-attachment small {
+  color: var(--muted);
+  font-size: 12px;
+}
 .composer {
   grid-row: 4;
   --composer-control-size: var(--control-size);
