@@ -1626,9 +1626,6 @@ func (r *Runtime) DetectLiveSkillCommand(ctx context.Context, userID, sessionID,
 func (r *Runtime) ExecuteLiveSkillCommand(ctx context.Context, userID, sessionID, text string, sink EventSink) (bool, error) {
 	command, ok := r.liveExplicitSkillCommand(text)
 	if !ok {
-		command, ok = r.selectLiveSkillCommand(ctx, userID, sessionID, text)
-	}
-	if !ok {
 		return false, nil
 	}
 	handled, _, err := r.executeLiveSkillCommand(ctx, userID, sessionID, text, command, sink)
@@ -1779,26 +1776,6 @@ func (r *Runtime) liveExplicitSkillCommand(text string) (string, bool) {
 			return text, true
 		}
 		return "", false
-	}
-	for _, skill := range r.ListSkills() {
-		if skill == nil || !skill.UserInvocable || skill.IsHidden {
-			continue
-		}
-		labels := liveSkillLabels(skill)
-		for _, label := range labels {
-			args, ok := liveSkillArgsForLabel(text, label)
-			if !ok {
-				continue
-			}
-			if strings.TrimSpace(args) == "" {
-				args = text
-			}
-			command := "/" + skill.Name
-			if strings.TrimSpace(args) != "" {
-				command += " " + strings.TrimSpace(args)
-			}
-			return command, true
-		}
 	}
 	return "", false
 }

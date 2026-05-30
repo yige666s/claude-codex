@@ -79,13 +79,13 @@ func TestLiveBackendE2EAudioTranscriptionAndPersistence(t *testing.T) {
 	writeLiveClientEvent(t, conn, LiveClientEvent{Type: "close"})
 }
 
-func TestLiveBackendE2ESkillRouting(t *testing.T) {
+func TestLiveBackendE2EExplicitSlashSkillRouting(t *testing.T) {
 	t.Setenv("VERTEX_ACCESS_TOKEN", "test-token")
 	upstream := newFakeGeminiLiveServer(t,
 		fakeGeminiScenario{
 			onAudioEnd: []map[string]any{
 				fakeGeminiServerContent(map[string]any{
-					"inputTranscription":  map[string]any{"text": "使用 架构图 技能画一个登录流程"},
+					"inputTranscription":  map[string]any{"text": "/diagram 画一个登录流程"},
 					"outputTranscription": map[string]any{"text": "我来生成。"},
 					"modelTurn": map[string]any{"parts": []any{
 						map[string]any{"inlineData": map[string]any{"mimeType": "audio/pcm;rate=24000", "data": "stale-audio"}},
@@ -115,10 +115,10 @@ func TestLiveBackendE2ESkillRouting(t *testing.T) {
 	writeLiveClientEvent(t, conn, LiveClientEvent{Type: "audio_end"})
 
 	expectLiveEvent(t, conn, func(event Event) bool {
-		return event.Type == "live_transcript" && event.Role == state.MessageRoleUser && strings.Contains(event.Content, "架构图")
+		return event.Type == "live_transcript" && event.Role == state.MessageRoleUser && strings.Contains(event.Content, "/diagram")
 	}, "skill input transcript")
 	expectLiveEvent(t, conn, func(event Event) bool {
-		return event.Type == "message" && event.Role == state.MessageRoleUser && strings.Contains(event.Content, "架构图")
+		return event.Type == "message" && event.Role == state.MessageRoleUser && strings.Contains(event.Content, "/diagram")
 	}, "skill user message")
 	start := expectLiveEvent(t, conn, func(event Event) bool { return event.Type == "live_skill_start" }, "live skill start")
 	if !strings.HasPrefix(start.Content, "/diagram ") {
@@ -135,7 +135,7 @@ func TestLiveBackendE2ESkillRouting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load session: %v", err)
 	}
-	assertLiveMessagesPersisted(t, saved.Messages, "使用 架构图 技能画一个登录流程", "diagram prompt: 画一个登录流程")
+	assertLiveMessagesPersisted(t, saved.Messages, "/diagram 画一个登录流程", "diagram prompt: 画一个登录流程")
 	writeLiveClientEvent(t, conn, LiveClientEvent{Type: "close"})
 }
 

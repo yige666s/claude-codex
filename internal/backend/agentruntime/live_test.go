@@ -459,7 +459,7 @@ func TestRuntimeLiveSystemInstructionIncludesPublishedSkills(t *testing.T) {
 	}
 }
 
-func TestRuntimeLiveSkillCommandParsesExplicitSpeech(t *testing.T) {
+func TestRuntimeLiveSkillCommandIgnoresNaturalLanguageSkillNames(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileSessionStore(root)
 	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{
@@ -470,16 +470,12 @@ func TestRuntimeLiveSkillCommandParsesExplicitSpeech(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	command, ok := runtime.liveExplicitSkillCommand("请使用 架构图 技能帮我画一个服务拓扑")
-	if !ok {
-		t.Fatal("expected live speech to be recognized as skill command")
-	}
-	if command != "/diagram 画一个服务拓扑" {
-		t.Fatalf("command = %q", command)
+	if command, ok := runtime.liveExplicitSkillCommand("请使用 架构图 技能帮我画一个服务拓扑"); ok {
+		t.Fatalf("natural language should not trigger slash fallback, got %q", command)
 	}
 }
 
-func TestRuntimeLiveSkillCommandUsesModelSelection(t *testing.T) {
+func TestRuntimeExecuteLiveSkillCommandIgnoresModelSelectionFallback(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileSessionStore(root)
 	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{
@@ -509,18 +505,8 @@ func TestRuntimeLiveSkillCommandUsesModelSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteLiveSkillCommand: %v", err)
 	}
-	if !handled {
-		t.Fatal("expected model-selected live skill command to be handled")
-	}
-	var sawAssistant bool
-	for _, event := range sink.events {
-		if event.Type == "message" && event.Role == state.MessageRoleAssistant && strings.Contains(event.Content, "diagram prompt: 登录流程方案") {
-			sawAssistant = true
-			break
-		}
-	}
-	if !sawAssistant {
-		t.Fatalf("expected model-selected skill result message, events=%#v", sink.events)
+	if handled {
+		t.Fatalf("natural language should be left to Gemini Live function calling, events=%#v", sink.events)
 	}
 }
 
@@ -578,7 +564,7 @@ func TestRuntimeExecuteLiveSkillFunctionCallRunsArtifactJob(t *testing.T) {
 	waitForLiveTestJob(t, jobs, "alice", routedJob.ID)
 }
 
-func TestRuntimeLiveSkillCommandUsesRecentContextForArtifactFollowup(t *testing.T) {
+func TestRuntimeExecuteLiveSkillCommandDoesNotRouteFollowupText(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileSessionStore(root)
 	jobs := NewMemoryJobStore()
@@ -620,29 +606,12 @@ func TestRuntimeLiveSkillCommandUsesRecentContextForArtifactFollowup(t *testing.
 	if err != nil {
 		t.Fatalf("ExecuteLiveSkillCommand: %v", err)
 	}
-	if !handled {
-		t.Fatal("expected follow-up image request to be routed to a live skill")
+	if handled {
+		t.Fatalf("follow-up text should be left to Gemini Live function calling, events=%#v", sink.events)
 	}
-	if !strings.Contains(selectorPrompt, "Recent conversation:") || !strings.Contains(selectorPrompt, "帮我生成一张狗的图片") {
-		t.Fatalf("selector prompt did not include recent context:\n%s", selectorPrompt)
+	if selectorPrompt != "" {
+		t.Fatalf("legacy live selector should not be invoked, prompt=%s", selectorPrompt)
 	}
-	var routedJob *Job
-	var sawStart bool
-	for _, event := range sink.events {
-		if event.Type == "live_skill_start" {
-			sawStart = true
-		}
-		if event.Type == "job" {
-			routedJob = event.Job
-		}
-	}
-	if !sawStart || routedJob == nil {
-		t.Fatalf("expected live skill job events, events=%#v", sink.events)
-	}
-	if routedJob.Type != "skill" || routedJob.Content != "/vertex-image-artifact 一张狗的图片，风格由系统决定" {
-		t.Fatalf("unexpected routed job: %#v", routedJob)
-	}
-	waitForLiveTestJob(t, jobs, "alice", routedJob.ID)
 }
 
 func waitForLiveTestJob(t *testing.T, jobs *MemoryJobStore, userID, jobID string) {
@@ -698,7 +667,7 @@ func (r contextAwareLiveSkillSelectorRunner) RunGeneratedPrompt(_ context.Contex
 	return engine.Result{Output: output, Session: session}, nil
 }
 
-func TestRuntimeExecuteLiveSkillCommandRunsSkill(t *testing.T) {
+func TestRuntimeExecuteLiveSkillCommandRunsExplicitSlashSkill(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileSessionStore(root)
 	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{
@@ -718,7 +687,7 @@ func TestRuntimeExecuteLiveSkillCommandRunsSkill(t *testing.T) {
 	}
 	sink := &collectSink{}
 
-	handled, err := runtime.ExecuteLiveSkillCommand(context.Background(), "alice", session.ID, "使用 架构图 技能画一个登录流程", sink)
+	handled, err := runtime.ExecuteLiveSkillCommand(context.Background(), "alice", session.ID, "/diagram 画一个登录流程", sink)
 	if err != nil {
 		t.Fatalf("ExecuteLiveSkillCommand: %v", err)
 	}
@@ -747,7 +716,7 @@ func TestRuntimeExecuteLiveSkillCommandRunsSkill(t *testing.T) {
 	}
 	foundOriginalUtterance := false
 	for _, message := range saved.Messages {
-		if !message.Hidden && message.Role == state.MessageRoleUser && strings.Contains(message.Content, "架构图") {
+		if !message.Hidden && message.Role == state.MessageRoleUser && strings.Contains(message.Content, "/diagram 画一个登录流程") {
 			foundOriginalUtterance = true
 			break
 		}
