@@ -259,7 +259,7 @@ func (s *VertexLiveService) setupMessage(ctx context.Context, req LiveRequest) m
 func liveRunSkillFunctionDeclaration() map[string]any {
 	return map[string]any{
 		"name":        "run_skill",
-		"description": "Run one published backend skill for the current user session. Use this whenever the user asks to create, generate, transform, fetch, analyze, or process something that matches an available skill, especially images or other artifacts. Do not claim the skill has run before calling this function.",
+		"description": "Run one published backend skill for the current user session. Only call this when the user has explicitly and unambiguously requested it in their current turn — a clear slash command (e.g. /vertex-image-artifact) or a direct, unambiguous spoken request. Never call this proactively, speculatively, or based on skill trigger keywords in the system prompt. Do not call this before the user has spoken.",
 		"parameters": map[string]any{
 			"type": "OBJECT",
 			"properties": map[string]any{
