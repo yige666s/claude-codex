@@ -1575,35 +1575,52 @@ func (r *Runtime) LiveSystemInstruction(ctx context.Context, userID, sessionID s
 			parts = append(parts, memory)
 		}
 	}
+	return strings.Join(parts, "\n\n")
+}
+
+func (r *Runtime) LiveInitialHistory(ctx context.Context, userID, sessionID string) ([]state.Message, error) {
+	if r == nil {
+		return nil, nil
+	}
+	opts := SessionLoadOptions{
+		MaxMessages:   defaultLiveInitialHistoryMaxMessages,
+		MaxTokens:     defaultLiveInitialHistoryMaxTokens,
+		LoadStrategy:  SessionLoadStrategySlidingWindow,
+		IncludeSystem: true,
+	}
+	var messages []state.Message
 	if r.sessionLoader != nil {
-		messages, err := r.sessionLoader.LoadContext(ctx, userID, sessionID, SessionLoadOptions{
-			MaxMessages:  12,
-			MaxTokens:    6000,
-			LoadStrategy: SessionLoadStrategySlidingWindow,
-		})
-		if err == nil && len(messages) > 0 {
-			var transcript strings.Builder
-			for _, message := range messages {
-				if message.Hidden || (message.Role != state.MessageRoleUser && message.Role != state.MessageRoleAssistant) {
-					continue
-				}
-				content := strings.TrimSpace(message.Content)
-				if content == "" {
-					continue
-				}
-				if transcript.Len() > 0 {
-					transcript.WriteString("\n")
-				}
-				transcript.WriteString(message.Role)
-				transcript.WriteString(": ")
-				transcript.WriteString(content)
-			}
-			if transcript.Len() > 0 {
-				parts = append(parts, "Recent conversation context:\n"+transcript.String())
-			}
+		loaded, err := r.sessionLoader.LoadContext(ctx, userID, sessionID, opts)
+		if err != nil {
+			return nil, err
+		}
+		messages = loaded
+	} else {
+		session, err := r.GetSession(ctx, userID, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if session != nil {
+			messages = applySessionTokenBudget(applySlidingWindowBudget(session.Messages, opts), opts)
 		}
 	}
-	return strings.Join(parts, "\n\n")
+	out := make([]state.Message, 0, len(messages))
+	for _, message := range messages {
+		if message.Hidden {
+			continue
+		}
+		if message.Status != 0 && message.Status != state.MessageStatusNormal {
+			continue
+		}
+		if message.Role != state.MessageRoleUser && message.Role != state.MessageRoleAssistant && !isSystemContextMessage(message) {
+			continue
+		}
+		if strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		out = append(out, message)
+	}
+	return out, nil
 }
 
 func (r *Runtime) liveSkillContext() string {

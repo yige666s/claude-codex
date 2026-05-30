@@ -79,6 +79,48 @@ func TestLiveBackendE2EAudioTranscriptionAndPersistence(t *testing.T) {
 	writeLiveClientEvent(t, conn, LiveClientEvent{Type: "close"})
 }
 
+func TestLiveBackendE2ESendsInitialHistoryAfterSetupComplete(t *testing.T) {
+	t.Setenv("VERTEX_ACCESS_TOKEN", "test-token")
+	upstream := newFakeGeminiLiveServer(t, fakeGeminiScenario{})
+	defer upstream.Close()
+
+	runtime, store, sessionID := newLiveE2ERuntime(t, upstream.URL(), nil)
+	session, err := store.Get(context.Background(), "alice", sessionID)
+	if err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	session.AddUserMessage("之前的问题")
+	session.AddAssistantMessage("之前的回答")
+	if err := store.Save(context.Background(), "alice", session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	server := httptest.NewServer(NewServer(runtime, HeaderAuthenticator{UserHeader: "X-User-ID"}, NoopRateLimiter{}, nil))
+	defer server.Close()
+	conn := dialLiveBackend(t, server.URL, sessionID)
+	defer conn.Close()
+
+	expectLiveEvent(t, conn, func(event Event) bool { return event.Type == "live_ready" }, "live_ready")
+	initialHistory := upstream.ExpectClientContent(t, func(clientContent map[string]any) bool {
+		turns, _ := clientContent["turns"].([]any)
+		if len(turns) == 0 {
+			return false
+		}
+		first, _ := turns[0].(map[string]any)
+		parts, _ := first["parts"].([]any)
+		if len(parts) == 0 {
+			return false
+		}
+		part, _ := parts[0].(map[string]any)
+		return first["role"] == "user" && part["text"] == "之前的问题" && clientContent["turnComplete"] == true
+	})
+	if len(initialHistory) == 0 {
+		t.Fatal("expected initial history clientContent")
+	}
+	expectLiveEvent(t, conn, func(event Event) bool { return event.Type == "live_setup_complete" }, "live_setup_complete")
+	writeLiveClientEvent(t, conn, LiveClientEvent{Type: "close"})
+}
+
 func TestLiveBackendE2EExplicitSlashSkillRouting(t *testing.T) {
 	t.Setenv("VERTEX_ACCESS_TOKEN", "test-token")
 	upstream := newFakeGeminiLiveServer(t,
@@ -333,6 +375,22 @@ func (s *fakeGeminiLiveServer) ExpectClientRealtimeInput(t *testing.T, match fun
 			}
 		case <-deadline:
 			t.Fatal("timed out waiting for matching Gemini realtimeInput")
+		}
+	}
+}
+
+func (s *fakeGeminiLiveServer) ExpectClientContent(t *testing.T, match func(map[string]any) bool) map[string]any {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case message := <-s.received:
+			clientContent, _ := message["clientContent"].(map[string]any)
+			if clientContent != nil && match(clientContent) {
+				return clientContent
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for matching Gemini clientContent")
 		}
 	}
 }

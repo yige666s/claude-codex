@@ -64,6 +64,15 @@ func TestLiveSetupMessageDisablesProviderVADAndEnablesResumption(t *testing.T) {
 	if resumption["handle"] != "resume-1" {
 		t.Fatalf("unexpected session resumption config: %#v", resumption)
 	}
+	history := setup["historyConfig"].(map[string]any)
+	if history["initialHistoryInClientContent"] != true {
+		t.Fatalf("Live setup should use Gemini initial history clientContent: %#v", history)
+	}
+	compression := setup["contextWindowCompression"].(map[string]any)
+	slidingWindow := compression["slidingWindow"].(map[string]any)
+	if slidingWindow["targetTokens"] != defaultLiveInitialHistoryMaxTokens {
+		t.Fatalf("unexpected context compression config: %#v", compression)
+	}
 }
 
 func TestLiveSetupMessageDisablesThinkingForDefault25Model(t *testing.T) {
@@ -145,6 +154,29 @@ func (r *countingLiveRecorder) LiveSystemInstruction(context.Context, string, st
 
 func (r *countingLiveRecorder) RecordLiveTurn(context.Context, string, string, string, string, string) error {
 	return nil
+}
+
+func TestLiveInitialHistoryPayloadUsesOfficialClientContentTurns(t *testing.T) {
+	payload := liveInitialHistoryPayload([]state.Message{
+		{Role: state.MessageRoleSystem, ContentType: state.MessageContentTypeSummary, Content: "older project goal"},
+		{Role: state.MessageRoleUser, Content: "继续生成图片"},
+		{Role: state.MessageRoleAssistant, Content: "图片已经生成。"},
+		{Role: state.MessageRoleUser, Content: "hidden", Hidden: true},
+	})
+	clientContent := payload["clientContent"].(map[string]any)
+	if clientContent["turnComplete"] != true {
+		t.Fatalf("initial history must finish with turnComplete=true: %#v", clientContent)
+	}
+	turns := clientContent["turns"].([]map[string]any)
+	if len(turns) != 3 {
+		t.Fatalf("turns = %d, want 3: %#v", len(turns), turns)
+	}
+	if turns[0]["role"] != "user" || !strings.Contains(turns[0]["parts"].([]map[string]any)[0]["text"].(string), "Conversation summary") {
+		t.Fatalf("summary should be sent as an initial user-history turn: %#v", turns[0])
+	}
+	if turns[1]["role"] != "user" || turns[2]["role"] != "model" {
+		t.Fatalf("unexpected user/model role mapping: %#v", turns)
+	}
 }
 
 func TestLiveClientTraceEventIsIgnoredUpstream(t *testing.T) {
@@ -456,6 +488,37 @@ func TestRuntimeLiveSystemInstructionIncludesPublishedSkills(t *testing.T) {
 	}
 	if strings.Contains(instruction, "`/internal`") || strings.Contains(instruction, "Hidden operator workflow") {
 		t.Fatalf("LiveSystemInstruction should not include non-user-invocable skills:\n%s", instruction)
+	}
+}
+
+func TestRuntimeLiveInitialHistoryUsesLargerSlidingWindow(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, nil, func(Scope) Runner { return echoRunner{} })
+	session, err := runtime.CreateSession(context.Background(), "alice", root)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		session.AddUserMessage(fmt.Sprintf("user-%02d", i))
+		session.AddAssistantMessage(fmt.Sprintf("assistant-%02d", i))
+	}
+	if err := store.Save(context.Background(), "alice", session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	history, err := runtime.LiveInitialHistory(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("LiveInitialHistory: %v", err)
+	}
+	if len(history) != defaultLiveInitialHistoryMaxMessages {
+		t.Fatalf("history messages = %d, want %d", len(history), defaultLiveInitialHistoryMaxMessages)
+	}
+	if history[0].Content != "user-04" || history[len(history)-1].Content != "assistant-19" {
+		t.Fatalf("unexpected sliding history window: first=%q last=%q", history[0].Content, history[len(history)-1].Content)
+	}
+	instruction := runtime.LiveSystemInstruction(context.Background(), "alice", session.ID)
+	if strings.Contains(instruction, "Recent conversation context") || strings.Contains(instruction, "user-19") {
+		t.Fatalf("live instruction should not inline recent history after clientContent migration:\n%s", instruction)
 	}
 }
 

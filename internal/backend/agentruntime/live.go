@@ -18,13 +18,15 @@ import (
 )
 
 const (
-	defaultLiveModel              = "gemini-live-2.5-flash-preview-native-audio-09-2025"
-	defaultLiveVertexLocation     = "us-central1"
-	defaultLiveVertexAPIVersion   = "v1beta1"
-	defaultLiveInputAudioMIMEType = "audio/pcm;rate=16000"
-	defaultLiveSessionTimeout     = 10 * time.Minute
-	defaultLiveVADPrefixPadding   = 150 * time.Millisecond
-	defaultLiveVADSilenceDuration = 350 * time.Millisecond
+	defaultLiveModel                     = "gemini-live-2.5-flash-preview-native-audio-09-2025"
+	defaultLiveVertexLocation            = "us-central1"
+	defaultLiveVertexAPIVersion          = "v1beta1"
+	defaultLiveInputAudioMIMEType        = "audio/pcm;rate=16000"
+	defaultLiveSessionTimeout            = 10 * time.Minute
+	defaultLiveVADPrefixPadding          = 150 * time.Millisecond
+	defaultLiveVADSilenceDuration        = 350 * time.Millisecond
+	defaultLiveInitialHistoryMaxMessages = 32
+	defaultLiveInitialHistoryMaxTokens   = 16000
 )
 
 type VertexLiveService struct {
@@ -39,6 +41,10 @@ type VertexLiveService struct {
 type LiveTurnRecorder interface {
 	LiveSystemInstruction(ctx context.Context, userID, sessionID string) string
 	RecordLiveTurn(ctx context.Context, userID, sessionID, userText, assistantText, model string) error
+}
+
+type LiveInitialHistoryProvider interface {
+	LiveInitialHistory(ctx context.Context, userID, sessionID string) ([]state.Message, error)
 }
 
 type LiveSkillHandler interface {
@@ -221,6 +227,14 @@ func (s *VertexLiveService) setupMessage(ctx context.Context, req LiveRequest) m
 			"turnCoverage": "TURN_INCLUDES_ONLY_ACTIVITY",
 		},
 		"sessionResumption": map[string]any{},
+		"historyConfig": map[string]any{
+			"initialHistoryInClientContent": true,
+		},
+		"contextWindowCompression": map[string]any{
+			"slidingWindow": map[string]any{
+				"targetTokens": defaultLiveInitialHistoryMaxTokens,
+			},
+		},
 	}
 	if handle := strings.TrimSpace(req.ResumeHandle); handle != "" {
 		setup["sessionResumption"] = map[string]any{"handle": handle}
@@ -380,6 +394,7 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 	skillHandler, _ := s.recorder.(LiveSkillHandler)
 	functionHandler, _ := s.recorder.(LiveSkillFunctionHandler)
 	skillTurn := false
+	initialHistorySent := false
 	for {
 		var message map[string]any
 		if err := conn.ReadJSON(&message); err != nil {
@@ -407,6 +422,12 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 			events = liveSkillVisibleEvents(events)
 		}
 		for _, event := range events {
+			if event.Type == "live_setup_complete" && !initialHistorySent {
+				if err := s.sendInitialHistory(ctx, req, conn, writeMu); err != nil {
+					return err
+				}
+				initialHistorySent = true
+			}
 			event.SessionID = req.SessionID
 			if err := sink.Send(ctx, event); err != nil {
 				return err
@@ -440,6 +461,71 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 			_ = sink.Send(ctx, Event{Type: "live_response_end", SessionID: req.SessionID})
 		}
 	}
+}
+
+func (s *VertexLiveService) sendInitialHistory(ctx context.Context, req LiveRequest, conn *websocket.Conn, writeMu *sync.Mutex) error {
+	payload := liveInitialHistoryPayload(nil)
+	if provider, ok := s.recorder.(LiveInitialHistoryProvider); ok && provider != nil {
+		messages, err := provider.LiveInitialHistory(ctx, req.UserID, req.SessionID)
+		if err != nil {
+			return fmt.Errorf("load live initial history: %w", err)
+		}
+		payload = liveInitialHistoryPayload(messages)
+	}
+	writeMu.Lock()
+	err := conn.WriteJSON(payload)
+	writeMu.Unlock()
+	if err != nil {
+		return fmt.Errorf("write live initial history: %w", err)
+	}
+	return nil
+}
+
+func liveInitialHistoryPayload(messages []state.Message) map[string]any {
+	turns := make([]map[string]any, 0, len(messages))
+	for _, message := range messages {
+		role, ok := liveInitialHistoryRole(message)
+		if !ok {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		if isSystemContextMessage(message) {
+			content = "Conversation summary from earlier turns:\n" + content
+		}
+		turns = append(turns, map[string]any{
+			"role":  role,
+			"parts": []map[string]any{{"text": content}},
+		})
+	}
+	return map[string]any{
+		"clientContent": map[string]any{
+			"turns":        turns,
+			"turnComplete": true,
+		},
+	}
+}
+
+func liveInitialHistoryRole(message state.Message) (string, bool) {
+	if message.Hidden {
+		return "", false
+	}
+	if message.Status != 0 && message.Status != state.MessageStatusNormal {
+		return "", false
+	}
+	switch message.Role {
+	case state.MessageRoleUser:
+		return "user", true
+	case state.MessageRoleAssistant:
+		return "model", true
+	case state.MessageRoleSystem:
+		if isSystemContextMessage(message) {
+			return "user", true
+		}
+	}
+	return "", false
 }
 
 func liveSkillVisibleEvents(events []Event) []Event {
