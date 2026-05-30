@@ -6,6 +6,7 @@ package dbsqlc
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 )
 
@@ -21,6 +22,31 @@ type AgentArtifact struct {
 	SizeBytes   int64        `json:"size_bytes"`
 	CreatedAt   time.Time    `json:"created_at"`
 	DeletedAt   sql.NullTime `json:"deleted_at"`
+}
+
+type AgentAssetInsight struct {
+	InsightID         string          `json:"insight_id"`
+	AssetID           string          `json:"asset_id"`
+	Kind              string          `json:"kind"`
+	UserID            string          `json:"user_id"`
+	SessionID         string          `json:"session_id"`
+	JobID             string          `json:"job_id"`
+	Filename          string          `json:"filename"`
+	ContentType       string          `json:"content_type"`
+	Status            string          `json:"status"`
+	Summary           string          `json:"summary"`
+	OcrText           json.RawMessage `json:"ocr_text"`
+	Tags              json.RawMessage `json:"tags"`
+	Entities          json.RawMessage `json:"entities"`
+	Relationships     json.RawMessage `json:"relationships"`
+	Style             json.RawMessage `json:"style"`
+	CandidateMemories json.RawMessage `json:"candidate_memories"`
+	Extractor         string          `json:"extractor"`
+	Confidence        float32         `json:"confidence"`
+	Error             string          `json:"error"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	CompletedAt       sql.NullTime    `json:"completed_at"`
 }
 
 type AgentAuditLog struct {
