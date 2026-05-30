@@ -1038,7 +1038,9 @@ export function AgentWorkspace() {
     let routedToJob = false;
     let sawRuntimeError = false;
     let firstTokenSeen = false;
-    const startedAt = performance.now();
+    const sentAt = performance.now();
+    let streamStartedAt = sentAt;
+    let lastVisibleAssistantAt: number | null = null;
     abortRef.current = abort;
     setDraft("");
     setAssistantDraft("");
@@ -1063,23 +1065,45 @@ export function AgentWorkspace() {
     setStatus({ tone: "busy", text: "Generating" });
     try {
       const response = await api.chatResponse(requestSessionId, requestContent, attachmentIds, abort.signal, { thinkingMode });
+      const timingElapsed = (now: number) => Math.max(0, Math.round(now - streamStartedAt));
+      const updateVisibleTiming = (now: number, firstVisible: boolean) => {
+        lastVisibleAssistantAt = now;
+        if (selectedSessionIdRef.current !== requestSessionId) return;
+        setResponseTiming((current) => {
+          const next = current?.sessionId === requestSessionId ? { ...current } : { sessionId: requestSessionId };
+          if (firstVisible) next.ttftMs = timingElapsed(now);
+          next.totalMs = timingElapsed(now);
+          return next;
+        });
+      };
       await readSSEStream(response, ({ data }) => {
+        if (data.type === "start") {
+          streamStartedAt = performance.now();
+        }
         if (data.type === "job") routedToJob = true;
         if (data.type === "error") sawRuntimeError = true;
         if (!firstTokenSeen && data.type === "delta" && data.content) {
           firstTokenSeen = true;
-          const ttftMs = Math.max(0, Math.round(performance.now() - startedAt));
+          const now = performance.now();
+          const ttftMs = timingElapsed(now);
           if (selectedSessionIdRef.current === requestSessionId) {
-            setResponseTiming({ sessionId: requestSessionId, ttftMs });
+            setResponseTiming({ sessionId: requestSessionId, ttftMs, totalMs: ttftMs });
             setStatus({ tone: "busy", text: `First response ${formatNumber(ttftMs)} ms` });
           }
+        }
+        if (data.type === "delta" && data.content) {
+          updateVisibleTiming(performance.now(), false);
+        }
+        if (!firstTokenSeen && data.type === "message" && data.role === "assistant" && data.content) {
+          firstTokenSeen = true;
+          updateVisibleTiming(performance.now(), true);
         }
         if (selectedSessionIdRef.current === requestSessionId) {
           handleRuntimeEvent(data);
         }
       });
-      if (selectedSessionIdRef.current === requestSessionId) {
-        setResponseTiming((current) => current?.sessionId === requestSessionId ? { ...current, totalMs: Math.max(0, Math.round(performance.now() - startedAt)) } : current);
+      if (selectedSessionIdRef.current === requestSessionId && lastVisibleAssistantAt !== null) {
+        setResponseTiming((current) => current?.sessionId === requestSessionId ? { ...current, totalMs: timingElapsed(lastVisibleAssistantAt as number) } : current);
       }
       setPendingAttachments([]);
       if (!routedToJob) await refreshSessionData(requestSessionId, { revealNewArtifacts: true });
