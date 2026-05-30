@@ -134,6 +134,25 @@ func buildRuntimeConfigStore(cfg storeConfig) agentruntime.LLMGovernanceConfigSt
 	return store
 }
 
+func buildAssetInsightStore(cfg storeConfig) agentruntime.AssetInsightStore {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		db := openSQLDB(cfg)
+		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+		store := agentruntime.NewSQLAssetInsightStoreWithDialect(db, dialect)
+		if err := store.Init(ctx); err != nil {
+			logFatalf("init sql asset insight store: %v", err)
+		}
+		return store
+	}
+	store := agentruntime.NewMemoryAssetInsightStore()
+	if err := store.Init(ctx); err != nil {
+		logFatalf("init memory asset insight store: %v", err)
+	}
+	return store
+}
+
 func buildSkillExecutionStore(cfg storeConfig) agentruntime.SkillExecutionStore {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -1932,7 +1932,11 @@ func (s *Server) handleExtractAssetMemory(w http.ResponseWriter, r *http.Request
 	})
 	s.recordGovernanceEvent("memory_extract_asset")
 	s.recordPIIRedactions(items)
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	response := map[string]any{"items": items}
+	if insight, err := s.runtime.GetAssetInsight(r.Context(), user.ID, assetID); err == nil {
+		response["insight"] = insight
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func writeAssetDownload(w http.ResponseWriter, asset *Artifact, data []byte) {

@@ -4,6 +4,7 @@ sql:
     schema:
       - "internal/backend/agentruntime/sqlc/schema/audit.sql"
       - "internal/backend/agentruntime/sqlc/schema/artifacts.sql"
+      - "internal/backend/agentruntime/sqlc/schema/asset_insights.sql"
       - "internal/backend/agentruntime/sqlc/schema/evaluation.sql"
       - "internal/backend/agentruntime/sqlc/schema/jobs.sql"
       - "internal/backend/agentruntime/sqlc/schema/llm_governance.sql"

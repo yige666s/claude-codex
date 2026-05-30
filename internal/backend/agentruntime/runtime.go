@@ -65,6 +65,7 @@ type Runtime struct {
 	memoryAbstract   MemoryAbstractor
 	memoryOrganizer  MemoryOrganizer
 	artifacts        *ArtifactService
+	assetInsights    AssetInsightStore
 	jobs             JobStore
 	jobQueue         JobQueue
 	jobEventFanout   JobEventPublisher
@@ -1325,6 +1326,7 @@ func (r *Runtime) createAsset(ctx context.Context, kind, userID, sessionID, file
 		return nil, err
 	}
 	r.scanCreatedAsset(ctx, asset, data)
+	r.enqueueAssetInsight(asset, data)
 	return asset, nil
 }
 

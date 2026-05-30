@@ -36,6 +36,12 @@ func (r *Runtime) ExtractMemoryFromAsset(ctx context.Context, userID, kind, asse
 	if err != nil {
 		return nil, err
 	}
+	if isImageContentType(asset.ContentType) && r.assetInsights != nil {
+		if _, err := r.processAssetInsight(ctx, asset, data); err != nil {
+			return nil, err
+		}
+		return []MemoryItem{}, nil
+	}
 	namespace := normalizeMemoryNamespace(options.Namespace)
 	visibility := normalizeMemoryVisibility(options.Visibility)
 	candidates, err := r.extractAssetMemoryCandidates(ctx, userID, asset, data)

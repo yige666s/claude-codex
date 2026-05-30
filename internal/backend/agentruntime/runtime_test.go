@@ -986,6 +986,97 @@ func TestRuntimeDoesNotCreateGenericMemoryForUnrecognizedImageAsset(t *testing.T
 	}
 }
 
+func TestRuntimeAutomaticallyCreatesImageArtifactInsight(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	insights := NewMemoryAssetInsightStore()
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(root),
+		NewFileMemoryService(root),
+		nil,
+		func(Scope) Runner { return echoRunner{} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	runtime.SetAssetInsightStore(insights)
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	artifact, err := runtime.CreateArtifact(ctx, "alice", session.ID, "architecture.svg", "image/svg+xml", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><title>Agent Runtime Architecture</title><text>Gateway API</text><text>Core Runtime</text></svg>`))
+	if err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+	insight := waitForAssetInsight(t, insights, "alice", artifact.ID)
+	if insight.Status != AssetInsightStatusDone || insight.Extractor != "svg" {
+		t.Fatalf("unexpected insight status: %#v", insight)
+	}
+	if !strings.Contains(insight.Summary, "Gateway API") || !strings.Contains(strings.Join(insight.Tags, ","), "diagram") {
+		t.Fatalf("expected SVG-derived searchable insight, got %#v", insight)
+	}
+}
+
+func TestRuntimeExtractMemoryFromImageAssetStoresInsightOnly(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	memory := NewFileMemoryService(root)
+	insights := NewMemoryAssetInsightStore()
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(root),
+		memory,
+		nil,
+		func(Scope) Runner { return echoRunner{} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	runtime.SetAssetInsightStore(insights)
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	attachment, err := runtime.CreateAttachment(ctx, "alice", session.ID, "diagram.svg", "image/svg+xml", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><text>Release Pipeline</text></svg>`))
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+	items, err := runtime.ExtractMemoryFromAsset(ctx, "alice", AssetKindAttachment, attachment.ID, MemoryAssetExtractionOptions{})
+	if err != nil {
+		t.Fatalf("extract memory: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("image extraction should not directly save durable memory items: %#v", items)
+	}
+	insight, err := insights.GetAssetInsight(ctx, "alice", attachment.ID)
+	if err != nil {
+		t.Fatalf("get insight: %v", err)
+	}
+	if insight.Status != AssetInsightStatusDone || !strings.Contains(insight.Summary, "Release Pipeline") {
+		t.Fatalf("expected image attachment insight, got %#v", insight)
+	}
+	matches, err := memory.ListMemoryItems(ctx, "alice", MemoryItemFilter{SourceKind: AssetKindAttachment, SourceID: attachment.ID})
+	if err != nil {
+		t.Fatalf("list memory: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no saved memory items, got %#v", matches)
+	}
+}
+
+func waitForAssetInsight(t *testing.T, store AssetInsightStore, userID, assetID string) AssetInsight {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		insight, err := store.GetAssetInsight(context.Background(), userID, assetID)
+		if err == nil && insight.Status != AssetInsightStatusPending {
+			return insight
+		}
+		lastErr = err
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for asset insight for %s: %v", assetID, lastErr)
+	return AssetInsight{}
+}
+
 func TestMemoryConflictResolutionMarksAmbiguousConflictPendingConfirm(t *testing.T) {
 	ctx := context.Background()
 	memory := NewFileMemoryService(t.TempDir())

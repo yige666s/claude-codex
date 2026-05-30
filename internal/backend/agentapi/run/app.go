@@ -71,6 +71,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	limiter := bootstrap.BuildRateLimiter(cfg.RateLimitBackend, cfg.RedisURL, cfg.RateLimit, time.Minute, cfg.RedisFailOpen)
 	authService := buildAuthService(cfg.EnableUserSystem, storeCfg, authServiceConfigFromStartup(cfg))
 	artifactService := buildArtifactService(artifactConfigFromStartup(cfg, storeCfg))
+	assetInsightStore := buildAssetInsightStore(storeCfg)
 	runtimeConfig := runtimeConfigFromStartup(cfg, skillShellSandboxConfig)
 	runtimeConfig.Logger = appLogger
 	runtime := agentruntime.NewRuntime(
@@ -188,6 +189,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		agentruntime.NewRuleMemoryOrganizer(),
 	))
 	runtime.SetArtifactService(artifactService)
+	runtime.SetAssetInsightStore(assetInsightStore)
 	var messageArchiveObjectStore *agentruntime.MessageArchiveObjectStore
 	if setter, ok := sessionStore.(interface {
 		SetMessageArchiveObjectStore(agentruntime.ObjectStore, string)
