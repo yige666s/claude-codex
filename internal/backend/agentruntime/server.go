@@ -2504,13 +2504,35 @@ func publicSessionView(session *state.Session) *state.Session {
 			continue
 		}
 		publicMessage := state.Message{
-			Role:      message.Role,
-			Content:   message.Content,
-			CreatedAt: message.CreatedAt,
+			Role:        message.Role,
+			Content:     message.Content,
+			Attachments: publicMessageAttachments(message.Attachments),
+			CreatedAt:   message.CreatedAt,
 		}
 		clone.Messages = append(clone.Messages, publicMessage)
 	}
 	return &clone
+}
+
+func publicMessageAttachments(attachments []state.MessageAttachment) []state.MessageAttachment {
+	if len(attachments) == 0 {
+		return nil
+	}
+	out := make([]state.MessageAttachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		if strings.TrimSpace(attachment.ID) == "" {
+			continue
+		}
+		out = append(out, state.MessageAttachment{
+			ID:           attachment.ID,
+			FileType:     attachment.FileType,
+			MimeType:     attachment.MimeType,
+			FileName:     attachment.FileName,
+			FileSize:     attachment.FileSize,
+			ThumbnailKey: attachment.ThumbnailKey,
+		})
+	}
+	return out
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request, user User, sessionID string) {

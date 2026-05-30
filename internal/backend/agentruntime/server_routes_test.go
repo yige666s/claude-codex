@@ -9,6 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"claude-codex/internal/harness/state"
 )
 
 func TestServerRouteBehaviorSnapshot(t *testing.T) {
@@ -77,6 +80,48 @@ func TestServerRouteBehaviorSnapshot(t *testing.T) {
 				t.Fatal("missing X-Request-ID header")
 			}
 		})
+	}
+}
+
+func TestPublicSessionViewKeepsSafeAttachmentMetadata(t *testing.T) {
+	now := time.Now().UTC()
+	session := &state.Session{
+		ID:         "session-1",
+		WorkingDir: "/tmp/private",
+		Messages: []state.Message{{
+			Role:    state.MessageRoleUser,
+			Content: "Please analyze the attached file(s).\n\nAttached files: photo.png",
+			Attachments: []state.MessageAttachment{{
+				ID:               "asset-1",
+				MessageID:        "message-1",
+				SessionID:        "session-1",
+				UserID:           "alice",
+				FileType:         "image",
+				MimeType:         "image/png",
+				FileName:         "photo.png",
+				FileSize:         123,
+				StorageKey:       "users/alice/private/photo.png",
+				ExtractedTextKey: "private/extracted.txt",
+				ThumbnailKey:     "thumbs/photo.png",
+			}},
+			CreatedAt: now,
+		}},
+	}
+
+	public := publicSessionView(session)
+	if public == nil || len(public.Messages) != 1 {
+		t.Fatalf("expected one public message, got %#v", public)
+	}
+	attachments := public.Messages[0].Attachments
+	if len(attachments) != 1 {
+		t.Fatalf("expected attachment metadata to survive public view, got %#v", public.Messages[0])
+	}
+	got := attachments[0]
+	if got.ID != "asset-1" || got.FileType != "image" || got.MimeType != "image/png" || got.FileName != "photo.png" || got.FileSize != 123 {
+		t.Fatalf("unexpected public attachment metadata: %#v", got)
+	}
+	if got.StorageKey != "" || got.ExtractedTextKey != "" || got.UserID != "" || got.SessionID != "" || got.MessageID != "" {
+		t.Fatalf("expected private attachment fields to be stripped: %#v", got)
 	}
 }
 
