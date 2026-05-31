@@ -477,8 +477,6 @@ label.composer-upload {
   min-height: 0;
   background: rgba(247, 250, 251, 0.88);
   border-color: var(--line);
-  display: flex;
-  flex-direction: column;
   backdrop-filter: blur(18px);
 }
 .sidebar {
@@ -490,9 +488,13 @@ label.composer-upload {
   position: relative;
   z-index: 7;
   overflow: hidden;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   box-shadow: none;
 }
 .right-panel {
+  display: flex;
+  flex-direction: column;
   margin: 16px 16px 16px 0;
   height: calc(100% - 32px);
   border: 1px solid rgba(225, 230, 238, 0.9);
@@ -616,6 +618,7 @@ label.composer-upload {
   z-index: 30;
 }
 .toolbar {
+  flex: 0 0 auto;
   margin: 0 14px 10px;
   padding: 10px;
   display: grid;
@@ -665,6 +668,7 @@ label.composer-upload {
   white-space: nowrap;
 }
 .sidebar-resource-nav {
+  flex: 0 0 auto;
   margin: 0 14px 12px;
   padding: 8px;
   border: 1px solid rgba(221, 229, 236, 0.9);
@@ -950,9 +954,10 @@ label.composer-upload {
 .session-list {
   overflow: auto;
   min-height: 0;
-  flex: 1;
-  padding: 10px 13px;
+  padding: 14px 13px 10px;
   background: transparent;
+  overscroll-behavior: contain;
+  scroll-padding-top: 14px;
 }
 .session-list-item,
 .job-summary {
