@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	providerbackend "claude-codex/internal/harness/provider"
 	"claude-codex/internal/harness/state"
 
 	"github.com/gorilla/websocket"
@@ -256,11 +257,36 @@ func (s *VertexLiveService) setupMessage(ctx context.Context, req LiveRequest) m
 				"parts": []map[string]any{{"text": instruction}},
 			}
 		}
-		if declarations := s.liveToolFunctionDeclarations(ctx, req); len(declarations) > 0 {
-			setup["tools"] = []map[string]any{{"functionDeclarations": declarations}}
-		}
+	}
+	if tools := s.liveSetupTools(ctx, req); len(tools) > 0 {
+		setup["tools"] = tools
 	}
 	return map[string]any{"setup": setup}
+}
+
+func (s *VertexLiveService) liveSetupTools(ctx context.Context, req LiveRequest) []map[string]any {
+	if s == nil {
+		return nil
+	}
+	tools := make([]map[string]any, 0, 2)
+	if liveGoogleSearchGroundingEnabled(s.config.Model) {
+		tools = append(tools, map[string]any{"googleSearch": map[string]any{}})
+	}
+	if declarations := s.liveToolFunctionDeclarations(ctx, req); len(declarations) > 0 {
+		tools = append(tools, map[string]any{"functionDeclarations": declarations})
+	}
+	return tools
+}
+
+func liveGoogleSearchGroundingEnabled(model string) bool {
+	mode := providerbackend.NormalizeGoogleSearchGroundingMode(os.Getenv("AGENT_API_GOOGLE_SEARCH_GROUNDING"))
+	if mode == "" {
+		mode = providerbackend.NormalizeGoogleSearchGroundingMode(os.Getenv("GOOGLE_SEARCH_GROUNDING"))
+	}
+	if mode == providerbackend.GoogleSearchGroundingOff {
+		return false
+	}
+	return providerbackend.SupportsGoogleSearchGrounding("vertex", model)
 }
 
 func (s *VertexLiveService) liveToolFunctionDeclarations(ctx context.Context, req LiveRequest) []map[string]any {

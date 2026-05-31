@@ -16,13 +16,14 @@ import (
 )
 
 type LLMConfig struct {
-	Provider       string
-	Model          string
-	APIKey         string
-	Token          string
-	BaseURL        string
-	Timeout        int
-	VertexLocation string
+	Provider              string
+	Model                 string
+	APIKey                string
+	Token                 string
+	BaseURL               string
+	Timeout               int
+	VertexLocation        string
+	GoogleSearchGrounding string
 }
 
 func BuildLLMConfig(providerName, model, apiKey, apiToken, apiBaseURL string, timeout int) (LLMConfig, error) {
@@ -41,6 +42,10 @@ func BuildLLMConfig(providerName, model, apiKey, apiToken, apiBaseURL string, ti
 		APIKey:   startupconfig.FirstNonEmpty(apiKey, providerEnvAPIKey(providerName)),
 		Token:    startupconfig.FirstNonEmpty(apiToken, providerEnvToken(providerName)),
 		Timeout:  timeout,
+		GoogleSearchGrounding: startupconfig.FirstNonEmpty(
+			os.Getenv("AGENT_API_GOOGLE_SEARCH_GROUNDING"),
+			os.Getenv("GOOGLE_SEARCH_GROUNDING"),
+		),
 	}
 	if strings.EqualFold(cfg.Provider, "vertex") || strings.EqualFold(cfg.Provider, "gcp") {
 		cfg.VertexLocation = startupconfig.FirstNonEmpty(os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "us-central1")
@@ -65,11 +70,12 @@ func newPlanner(cfg LLMConfig) (engine.Planner, error) {
 		return anthropic.NewPlanner(client, cfg.Model), nil
 	case "custom", "openai-compatible", "baseurl":
 		provider, err := providerbackend.NewOpenAIProvider(providerbackend.Config{
-			Provider: "openai",
-			APIKey:   startupconfig.FirstNonEmpty(cfg.APIKey, cfg.Token),
-			BaseURL:  cfg.BaseURL,
-			Model:    cfg.Model,
-			Timeout:  cfg.Timeout,
+			Provider:              "openai",
+			APIKey:                startupconfig.FirstNonEmpty(cfg.APIKey, cfg.Token),
+			BaseURL:               cfg.BaseURL,
+			Model:                 cfg.Model,
+			Timeout:               cfg.Timeout,
+			GoogleSearchGrounding: cfg.GoogleSearchGrounding,
 		})
 		if err != nil {
 			return nil, err
@@ -77,13 +83,14 @@ func newPlanner(cfg LLMConfig) (engine.Planner, error) {
 		return providerbackend.NewPlanner(provider, cfg.Model), nil
 	default:
 		provider, err := providerbackend.NewFactory().CreateProvider(providerbackend.Config{
-			Provider:       cfg.Provider,
-			APIKey:         cfg.APIKey,
-			Token:          cfg.Token,
-			BaseURL:        cfg.BaseURL,
-			Model:          cfg.Model,
-			Timeout:        cfg.Timeout,
-			VertexLocation: cfg.VertexLocation,
+			Provider:              cfg.Provider,
+			APIKey:                cfg.APIKey,
+			Token:                 cfg.Token,
+			BaseURL:               cfg.BaseURL,
+			Model:                 cfg.Model,
+			Timeout:               cfg.Timeout,
+			VertexLocation:        cfg.VertexLocation,
+			GoogleSearchGrounding: cfg.GoogleSearchGrounding,
 		})
 		if err != nil {
 			return nil, err
@@ -163,6 +170,10 @@ func runtimeProviderLLMConfig(providerName string, timeout int) (LLMConfig, bool
 		APIKey:   providerEnvAPIKey(providerName),
 		Token:    providerEnvToken(providerName),
 		Timeout:  timeout,
+		GoogleSearchGrounding: startupconfig.FirstNonEmpty(
+			os.Getenv("AGENT_API_GOOGLE_SEARCH_GROUNDING"),
+			os.Getenv("GOOGLE_SEARCH_GROUNDING"),
+		),
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = defaults.Timeout

@@ -1770,6 +1770,7 @@ func (r *Runtime) executeLiveWebResearchFunctionCall(ctx context.Context, userID
 		SessionID: session.ID,
 		RequestID: requestIDFromContext(ctx),
 	})
+	callCtx = providerbackend.WithGoogleSearchGrounding(callCtx, providerbackend.GoogleSearchGroundingAlways)
 	researchSession := state.NewSession(session.WorkingDir)
 	result, err := runner.RunGeneratedPrompt(callCtx, researchSession, liveWebResearchPrompt(input, displayText))
 	output := strings.TrimSpace(result.Output)
@@ -1874,7 +1875,7 @@ func liveFunctionDeclarationFromDescriptor(descriptor toolkit.Descriptor) (map[s
 
 func liveWebResearchFunctionDeclaration() map[string]any {
 	return map[string]any{
-		"name": liveWebResearchFunctionName,
+		"name":        liveWebResearchFunctionName,
 		"description": "Run a backend web research pass for the current Live voice turn. Use this instead of answering from memory when the user asks for current, recent, exact, numeric, sourced, or externally verifiable information. Especially use it for multi-step searches, comparisons, market/news/model/product lookups, date ranges, rankings, and requests that explicitly say to search the web. Do not speak a factual answer before this function returns.",
 		"parameters": map[string]any{
 			"type": "OBJECT",
@@ -1929,7 +1930,7 @@ func liveWebResearchArgs(raw json.RawMessage) liveWebResearchInput {
 func liveWebResearchPrompt(input liveWebResearchInput, displayText string) string {
 	var builder strings.Builder
 	builder.WriteString("You are executing a backend web research subtask for a Live voice conversation.\n")
-	builder.WriteString("Use WebSearch first. Use WebFetch for the most relevant sources when snippets are insufficient. Do not ask follow-up questions.\n")
+	builder.WriteString("Use provider-native Google Search grounding when available. If the active model does not support native grounding, use WebSearch first and WebFetch for the most relevant sources when snippets are insufficient. Do not ask follow-up questions.\n")
 	builder.WriteString("Return a complete answer in the user's language, with concrete numbers, dates, and source URLs when available. If reliable data cannot be found, say what is missing instead of guessing.\n")
 	builder.WriteString("Keep the answer concise enough for Live mode, but do not stop mid-sentence.\n\n")
 	fmt.Fprintf(&builder, "Current date: %s\n", time.Now().Format("2006-01-02"))

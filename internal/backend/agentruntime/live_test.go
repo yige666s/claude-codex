@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"claude-codex/internal/harness/engine"
+	providerbackend "claude-codex/internal/harness/provider"
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 	toolkit "claude-codex/internal/harness/tools"
@@ -103,6 +104,34 @@ func TestLiveSetupMessageUsesMinimalThinkingFor31Model(t *testing.T) {
 	thinking := generation["thinkingConfig"].(map[string]any)
 	if thinking["thinkingLevel"] != "MINIMAL" {
 		t.Fatalf("unexpected thinking config: %#v", thinking)
+	}
+}
+
+func TestLiveSetupMessageAddsNativeGoogleSearchForSupportedModel(t *testing.T) {
+	service := NewVertexLiveService(LiveConfig{
+		Enabled:         true,
+		VertexProjectID: "project-1",
+		Model:           defaultLiveModel,
+	}, nil, nil)
+	message := service.setupMessage(context.Background(), LiveRequest{UserID: "alice", SessionID: "session-1"})
+	setup := message["setup"].(map[string]any)
+	tools := setup["tools"].([]map[string]any)
+	if _, ok := tools[0]["googleSearch"]; !ok {
+		t.Fatalf("missing googleSearch tool in live setup: %#v", tools)
+	}
+}
+
+func TestLiveSetupMessageCanDisableNativeGoogleSearch(t *testing.T) {
+	t.Setenv("AGENT_API_GOOGLE_SEARCH_GROUNDING", "off")
+	service := NewVertexLiveService(LiveConfig{
+		Enabled:         true,
+		VertexProjectID: "project-1",
+		Model:           defaultLiveModel,
+	}, nil, nil)
+	message := service.setupMessage(context.Background(), LiveRequest{UserID: "alice", SessionID: "session-1"})
+	setup := message["setup"].(map[string]any)
+	if _, ok := setup["tools"]; ok {
+		t.Fatalf("googleSearch should be disabled by env: %#v", setup["tools"])
 	}
 }
 
@@ -592,6 +621,9 @@ func TestRuntimeExecuteLiveToolFunctionCallRunsWebResearch(t *testing.T) {
 	if !strings.Contains(runner.generatedPrompt, "Research question: 北京天气") || !strings.Contains(runner.generatedPrompt, "Requirements: 给出来源") {
 		t.Fatalf("unexpected research prompt: %s", runner.generatedPrompt)
 	}
+	if runner.googleSearchGrounding != providerbackend.GoogleSearchGroundingAlways {
+		t.Fatalf("web_research should force native Google Search when available, got %q", runner.googleSearchGrounding)
+	}
 	saved, err := store.Get(context.Background(), "alice", session.ID)
 	if err != nil {
 		t.Fatalf("Get saved session: %v", err)
@@ -815,12 +847,13 @@ func (r contextAwareLiveSkillSelectorRunner) Run(ctx context.Context, session *s
 }
 
 type liveHarnessRunner struct {
-	descriptors     []toolkit.Descriptor
-	output          string
-	generated       string
-	generatedPrompt string
-	calledName      string
-	calledInput     json.RawMessage
+	descriptors           []toolkit.Descriptor
+	output                string
+	generated             string
+	generatedPrompt       string
+	googleSearchGrounding string
+	calledName            string
+	calledInput           json.RawMessage
 }
 
 func (r *liveHarnessRunner) Run(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
@@ -828,9 +861,10 @@ func (r *liveHarnessRunner) Run(_ context.Context, session *state.Session, promp
 	return engine.Result{Session: session}, nil
 }
 
-func (r *liveHarnessRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+func (r *liveHarnessRunner) RunGeneratedPrompt(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
 	session.AddSystemContext(prompt)
 	r.generatedPrompt = prompt
+	r.googleSearchGrounding = providerbackend.GoogleSearchGroundingFromContext(ctx)
 	if strings.TrimSpace(r.generated) != "" {
 		session.AddAssistantMessage(r.generated)
 		return engine.Result{Output: r.generated, Session: session}, nil

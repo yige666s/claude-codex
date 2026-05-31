@@ -117,7 +117,7 @@ func (p *VertexProvider) CreateMessage(ctx context.Context, request MessageReque
 	if model.Publisher == "anthropic" {
 		return p.createAnthropicMessage(ctx, request, model)
 	}
-	reqBody := vertexGeminiRequest(request)
+	reqBody := p.vertexGeminiRequest(request)
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, err
@@ -165,7 +165,7 @@ func (p *VertexProvider) StreamMessage(ctx context.Context, request MessageReque
 		}
 		return resp, nil
 	}
-	reqBody := vertexGeminiRequest(request)
+	reqBody := p.vertexGeminiRequest(request)
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, err
@@ -346,7 +346,7 @@ func vertexEndpointBaseURL(location string) string {
 	}
 }
 
-func vertexGeminiRequest(request MessageRequest) geminiRequest {
+func (p *VertexProvider) vertexGeminiRequest(request MessageRequest) geminiRequest {
 	req := geminiRequest{
 		Contents: make([]geminiContent, 0, len(request.Messages)),
 		GenerationConfig: geminiGenerationConfig{
@@ -360,17 +360,7 @@ func vertexGeminiRequest(request MessageRequest) geminiRequest {
 		req.SystemInstruction = &geminiContent{Role: "user", Parts: []geminiPart{{Text: request.System}}}
 	}
 	req.Contents = append(req.Contents, geminiContentsFromMessages(request.Messages)...)
-	if len(request.Tools) > 0 {
-		functionDecls := make([]geminiFunctionDeclaration, len(request.Tools))
-		for i, tool := range request.Tools {
-			functionDecls[i] = geminiFunctionDeclaration{
-				Name:        tool.Name,
-				Description: tool.Description,
-				Parameters:  tool.InputSchema,
-			}
-		}
-		req.Tools = []geminiTool{{FunctionDeclarations: functionDecls}}
-	}
+	req.Tools = geminiToolsForRequest("vertex", request, p.config)
 	return req
 }
 
@@ -420,12 +410,13 @@ func geminiResponseToUnified(model string, resp geminiResponse) (*MessageRespons
 		stopReason = "tool_use"
 	}
 	return &MessageResponse{
-		ID:         fmt.Sprintf("vertex-%d", time.Now().Unix()),
-		Model:      model,
-		Role:       "assistant",
-		Content:    contentBlocks,
-		ToolCalls:  toolCalls,
-		StopReason: stopReason,
+		ID:                fmt.Sprintf("vertex-%d", time.Now().Unix()),
+		Model:             model,
+		Role:              "assistant",
+		Content:           contentBlocks,
+		ToolCalls:         toolCalls,
+		StopReason:        stopReason,
+		GroundingMetadata: candidate.GroundingMetadata,
 		Usage: Usage{
 			InputTokens:  resp.UsageMetadata.PromptTokenCount,
 			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,

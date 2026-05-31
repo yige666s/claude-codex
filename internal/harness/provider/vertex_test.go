@@ -499,6 +499,115 @@ func TestVertexProviderBatchesConsecutiveToolResults(t *testing.T) {
 	}
 }
 
+func TestVertexProviderAddsNativeGoogleSearchGroundingForSupportedModel(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{
+				"content":{"role":"model","parts":[{"text":"grounded answer"}]},
+				"finishReason":"STOP",
+				"groundingMetadata":{"webSearchQueries":["北京天气"]}
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "gemini-2.5-flash",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	resp, err := provider.CreateMessage(context.Background(), MessageRequest{
+		Model:                 "gemini-2.5-flash",
+		Messages:              []Message{{Role: "user", Content: "查一下北京天气"}},
+		GoogleSearchGrounding: GoogleSearchGroundingAuto,
+		Tools: []Tool{
+			{Name: "WebSearch", Description: "Search the web.", InputSchema: map[string]interface{}{"type": "object"}},
+			{Name: "WebFetch", Description: "Fetch a URL.", InputSchema: map[string]interface{}{"type": "object"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	tools, ok := body["tools"].([]interface{})
+	if !ok || len(tools) != 2 {
+		t.Fatalf("expected function declarations plus googleSearch, got %#v", body["tools"])
+	}
+	if _, ok := tools[1].(map[string]interface{})["googleSearch"]; !ok {
+		t.Fatalf("missing googleSearch tool: %#v", tools)
+	}
+	declarations := tools[0].(map[string]interface{})["functionDeclarations"].([]interface{})
+	if len(declarations) != 1 || declarations[0].(map[string]interface{})["name"] != "WebFetch" {
+		t.Fatalf("native grounding should filter WebSearch fallback but keep WebFetch: %#v", declarations)
+	}
+	if !strings.Contains(string(resp.GroundingMetadata), "北京天气") {
+		t.Fatalf("grounding metadata was not preserved: %s", string(resp.GroundingMetadata))
+	}
+}
+
+func TestVertexProviderKeepsWebSearchFallbackForUnsupportedModel(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{"content":{"role":"model","parts":[{"text":"fallback answer"}]},"finishReason":"STOP"}]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "gemini-1.5-pro",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	_, err = provider.CreateMessage(context.Background(), MessageRequest{
+		Model:                 "gemini-1.5-pro",
+		Messages:              []Message{{Role: "user", Content: "查一下北京天气"}},
+		GoogleSearchGrounding: GoogleSearchGroundingAuto,
+		Tools: []Tool{
+			{Name: "WebSearch", Description: "Search the web.", InputSchema: map[string]interface{}{"type": "object"}},
+			{Name: "WebFetch", Description: "Fetch a URL.", InputSchema: map[string]interface{}{"type": "object"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	tools, ok := body["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected only function declarations, got %#v", body["tools"])
+	}
+	if _, ok := tools[0].(map[string]interface{})["googleSearch"]; ok {
+		t.Fatalf("unsupported model should not receive googleSearch: %#v", tools)
+	}
+	declarations := tools[0].(map[string]interface{})["functionDeclarations"].([]interface{})
+	if len(declarations) != 2 || declarations[0].(map[string]interface{})["name"] != "WebSearch" {
+		t.Fatalf("WebSearch fallback should remain available: %#v", declarations)
+	}
+}
+
 func TestVertexProviderCallsClaudeRawPredict(t *testing.T) {
 	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
 	t.Setenv("VERTEX_LOCATION", "us-central1")

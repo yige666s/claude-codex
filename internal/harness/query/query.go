@@ -146,12 +146,13 @@ func newProviderModelCaller(modelProvider provider.Provider) ModelCaller {
 			}
 		}
 		resp, err := p.CreateMessage(ctx, provider.MessageRequest{
-			Model:       params.Model,
-			Messages:    toProviderMessages(params.Messages),
-			MaxTokens:   params.MaxTokens,
-			Temperature: params.Temperature,
-			Tools:       toProviderTools(params.Tools),
-			System:      params.SystemPrompt.Content,
+			Model:                 params.Model,
+			Messages:              toProviderMessages(params.Messages),
+			MaxTokens:             params.MaxTokens,
+			Temperature:           params.Temperature,
+			Tools:                 toProviderTools(params.Tools),
+			System:                params.SystemPrompt.Content,
+			GoogleSearchGrounding: provider.GoogleSearchGroundingAuto,
 		})
 		if err != nil {
 			return nil, err
@@ -198,6 +199,10 @@ func providerFromEnv(model string) (provider.Provider, error) {
 	if baseURL := os.Getenv("CLAUDE_CODE_API_BASE_URL"); baseURL != "" {
 		cfg.BaseURL = baseURL
 	}
+	cfg.GoogleSearchGrounding = firstNonEmpty(
+		os.Getenv("AGENT_API_GOOGLE_SEARCH_GROUNDING"),
+		os.Getenv("GOOGLE_SEARCH_GROUNDING"),
+	)
 	return provider.NewFactory().CreateProvider(cfg)
 }
 

@@ -21,11 +21,12 @@ func NewPlanner(provider Provider, model string) *Planner {
 
 func (p *Planner) Next(ctx context.Context, session *state.Session, tools []toolkit.Descriptor) (plannerapi.Plan, error) {
 	request := MessageRequest{
-		Model:          p.model,
-		MaxTokens:      8096,
-		Messages:       toProviderMessages(session.Messages),
-		Tools:          toProviderTools(tools),
-		ThinkingConfig: ThinkingConfigFromContext(ctx),
+		Model:                 p.model,
+		MaxTokens:             8096,
+		Messages:              toProviderMessages(session.Messages),
+		Tools:                 toProviderTools(tools),
+		ThinkingConfig:        ThinkingConfigFromContext(ctx),
+		GoogleSearchGrounding: plannerGoogleSearchGrounding(ctx),
 	}
 
 	response, err := p.provider.CreateMessage(ctx, request)
@@ -39,12 +40,13 @@ func (p *Planner) Next(ctx context.Context, session *state.Session, tools []tool
 func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools []toolkit.Descriptor, onChunk func(string)) (plannerapi.Plan, error) {
 	if streaming, ok := p.provider.(StreamingProvider); ok {
 		request := MessageRequest{
-			Model:          p.model,
-			MaxTokens:      8096,
-			Messages:       toProviderMessages(session.Messages),
-			Tools:          toProviderTools(tools),
-			Stream:         true,
-			ThinkingConfig: ThinkingConfigFromContext(ctx),
+			Model:                 p.model,
+			MaxTokens:             8096,
+			Messages:              toProviderMessages(session.Messages),
+			Tools:                 toProviderTools(tools),
+			Stream:                true,
+			ThinkingConfig:        ThinkingConfigFromContext(ctx),
+			GoogleSearchGrounding: plannerGoogleSearchGrounding(ctx),
 		}
 		response, err := streaming.StreamMessage(ctx, request, onChunk)
 		if err != nil {
@@ -63,6 +65,13 @@ func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools 
 		onChunk(plan.AssistantText)
 	}
 	return plan, nil
+}
+
+func plannerGoogleSearchGrounding(ctx context.Context) string {
+	if mode := GoogleSearchGroundingFromContext(ctx); mode != "" {
+		return mode
+	}
+	return GoogleSearchGroundingAuto
 }
 
 func toProviderMessages(messages []state.Message) []Message {

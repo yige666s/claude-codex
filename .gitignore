@@ -120,4 +120,3 @@ secrets.json
 .omc/
 .omx/
 docs/*
-!docs/LIVE_API_ISSUES_AND_SOLUTIONS.md

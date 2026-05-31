@@ -3,9 +3,17 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"strings"
 )
 
 type thinkingConfigContextKey struct{}
+type googleSearchGroundingContextKey struct{}
+
+const (
+	GoogleSearchGroundingOff    = "off"
+	GoogleSearchGroundingAuto   = "auto"
+	GoogleSearchGroundingAlways = "always"
+)
 
 // Provider defines the interface for LLM providers
 type Provider interface {
@@ -37,6 +45,10 @@ type MessageRequest struct {
 	Tools          []Tool          `json:"tools,omitempty"`
 	System         string          `json:"system,omitempty"`
 	ThinkingConfig *ThinkingConfig `json:"thinking_config,omitempty"`
+	// GoogleSearchGrounding controls provider-native Google Search grounding for
+	// providers/models that support it. "auto" and "always" attach the
+	// googleSearch tool and let Gemini decide whether it needs a search.
+	GoogleSearchGrounding string `json:"google_search_grounding,omitempty"`
 }
 
 // ThinkingConfig requests provider-native thinking/reasoning controls when a model supports them.
@@ -56,6 +68,34 @@ func WithThinkingConfig(ctx context.Context, config *ThinkingConfig) context.Con
 func ThinkingConfigFromContext(ctx context.Context) *ThinkingConfig {
 	config, _ := ctx.Value(thinkingConfigContextKey{}).(*ThinkingConfig)
 	return config
+}
+
+func WithGoogleSearchGrounding(ctx context.Context, mode string) context.Context {
+	mode = NormalizeGoogleSearchGroundingMode(mode)
+	if mode == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, googleSearchGroundingContextKey{}, mode)
+}
+
+func GoogleSearchGroundingFromContext(ctx context.Context) string {
+	mode, _ := ctx.Value(googleSearchGroundingContextKey{}).(string)
+	return NormalizeGoogleSearchGroundingMode(mode)
+}
+
+func NormalizeGoogleSearchGroundingMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "":
+		return ""
+	case GoogleSearchGroundingOff:
+		return GoogleSearchGroundingOff
+	case GoogleSearchGroundingAlways, "on", "true", "enabled":
+		return GoogleSearchGroundingAlways
+	case GoogleSearchGroundingAuto:
+		return GoogleSearchGroundingAuto
+	default:
+		return ""
+	}
 }
 
 // Message represents a single message in the conversation
@@ -90,13 +130,14 @@ type Tool struct {
 
 // MessageResponse represents a unified response across providers
 type MessageResponse struct {
-	ID         string         `json:"id"`
-	Model      string         `json:"model"`
-	Role       string         `json:"role"`
-	Content    []ContentBlock `json:"content"`
-	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
-	StopReason string         `json:"stop_reason,omitempty"`
-	Usage      Usage          `json:"usage"`
+	ID                string          `json:"id"`
+	Model             string          `json:"model"`
+	Role              string          `json:"role"`
+	Content           []ContentBlock  `json:"content"`
+	ToolCalls         []ToolCall      `json:"tool_calls,omitempty"`
+	StopReason        string          `json:"stop_reason,omitempty"`
+	Usage             Usage           `json:"usage"`
+	GroundingMetadata json.RawMessage `json:"grounding_metadata,omitempty"`
 }
 
 // Usage represents token usage information
@@ -115,4 +156,5 @@ type Config struct {
 	Timeout                 int    `json:"timeout_seconds"`
 	VertexLocation          string `json:"vertex_location,omitempty"`
 	VertexAnthropicLocation string `json:"vertex_anthropic_location,omitempty"`
+	GoogleSearchGrounding   string `json:"google_search_grounding,omitempty"`
 }
