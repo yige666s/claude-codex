@@ -523,7 +523,7 @@ func TestRuntimeLiveInitialHistoryUsesLargerSlidingWindow(t *testing.T) {
 	}
 }
 
-func TestRuntimeLiveToolFunctionDeclarationsExposeSafeHarnessToolsAndRunSkill(t *testing.T) {
+func TestRuntimeLiveToolFunctionDeclarationsExposeWebResearchAndRunSkill(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileSessionStore(root)
 	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{
@@ -549,28 +549,28 @@ func TestRuntimeLiveToolFunctionDeclarationsExposeSafeHarnessToolsAndRunSkill(t 
 	for _, declaration := range declarations {
 		names[fmt.Sprint(declaration["name"])] = declaration
 	}
-	for _, want := range []string{"WebSearch", "WebFetch", "run_skill"} {
+	for _, want := range []string{"web_research", "run_skill"} {
 		if _, ok := names[want]; !ok {
 			t.Fatalf("missing live function %q in %#v", want, names)
 		}
 	}
-	for _, blocked := range []string{"Bash", "Skill"} {
+	for _, blocked := range []string{"WebSearch", "WebFetch", "Bash", "Skill"} {
 		if _, ok := names[blocked]; ok {
 			t.Fatalf("live should not expose %s directly: %#v", blocked, declarations)
 		}
 	}
-	parameters := names["WebSearch"]["parameters"].(map[string]any)
+	parameters := names["web_research"]["parameters"].(map[string]any)
 	if parameters["type"] != "OBJECT" {
 		t.Fatalf("live schema type should be normalized for Vertex Live: %#v", parameters)
 	}
 }
 
-func TestRuntimeExecuteLiveToolFunctionCallRunsHarnessTool(t *testing.T) {
+func TestRuntimeExecuteLiveToolFunctionCallRunsWebResearch(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileSessionStore(root)
 	runner := &liveHarnessRunner{
 		descriptors: []toolkit.Descriptor{{Name: "WebSearch", Description: "Search the web.", InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`)}},
-		output:      "answer: sunny",
+		generated:   "北京今日天气晴，来源：https://example.com/weather",
 	}
 	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, nil, func(Scope) Runner { return runner })
 	session, err := runtime.CreateSession(context.Background(), "alice", root)
@@ -579,18 +579,18 @@ func TestRuntimeExecuteLiveToolFunctionCallRunsHarnessTool(t *testing.T) {
 	}
 	sink := &collectSink{}
 
-	handled, output, err := runtime.ExecuteLiveToolFunctionCall(context.Background(), "alice", session.ID, "call-1", "WebSearch", json.RawMessage(`{"query":"北京天气"}`), "查一下北京天气", sink)
+	handled, output, err := runtime.ExecuteLiveToolFunctionCall(context.Background(), "alice", session.ID, "call-1", "web_research", json.RawMessage(`{"query":"北京天气","requirements":"给出来源"}`), "查一下北京天气", sink)
 	if err != nil {
 		t.Fatalf("ExecuteLiveToolFunctionCall: %v", err)
 	}
 	if !handled {
-		t.Fatal("expected WebSearch to be handled")
+		t.Fatal("expected web_research to be handled")
 	}
-	if output != "answer: sunny" {
+	if output != "北京今日天气晴，来源：https://example.com/weather" {
 		t.Fatalf("output = %q", output)
 	}
-	if runner.calledName != "WebSearch" || string(runner.calledInput) != `{"query":"北京天气"}` {
-		t.Fatalf("unexpected runner call: name=%q input=%s", runner.calledName, runner.calledInput)
+	if !strings.Contains(runner.generatedPrompt, "Research question: 北京天气") || !strings.Contains(runner.generatedPrompt, "Requirements: 给出来源") {
+		t.Fatalf("unexpected research prompt: %s", runner.generatedPrompt)
 	}
 	saved, err := store.Get(context.Background(), "alice", session.ID)
 	if err != nil {
@@ -599,10 +599,10 @@ func TestRuntimeExecuteLiveToolFunctionCallRunsHarnessTool(t *testing.T) {
 	if len(saved.Messages) != 2 {
 		t.Fatalf("saved messages = %d, want assistant tool call + tool result: %#v", len(saved.Messages), saved.Messages)
 	}
-	if saved.Messages[0].Role != state.MessageRoleAssistant || len(saved.Messages[0].ToolCalls) != 1 || saved.Messages[0].ToolCalls[0].Name != "WebSearch" {
+	if saved.Messages[0].Role != state.MessageRoleAssistant || len(saved.Messages[0].ToolCalls) != 1 || saved.Messages[0].ToolCalls[0].Name != "web_research" {
 		t.Fatalf("unexpected tool call message: %#v", saved.Messages[0])
 	}
-	if saved.Messages[1].Role != state.MessageRoleTool || saved.Messages[1].ToolName != "WebSearch" || saved.Messages[1].ToolOutput != "answer: sunny" {
+	if saved.Messages[1].Role != state.MessageRoleTool || saved.Messages[1].ToolName != "web_research" || saved.Messages[1].ToolOutput != "北京今日天气晴，来源：https://example.com/weather" {
 		t.Fatalf("unexpected tool result message: %#v", saved.Messages[1])
 	}
 	var sawStart, sawResult bool
@@ -815,10 +815,12 @@ func (r contextAwareLiveSkillSelectorRunner) Run(ctx context.Context, session *s
 }
 
 type liveHarnessRunner struct {
-	descriptors []toolkit.Descriptor
-	output      string
-	calledName  string
-	calledInput json.RawMessage
+	descriptors     []toolkit.Descriptor
+	output          string
+	generated       string
+	generatedPrompt string
+	calledName      string
+	calledInput     json.RawMessage
 }
 
 func (r *liveHarnessRunner) Run(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
@@ -828,6 +830,11 @@ func (r *liveHarnessRunner) Run(_ context.Context, session *state.Session, promp
 
 func (r *liveHarnessRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
 	session.AddSystemContext(prompt)
+	r.generatedPrompt = prompt
+	if strings.TrimSpace(r.generated) != "" {
+		session.AddAssistantMessage(r.generated)
+		return engine.Result{Output: r.generated, Session: session}, nil
+	}
 	return engine.Result{Session: session}, nil
 }
 

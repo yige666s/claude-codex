@@ -298,18 +298,18 @@ run_skill(skill, args, reason)
 3. `Skill` 不直接暴露为 harness `Skill` tool，因为它的描述对语音场景过宽，容易误触发；Live 继续使用收窄后的 `run_skill` 专用函数处理 published skill/job。
 4. `VertexLiveService` setup 阶段动态写入 Gemini Live `functionDeclarations`。
 5. Gemini Live 返回 `toolCall` 后，后端按函数名分发：
-   - `WebSearch` / `WebFetch` -> `engine.ExecuteTool`
-   - `run_skill` -> Live Skill/job 专用执行链路
-6. 通用 harness tool 的调用结果会以隐藏 tool call / tool result 形式写回当前 session，供后续上下文和审计使用。
+   - `web_research` -> 后端文本 runner 聚合执行 WebSearch / WebFetch。
+   - `run_skill` -> Live Skill/job 专用执行链路。
+6. 工具调用结果会以隐藏 tool call / tool result 形式写回当前 session，供后续上下文和审计使用。
 
 ### 当前状态
 
 已落地。
 
-Live 当前同时支持：
+Live 当前支持：
 
 - Gemini Live 原生 function calling。
-- 安全 harness tools：`WebSearch`、`WebFetch`。
+- 网页研究聚合工具：`web_research`。
 - Skill/job 专用函数：`run_skill`。
 
 ### 关键代码
@@ -321,6 +321,7 @@ Live 当前同时支持：
 - `internal/backend/agentruntime/runtime.go`
   - `LiveToolFunctionDeclarations`
   - `ExecuteLiveToolFunctionCall`
+  - `executeLiveWebResearchFunctionCall`
   - `liveFunctionDeclarationFromDescriptor`
   - `liveHarnessToolAllowlist`
 
@@ -329,7 +330,7 @@ Live 当前同时支持：
 新增并通过测试：
 
 ```bash
-go test ./internal/backend/agentruntime -run 'TestRuntimeLiveToolFunctionDeclarationsExposeSafeHarnessToolsAndRunSkill|TestRuntimeExecuteLiveToolFunctionCallRunsHarnessTool'
+go test ./internal/backend/agentruntime -run 'TestRuntimeLiveToolFunctionDeclarationsExposeWebResearchAndRunSkill|TestRuntimeExecuteLiveToolFunctionCallRunsWebResearch'
 go test ./internal/backend/agentruntime
 ```
 
@@ -337,7 +338,7 @@ go test ./internal/backend/agentruntime
 
 不要把 `Bash`、`Read`、`Write`、`Edit` 等内部/高危工具直接暴露给 Live。语音转写天然更短、更噪，工具描述越宽泛越容易误触发。
 
-如果后续要扩展 Live 工具，优先走 allowlist，并为每个工具写面向语音场景的窄描述。
+如果后续要扩展 Live 工具，优先走窄语义的聚合函数，并为每个工具写面向语音场景的窄描述。
 
 ## 问题：工具调用后重复回复
 
@@ -449,6 +450,89 @@ Live 语音输入中会出现短 filler、误唤醒词、重复字词或 ASR 噪
 
 Live 中如果生成图片，不应因为模型一句“这是一只狗”就直接写入长期记忆。应先进入 artifact insight，再由用户行为或后续确认决定是否升级为 memory。
 
+## 问题：Live 模式复杂网页搜索不稳定
+
+### 现象
+
+当用户在 Live 模式中要求“去网上搜索具体数字”“比较一段时间内走势”“查最新排名/模型/价格”等复杂网页问题时，模型可能出现：
+
+- 先凭记忆回答，没有真正搜索。
+- 只说半句，例如“根据 3 月 1 日至 5 月...”，没有完成整合。
+- 多轮搜索上下文混乱，把用户追问当成普通语音轮次。
+- 工具调用结果回来后，Live 模型仍然补出不完整或缺来源的回答。
+
+### 根因
+
+Live 的强项是低延迟实时对话，不是长链路检索研究。之前 Live 直接暴露底层 `WebSearch` / `WebFetch` 给 Gemini Live：
+
+```text
+Live 模型
+-> 决定是否 WebSearch
+-> 等搜索
+-> 决定是否 WebFetch
+-> 等抓取
+-> 再组织语音回复
+```
+
+这个链路对实时语音不友好：任意一步慢、没有继续调用、或中间产生了 assistant transcript，都可能导致回复半截或缺少事实依据。
+
+### 方案
+
+Live 不再直接暴露底层 `WebSearch` / `WebFetch`，而是暴露一个 Live 专用虚拟函数：
+
+```text
+web_research(query, requirements, reason)
+```
+
+Gemini Live 只负责判断“当前用户是否需要网页研究”。一旦需要，后端用普通文本 runner 执行完整研究子任务：
+
+```text
+Live function call web_research
+-> 后端 RunGeneratedPrompt
+-> 内部可多步调用 WebSearch / WebFetch
+-> 产出完整、有来源、不断句的答案
+-> 作为 functionResponse 返回给 Gemini Live
+```
+
+这样把复杂检索从实时语音回合里拆出去，降低 Live 模型自己多步规划失败的概率。
+
+### 当前状态
+
+已落地：
+
+- Live setup 只暴露 `web_research`，不再直接暴露 `WebSearch` / `WebFetch`。
+- `web_research` 使用更长超时（默认 75s，且不低于 runtime turn timeout）。
+- 研究结果以 hidden tool call/tool result 落库，后续上下文可见。
+- 仍保留低层 `WebSearch` / `WebFetch` 的服务端兼容执行能力，但不主动声明给 Live 模型。
+
+### 关键代码
+
+- `internal/backend/agentruntime/runtime.go`
+  - `liveWebResearchFunctionDeclaration`
+  - `executeLiveWebResearchFunctionCall`
+  - `liveWebResearchPrompt`
+- `internal/backend/agentruntime/live_test.go`
+  - `TestRuntimeLiveToolFunctionDeclarationsExposeWebResearchAndRunSkill`
+  - `TestRuntimeExecuteLiveToolFunctionCallRunsWebResearch`
+
+### 验证
+
+已验证：
+
+```bash
+go test ./internal/backend/agentruntime -run 'TestRuntimeLiveToolFunctionDeclarationsExposeWebResearchAndRunSkill|TestRuntimeExecuteLiveToolFunctionCallRunsWebResearch|TestLiveSetupMessageDisablesProviderVADAndEnablesResumption'
+go test ./internal/backend/agentruntime
+go test ./...
+```
+
+### 后续注意
+
+`web_research` 解决的是复杂搜索的稳定性，不等于所有 Live 搜索都应该长时间阻塞。后续可以继续优化：
+
+- 前端展示“正在搜索/正在整理资料”的 Live tool 状态。
+- 对超长研究自动建议切到文本模式。
+- 对高风险事实（金融、医疗、法律）强制输出来源和日期。
+
 ## 已落地决策摘要
 
 | 主题 | 决策 | 状态 |
@@ -462,3 +546,4 @@ Live 中如果生成图片，不应因为模型一句“这是一只狗”就直
 | 重复回复 | 需要后端统一最终输出源并抑制 tool 后模型补话 | 待加强 |
 | 噪声过滤 | 使用统一噪声词库 | 已落地 |
 | 图片记忆 | artifact insight 先行，避免污染 durable memory | 已落地 |
+| 复杂网页搜索 | Live 暴露 `web_research` 聚合工具，后端完成多步搜索/抓取/整合 | 已落地 |

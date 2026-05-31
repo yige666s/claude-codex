@@ -32,11 +32,13 @@ const (
 	consumerSecurityInjectedKey = "agentruntime.consumer_security_context_injected"
 	workspaceContextAckContent  = "Understood. I have the workspace context."
 	liveSkillSelectionTimeout   = 8 * time.Second
+	liveWebResearchTimeout      = 75 * time.Second
 )
 
 type hiddenUserMessageContextKey struct{}
 
 type liveHarnessToolRunner interface {
+	Runner
 	Descriptors() []toolkit.Descriptor
 	ExecuteTool(ctx context.Context, name string, input json.RawMessage) (toolkit.Result, error)
 }
@@ -45,6 +47,8 @@ var liveHarnessToolAllowlist = map[string]struct{}{
 	"WebSearch": {},
 	"WebFetch":  {},
 }
+
+const liveWebResearchFunctionName = "web_research"
 
 const consumerSecuritySystemContext = `<consumer-security>
 You are serving a consumer web user. Do not expose internal server tools, tool names, file paths, workspace paths, shell commands, environment variables, credentials, stack traces, or raw provider errors.
@@ -1644,15 +1648,8 @@ func (r *Runtime) LiveToolFunctionDeclarations(ctx context.Context, userID, sess
 		return nil, err
 	}
 	if runner != nil {
-		for _, descriptor := range runner.Descriptors() {
-			if !liveHarnessToolAllowed(descriptor.Name) {
-				continue
-			}
-			declaration, err := liveFunctionDeclarationFromDescriptor(descriptor)
-			if err != nil {
-				return nil, err
-			}
-			declarations = append(declarations, declaration)
+		if liveRunnerHasWebTools(runner) {
+			declarations = append(declarations, liveWebResearchFunctionDeclaration())
 		}
 	}
 	if r.liveHasUserInvocableSkills() {
@@ -1669,6 +1666,9 @@ func (r *Runtime) ExecuteLiveToolFunctionCall(ctx context.Context, userID, sessi
 	if liveSkillFunctionName(toolName) {
 		skillName, skillArgs := liveSkillFunctionArgs(toolName, args)
 		return r.ExecuteLiveSkillFunctionCall(ctx, userID, sessionID, skillName, skillArgs, displayText, sink)
+	}
+	if strings.EqualFold(toolName, liveWebResearchFunctionName) {
+		return r.executeLiveWebResearchFunctionCall(ctx, userID, sessionID, callID, args, displayText, sink)
 	}
 	if !liveHarnessToolAllowed(toolName) {
 		return false, "", nil
@@ -1730,6 +1730,83 @@ func (r *Runtime) ExecuteLiveToolFunctionCall(ctx context.Context, userID, sessi
 	return true, output, nil
 }
 
+func (r *Runtime) executeLiveWebResearchFunctionCall(ctx context.Context, userID, sessionID, callID string, args json.RawMessage, displayText string, sink EventSink) (bool, string, error) {
+	runner, session, err := r.liveHarnessToolRunner(ctx, userID, sessionID)
+	if err != nil {
+		return true, "", err
+	}
+	if runner == nil || session == nil {
+		return true, "", fmt.Errorf("live web research runner is not configured")
+	}
+	input := liveWebResearchArgs(args)
+	if strings.TrimSpace(input.Query) == "" {
+		input.Query = strings.TrimSpace(displayText)
+	}
+	if strings.TrimSpace(input.Query) == "" {
+		return true, "", fmt.Errorf("web_research requires a query")
+	}
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		callID = fmt.Sprintf("live-web-research-%d", time.Now().UnixNano())
+	}
+	startMessageCount := len(session.Messages)
+	if sink != nil {
+		_ = sink.Send(ctx, Event{Type: "live_tool_start", SessionID: session.ID, Role: state.MessageRoleTool, Content: "Web research", Data: liveJSON(map[string]any{"tool": liveWebResearchFunctionName, "call_id": callID, "query": input.Query})})
+	}
+
+	timeout := liveWebResearchTimeout
+	if r.config.TurnTimeout > timeout {
+		timeout = r.config.TurnTimeout
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	callCtx = WithLLMScope(callCtx, LLMScope{
+		UserID:    userID,
+		SessionID: session.ID,
+		RequestID: requestIDFromContext(ctx),
+	})
+	researchSession := state.NewSession(session.WorkingDir)
+	result, err := runner.RunGeneratedPrompt(callCtx, researchSession, liveWebResearchPrompt(input, displayText))
+	output := strings.TrimSpace(result.Output)
+	if output == "" {
+		output = strings.TrimSpace(lastAssistantContent(researchSession))
+	}
+	if err != nil {
+		output = formatLiveToolExecutionError(liveWebResearchFunctionName, err)
+	}
+	if output == "" {
+		output = "No reliable web research result was produced."
+	}
+
+	callInput, marshalErr := json.Marshal(input)
+	if marshalErr != nil {
+		callInput = args
+	}
+	session.AddAssistantMessageWithTools("", []state.ToolCall{{
+		ID:    callID,
+		Name:  liveWebResearchFunctionName,
+		Input: json.RawMessage(callInput),
+	}})
+	session.AddToolResult(callID, liveWebResearchFunctionName, json.RawMessage(callInput), output)
+	if persistErr := r.persistChatSession(ctx, userID, session, startMessageCount); persistErr != nil {
+		if err != nil {
+			return true, output, errors.Join(err, persistErr)
+		}
+		return true, output, persistErr
+	}
+	if sink != nil {
+		eventType := "live_tool_result"
+		if err != nil {
+			eventType = "live_tool_error"
+		}
+		_ = sink.Send(ctx, Event{Type: eventType, SessionID: session.ID, Role: state.MessageRoleTool, Content: output, Data: liveJSON(map[string]any{"tool": liveWebResearchFunctionName, "call_id": callID, "query": input.Query})})
+	}
+	if err != nil {
+		return true, output, err
+	}
+	return true, output, nil
+}
+
 func (r *Runtime) liveHarnessToolRunner(ctx context.Context, userID, sessionID string) (liveHarnessToolRunner, *state.Session, error) {
 	if r == nil || r.engineFactory == nil {
 		return nil, nil, nil
@@ -1754,6 +1831,20 @@ func liveHarnessToolAllowed(name string) bool {
 	return ok
 }
 
+func liveRunnerHasWebTools(runner liveHarnessToolRunner) bool {
+	if runner == nil {
+		return false
+	}
+	hasSearch := false
+	for _, descriptor := range runner.Descriptors() {
+		if strings.EqualFold(strings.TrimSpace(descriptor.Name), "WebSearch") {
+			hasSearch = true
+			break
+		}
+	}
+	return hasSearch
+}
+
 func (r *Runtime) liveHasUserInvocableSkills() bool {
 	return r != nil && len(r.ListSkills()) > 0
 }
@@ -1776,6 +1867,31 @@ func liveFunctionDeclarationFromDescriptor(descriptor toolkit.Descriptor) (map[s
 	}, nil
 }
 
+func liveWebResearchFunctionDeclaration() map[string]any {
+	return map[string]any{
+		"name": liveWebResearchFunctionName,
+		"description": "Run a backend web research pass for the current Live voice turn. Use this instead of answering from memory when the user asks for current, recent, exact, numeric, sourced, or externally verifiable information. Especially use it for multi-step searches, comparisons, market/news/model/product lookups, date ranges, rankings, and requests that explicitly say to search the web. Do not speak a factual answer before this function returns.",
+		"parameters": map[string]any{
+			"type": "OBJECT",
+			"properties": map[string]any{
+				"query": map[string]any{
+					"type":        "STRING",
+					"description": "A complete standalone search/research question including the entity, date range, metric, geography, and required output.",
+				},
+				"requirements": map[string]any{
+					"type":        "STRING",
+					"description": "Specific constraints for the answer, such as exact numbers, sources, date range, comparison criteria, or preferred language.",
+				},
+				"reason": map[string]any{
+					"type":        "STRING",
+					"description": "A short reason why web research is required.",
+				},
+			},
+			"required": []string{"query"},
+		},
+	}
+}
+
 func liveHarnessToolDescription(descriptor toolkit.Descriptor) string {
 	description := strings.TrimSpace(descriptor.Description)
 	switch strings.TrimSpace(descriptor.Name) {
@@ -1786,6 +1902,56 @@ func liveHarnessToolDescription(descriptor toolkit.Descriptor) string {
 	default:
 		return description
 	}
+}
+
+type liveWebResearchInput struct {
+	Query        string `json:"query"`
+	Requirements string `json:"requirements,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+func liveWebResearchArgs(raw json.RawMessage) liveWebResearchInput {
+	var input liveWebResearchInput
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &input)
+	}
+	input.Query = strings.TrimSpace(input.Query)
+	input.Requirements = strings.TrimSpace(input.Requirements)
+	input.Reason = strings.TrimSpace(input.Reason)
+	return input
+}
+
+func liveWebResearchPrompt(input liveWebResearchInput, displayText string) string {
+	var builder strings.Builder
+	builder.WriteString("You are executing a backend web research subtask for a Live voice conversation.\n")
+	builder.WriteString("Use WebSearch first. Use WebFetch for the most relevant sources when snippets are insufficient. Do not ask follow-up questions.\n")
+	builder.WriteString("Return a complete answer in the user's language, with concrete numbers, dates, and source URLs when available. If reliable data cannot be found, say what is missing instead of guessing.\n")
+	builder.WriteString("Keep the answer concise enough for Live mode, but do not stop mid-sentence.\n\n")
+	fmt.Fprintf(&builder, "Current date: %s\n", time.Now().Format("2006-01-02"))
+	fmt.Fprintf(&builder, "Research question: %s\n", input.Query)
+	if input.Requirements != "" {
+		fmt.Fprintf(&builder, "Requirements: %s\n", input.Requirements)
+	}
+	if input.Reason != "" {
+		fmt.Fprintf(&builder, "Why web research was requested: %s\n", input.Reason)
+	}
+	if strings.TrimSpace(displayText) != "" && strings.TrimSpace(displayText) != input.Query {
+		fmt.Fprintf(&builder, "Latest live utterance/context: %s\n", strings.TrimSpace(displayText))
+	}
+	return builder.String()
+}
+
+func lastAssistantContent(session *state.Session) string {
+	if session == nil {
+		return ""
+	}
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		message := session.Messages[i]
+		if message.Role == state.MessageRoleAssistant && strings.TrimSpace(message.Content) != "" {
+			return message.Content
+		}
+	}
+	return ""
 }
 
 func liveNormalizeFunctionSchema(value any) any {
