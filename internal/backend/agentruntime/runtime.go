@@ -1569,6 +1569,11 @@ func (r *Runtime) LiveSystemInstruction(ctx context.Context, userID, sessionID s
 	}
 	parts = append(parts, r.baseLiveRuntimeContextParts()...)
 	parts = append(parts, "Live voice language policy: preserve the user's spoken language; if the utterance is ambiguous, prefer Chinese for this product unless recent conversation context is clearly in another language. Treat short repeated fillers, obvious ASR noise, and accidental wake words as non-actionable. Never trigger artifact-producing skills from vague live speech; require an explicit slash command or a clear confirmation-quality request.")
+	parts = append(parts, "Session history policy: you may receive prior conversation history at session start. Do NOT proactively summarize, reference, or act on that history until the user speaks first. Wait silently for the user's first utterance.")
+	runner, _, _ := r.liveHarnessToolRunner(ctx, userID, sessionID)
+	if runner != nil && liveRunnerHasWebTools(runner) {
+		parts = append(parts, "Web research: you have a `web_research` function available. Use it — do not answer from memory — whenever the user asks for current events, recent news, live data, or any externally verifiable fact. Call the function immediately; do not narrate that you are about to search.")
+	}
 	if skillContext := r.liveSkillContext(); strings.TrimSpace(skillContext) != "" {
 		parts = append(parts, "<skills>\n"+skillContext+"\n</skills>")
 	}
