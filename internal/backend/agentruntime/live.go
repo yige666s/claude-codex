@@ -29,6 +29,39 @@ const (
 	defaultLiveInitialHistoryMaxTokens   = 16000
 )
 
+var supportedLivePrebuiltVoiceNames = map[string]struct{}{
+	"Achernar":      {},
+	"Achird":        {},
+	"Algenib":       {},
+	"Algieba":       {},
+	"Alnilam":       {},
+	"Aoede":         {},
+	"Autonoe":       {},
+	"Callirrhoe":    {},
+	"Charon":        {},
+	"Despina":       {},
+	"Enceladus":     {},
+	"Erinome":       {},
+	"Fenrir":        {},
+	"Gacrux":        {},
+	"Iapetus":       {},
+	"Kore":          {},
+	"Laomedeia":     {},
+	"Leda":          {},
+	"Orus":          {},
+	"Puck":          {},
+	"Pulcherrima":   {},
+	"Rasalgethi":    {},
+	"Sadachbia":     {},
+	"Sadaltager":    {},
+	"Schedar":       {},
+	"Sulafat":       {},
+	"Umbriel":       {},
+	"Vindemiatrix":  {},
+	"Zephyr":        {},
+	"Zubenelgenubi": {},
+}
+
 type VertexLiveService struct {
 	config           LiveConfig
 	recorder         LiveTurnRecorder
@@ -102,6 +135,8 @@ func normalizeLiveConfig(config LiveConfig) LiveConfig {
 		config.InputAudioMIMEType = defaultLiveInputAudioMIMEType
 	}
 	config.OutputAudioMIMEType = strings.TrimSpace(config.OutputAudioMIMEType)
+	config.VoiceName = normalizeLivePrebuiltVoiceName(config.VoiceName)
+	config.LanguageCode = strings.TrimSpace(config.LanguageCode)
 	config.LiveVADStartSensitivity = liveNormalizeEnum(config.LiveVADStartSensitivity, "START_SENSITIVITY_HIGH")
 	config.LiveVADEndSensitivity = liveNormalizeEnum(config.LiveVADEndSensitivity, "END_SENSITIVITY_HIGH")
 	if config.LiveVADPrefixPadding <= 0 {
@@ -124,6 +159,19 @@ func liveNormalizeEnum(value, fallback string) string {
 	return value
 }
 
+func normalizeLivePrebuiltVoiceName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	for name := range supportedLivePrebuiltVoiceNames {
+		if strings.EqualFold(value, name) {
+			return name
+		}
+	}
+	return value
+}
+
 func validateLiveConfig(config LiveConfig) error {
 	config = normalizeLiveConfig(config)
 	if config.Provider != "vertex" {
@@ -131,6 +179,11 @@ func validateLiveConfig(config LiveConfig) error {
 	}
 	if !strings.Contains(strings.TrimSpace(config.Model), "/") && liveVertexProjectID(config) == "" {
 		return fmt.Errorf("live vertex project ID is required; set AGENT_API_LIVE_VERTEX_PROJECT_ID, VERTEX_PROJECT_ID, or GOOGLE_CLOUD_PROJECT")
+	}
+	if voice := strings.TrimSpace(config.VoiceName); voice != "" {
+		if _, ok := supportedLivePrebuiltVoiceNames[voice]; !ok {
+			return fmt.Errorf("unsupported live prebuilt voice %q", voice)
+		}
 	}
 	return nil
 }
@@ -166,6 +219,8 @@ func (s *VertexLiveService) Run(ctx context.Context, req LiveRequest, input Live
 	if err := sink.Send(ctx, Event{Type: "live_ready", SessionID: req.SessionID, Data: liveJSON(liveReadyPayload{
 		Model:              s.config.Model,
 		InputAudioMIMEType: s.config.InputAudioMIMEType,
+		VoiceName:          s.config.VoiceName,
+		LanguageCode:       s.config.LanguageCode,
 	})}); err != nil {
 		return err
 	}
@@ -221,6 +276,9 @@ func (s *VertexLiveService) setupMessage(ctx context.Context, req LiveRequest) m
 	}
 	if thinkingConfig := liveThinkingConfig(s.config.Model); len(thinkingConfig) > 0 {
 		generationConfig["thinkingConfig"] = thinkingConfig
+	}
+	if speechConfig := liveSpeechConfig(s.config); len(speechConfig) > 0 {
+		generationConfig["speechConfig"] = speechConfig
 	}
 	setup := map[string]any{
 		"model":            liveVertexModelResource(s.config),
@@ -350,6 +408,22 @@ func liveThinkingConfig(model string) map[string]any {
 	default:
 		return nil
 	}
+}
+
+func liveSpeechConfig(config LiveConfig) map[string]any {
+	config = normalizeLiveConfig(config)
+	speechConfig := map[string]any{}
+	if config.LanguageCode != "" {
+		speechConfig["languageCode"] = config.LanguageCode
+	}
+	if config.VoiceName != "" {
+		speechConfig["voiceConfig"] = map[string]any{
+			"prebuiltVoiceConfig": map[string]any{
+				"voiceName": config.VoiceName,
+			},
+		}
+	}
+	return speechConfig
 }
 
 func (s *VertexLiveService) sendLoop(ctx context.Context, req LiveRequest, input LiveClientStream, conn *websocket.Conn, writeMu *sync.Mutex, sink EventSink) error {
@@ -905,6 +979,8 @@ func firstLiveString(values ...any) string {
 type liveReadyPayload struct {
 	Model              string `json:"model"`
 	InputAudioMIMEType string `json:"input_audio_mime_type"`
+	VoiceName          string `json:"voice_name,omitempty"`
+	LanguageCode       string `json:"language_code,omitempty"`
 }
 
 func liveVertexWebSocketURL(config LiveConfig) (string, error) {

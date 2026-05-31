@@ -38,6 +38,9 @@ func logStartup(cfg startupconfig.Config, llmCfg bootstrap.LLMConfig, llmConfigM
 	logInfof("user system enabled: %t", authService != nil)
 	logInfof("rate limit backend: %s", cfg.RateLimitBackend)
 	logInfof("message context cache backend: %s ttl=%s", cfg.MessageContextCacheBackend, cfg.MessageContextCacheTTL)
+	if strings.TrimSpace(cfg.LiveVoiceName) != "" || strings.TrimSpace(cfg.LiveLanguageCode) != "" {
+		logInfof("live voice: voice=%s language=%s", cfg.LiveVoiceName, cfg.LiveLanguageCode)
+	}
 	logInfof("live setup prompt cache backend: %s ttl=%s", cfg.LiveSetupPromptCacheBackend, cfg.LiveSetupPromptCacheTTL)
 	logInfof("session list cache backend: %s ttl=%s", cfg.SessionListCacheBackend, cfg.SessionListCacheTTL)
 	logInfof("message events backend: %s kafka_consumer=%t topic=%s", cfg.MessageEventsBackend, cfg.MessageEventsKafkaConsumerEnabled, cfg.MessageEventsKafkaTopic)

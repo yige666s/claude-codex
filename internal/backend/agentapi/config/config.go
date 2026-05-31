@@ -114,6 +114,8 @@ type Config struct {
 	LiveVertexAPIVersion                    string
 	LiveInputAudioMIME                      string
 	LiveOutputAudioMIME                     string
+	LiveVoiceName                           string
+	LiveLanguageCode                        string
 	LiveInputTranscription                  bool
 	LiveOutputTranscription                 bool
 	LiveVADStartSensitivity                 string
@@ -335,6 +337,8 @@ func Default() Config {
 		LiveVertexAPIVersion:                    FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_API_VERSION"), "v1beta1"),
 		LiveInputAudioMIME:                      FirstNonEmpty(os.Getenv("AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE"), "audio/pcm;rate=16000"),
 		LiveOutputAudioMIME:                     os.Getenv("AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE"),
+		LiveVoiceName:                           os.Getenv("AGENT_API_LIVE_VOICE_NAME"),
+		LiveLanguageCode:                        os.Getenv("AGENT_API_LIVE_LANGUAGE_CODE"),
 		LiveInputTranscription:                  EnvBool("AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED", true),
 		LiveOutputTranscription:                 EnvBool("AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED", true),
 		LiveVADStartSensitivity:                 FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VAD_START_SENSITIVITY"), "START_SENSITIVITY_HIGH"),
@@ -557,6 +561,8 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.StringVar(&cfg.LiveVertexAPIVersion, "live-vertex-api-version", cfg.LiveVertexAPIVersion, "Vertex Live websocket API version")
 	flags.StringVar(&cfg.LiveInputAudioMIME, "live-input-audio-mime-type", cfg.LiveInputAudioMIME, "input audio MIME type sent to Gemini Live")
 	flags.StringVar(&cfg.LiveOutputAudioMIME, "live-output-audio-mime-type", cfg.LiveOutputAudioMIME, "fallback output audio MIME type for Gemini Live")
+	flags.StringVar(&cfg.LiveVoiceName, "live-voice-name", cfg.LiveVoiceName, "Gemini Live prebuilt voice name, for example Puck, Charon, Kore, Fenrir, Aoede, or Zephyr")
+	flags.StringVar(&cfg.LiveLanguageCode, "live-language-code", cfg.LiveLanguageCode, "optional BCP-47 Live response language code, for example zh-CN or en-US")
 	flags.BoolVar(&cfg.LiveInputTranscription, "live-input-transcription-enabled", cfg.LiveInputTranscription, "request input audio transcription from Gemini Live")
 	flags.BoolVar(&cfg.LiveOutputTranscription, "live-output-transcription-enabled", cfg.LiveOutputTranscription, "request output audio transcription from Gemini Live")
 	flags.StringVar(&cfg.LiveVADStartSensitivity, "live-vad-start-sensitivity", cfg.LiveVADStartSensitivity, "Gemini Live VAD speech start sensitivity")

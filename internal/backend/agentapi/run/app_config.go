@@ -161,6 +161,8 @@ func liveConfigFromStartup(cfg startupconfig.Config) agentruntime.LiveConfig {
 		VertexAPIVersion:           cfg.LiveVertexAPIVersion,
 		InputAudioMIMEType:         cfg.LiveInputAudioMIME,
 		OutputAudioMIMEType:        cfg.LiveOutputAudioMIME,
+		VoiceName:                  cfg.LiveVoiceName,
+		LanguageCode:               cfg.LiveLanguageCode,
 		InputTranscriptionEnabled:  cfg.LiveInputTranscription,
 		OutputTranscriptionEnabled: cfg.LiveOutputTranscription,
 		LiveVADStartSensitivity:    cfg.LiveVADStartSensitivity,

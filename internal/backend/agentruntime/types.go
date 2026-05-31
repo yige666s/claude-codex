@@ -433,6 +433,8 @@ type LiveConfig struct {
 	VertexAPIVersion           string
 	InputAudioMIMEType         string
 	OutputAudioMIMEType        string
+	VoiceName                  string
+	LanguageCode               string
 	InputTranscriptionEnabled  bool
 	OutputTranscriptionEnabled bool
 	LiveVADStartSensitivity    string

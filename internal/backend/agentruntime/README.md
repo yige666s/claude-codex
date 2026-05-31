@@ -622,9 +622,20 @@ Relevant settings:
 
 - `AGENT_API_LIVE_MODEL=gemini-live-2.5-flash-preview-native-audio-09-2025`
 - `AGENT_API_LIVE_VERTEX_LOCATION=us-central1`
+- `AGENT_API_LIVE_VOICE_NAME=Puck`
+- `AGENT_API_LIVE_LANGUAGE_CODE=zh-CN`
 - `AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED=true`
 - `AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED=true`
 - `AGENT_API_LIVE_VAD_START_SENSITIVITY=START_SENSITIVITY_HIGH`
 - `AGENT_API_LIVE_VAD_END_SENSITIVITY=END_SENSITIVITY_HIGH`
 - `AGENT_API_LIVE_VAD_PREFIX_PADDING=150ms`
 - `AGENT_API_LIVE_VAD_SILENCE_DURATION=350ms`
+
+`AGENT_API_LIVE_VOICE_NAME` accepts the Gemini Live prebuilt voices from the
+Vertex Live voice configuration docs: `Achernar`, `Achird`, `Algenib`,
+`Algieba`, `Alnilam`, `Aoede`, `Autonoe`, `Callirrhoe`, `Charon`, `Despina`,
+`Enceladus`, `Erinome`, `Fenrir`, `Gacrux`, `Iapetus`, `Kore`, `Laomedeia`,
+`Leda`, `Orus`, `Puck`, `Pulcherrima`, `Rasalgethi`, `Sadachbia`,
+`Sadaltager`, `Schedar`, `Sulafat`, `Umbriel`, `Vindemiatrix`, `Zephyr`, and
+`Zubenelgenubi`. Names are normalized case-insensitively before the Live setup
+message is sent.

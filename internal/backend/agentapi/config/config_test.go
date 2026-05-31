@@ -14,6 +14,8 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	t.Setenv("AGENT_API_OBJECT_TIMEOUT", "3s")
 	t.Setenv("AGENT_API_TIMEZONE", "Asia/Shanghai")
 	t.Setenv("AGENT_API_LOCALE", "zh-CN")
+	t.Setenv("AGENT_API_LIVE_VOICE_NAME", "Kore")
+	t.Setenv("AGENT_API_LIVE_LANGUAGE_CODE", "zh-CN")
 
 	cfg := Default()
 
@@ -35,6 +37,12 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	if cfg.Locale != "zh-CN" {
 		t.Fatalf("Locale = %q, want zh-CN", cfg.Locale)
 	}
+	if cfg.LiveVoiceName != "Kore" {
+		t.Fatalf("LiveVoiceName = %q, want Kore", cfg.LiveVoiceName)
+	}
+	if cfg.LiveLanguageCode != "zh-CN" {
+		t.Fatalf("LiveLanguageCode = %q, want zh-CN", cfg.LiveLanguageCode)
+	}
 }
 
 func TestBindFlagsOverridesConfig(t *testing.T) {
@@ -50,6 +58,8 @@ func TestBindFlagsOverridesConfig(t *testing.T) {
 		"--addr", ":9090",
 		"--sql-max-open-conns", "11",
 		"--live-enabled",
+		"--live-voice-name", "Puck",
+		"--live-language-code", "en-US",
 		"--object-timeout", "4s",
 		"--timezone", "UTC",
 		"--locale", "en-US",
@@ -66,6 +76,12 @@ func TestBindFlagsOverridesConfig(t *testing.T) {
 	}
 	if !cfg.LiveEnabled {
 		t.Fatal("LiveEnabled = false, want true")
+	}
+	if cfg.LiveVoiceName != "Puck" {
+		t.Fatalf("LiveVoiceName = %q, want Puck", cfg.LiveVoiceName)
+	}
+	if cfg.LiveLanguageCode != "en-US" {
+		t.Fatalf("LiveLanguageCode = %q, want en-US", cfg.LiveLanguageCode)
 	}
 	if cfg.ObjectTimeout != 4*time.Second {
 		t.Fatalf("ObjectTimeout = %s, want 4s", cfg.ObjectTimeout)

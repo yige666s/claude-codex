@@ -106,6 +106,39 @@ func TestLiveSetupMessageUsesMinimalThinkingFor31Model(t *testing.T) {
 	}
 }
 
+func TestLiveSetupMessageUsesPrebuiltVoiceAndLanguage(t *testing.T) {
+	service := NewVertexLiveService(LiveConfig{
+		Enabled:         true,
+		VertexProjectID: "project-1",
+		Model:           defaultLiveModel,
+		VoiceName:       "kore",
+		LanguageCode:    "zh-CN",
+	}, nil, nil)
+	message := service.setupMessage(context.Background(), LiveRequest{UserID: "alice", SessionID: "session-1"})
+	setup := message["setup"].(map[string]any)
+	generation := setup["generationConfig"].(map[string]any)
+	speech := generation["speechConfig"].(map[string]any)
+	if speech["languageCode"] != "zh-CN" {
+		t.Fatalf("unexpected speech language: %#v", speech)
+	}
+	voice := speech["voiceConfig"].(map[string]any)
+	prebuilt := voice["prebuiltVoiceConfig"].(map[string]any)
+	if prebuilt["voiceName"] != "Kore" {
+		t.Fatalf("unexpected prebuilt voice config: %#v", speech)
+	}
+}
+
+func TestLiveConfigRejectsUnsupportedPrebuiltVoice(t *testing.T) {
+	err := validateLiveConfig(LiveConfig{
+		Enabled:         true,
+		VertexProjectID: "project-1",
+		VoiceName:       "not-a-real-voice",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported live prebuilt voice") {
+		t.Fatalf("validateLiveConfig error = %v, want unsupported voice", err)
+	}
+}
+
 func TestLiveSetupMessageUsesPromptCache(t *testing.T) {
 	recorder := &countingLiveRecorder{instruction: "cached instruction"}
 	cache := NewMemoryLiveSetupPromptCache(time.Minute)
