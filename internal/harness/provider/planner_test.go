@@ -161,49 +161,6 @@ func TestPlannerPassesThinkingConfigFromContext(t *testing.T) {
 	}
 }
 
-func TestPlannerRequestsGoogleSearchGroundingAutoByDefault(t *testing.T) {
-	provider := &fakeProvider{
-		response: &MessageResponse{
-			Model:      "fake",
-			Role:       "assistant",
-			Content:    []ContentBlock{{Type: "text", Text: "ok"}},
-			StopReason: "end_turn",
-		},
-	}
-	planner := NewPlanner(provider, "fake")
-	session := state.NewSession(t.TempDir())
-	session.AddUserMessage("search if needed")
-
-	if _, err := planner.Next(context.Background(), session, nil); err != nil {
-		t.Fatalf("Next() error = %v", err)
-	}
-	if provider.request == nil || provider.request.GoogleSearchGrounding != GoogleSearchGroundingAuto {
-		t.Fatalf("google search grounding mode = %#v", provider.request)
-	}
-}
-
-func TestPlannerAllowsGoogleSearchGroundingOverride(t *testing.T) {
-	provider := &fakeProvider{
-		response: &MessageResponse{
-			Model:      "fake",
-			Role:       "assistant",
-			Content:    []ContentBlock{{Type: "text", Text: "ok"}},
-			StopReason: "end_turn",
-		},
-	}
-	planner := NewPlanner(provider, "fake")
-	session := state.NewSession(t.TempDir())
-	session.AddUserMessage("no search")
-	ctx := WithGoogleSearchGrounding(context.Background(), GoogleSearchGroundingOff)
-
-	if _, err := planner.Next(ctx, session, nil); err != nil {
-		t.Fatalf("Next() error = %v", err)
-	}
-	if provider.request == nil || provider.request.GoogleSearchGrounding != GoogleSearchGroundingOff {
-		t.Fatalf("google search grounding mode = %#v", provider.request)
-	}
-}
-
 func TestPlannerPreservesUserContentBlocks(t *testing.T) {
 	provider := &fakeProvider{
 		response: &MessageResponse{

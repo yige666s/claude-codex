@@ -101,12 +101,7 @@ type geminiSafetySetting struct {
 }
 
 type geminiTool struct {
-	FunctionDeclarations []geminiFunctionDeclaration `json:"functionDeclarations,omitempty"`
-	GoogleSearch         *geminiGoogleSearch         `json:"googleSearch,omitempty"`
-}
-
-type geminiGoogleSearch struct {
-	ExcludeDomains []string `json:"exclude_domains,omitempty"`
+	FunctionDeclarations []geminiFunctionDeclaration `json:"functionDeclarations"`
 }
 
 type geminiFunctionDeclaration struct {
@@ -165,7 +160,17 @@ func (p *GeminiProvider) StreamMessage(ctx context.Context, request MessageReque
 		}
 	}
 	geminiReq.Contents = append(geminiReq.Contents, geminiContentsFromMessages(request.Messages)...)
-	geminiReq.Tools = geminiToolsForRequest("gemini", request, p.config)
+	if len(request.Tools) > 0 {
+		functionDecls := make([]geminiFunctionDeclaration, len(request.Tools))
+		for i, tool := range request.Tools {
+			functionDecls[i] = geminiFunctionDeclaration{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.InputSchema,
+			}
+		}
+		geminiReq.Tools = []geminiTool{{FunctionDeclarations: functionDecls}}
+	}
 	body, err := json.Marshal(geminiReq)
 	if err != nil {
 		return nil, err
@@ -195,11 +200,10 @@ type geminiResponse struct {
 }
 
 type geminiCandidate struct {
-	Content           geminiContent   `json:"content"`
-	FinishReason      string          `json:"finishReason"`
-	Index             int             `json:"index"`
-	SafetyRatings     []interface{}   `json:"safetyRatings,omitempty"`
-	GroundingMetadata json.RawMessage `json:"groundingMetadata,omitempty"`
+	Content       geminiContent `json:"content"`
+	FinishReason  string        `json:"finishReason"`
+	Index         int           `json:"index"`
+	SafetyRatings []interface{} `json:"safetyRatings,omitempty"`
 }
 
 type geminiUsageMetadata struct {
@@ -230,7 +234,20 @@ func (p *GeminiProvider) CreateMessage(ctx context.Context, request MessageReque
 
 	geminiReq.Contents = append(geminiReq.Contents, geminiContentsFromMessages(request.Messages)...)
 
-	geminiReq.Tools = geminiToolsForRequest("gemini", request, p.config)
+	// Convert tools if present
+	if len(request.Tools) > 0 {
+		functionDecls := make([]geminiFunctionDeclaration, len(request.Tools))
+		for i, tool := range request.Tools {
+			functionDecls[i] = geminiFunctionDeclaration{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.InputSchema,
+			}
+		}
+		geminiReq.Tools = []geminiTool{
+			{FunctionDeclarations: functionDecls},
+		}
+	}
 
 	// Marshal request
 	body, err := json.Marshal(geminiReq)
@@ -301,40 +318,17 @@ func (p *GeminiProvider) CreateMessage(ctx context.Context, request MessageReque
 	}
 
 	return &MessageResponse{
-		ID:                fmt.Sprintf("gemini-%d", time.Now().Unix()),
-		Model:             request.Model,
-		Role:              "assistant",
-		Content:           contentBlocks,
-		ToolCalls:         toolCalls,
-		StopReason:        stopReason,
-		GroundingMetadata: candidate.GroundingMetadata,
+		ID:         fmt.Sprintf("gemini-%d", time.Now().Unix()),
+		Model:      request.Model,
+		Role:       "assistant",
+		Content:    contentBlocks,
+		ToolCalls:  toolCalls,
+		StopReason: stopReason,
 		Usage: Usage{
 			InputTokens:  geminiResp.UsageMetadata.PromptTokenCount,
 			OutputTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
 		},
 	}, nil
-}
-
-func geminiToolsForRequest(providerName string, request MessageRequest, config Config) []geminiTool {
-	mode := googleSearchGroundingMode(request, config)
-	groundingEnabled := shouldUseGoogleSearchGrounding(providerName, request.Model, mode)
-	tools := filterGoogleSearchFallbackTools(request.Tools, groundingEnabled)
-	out := make([]geminiTool, 0, 2)
-	if len(tools) > 0 {
-		functionDecls := make([]geminiFunctionDeclaration, len(tools))
-		for i, tool := range tools {
-			functionDecls[i] = geminiFunctionDeclaration{
-				Name:        tool.Name,
-				Description: tool.Description,
-				Parameters:  tool.InputSchema,
-			}
-		}
-		out = append(out, geminiTool{FunctionDeclarations: functionDecls})
-	}
-	if groundingEnabled {
-		out = append(out, geminiTool{GoogleSearch: &geminiGoogleSearch{}})
-	}
-	return out
 }
 
 func geminiContentsFromMessages(messages []Message) []geminiContent {
@@ -479,7 +473,6 @@ func parseGeminiStreamResponse(model string, body io.Reader, idPrefix string, on
 		usage       Usage
 		stopReason  string
 		chunkIndex  int
-		grounding   json.RawMessage
 	)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -509,9 +502,6 @@ func parseGeminiStreamResponse(model string, body io.Reader, idPrefix string, on
 		candidate := chunk.Candidates[0]
 		if candidate.FinishReason != "" {
 			stopReason = candidate.FinishReason
-		}
-		if len(candidate.GroundingMetadata) > 0 {
-			grounding = candidate.GroundingMetadata
 		}
 		for _, part := range candidate.Content.Parts {
 			if part.Text != "" {
@@ -550,14 +540,13 @@ func parseGeminiStreamResponse(model string, body io.Reader, idPrefix string, on
 		contentBlocks = []ContentBlock{{Type: "text", Text: text}}
 	}
 	return &MessageResponse{
-		ID:                fmt.Sprintf("%s-%d", idPrefix, time.Now().Unix()),
-		Model:             model,
-		Role:              "assistant",
-		Content:           contentBlocks,
-		ToolCalls:         toolCalls,
-		StopReason:        stopReason,
-		Usage:             usage,
-		GroundingMetadata: grounding,
+		ID:         fmt.Sprintf("%s-%d", idPrefix, time.Now().Unix()),
+		Model:      model,
+		Role:       "assistant",
+		Content:    contentBlocks,
+		ToolCalls:  toolCalls,
+		StopReason: stopReason,
+		Usage:      usage,
 	}, nil
 }
 
