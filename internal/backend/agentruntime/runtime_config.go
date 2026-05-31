@@ -249,7 +249,7 @@ func applyLLMGovernanceConfigPatchWithOptions(config LLMGovernanceConfig, patch 
 		if providerChanged {
 			next.ModelRoutes = resetModelRoutes(next.ModelRoutes, option.ID)
 		} else {
-			next.ModelRoutes = setDefaultModelRoute(next.ModelRoutes, option.ID)
+			next.ModelRoutes = setPrimaryModelRoutes(next.ModelRoutes, option.ID)
 		}
 	}
 	if patch.VertexLocation != nil {
@@ -381,6 +381,43 @@ func setDefaultModelRoute(routes, model string) string {
 	}
 	if !found {
 		out = append([]string{"default=" + model}, out...)
+	}
+	return strings.Join(out, ",")
+}
+
+func setPrimaryModelRoutes(routes, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return strings.TrimSpace(routes)
+	}
+	items := splitRuntimeConfigCSV(routes)
+	out := make([]string, 0, len(items)+1)
+	foundDefault := false
+	for _, item := range items {
+		key, _, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if key == "default" {
+			foundDefault = true
+			out = append(out, "default="+model)
+			continue
+		}
+		if key == "chat" || strings.HasPrefix(key, "chat:") {
+			out = append(out, key+"="+model)
+			continue
+		}
+		out = append(out, item)
+	}
+	if !foundDefault {
+		out = append([]string{"default=" + model}, out...)
+	}
+	if len(out) == 0 {
+		return "default=" + model
 	}
 	return strings.Join(out, ",")
 }

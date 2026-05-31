@@ -31,6 +31,26 @@ func TestLLMGovernanceConfigModelPatchBindsVertexLocation(t *testing.T) {
 	}
 }
 
+func TestLLMGovernanceConfigModelPatchUpdatesChatRoutes(t *testing.T) {
+	model := "gemini-2.5-pro"
+	updated, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{
+		Provider:       "vertex",
+		Model:          "gemini-3.1-flash-lite",
+		VertexLocation: "global",
+		ModelRoutes:    "default=gemini-3.1-flash-lite,chat=gemini-3.1-flash-lite,chat:search=gemini-3.1-flash-lite,skill:vertex-image-artifact=gemini-2.5-flash",
+	}, LLMGovernanceConfigPatch{Model: &model})
+	if err != nil {
+		t.Fatalf("apply model patch: %v", err)
+	}
+	want := "default=gemini-2.5-pro,chat=gemini-2.5-pro,chat:search=gemini-2.5-pro,skill:vertex-image-artifact=gemini-2.5-flash"
+	if updated.ModelRoutes != want {
+		t.Fatalf("model routes = %q, want %q", updated.ModelRoutes, want)
+	}
+	if updated.VertexLocation != "us-central1" {
+		t.Fatalf("vertex location = %q, want us-central1", updated.VertexLocation)
+	}
+}
+
 func TestLLMGovernanceConfigModelPatchCanSwitchToShortAPI(t *testing.T) {
 	model := "google/gemini-3.1-pro-preview"
 	updated, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{

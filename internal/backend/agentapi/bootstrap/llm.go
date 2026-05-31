@@ -100,7 +100,7 @@ func newPlanner(cfg LLMConfig) (engine.Planner, error) {
 }
 
 func NewGovernedPlannerForScope(primary LLMConfig, fallbackSpec, modelRoutes string, scope agentruntime.Scope, usageStore agentruntime.LLMUsageStore, governance agentruntime.LLMGovernanceConfig) (*agentruntime.GovernedPlanner, error) {
-	primary.Model = RoutedModel(primary.Model, modelRoutes, scope)
+	primary = applyRoutedModelForScope(primary, modelRoutes, scope)
 	configs := []LLMConfig{primary}
 	for _, fallback := range ParseLLMFallbacks(fallbackSpec, primary.Timeout) {
 		if fallback.Model == "" {
@@ -129,6 +129,16 @@ func NewGovernedPlannerForScope(primary LLMConfig, fallbackSpec, modelRoutes str
 		})
 	}
 	return agentruntime.NewGovernedPlanner(backends, usageStore, governance)
+}
+
+func applyRoutedModelForScope(config LLMConfig, modelRoutes string, scope agentruntime.Scope) LLMConfig {
+	config.Model = RoutedModel(config.Model, modelRoutes, scope)
+	if option, ok := agentruntime.LLMModelOptionFor(config.Model); ok {
+		config.Provider = option.Provider
+		config.Model = option.ID
+		config.VertexLocation = option.VertexLocation
+	}
+	return config
 }
 
 func ApplyRuntimeLLMConfig(base LLMConfig, runtimeConfig agentruntime.LLMGovernanceConfig) LLMConfig {
