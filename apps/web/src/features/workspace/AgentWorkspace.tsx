@@ -217,6 +217,7 @@ export function AgentWorkspace() {
   const activeJobStreamIdRef = useRef("");
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const selectedSessionIdRef = useRef("");
+  const deletedSessionIdsRef = useRef<Set<string>>(new Set());
   const resourceDialogTabRef = useRef<RightPanelTab | null>(null);
   const artifactWorkspaceOpenRef = useRef(false);
   const resourceIdsRef = useRef<Record<RightPanelTab, Set<string>>>(emptyResourceIdSets());
@@ -545,17 +546,31 @@ export function AgentWorkspace() {
   }
 
   async function refreshSessionData(id: string, options: { revealNewArtifacts?: boolean } = {}) {
+    if (!id || deletedSessionIdsRef.current.has(id)) return;
     if (selectedSessionIdRef.current === id) {
       setStatus({ tone: "busy", text: "Refreshing" });
     }
     const previousArtifactIds = new Set(artifactsRef.current.map((asset) => asset.id));
-    const [session, jobList, attachmentList, artifactList] = await Promise.all([
-      api.getSession(id),
-      api.jobs(id),
-      api.attachments(id),
-      api.artifacts(id)
-    ]);
-    setSessions((current) => upsertSession(current, session));
+    let session: Session;
+    let jobList: Job[];
+    let attachmentList: Asset[];
+    let artifactList: Asset[];
+    try {
+      [session, jobList, attachmentList, artifactList] = await Promise.all([
+        api.getSession(id),
+        api.jobs(id),
+        api.attachments(id),
+        api.artifacts(id)
+      ]);
+    } catch (error) {
+      if (deletedSessionIdsRef.current.has(id)) return;
+      throw error;
+    }
+    if (deletedSessionIdsRef.current.has(id) || deletedSessionIdsRef.current.has(session.id)) return;
+    setSessions((current) => upsertSession(
+      current.filter((item) => !deletedSessionIdsRef.current.has(item.id)),
+      session
+    ));
     if (selectedSessionIdRef.current !== id) {
       return;
     }
@@ -709,6 +724,7 @@ export function AgentWorkspace() {
   async function createSession() {
     try {
       const session = await api.createSession();
+      deletedSessionIdsRef.current.delete(session.id);
       setSessions((current) => [session, ...current]);
       selectedSessionIdRef.current = session.id;
       setSessionId(session.id);
@@ -733,14 +749,27 @@ export function AgentWorkspace() {
     if (!confirmed) return;
     try {
       await api.deleteSession(targetSessionId);
-      const next = sessions.filter((item) => item.id !== targetSessionId);
-      setSessions(next);
+      deletedSessionIdsRef.current.add(targetSessionId);
+      clearActiveJobForSession(targetSessionId);
+      setSessions((current) => current.filter((item) => item.id !== targetSessionId));
       if (targetSessionId === sessionId) {
-        const nextSessionId = next[0]?.id || "";
-        selectedSessionIdRef.current = nextSessionId;
-        setSessionId(nextSessionId);
-        setMessages(visibleMessages(next[0]?.messages || []));
+        stopLiveMode(false, false);
+        closeJobStream();
+        setSelectedJobId("");
+        setJobEvents([]);
+        selectedSessionIdRef.current = "";
+        setSessionId("");
+        setMessages([]);
+        setJobs([]);
+        setAttachments([]);
+        setArtifacts([]);
         resetSessionScopedFeedback({ clearDraft: true });
+        const freshSession = await api.createSession();
+        deletedSessionIdsRef.current.delete(freshSession.id);
+        selectedSessionIdRef.current = freshSession.id;
+        setSessions((current) => [freshSession, ...current.filter((item) => item.id !== targetSessionId)]);
+        setSessionId(freshSession.id);
+        setStatus({ tone: "ok", text: "New chat ready" });
       }
       setSettingsOpen(false);
     } catch (error) {
@@ -1352,14 +1381,18 @@ export function AgentWorkspace() {
 
   function handleRuntimeEvent(event: RuntimeEvent) {
     if (event.type === "message" && event.role === "user") {
-      setMessages((current) => appendRuntimeMessage(current, { role: "user", content: event.content || "" }));
+      const message = runtimeEventMessage(event, "user");
+      setMessages((current) => appendRuntimeMessage(current, message));
+      appendSessionMessage(event.session_id || sessionId, message);
     }
     if (event.type === "delta") {
       setAssistantDraft((current) => current + (event.content || ""));
     }
     if (event.type === "message" && event.role === "assistant") {
+      const message = runtimeEventMessage(event, "assistant");
       setAssistantDraft("");
-      setMessages((current) => appendRuntimeMessage(current, { role: "assistant", content: event.content || "" }));
+      setMessages((current) => appendRuntimeMessage(current, message));
+      appendSessionMessage(event.session_id || sessionId, message);
     }
     if (event.type === "job" && event.job_id) {
       setSelectedJobId(event.job_id);
@@ -1383,6 +1416,18 @@ export function AgentWorkspace() {
     if (event.type === "done") {
       setStatus({ tone: "ok", text: "Done" });
     }
+  }
+
+  function appendSessionMessage(targetSessionId: string, message: Message) {
+    if (!targetSessionId || deletedSessionIdsRef.current.has(targetSessionId)) return;
+    setSessions((current) => current.map((item) => {
+      if (item.id !== targetSessionId || deletedSessionIdsRef.current.has(item.id)) return item;
+      return {
+        ...item,
+        messages: appendRuntimeMessage(item.messages || [], message),
+        updated_at: message.created_at || new Date().toISOString()
+      };
+    }));
   }
 
   async function openJobStream(jobId: string, reconnect = false) {
@@ -1945,6 +1990,14 @@ function appendRuntimeMessage(messages: Message[], message: Message): Message[] 
   return [...messages, message];
 }
 
+function runtimeEventMessage(event: RuntimeEvent, role: "user" | "assistant"): Message {
+  return {
+    role,
+    content: event.content || "",
+    created_at: new Date().toISOString()
+  };
+}
+
 function isConvertedSkillCommandMessage(messages: Message[], message: Message): boolean {
   const content = (message.content || message.tool_output || "").trim();
   if (message.hidden || message.role !== "user" || !isSlashSkillCommand(content)) {
@@ -2017,6 +2070,16 @@ function clearActiveJob(jobId?: string) {
   try {
     const stored = loadActiveJob();
     if (jobId && stored?.jobId && stored.jobId !== jobId) return;
+    localStorage.removeItem(activeJobStorageKey);
+  } catch {
+    // Best-effort recovery hint only.
+  }
+}
+
+function clearActiveJobForSession(sessionId: string) {
+  try {
+    const stored = loadActiveJob();
+    if (stored?.sessionId !== sessionId) return;
     localStorage.removeItem(activeJobStorageKey);
   } catch {
     // Best-effort recovery hint only.

@@ -49,7 +49,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByLabel("Repeat secret").fill("password123");
   await page.getByRole("button", { name: "Create Account" }).click();
 
-  await expect(page.getByRole("heading", { name: /Hello E2E User/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Hi E2E User/i })).toBeVisible();
   await expect(page.locator(".empty-state")).toBeVisible();
   await expect(page.getByRole("button", { name: "Use image generation" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Use web search" })).toBeVisible();
@@ -161,6 +161,40 @@ test("keeps sent chat text visible when the stream fails", async ({ page }) => {
   await expect(page.getByText(/Message delivery failed/).first()).toBeVisible();
 });
 
+test("opens a fresh chat after deleting the active session", async ({ page }) => {
+  await mockAgentAPI(page, {
+    initialSessions: [{
+      id: "20260509T115900Z-old",
+      working_dir: "/tmp",
+      started_at: now,
+      updated_at: "2026-05-09T11:59:00.000Z",
+      messages: [
+        { role: "user", content: "old history should not become active", created_at: now, message_index: 0 },
+        { role: "assistant", content: "old session answer", created_at: now, message_index: 1 }
+      ]
+    }]
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Email").fill("e2e@example.com");
+  await page.getByLabel("Password").fill("password123");
+  await page.getByRole("button", { name: "Login" }).last().click();
+  await expect(page.getByText("old session answer")).toBeVisible();
+
+  await page.getByRole("button", { name: "新聊天" }).click();
+  await expect(page.locator(".empty-state")).toBeVisible();
+  await page.getByRole("textbox", { name: "Message" }).fill("delete this active session");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Echo: delete this active session")).toBeVisible();
+
+  await page.locator(".session-list-item.active .session-delete").click();
+  await page.getByRole("dialog", { name: "Delete session?" }).getByRole("button", { name: "Delete" }).click();
+
+  await expect(page.locator(".empty-state")).toBeVisible();
+  await expect(page.locator(".message")).toHaveCount(0);
+  await expect(page.locator(".session-list-item.active", { hasText: "old history should not become active" })).toHaveCount(0);
+});
+
 test("covers admin console smoke after the panel split", async ({ page }) => {
   await mockAgentAPI(page);
 
@@ -168,7 +202,7 @@ test("covers admin console smoke after the panel split", async ({ page }) => {
   await page.getByLabel("Email").fill("admin@example.com");
   await page.getByLabel("Password").fill("password123");
   await page.getByRole("button", { name: "Login" }).last().click();
-  await expect(page.getByRole("heading", { name: /Hello E2E User/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Hi E2E User/i })).toBeVisible();
 
   await page.goto("/admin");
   await expect(page.getByRole("heading", { name: "Skills" })).toBeVisible();
@@ -185,7 +219,7 @@ test("covers admin console smoke after the panel split", async ({ page }) => {
   await expect(page.getByText("gemini")).toBeVisible();
 });
 
-async function mockAgentAPI(page: Page, options: { failChat?: boolean } = {}) {
+async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSessions?: Session[] } = {}) {
   const sessionA: Session = {
     id: "20260509T120000Z-e2e",
     working_dir: "/tmp",
@@ -195,7 +229,7 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean } = {}) {
   };
   let createdSessionCount = 0;
   const state = {
-    sessions: [sessionA] as Session[],
+    sessions: cloneSessions(options.initialSessions || [sessionA]),
     attachments: [] as Asset[],
     artifacts: [] as Asset[],
     jobs: [] as Job[],
@@ -250,7 +284,17 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean } = {}) {
 
   await page.route(/.*\/v1\/sessions\/[^/]+$/, async (route) => {
     const id = route.request().url().split("/v1/sessions/")[1].split("?")[0];
-    return json(route, state.sessions.find((session) => session.id === decodeURIComponent(id)) || state.sessions[0]);
+    const sessionID = decodeURIComponent(id);
+    if (route.request().method() === "DELETE") {
+      state.sessions = state.sessions.filter((session) => session.id !== sessionID);
+      state.jobs = state.jobs.filter((job) => job.session_id !== sessionID);
+      state.attachments = state.attachments.filter((asset) => asset.session_id !== sessionID);
+      state.artifacts = state.artifacts.filter((asset) => asset.session_id !== sessionID);
+      return json(route, {});
+    }
+    const session = state.sessions.find((item) => item.id === sessionID);
+    if (!session) return json(route, { error: "session not found" }, 404);
+    return json(route, session);
   });
 
   await page.route(/.*\/v1\/sessions\/[^/]+\/messages$/, async (route) => {
@@ -440,6 +484,13 @@ function authSession(email: string) {
     csrf_token: "csrf-token",
     expires_at: "2099-01-01T00:00:00.000Z"
   };
+}
+
+function cloneSessions(sessions: Session[]): Session[] {
+  return sessions.map((session) => ({
+    ...session,
+    messages: session.messages.map((message) => ({ ...message }))
+  }));
 }
 
 function json(route: Route, body: unknown, status = 200) {
