@@ -211,7 +211,7 @@ func TestLiveInitialHistoryPayloadUsesOfficialClientContentTurns(t *testing.T) {
 	if turns[1]["role"] != "user" || turns[2]["role"] != "model" {
 		t.Fatalf("unexpected user/model role mapping: %#v", turns)
 	}
-	if turns[3]["role"] != "user" || !strings.Contains(turns[3]["parts"].([]map[string]any)[0]["text"].(string), "one short greeting only") {
+	if turns[3]["role"] != "user" || !strings.Contains(turns[3]["parts"].([]map[string]any)[0]["text"].(string), "one short greeting") {
 		t.Fatalf("startup greeting should be the final live turn: %#v", turns[3])
 	}
 }
@@ -226,7 +226,7 @@ func TestLiveInitialHistoryPayloadGreetsEvenWithoutHistory(t *testing.T) {
 	if len(turns) != 1 {
 		t.Fatalf("turns = %d, want 1: %#v", len(turns), turns)
 	}
-	if turns[0]["role"] != "user" || !strings.Contains(turns[0]["parts"].([]map[string]any)[0]["text"].(string), "Do not answer, summarize, or reference") {
+	if turns[0]["role"] != "user" || !strings.Contains(turns[0]["parts"].([]map[string]any)[0]["text"].(string), "Do not answer, summarize, continue, or take action") {
 		t.Fatalf("missing guarded startup greeting turn: %#v", turns[0])
 	}
 }

@@ -1569,7 +1569,7 @@ func (r *Runtime) LiveSystemInstruction(ctx context.Context, userID, sessionID s
 	}
 	parts = append(parts, r.baseLiveRuntimeContextParts()...)
 	parts = append(parts, "Live voice language policy: preserve the user's spoken language; if the utterance is ambiguous, prefer Chinese for this product unless recent conversation context is clearly in another language. Treat short repeated fillers, obvious ASR noise, and accidental wake words as non-actionable. Never trigger artifact-producing skills from vague live speech; require an explicit slash command or a clear confirmation-quality request.")
-	parts = append(parts, "Session history policy: you may receive prior conversation history at session start. If the startup prompt asks for a greeting, reply only with that brief greeting. Do NOT proactively summarize, reference, or act on prior history or saved memory until the user speaks first.")
+	parts = append(parts, "Session history policy: you may receive prior conversation history and saved memory at session start. If the startup prompt asks for a greeting, reply only with that brief greeting. Do NOT proactively answer, summarize, continue, or take action on prior history, saved memory, tools, or other sessions until the user makes a new spoken request. Use prior context only after it is relevant to the user's new request.")
 	runner, _, _ := r.liveHarnessToolRunner(ctx, userID, sessionID)
 	if runner != nil && liveRunnerHasWebTools(runner) {
 		parts = append(parts, "Web research: you have a `web_research` function available. Use it — do not answer from memory — whenever the user asks for current events, recent news, live data, or any externally verifiable fact. Call the function immediately; do not narrate that you are about to search.")

@@ -27,7 +27,7 @@ const (
 	defaultLiveVADSilenceDuration        = 350 * time.Millisecond
 	defaultLiveInitialHistoryMaxMessages = 32
 	defaultLiveInitialHistoryMaxTokens   = 16000
-	defaultLiveStartupGreetingPrompt     = "Live voice is now connected. Reply in Language user common used,if no defaut with english with one short greeting only, then wait for the user's first spoken request. Do not answer, summarize, or reference prior history, saved memory, tools, or other sessions."
+	defaultLiveStartupGreetingPrompt     = "Live voice is now connected. Reply with one short greeting in the user's usual language; if unsure, use English. Then wait for the user's first spoken request. You may use the provided history and memory later, after the user asks something. Do not answer, summarize, continue, or take action on prior history, saved memory, tools, or other sessions unless the user explicitly asks in a new spoken request."
 )
 
 var supportedLivePrebuiltVoiceNames = map[string]struct{}{
