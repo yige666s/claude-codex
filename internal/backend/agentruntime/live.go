@@ -22,6 +22,7 @@ const (
 	defaultLiveVertexLocation            = "us-central1"
 	defaultLiveVertexAPIVersion          = "v1beta1"
 	defaultLiveInputAudioMIMEType        = "audio/pcm;rate=16000"
+	defaultLiveLanguageCode              = "zh-CN"
 	defaultLiveSessionTimeout            = 10 * time.Minute
 	defaultLiveVADPrefixPadding          = 150 * time.Millisecond
 	defaultLiveVADSilenceDuration        = 350 * time.Millisecond
@@ -138,6 +139,9 @@ func normalizeLiveConfig(config LiveConfig) LiveConfig {
 	config.OutputAudioMIMEType = strings.TrimSpace(config.OutputAudioMIMEType)
 	config.VoiceName = normalizeLivePrebuiltVoiceName(config.VoiceName)
 	config.LanguageCode = strings.TrimSpace(config.LanguageCode)
+	if config.LanguageCode == "" {
+		config.LanguageCode = defaultLiveLanguageCode
+	}
 	config.LiveVADStartSensitivity = liveNormalizeEnum(config.LiveVADStartSensitivity, "START_SENSITIVITY_HIGH")
 	config.LiveVADEndSensitivity = liveNormalizeEnum(config.LiveVADEndSensitivity, "END_SENSITIVITY_HIGH")
 	if config.LiveVADPrefixPadding <= 0 {
@@ -928,7 +932,26 @@ func liveIsNoisyInputTranscript(text string) bool {
 			return true
 		}
 	}
+	if liveIsLikelyShortNonChineseNoise(compact, len(runes)) {
+		return true
+	}
 	return false
+}
+
+func liveIsLikelyShortNonChineseNoise(compact string, runeCount int) bool {
+	if runeCount == 0 || runeCount > 12 {
+		return false
+	}
+	hasNonTargetScript := false
+	for _, r := range compact {
+		if (r >= 0x3400 && r <= 0x9fff) || (r >= 0xf900 && r <= 0xfaff) {
+			return false
+		}
+		if (r >= 0x3040 && r <= 0x30ff) || (r >= 0xac00 && r <= 0xd7af) {
+			hasNonTargetScript = true
+		}
+	}
+	return hasNonTargetScript
 }
 
 func liveOutputAudioParts(content map[string]any, fallbackMIME string) []map[string]any {

@@ -27,6 +27,9 @@ func TestLiveVertexWebSocketURL(t *testing.T) {
 
 func TestNormalizeLiveConfigUsesLowLatencyVADDefaults(t *testing.T) {
 	config := normalizeLiveConfig(LiveConfig{})
+	if config.LanguageCode != defaultLiveLanguageCode {
+		t.Fatalf("language code = %q, want %q", config.LanguageCode, defaultLiveLanguageCode)
+	}
 	if config.LiveVADStartSensitivity != "START_SENSITIVITY_HIGH" {
 		t.Fatalf("start sensitivity = %q", config.LiveVADStartSensitivity)
 	}
@@ -261,7 +264,7 @@ func TestLiveInputNoiseFilterKeepsShortChinese(t *testing.T) {
 			t.Fatalf("%q should be kept as a meaningful greeting or wake word", text)
 		}
 	}
-	for _, text := range []string{"嗯", "嗯嗯嗯", "呃", "那个", "ummm", "you know", "I mean", "调调调调"} {
+	for _, text := range []string{"嗯", "嗯嗯嗯", "呃", "那个", "ummm", "you know", "I mean", "调调调调", "keine Ahnung", "Tudo.", "en una", "시그널이 켜졌어요?"} {
 		if !liveIsNoisyInputTranscript(text) {
 			t.Fatalf("%q should be treated as noise", text)
 		}

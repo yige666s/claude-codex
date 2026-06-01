@@ -125,7 +125,10 @@
     "right right",
     "sure sure",
     "no no",
-    "yes yes"
+    "yes yes",
+    "keine ahnung",
+    "tudo",
+    "en una"
   ],
   "repeatableFillers": [
     "嗯",
@@ -193,6 +196,11 @@
       "value": "啦啦啦",
       "maxRunes": 8,
       "comment": "Humming/singing noise"
+    },
+    {
+      "value": "시그널이 켜졌어요",
+      "maxRunes": 12,
+      "comment": "Short non-target-language hallucination from ambient noise"
     }
   ]
 }

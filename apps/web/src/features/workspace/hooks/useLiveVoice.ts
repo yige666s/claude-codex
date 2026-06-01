@@ -22,8 +22,9 @@ const liveVoiceProcessorBufferSize = 1024;
 const liveTargetSampleRate = 16000;
 const liveModeSwitchCooldownMs = 450;
 const liveSocketBackpressureBytes = 512 * 1024;
-const livePreSpeechFrameLimit = 4;
-const liveEndOfSpeechMs = 500;
+const livePreSpeechFrameLimit = 6;
+const liveSpeechStartMinMs = 260;
+const liveEndOfSpeechMs = 700;
 const liveCalibrationFrameCount = 16;
 const liveReconnectDelayMs = 700;
 const liveMaxReconnectAttempts = 2;
@@ -544,12 +545,14 @@ export function useLiveVoice({
     const source = audioContext.createMediaStreamSource(stream);
     const processor = audioContext.createScriptProcessor(liveVoiceProcessorBufferSize, 1, 1);
     let speechActive = false;
+    let speechCandidateStartedAt = 0;
     let lastSpeechAt = 0;
     let calibrationFrames = 0;
     let calibrationRMS = 0;
     let noiseFloor = 0.006;
     let calibrationNoticeSent = false;
     const preSpeechFrames: Uint8Array[] = [];
+    const pendingSpeechFrames: Uint8Array[] = [];
     const sendAudioFrame = (data: string) => {
       if (socket.bufferedAmount > liveSocketBackpressureBytes) return;
       liveAudioBytesSentRef.current += Math.ceil(data.length * 0.75);
@@ -570,7 +573,9 @@ export function useLiveVoice({
           speechActive = false;
           sendActivity("activity_end");
         }
+        speechCandidateStartedAt = 0;
         preSpeechFrames.length = 0;
+        pendingSpeechFrames.length = 0;
         return;
       }
       const input = event.inputBuffer.getChannelData(0);
@@ -594,32 +599,49 @@ export function useLiveVoice({
       }
       const pcm = downsampleToPCM16(input, audioContext.sampleRate, liveTargetSampleRate);
       if (!pcm.length) return;
-      const speechThreshold = Math.max(0.012, Math.min(0.08, noiseFloor * 3.4 + 0.004));
-      const peakThreshold = Math.max(0.08, speechThreshold * 4);
+      const speechThreshold = Math.max(0.018, Math.min(0.09, noiseFloor * 4.8 + 0.007));
+      const peakThreshold = Math.max(0.12, speechThreshold * 4.5);
       const hasSpeech = metrics.rms >= speechThreshold || metrics.peak >= peakThreshold;
       if (hasSpeech) {
         lastSpeechAt = now;
         if (!speechActive) {
+          if (!speechCandidateStartedAt) {
+            speechCandidateStartedAt = now;
+            pendingSpeechFrames.length = 0;
+          }
+          pendingSpeechFrames.push(pcm);
+          if (now - speechCandidateStartedAt < liveSpeechStartMinMs) {
+            return;
+          }
           speechActive = true;
+          speechCandidateStartedAt = 0;
           sendActivity("activity_start");
           updateLiveStatus("speaking");
           onStatus({ tone: "busy", text: "Detected speech" });
           for (const frame of preSpeechFrames.splice(0)) {
             sendAudioFrame(bytesToBase64(frame));
           }
+          for (const frame of pendingSpeechFrames.splice(0)) {
+            sendAudioFrame(bytesToBase64(frame));
+          }
+          return;
         }
       }
       if (speechActive) {
         sendAudioFrame(bytesToBase64(pcm));
         if (!hasSpeech && now - lastSpeechAt > liveEndOfSpeechMs) {
           speechActive = false;
+          speechCandidateStartedAt = 0;
           preSpeechFrames.length = 0;
+          pendingSpeechFrames.length = 0;
           sendActivity("activity_end");
           updateLiveStatus("thinking");
           onStatus({ tone: "busy", text: "Processing voice" });
         }
         return;
       }
+      speechCandidateStartedAt = 0;
+      pendingSpeechFrames.length = 0;
       preSpeechFrames.push(pcm);
       if (preSpeechFrames.length > livePreSpeechFrameLimit) {
         preSpeechFrames.shift();
@@ -994,11 +1016,19 @@ function isNoisyLiveTranscript(text: string): boolean {
   if (liveTranscriptNoise.repeatableFillers.some((filler) => isExtendedLiveTranscriptFiller(compact, filler))) return true;
   if (runes.length >= liveTranscriptNoise.repeatedSingleRuneMinRunes && runes.every((rune) => rune === runes[0])) return true;
   if (liveTranscriptNoise.shortContains.some((item) => runes.length <= item.maxRunes && compact.includes(item.value))) return true;
+  if (isLikelyShortNonChineseNoise(compact, runes.length)) return true;
   return false;
 }
 
 function compactLiveTranscriptNoiseText(text: string): string {
-  return text.trim().toLowerCase().replace(/\s+/g, "");
+  return text.trim().toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function isLikelyShortNonChineseNoise(compact: string, runeCount: number): boolean {
+  if (runeCount === 0 || runeCount > 12) return false;
+  if (/[\u3400-\u9fff]/u.test(compact)) return false;
+  if (/[\u3040-\u30ff\uac00-\ud7af]/u.test(compact)) return true;
+  return false;
 }
 
 function isExtendedLiveTranscriptFiller(compact: string, filler: string): boolean {

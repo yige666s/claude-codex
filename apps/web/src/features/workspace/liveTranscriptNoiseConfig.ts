@@ -35,6 +35,7 @@ export const liveTranscriptNoise: LiveTranscriptNoiseRules = {
     "anyways",
     "basically",
     "eh",
+    "enuna",
     "er",
     "erm",
     "frankly",
@@ -45,6 +46,7 @@ export const liveTranscriptNoise: LiveTranscriptNoiseRules = {
     "iguess",
     "imean",
     "isuppose",
+    "keineahnung",
     "kindof",
     "like",
     "literally",
@@ -64,6 +66,7 @@ export const liveTranscriptNoise: LiveTranscriptNoiseRules = {
     "so",
     "sortof",
     "suresure",
+    "tudo",
     "uh",
     "uh-huh",
     "uhh",
@@ -166,6 +169,10 @@ export const liveTranscriptNoise: LiveTranscriptNoiseRules = {
     {
       "value": "lalala",
       "maxRunes": 16
+    },
+    {
+      "value": "시그널이켜졌어요",
+      "maxRunes": 12
     },
     {
       "value": "呃呃",

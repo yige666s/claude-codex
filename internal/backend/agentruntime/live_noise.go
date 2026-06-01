@@ -1,9 +1,19 @@
 package agentruntime
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 func liveCompactTranscriptNoiseText(text string) string {
-	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), ""))
+	var out strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(text)) {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }
 
 func liveTranscriptNoiseContains(values []string, target string) bool {
