@@ -2,18 +2,23 @@
 
 :root {
   color-scheme: light;
-  --bg: #edf2f4;
+  --bg: #eef3f2;
   --panel: #ffffff;
-  --panel-soft: #f3f7f7;
+  --panel-soft: #f5f8f8;
   --panel-raised: #ffffff;
-  --line: #dce3e8;
-  --text: #172026;
-  --muted: #64717d;
-  --accent: #0f766e;
-  --accent-strong: #0b5f59;
-  --focus: rgba(15, 118, 110, 0.14);
-  --active-bg: #eef7f5;
-  --user-message-bg: #f2faf8;
+  --line: #d8e2e5;
+  --line-strong: #c5d3d7;
+  --text: #172126;
+  --muted: #62717c;
+  --muted-soft: #8795a1;
+  --accent: #0c8a7a;
+  --accent-strong: #08675f;
+  --accent-soft: #e7f5f2;
+  --focus: rgba(12, 138, 122, 0.15);
+  --active-bg: #edf8f5;
+  --user-message-bg: #eef8f5;
+  --surface-shadow: 0 18px 48px rgba(27, 38, 50, 0.08);
+  --surface-shadow-soft: 0 10px 28px rgba(27, 38, 50, 0.055);
   --danger-soft: #fff5f3;
   --quote-bg: #f8faf9;
   --quote-text: #334155;
@@ -33,10 +38,12 @@ html, body, #root {
 }
 body {
   margin: 0;
-  background: #050505;
+  background: #0b1114;
   color: var(--text);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
   overflow: hidden;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
 }
 button, input, textarea { font: inherit; }
 button {
@@ -44,10 +51,20 @@ button {
   background: var(--panel);
   color: var(--text);
   min-height: 36px;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
 }
 button:disabled { cursor: not-allowed; opacity: 0.55; }
+.ui-button,
+button,
+label.composer-upload {
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease, transform 0.16s ease;
+}
+.ui-button:active:not(:disabled),
+button:active:not(:disabled),
+label.composer-upload:active {
+  transform: translateY(1px);
+}
 .sr-only {
   position: absolute;
   width: 1px;
@@ -74,6 +91,40 @@ select {
   background: var(--panel);
   color: var(--text);
   font: inherit;
+}
+
+::selection {
+  background: rgba(12, 138, 122, 0.18);
+  color: var(--text);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: rgba(98, 113, 124, 0.35);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(98, 113, 124, 0.52);
+  background-clip: padding-box;
+}
+
+.app-loading {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(12, 138, 122, 0.12), transparent 28%),
+    linear-gradient(180deg, #f7faf9, #eef3f2);
+  color: var(--muted);
+  font-weight: 720;
 }
 
 .auth-page {
@@ -453,7 +504,7 @@ label.composer-upload {
 }
 
 .app-shell {
-  --left-sidebar-width: 300px;
+  --left-sidebar-width: 312px;
   width: 100vw;
   height: 100vh;
   height: 100dvh;
@@ -465,9 +516,11 @@ label.composer-upload {
   overflow: hidden;
   border: 0;
   border-radius: 0;
-  background: #eef3f5;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(12, 138, 122, 0.1), transparent 28%),
+    linear-gradient(135deg, #f8faf9 0%, #eef4f4 48%, #e9f0f2 100%);
   box-shadow: none;
-  transition: grid-template-columns 160ms ease;
+  transition: grid-template-columns 220ms cubic-bezier(.2,.85,.25,1);
 }
 .app-shell.left-collapsed {
   --left-sidebar-width: 72px;
@@ -475,7 +528,7 @@ label.composer-upload {
 .sidebar, .right-panel {
   height: 100%;
   min-height: 0;
-  background: rgba(247, 250, 251, 0.88);
+  background: rgba(248, 251, 251, 0.9);
   border-color: var(--line);
   backdrop-filter: blur(18px);
 }
@@ -483,7 +536,7 @@ label.composer-upload {
   margin: 0;
   height: 100%;
   border: 0;
-  border-right: 1px solid rgba(220, 228, 235, 0.94);
+  border-right: 1px solid rgba(210, 222, 227, 0.84);
   border-radius: 0;
   position: relative;
   z-index: 7;
@@ -497,12 +550,12 @@ label.composer-upload {
   flex-direction: column;
   margin: 16px 16px 16px 0;
   height: calc(100% - 32px);
-  border: 1px solid rgba(225, 230, 238, 0.9);
-  border-radius: 18px;
+  border: 1px solid rgba(214, 225, 229, 0.88);
+  border-radius: 16px;
   overflow: hidden;
   min-width: 0;
   transition: opacity 120ms ease;
-  box-shadow: 0 24px 70px rgba(35, 43, 61, 0.055);
+  box-shadow: var(--surface-shadow-soft);
 }
 .right-collapsed .right-panel {
   border-left: 0;
@@ -512,14 +565,15 @@ label.composer-upload {
   visibility: hidden;
 }
 .sidebar-head, .topbar {
-  min-height: 62px;
-  padding: 12px 15px;
+  min-height: 66px;
+  padding: 13px 16px;
   display: flex;
   align-items: center;
   gap: 12px;
 }
 .sidebar-head {
-  border-bottom: 0;
+  border-bottom: 1px solid rgba(222, 231, 235, 0.68);
+  background: rgba(251, 253, 253, 0.72);
 }
 .sidebar-head strong {
   min-width: 0;
@@ -532,21 +586,21 @@ label.composer-upload {
   height: 30px;
   margin-left: auto;
   padding: 0 9px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(206, 219, 224, 0.86);
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   color: var(--muted);
-  background: var(--panel-soft);
+  background: rgba(255, 255, 255, 0.76);
   font-size: 12px;
   font-weight: 650;
   white-space: nowrap;
 }
 .service-status.ok {
-  border-color: #b9d9d4;
+  border-color: rgba(146, 204, 194, 0.7);
   color: var(--accent);
-  background: var(--active-bg);
+  background: var(--accent-soft);
 }
 .service-status.busy {
   border-color: #bfdbfe;
@@ -619,19 +673,19 @@ label.composer-upload {
 }
 .toolbar {
   flex: 0 0 auto;
-  margin: 0 14px 10px;
-  padding: 10px;
+  margin: 14px 14px 10px;
+  padding: 8px;
   display: grid;
   gap: 8px;
-  border: 1px solid rgba(221, 229, 236, 0.9);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.66);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(215, 226, 231, 0.82);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), var(--surface-shadow-soft);
 }
 .sidebar-action-button,
 .sidebar-resource-button {
   width: 100%;
-  min-height: 42px;
+  min-height: 44px;
   padding: 0 12px;
   border: 1px solid transparent;
   border-radius: 12px;
@@ -646,20 +700,22 @@ label.composer-upload {
   font-size: 14px;
   font-weight: 720;
   text-align: left;
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease, color 160ms ease, transform 160ms ease;
 }
 .sidebar-action-button:hover,
 .sidebar-resource-button:hover {
-  border-color: rgba(210, 220, 230, 0.78);
-  background: rgba(242, 247, 247, 0.92);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  border-color: rgba(191, 209, 216, 0.78);
+  background: rgba(246, 250, 250, 0.95);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.94), 0 8px 18px rgba(35, 49, 57, 0.055);
+  transform: translateY(-1px);
 }
 .sidebar-action-button.primary-action {
-  background: #11927f;
+  background: linear-gradient(180deg, #119987, #0b8678);
   color: #fff;
-  box-shadow: 0 12px 24px rgba(17, 146, 127, 0.15);
+  box-shadow: 0 12px 24px rgba(12, 138, 122, 0.18);
 }
 .sidebar-action-button.primary-action:hover {
-  background: #0d786d;
+  background: linear-gradient(180deg, #0f8d80, #087569);
 }
 .sidebar-action-label {
   min-width: 0;
@@ -671,11 +727,12 @@ label.composer-upload {
   flex: 0 0 auto;
   margin: 0 14px 12px;
   padding: 8px;
-  border: 1px solid rgba(221, 229, 236, 0.9);
-  border-radius: 14px;
+  border: 1px solid rgba(215, 226, 231, 0.82);
+  border-radius: 16px;
   display: grid;
   gap: 3px;
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: var(--surface-shadow-soft);
 }
 .sidebar-resource-button {
   min-height: 38px;
@@ -691,7 +748,7 @@ label.composer-upload {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(232, 239, 241, 0.9);
+  background: rgba(231, 239, 241, 0.92);
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
@@ -927,8 +984,19 @@ label.composer-upload {
   min-width: 46px;
   min-height: 46px;
   padding: 0;
+  border-color: var(--accent);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #8fcac1, #7dbbb2);
+  color: #fff;
   display: inline-grid;
   place-items: center;
+  box-shadow: 0 12px 26px rgba(12, 138, 122, 0.16);
+}
+.send:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+  background: linear-gradient(180deg, #19a28f, #0d8175);
+  color: #fff;
+  transform: translateY(-1px);
 }
 .stop-generation {
   width: 46px;
@@ -936,7 +1004,7 @@ label.composer-upload {
   min-height: 46px;
   padding: 0;
   border: 2px solid var(--danger);
-  border-radius: 999px;
+  border-radius: 12px;
   background: var(--panel);
   color: var(--danger);
   display: inline-grid;
@@ -954,7 +1022,7 @@ label.composer-upload {
 .session-list {
   overflow: auto;
   min-height: 0;
-  padding: 14px 13px 10px;
+  padding: 12px 13px 10px;
   background: transparent;
   overscroll-behavior: contain;
   scroll-padding-top: 14px;
@@ -976,19 +1044,20 @@ label.composer-upload {
   grid-template-columns: minmax(0, 1fr) 42px;
   align-items: center;
   gap: 8px;
-  min-height: 46px;
-  margin-bottom: 7px;
+  min-height: 48px;
+  margin-bottom: 6px;
   padding: 0 8px 0 10px;
   border-width: 1px;
   border-color: transparent;
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: none;
   background: transparent;
 }
 .session-list-item:hover {
-  border-color: rgba(220, 226, 235, 0.86);
-  background: rgba(255, 255, 255, 0.58);
-  box-shadow: 0 12px 26px rgba(42, 50, 67, 0.055);
+  border-color: rgba(204, 218, 224, 0.82);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 10px 22px rgba(42, 50, 67, 0.06);
+  transform: translateY(-1px);
 }
 .session-select {
   width: 100%;
@@ -1017,7 +1086,13 @@ label.composer-upload {
   border-radius: 8px;
   display: inline-grid;
   place-items: center;
-  opacity: 0.82;
+  opacity: 0;
+  transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.session-list-item:hover .session-delete,
+.session-list-item:focus-within .session-delete,
+.session-list-item.active .session-delete {
+  opacity: 0.88;
 }
 .session-delete:hover,
 .session-delete:focus-visible {
@@ -1029,7 +1104,7 @@ label.composer-upload {
 .job-summary span {
   max-width: 100%;
   min-width: 0;
-  font-weight: 650;
+  font-weight: 720;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1045,9 +1120,9 @@ label.composer-upload {
 }
 .session-list-item.active,
 .job-summary.active {
-  background: rgba(244, 249, 255, 0.94);
-  border-color: rgba(188, 208, 242, 0.92);
-  box-shadow: inset 3px 0 0 #5267ff, 0 12px 26px rgba(82, 103, 255, 0.08);
+  background: rgba(238, 248, 245, 0.96);
+  border-color: rgba(150, 202, 192, 0.88);
+  box-shadow: inset 3px 0 0 var(--accent), 0 14px 28px rgba(12, 138, 122, 0.095);
 }
 .job-list {
   overflow: visible;
@@ -1357,7 +1432,9 @@ label.composer-upload {
   position: relative;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
-  background: linear-gradient(180deg, #f6f8f9 0%, #eef4f6 100%);
+  background:
+    radial-gradient(circle at 78% 4%, rgba(12, 138, 122, 0.08), transparent 24%),
+    linear-gradient(180deg, #f8faf9 0%, #eef4f3 100%);
 }
 .workspace-stage {
   height: 100%;
@@ -1373,9 +1450,10 @@ label.composer-upload {
 }
 .topbar {
   grid-row: 1;
-  min-height: 72px;
-  padding: 16px 28px 8px;
-  border-bottom: 0;
+  min-height: 70px;
+  padding: 16px 32px 8px;
+  border-bottom: 1px solid rgba(219, 229, 233, 0.5);
+  background: linear-gradient(180deg, rgba(248, 250, 249, 0.8), rgba(248, 250, 249, 0));
 }
 .topbar > div {
   min-width: 0;
@@ -1383,8 +1461,9 @@ label.composer-upload {
 }
 .topbar h2 {
   margin: 0 0 4px;
-  font-size: 15px;
-  font-weight: 760;
+  font-size: 16px;
+  font-weight: 780;
+  letter-spacing: -0.01em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1394,7 +1473,8 @@ label.composer-upload {
   align-items: center;
   gap: 6px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 680;
 }
 .status.ok { color: var(--accent); }
 .status.busy { color: var(--blue); }
@@ -1431,15 +1511,16 @@ label.composer-upload {
   grid-row: 3;
   min-height: 0;
   overflow: auto;
-  padding: 20px 54px 24px;
+  padding: 24px clamp(28px, 5vw, 72px) 28px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 18px;
+  scroll-behavior: smooth;
 }
 .empty-state {
   width: min(760px, 100%);
   align-self: center;
-  margin: max(70px, 12vh) auto 220px;
+  margin: max(60px, 12vh) auto 220px;
   color: var(--text);
   display: grid;
   justify-items: center;
@@ -1447,30 +1528,29 @@ label.composer-upload {
   animation: emptyStateIn 520ms cubic-bezier(.2,.85,.25,1) both;
 }
 .empty-orb {
-  width: 78px;
-  height: 78px;
+  width: 72px;
+  height: 72px;
   border-radius: 999px;
   background:
     radial-gradient(circle at 28% 28%, rgba(255, 255, 255, 0.95), transparent 24%),
     radial-gradient(circle at 64% 70%, rgba(84, 235, 219, 0.95), transparent 26%),
-    linear-gradient(135deg, #5867ff, #d1ccff 48%, #b6fff3);
+    linear-gradient(135deg, #a7c7c1, #dbe7e4 48%, #77e6d4);
   filter: blur(0.1px);
   box-shadow:
-    0 22px 52px rgba(83, 103, 255, 0.18),
-    0 0 38px rgba(122, 255, 235, 0.2);
+    0 22px 52px rgba(12, 138, 122, 0.16),
+    0 0 38px rgba(122, 255, 235, 0.18);
 }
 .empty-state h1 {
   margin: 22px 0 0;
   max-width: 760px;
-  font-family: "Avenir Next", "Gill Sans", "Trebuchet MS", sans-serif;
-  font-size: clamp(30px, 4.2vw, 48px);
+  font-size: clamp(29px, 4vw, 46px);
   line-height: 1.12;
   font-weight: 820;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.035em;
 }
 .empty-state h1 span {
   display: block;
-  color: #5367ff;
+  color: var(--accent);
 }
 @keyframes emptyStateIn {
   from { opacity: 0; transform: translateY(16px) scale(0.98); }
@@ -1479,22 +1559,26 @@ label.composer-upload {
 .message {
   max-width: min(760px, 86%);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 12px 14px;
+  border-radius: 16px;
+  padding: 13px 15px;
   background: var(--panel);
+  box-shadow: 0 10px 28px rgba(38, 49, 59, 0.045);
+  animation: messageIn 220ms cubic-bezier(.2,.85,.25,1) both;
 }
 .message.user {
   align-self: flex-end;
-  border-color: #c8dbd8;
-  background: #edf7f5;
+  border-color: rgba(175, 213, 206, 0.78);
+  background: linear-gradient(180deg, #f4fbf9, var(--user-message-bg));
+  box-shadow: 0 12px 30px rgba(12, 138, 122, 0.08);
 }
 .message.assistant {
   align-self: flex-start;
-  max-width: min(860px, 88%);
+  max-width: min(900px, 88%);
   border: 0;
   border-radius: 0;
-  padding: 0;
+  padding: 4px 0;
   background: transparent;
+  box-shadow: none;
 }
 .message.highlighted {
   border-color: var(--accent);
@@ -1503,12 +1587,13 @@ label.composer-upload {
 .message-role {
   color: var(--muted);
   font-size: 12px;
-  margin-bottom: 6px;
+  font-weight: 720;
+  margin-bottom: 7px;
 }
 .message-text {
   margin: 0;
   white-space: pre-wrap;
-  line-height: 1.55;
+  line-height: 1.6;
 }
 .message-actions {
   margin-top: 8px;
@@ -1524,12 +1609,12 @@ label.composer-upload {
   min-height: 30px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--muted);
   background: transparent;
 }
 .message-action-button:hover:not(:disabled) {
-  border-color: rgba(210, 220, 230, 0.78);
+  border-color: rgba(200, 214, 221, 0.78);
   background: rgba(255, 255, 255, 0.76);
   color: var(--text);
 }
@@ -1538,9 +1623,10 @@ label.composer-upload {
 }
 .markdown-content {
   display: grid;
-  gap: 10px;
-  line-height: 1.65;
+  gap: 11px;
+  line-height: 1.68;
   overflow-wrap: anywhere;
+  font-size: 15px;
 }
 .markdown-content h2,
 .markdown-content h3,
@@ -1592,15 +1678,16 @@ label.composer-upload {
 }
 .markdown-content blockquote {
   margin: 2px 0;
-  padding: 8px 12px;
-  border-left: 3px solid #b9d9d4;
+  padding: 9px 13px;
+  border-left: 3px solid rgba(12, 138, 122, 0.45);
+  border-radius: 0 10px 10px 0;
   color: var(--quote-text);
   background: var(--quote-bg);
 }
 .markdown-content code {
   padding: 2px 5px;
   border: 1px solid #dde4e8;
-  border-radius: 5px;
+  border-radius: 6px;
   background: var(--inline-code-bg);
   font: 0.92em/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -1608,7 +1695,7 @@ label.composer-upload {
   margin: 2px 0;
   padding: 12px;
   border: 1px solid #dbe3e8;
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--code-bg);
   color: var(--code-text);
   overflow: auto;
@@ -1637,7 +1724,12 @@ label.composer-upload {
   max-width: 100%;
   overflow: auto;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
+}
+
+@keyframes messageIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .markdown-content table {
   width: 100%;
@@ -1671,9 +1763,10 @@ label.composer-upload {
 }
 .message-attachment-preview {
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.58);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
   overflow: hidden;
+  box-shadow: 0 8px 22px rgba(38, 49, 59, 0.04);
 }
 .message-attachment-preview > button {
   width: 100%;
@@ -1716,9 +1809,10 @@ label.composer-upload {
 }
 .message-asset-attachment {
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.58);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
   overflow: hidden;
+  box-shadow: 0 8px 22px rgba(38, 49, 59, 0.04);
 }
 .message-asset-attachment.file {
   min-height: 42px;
@@ -1762,20 +1856,23 @@ label.composer-upload {
   grid-row: 4;
   --composer-control-size: var(--control-size);
   min-height: 0;
-  border-top: 1px solid rgba(220, 228, 235, 0.8);
-  background: rgba(250, 252, 252, 0.9);
-  padding: 12px 18px 10px;
+  border-top: 1px solid rgba(213, 225, 230, 0.78);
+  background: rgba(250, 252, 252, 0.82);
+  padding: 13px 18px 12px;
   display: grid;
   gap: 8px;
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(18px);
 }
 .composer-surface {
   display: grid;
   min-width: 0;
   gap: 8px;
+  max-width: 1180px;
+  width: 100%;
+  margin: 0 auto;
 }
 .empty-workspace .composer {
-  width: min(720px, calc(100% - 64px));
+  width: min(760px, calc(100% - 64px));
   grid-row: 1 / -1;
   grid-column: 1;
   position: absolute;
@@ -1784,11 +1881,11 @@ label.composer-upload {
   z-index: 3;
   transform: translateX(-50%);
   border: 1px solid rgba(222, 228, 238, 0.95);
-  border-radius: 18px;
+  border-radius: 20px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.76)),
     radial-gradient(circle at 88% 120%, rgba(113, 232, 216, 0.18), transparent 38%);
-  box-shadow: 0 34px 80px rgba(79, 87, 110, 0.15);
+  box-shadow: 0 34px 80px rgba(79, 87, 110, 0.14);
 }
 .empty-workspace .composer.composer-with-tools {
   padding: 0;
@@ -1802,7 +1899,7 @@ label.composer-upload {
 .empty-workspace .composer.composer-with-tools .composer-surface {
   padding: 12px 18px 10px;
   border: 1px solid rgba(222, 228, 238, 0.95);
-  border-radius: 18px;
+  border-radius: 20px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.76)),
     radial-gradient(circle at 88% 120%, rgba(113, 232, 216, 0.18), transparent 38%);
@@ -1813,7 +1910,7 @@ label.composer-upload {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: end;
-  gap: 12px;
+  gap: 10px;
 }
 .composer-expanded .composer-row {
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -1825,10 +1922,10 @@ label.composer-upload {
   height: var(--composer-control-size);
   min-height: var(--composer-control-size);
   max-height: min(180px, calc(100vh - 220px));
-  padding: 11px 14px;
+  padding: 12px 14px;
   border-color: transparent;
   background: transparent;
-  line-height: 1.4;
+  line-height: 1.45;
   resize: none;
   overflow-y: hidden;
   overflow-wrap: anywhere;
@@ -1863,9 +1960,9 @@ label.composer-upload {
   height: var(--composer-control-size);
   min-height: var(--composer-control-size);
   padding: 0;
-  border: 1px solid rgba(224, 229, 237, 0.96);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(213, 225, 230, 0.96);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
   color: var(--muted);
   display: inline-grid;
   place-items: center;
@@ -1875,6 +1972,7 @@ label.composer-upload {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--active-bg);
+  transform: translateY(-1px);
 }
 .composer-file-input,
 .composer-upload input {
@@ -1901,10 +1999,10 @@ label.composer-upload {
 .composer-tool-chip {
   min-height: 36px;
   padding: 0 14px;
-  border: 1px solid rgba(224, 229, 237, 0.96);
+  border: 1px solid rgba(213, 225, 230, 0.96);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.78);
-  color: var(--ink);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--text);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1941,9 +2039,9 @@ label.composer-upload {
 }
 .composer .live-control {
   padding: 0;
-  border: 1px solid rgba(224, 229, 237, 0.96);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(213, 225, 230, 0.96);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
   color: var(--muted);
   display: inline-grid;
   place-items: center;
@@ -1953,6 +2051,7 @@ label.composer-upload {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--active-bg);
+  transform: translateY(-1px);
 }
 .composer .live-control.active {
   border-color: var(--danger);
@@ -1996,7 +2095,7 @@ label.composer-upload {
 }
 .response-metrics span {
   padding: 3px 7px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(213, 225, 230, 0.92);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.76);
 }
@@ -2013,8 +2112,8 @@ label.composer-upload {
   align-items: center;
   gap: 6px;
   padding: 4px 6px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: 1px solid rgba(213, 225, 230, 0.92);
+  border-radius: 10px;
   background: #f6faf9;
   color: var(--text);
   font-size: 12px;
@@ -2736,20 +2835,23 @@ label.composer-upload {
   height: 100vh;
   height: 100dvh;
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  background: var(--bg);
+  grid-template-columns: 296px minmax(0, 1fr);
+  background:
+    radial-gradient(circle at 88% 0%, rgba(12, 138, 122, 0.08), transparent 24%),
+    linear-gradient(135deg, #f8faf9, var(--bg));
   overflow: hidden;
 }
 .admin-sidebar {
   min-height: 0;
-  border-right: 1px solid var(--line);
-  background: var(--panel);
+  border-right: 1px solid rgba(210, 222, 227, 0.84);
+  background: rgba(248, 251, 251, 0.92);
+  backdrop-filter: blur(18px);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
 .admin-brand {
   padding: 18px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid rgba(220, 229, 233, 0.72);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -2781,8 +2883,8 @@ label.composer-upload {
 .admin-token-box {
   align-self: start;
   padding: 14px;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+  border-top: 1px solid rgba(220, 229, 233, 0.72);
+  border-bottom: 1px solid rgba(220, 229, 233, 0.72);
   display: grid;
   gap: 10px;
 }
@@ -2807,7 +2909,7 @@ label.composer-upload {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: 22px;
+  padding: 24px;
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 16px;
@@ -2820,7 +2922,8 @@ label.composer-upload {
 }
 .admin-header h1 {
   margin: 0;
-  font-size: 24px;
+  font-size: 26px;
+  line-height: 1.1;
   letter-spacing: 0;
 }
 .admin-header p,
@@ -2833,9 +2936,9 @@ label.composer-upload {
 .admin-tabs {
   min-width: 0;
   padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
+  border: 1px solid rgba(214, 225, 229, 0.88);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
   display: flex;
   gap: 4px;
   overflow-x: auto;
@@ -2849,7 +2952,7 @@ label.composer-upload {
   min-height: 38px;
   padding: 0 12px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 10px;
   background: transparent;
   color: var(--muted);
   display: inline-flex;
@@ -2863,8 +2966,9 @@ label.composer-upload {
   color: var(--text);
 }
 .admin-tabs button.active {
-  background: var(--accent);
+  background: linear-gradient(180deg, #119987, #0b8678);
   color: white;
+  box-shadow: 0 10px 24px rgba(12, 138, 122, 0.18);
 }
 .admin-tabs button small {
   min-width: 22px;
@@ -2882,7 +2986,7 @@ label.composer-upload {
 .admin-banner,
 .admin-inline-banner {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -2913,8 +3017,8 @@ label.composer-upload {
 }
 .admin-empty {
   min-height: 260px;
-  border: 1px dashed var(--line);
-  border-radius: 8px;
+  border: 1px dashed rgba(196, 211, 218, 0.94);
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.68);
   display: grid;
   place-items: center;
@@ -2942,9 +3046,10 @@ label.composer-upload {
 .admin-detail-panel,
 .admin-card,
 .admin-metric {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
+  border: 1px solid rgba(214, 225, 229, 0.9);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--surface-shadow-soft);
 }
 .admin-list-panel {
   min-height: 0;
@@ -2972,8 +3077,8 @@ label.composer-upload {
 .admin-search {
   min-height: 38px;
   padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 1px solid rgba(214, 225, 229, 0.92);
+  border-radius: 12px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
@@ -3042,7 +3147,7 @@ label.composer-upload {
 .admin-skill-row {
   min-height: 58px;
   padding: 8px;
-  border-radius: 8px;
+  border-radius: 12px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -3051,8 +3156,8 @@ label.composer-upload {
 }
 .admin-skill-row.active,
 .admin-skill-row:hover {
-  border-color: #b9d9d4;
-  background: var(--active-bg);
+  border-color: rgba(150, 202, 192, 0.82);
+  background: var(--accent-soft);
 }
 .admin-skill-row.static {
   border-color: transparent;
@@ -3135,7 +3240,7 @@ label.composer-upload {
   margin: 12px 0 0;
   padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   overflow: auto;
   background: var(--panel-soft);
   color: var(--text);
@@ -3165,7 +3270,7 @@ label.composer-upload {
   margin-top: 10px;
   padding: 10px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   display: grid;
   gap: 4px;
 }
@@ -3191,7 +3296,7 @@ label.composer-upload {
   min-height: 36px;
   padding: 8px;
   border: 1px solid #e3e8ec;
-  border-radius: 8px;
+  border-radius: 12px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
