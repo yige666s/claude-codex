@@ -450,8 +450,7 @@ export function useLiveVoice({
       return;
     }
     if (event.type === "done") {
-      liveExpectedCloseRef.current = true;
-      onStatus({ tone: "idle", text: "Live voice stopped" });
+      resumeLiveInputAfterPlayback(socket, generation);
       return;
     }
     if (event.type === "message" && event.role === "assistant" && isLiveSkillEvent(event)) {
@@ -686,6 +685,7 @@ export function useLiveVoice({
         liveInputPausedRef.current = false;
         if (liveCaptureRequestedRef.current && liveMediaRef.current) {
           updateLiveStatus("listening");
+          onStatus({ tone: "busy", text: "Listening" });
         } else {
           scheduleLiveCaptureResume(socket, generation);
         }
