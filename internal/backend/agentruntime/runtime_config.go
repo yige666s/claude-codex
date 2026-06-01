@@ -50,6 +50,7 @@ type LLMModelOption struct {
 }
 
 var allowedLLMModelOptions = []LLMModelOption{
+	{ID: "gemini-3.5-flash", Label: "Gemini 3.5 Flash", Provider: "vertex", VertexLocation: "global"},
 	{ID: "gemini-3.1-flash-lite", Label: "Gemini 3.1 Flash Lite", Provider: "vertex", VertexLocation: "global"},
 	{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro", Provider: "vertex", VertexLocation: "us-central1"},
 	{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash", Provider: "vertex", VertexLocation: "us-central1"},
@@ -128,7 +129,13 @@ func (m *LLMGovernanceConfigManager) Load(ctx context.Context) error {
 		return err
 	}
 	if modelsOK {
-		allowedModels = normalizeLLMModelOptions(models)
+		var changed bool
+		allowedModels, changed = mergeDefaultLLMModelOptions(models)
+		if changed {
+			if err := m.store.SaveLLMModelCatalog(ctx, allowedModels); err != nil {
+				return err
+			}
+		}
 	} else {
 		if err := m.store.SaveLLMModelCatalog(ctx, allowedModels); err != nil {
 			return err
@@ -513,6 +520,24 @@ func normalizeLLMModelOptions(options []LLMModelOption) []LLMModelOption {
 		return defaultLLMModelOptions()
 	}
 	return out
+}
+
+func mergeDefaultLLMModelOptions(options []LLMModelOption) ([]LLMModelOption, bool) {
+	out := normalizeLLMModelOptions(options)
+	seen := make(map[string]struct{}, len(out))
+	for _, option := range out {
+		seen[option.ID] = struct{}{}
+	}
+	changed := false
+	for _, option := range defaultLLMModelOptions() {
+		if _, ok := seen[option.ID]; ok {
+			continue
+		}
+		out = append(out, option)
+		seen[option.ID] = struct{}{}
+		changed = true
+	}
+	return out, changed
 }
 
 func copyLLMModelOptions(options []LLMModelOption) []LLMModelOption {

@@ -27,6 +27,7 @@ const (
 	defaultLiveVADSilenceDuration        = 350 * time.Millisecond
 	defaultLiveInitialHistoryMaxMessages = 32
 	defaultLiveInitialHistoryMaxTokens   = 16000
+	defaultLiveStartupGreetingPrompt     = "Live voice is now connected. Reply in Language user common used,if no defaut with english with one short greeting only, then wait for the user's first spoken request. Do not answer, summarize, or reference prior history, saved memory, tools, or other sessions."
 )
 
 var supportedLivePrebuiltVoiceNames = map[string]struct{}{
@@ -583,7 +584,7 @@ func (s *VertexLiveService) sendInitialHistory(ctx context.Context, req LiveRequ
 }
 
 func liveInitialHistoryPayload(messages []state.Message) map[string]any {
-	turns := make([]map[string]any, 0, len(messages))
+	turns := make([]map[string]any, 0, len(messages)+1)
 	for _, message := range messages {
 		role, ok := liveInitialHistoryRole(message)
 		if !ok {
@@ -601,6 +602,10 @@ func liveInitialHistoryPayload(messages []state.Message) map[string]any {
 			"parts": []map[string]any{{"text": content}},
 		})
 	}
+	turns = append(turns, map[string]any{
+		"role":  "user",
+		"parts": []map[string]any{{"text": defaultLiveStartupGreetingPrompt}},
+	})
 	return map[string]any{
 		"clientContent": map[string]any{
 			"turns":        turns,

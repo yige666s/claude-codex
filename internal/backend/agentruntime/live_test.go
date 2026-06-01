@@ -202,14 +202,32 @@ func TestLiveInitialHistoryPayloadUsesOfficialClientContentTurns(t *testing.T) {
 		t.Fatalf("initial history must finish with turnComplete=true: %#v", clientContent)
 	}
 	turns := clientContent["turns"].([]map[string]any)
-	if len(turns) != 3 {
-		t.Fatalf("turns = %d, want 3: %#v", len(turns), turns)
+	if len(turns) != 4 {
+		t.Fatalf("turns = %d, want 4: %#v", len(turns), turns)
 	}
 	if turns[0]["role"] != "user" || !strings.Contains(turns[0]["parts"].([]map[string]any)[0]["text"].(string), "Conversation summary") {
 		t.Fatalf("summary should be sent as an initial user-history turn: %#v", turns[0])
 	}
 	if turns[1]["role"] != "user" || turns[2]["role"] != "model" {
 		t.Fatalf("unexpected user/model role mapping: %#v", turns)
+	}
+	if turns[3]["role"] != "user" || !strings.Contains(turns[3]["parts"].([]map[string]any)[0]["text"].(string), "one short greeting only") {
+		t.Fatalf("startup greeting should be the final live turn: %#v", turns[3])
+	}
+}
+
+func TestLiveInitialHistoryPayloadGreetsEvenWithoutHistory(t *testing.T) {
+	payload := liveInitialHistoryPayload(nil)
+	clientContent := payload["clientContent"].(map[string]any)
+	if clientContent["turnComplete"] != true {
+		t.Fatalf("startup greeting must complete the turn: %#v", clientContent)
+	}
+	turns := clientContent["turns"].([]map[string]any)
+	if len(turns) != 1 {
+		t.Fatalf("turns = %d, want 1: %#v", len(turns), turns)
+	}
+	if turns[0]["role"] != "user" || !strings.Contains(turns[0]["parts"].([]map[string]any)[0]["text"].(string), "Do not answer, summarize, or reference") {
+		t.Fatalf("missing guarded startup greeting turn: %#v", turns[0])
 	}
 }
 

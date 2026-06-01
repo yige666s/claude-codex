@@ -31,6 +31,25 @@ func TestLLMGovernanceConfigModelPatchBindsVertexLocation(t *testing.T) {
 	}
 }
 
+func TestLLMGovernanceConfigModelPatchAllowsGemini35Flash(t *testing.T) {
+	model := "gemini-3.5-flash"
+	updated, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{
+		Provider:       "vertex",
+		Model:          "gemini-2.5-flash",
+		VertexLocation: "us-central1",
+		ModelRoutes:    "default=gemini-2.5-flash,chat=gemini-2.5-flash",
+	}, LLMGovernanceConfigPatch{Model: &model})
+	if err != nil {
+		t.Fatalf("apply gemini 3.5 flash model patch: %v", err)
+	}
+	if updated.Provider != "vertex" || updated.Model != "gemini-3.5-flash" || updated.VertexLocation != "global" {
+		t.Fatalf("unexpected runtime model config: %#v", updated)
+	}
+	if updated.ModelRoutes != "default=gemini-3.5-flash,chat=gemini-3.5-flash" {
+		t.Fatalf("model routes = %q", updated.ModelRoutes)
+	}
+}
+
 func TestLLMGovernanceConfigModelPatchUpdatesChatRoutes(t *testing.T) {
 	model := "gemini-2.5-pro"
 	updated, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{
@@ -151,11 +170,41 @@ func TestLLMGovernanceConfigManagerLoadsModelCatalogFromStore(t *testing.T) {
 	}
 	status := manager.StatusMap()
 	models, ok := status["allowed_models"].([]LLMModelOption)
-	if !ok || len(models) != 1 || models[0].ID != "openai/gpt-5.4-mini" {
+	if !ok {
 		t.Fatalf("allowed models were not loaded from store: %#v", status["allowed_models"])
+	}
+	if _, ok := llmModelOptionFor("openai/gpt-5.4-mini", models); !ok {
+		t.Fatalf("stored model was not preserved: %#v", models)
 	}
 	if got := manager.Get(); got.Provider != "openai" || got.Model != "openai/gpt-5.4-mini" {
 		t.Fatalf("config was not normalized with stored catalog: %#v", got)
+	}
+}
+
+func TestLLMGovernanceConfigManagerMergesNewDefaultModelsIntoStoredCatalog(t *testing.T) {
+	store := &memoryRuntimeConfigStore{
+		models: []LLMModelOption{
+			{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash", Provider: "vertex", VertexLocation: "us-central1"},
+			{ID: "openai/gpt-5.4-mini", Label: "GPT 5.4 Mini", Provider: "openai"},
+		},
+	}
+	manager := NewLLMGovernanceConfigManager(LLMGovernanceConfig{}, store)
+	if err := manager.Load(context.Background()); err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	status := manager.StatusMap()
+	models, ok := status["allowed_models"].([]LLMModelOption)
+	if !ok {
+		t.Fatalf("allowed models were not typed as model options: %#v", status["allowed_models"])
+	}
+	if _, ok := llmModelOptionFor("gemini-3.5-flash", models); !ok {
+		t.Fatalf("gemini-3.5-flash was not merged into allowed models: %#v", models)
+	}
+	if _, ok := llmModelOptionFor("openai/gpt-5.4-mini", models); !ok {
+		t.Fatalf("custom stored model was not preserved: %#v", models)
+	}
+	if _, ok := llmModelOptionFor("gemini-3.5-flash", store.models); !ok {
+		t.Fatalf("merged default model was not persisted: %#v", store.models)
 	}
 }
 
