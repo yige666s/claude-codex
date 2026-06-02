@@ -483,7 +483,15 @@ type MessageSearchConfig struct {
 	EmbeddingIndexTaskType string
 	EmbeddingAutoTruncate  bool
 
-	RRFK int
+	RRFK                 int
+	QueryRewriteEnabled  bool
+	DynamicTopKEnabled   bool
+	MinRecallWindow      int
+	MaxRecallWindow      int
+	MultiTurnEnabled     bool
+	RerankEnabled        bool
+	RerankCandidateLimit int
+	LowConfidenceScore   float64
 }
 
 type MemoryVectorConfig struct {

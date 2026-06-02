@@ -318,11 +318,23 @@ the built-in consumer is enabled.
 - `-message-search-backend elasticsearch -message-search-endpoint http://localhost:9200 -message-search-index agent_messages` uses Elasticsearch for full-text search.
 - `-message-search-backend opensearch` uses the same endpoint/index/auth flags for OpenSearch.
 - `-message-search-backend semantic` uses Qdrant plus an embedding provider.
-- `-message-search-backend hybrid` runs full-text and semantic search, then fuses results with RRF.
+- `-message-search-backend hybrid` runs full-text and semantic search, fuses
+  results with RRF, and can apply deterministic query rewrite, adaptive recall
+  windows, low-confidence follow-up retrieval, and local rerank before paging.
 
 Environment variables follow the `AGENT_API_MESSAGE_SEARCH_*` prefix, for example
 `AGENT_API_MESSAGE_SEARCH_ENDPOINT`, `AGENT_API_MESSAGE_SEARCH_QDRANT_ENDPOINT`,
 and `AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT`.
+
+RAG retrieval tuning is controlled by
+`AGENT_API_MESSAGE_SEARCH_QUERY_REWRITE_ENABLED`,
+`AGENT_API_MESSAGE_SEARCH_DYNAMIC_TOPK_ENABLED`,
+`AGENT_API_MESSAGE_SEARCH_MIN_RECALL_WINDOW`,
+`AGENT_API_MESSAGE_SEARCH_MAX_RECALL_WINDOW`,
+`AGENT_API_MESSAGE_SEARCH_MULTI_TURN_ENABLED`,
+`AGENT_API_MESSAGE_SEARCH_RERANK_ENABLED`,
+`AGENT_API_MESSAGE_SEARCH_RERANK_CANDIDATE_LIMIT`, and
+`AGENT_API_MESSAGE_SEARCH_LOW_CONFIDENCE_SCORE`.
 
 Semantic search supports OpenAI-compatible embeddings and Vertex AI Gemini
 embeddings. For Vertex AI, set `AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER=vertex`,

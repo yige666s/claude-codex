@@ -137,6 +137,14 @@ func messageSearchConfigFromStartup(cfg startupconfig.Config) agentruntime.Messa
 		EmbeddingIndexTaskType:     cfg.MessageSearchEmbeddingIndexTaskType,
 		EmbeddingAutoTruncate:      cfg.MessageSearchEmbeddingAutoTruncate,
 		RRFK:                       cfg.MessageSearchRRFK,
+		QueryRewriteEnabled:        cfg.MessageSearchQueryRewriteEnabled,
+		DynamicTopKEnabled:         cfg.MessageSearchDynamicTopKEnabled,
+		MinRecallWindow:            cfg.MessageSearchMinRecallWindow,
+		MaxRecallWindow:            cfg.MessageSearchMaxRecallWindow,
+		MultiTurnEnabled:           cfg.MessageSearchMultiTurnEnabled,
+		RerankEnabled:              cfg.MessageSearchRerankEnabled,
+		RerankCandidateLimit:       cfg.MessageSearchRerankCandidateLimit,
+		LowConfidenceScore:         cfg.MessageSearchLowConfidenceScore,
 	}
 }
 

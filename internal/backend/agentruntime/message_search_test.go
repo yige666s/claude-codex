@@ -19,11 +19,13 @@ type stubMessageSearchStore struct {
 	err     error
 	limit   int
 	offset  int
+	queries []string
 }
 
 func (s *stubMessageSearchStore) SearchMessages(ctx context.Context, userID, query string, limit, offset int) ([]MessageSearchResult, error) {
 	s.limit = limit
 	s.offset = offset
+	s.queries = append(s.queries, query)
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -34,10 +36,12 @@ type stubSemanticMessageSearcher struct {
 	results []MessageSearchResult
 	err     error
 	limit   int
+	queries []string
 }
 
 func (s *stubSemanticMessageSearcher) SearchSemanticMessages(ctx context.Context, userID, query string, limit int) ([]MessageSearchResult, error) {
 	s.limit = limit
+	s.queries = append(s.queries, query)
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -135,6 +139,87 @@ func TestMessageSearchServiceHybridPropagatesConfiguredBackendError(t *testing.T
 	_, err := service.SearchMessages(context.Background(), "alice", "query", 10, 0)
 	if !errors.Is(err, expected) {
 		t.Fatalf("expected backend error, got %v", err)
+	}
+}
+
+func TestMessageSearchServiceHybridUsesDynamicRecallWindow(t *testing.T) {
+	keyword := &stubMessageSearchStore{}
+	semantic := &stubSemanticMessageSearcher{}
+	service := &MessageSearchService{
+		config: normalizeMessageSearchConfig(MessageSearchConfig{
+			Backend:            messageSearchBackendHybrid,
+			DynamicTopKEnabled: true,
+			MinRecallWindow:    25,
+			MaxRecallWindow:    80,
+		}),
+		keyword:  keyword,
+		semantic: semantic,
+	}
+
+	_, err := service.SearchMessages(context.Background(), "alice", "上次 那个 登录 bug", 5, 0)
+	if err != nil {
+		t.Fatalf("SearchMessages() error = %v", err)
+	}
+	if keyword.limit != 65 || semantic.limit != 65 {
+		t.Fatalf("expected dynamic recall window 65, got keyword=%d semantic=%d", keyword.limit, semantic.limit)
+	}
+}
+
+func TestMessageSearchServiceHybridExpandsWithRewrittenQuery(t *testing.T) {
+	keyword := &stubMessageSearchStore{results: []MessageSearchResult{
+		{SessionID: "s1", MessageIndex: 0, Content: "weak initial hit", Source: "elasticsearch", Score: 0.01},
+	}}
+	semantic := &stubSemanticMessageSearcher{}
+	service := &MessageSearchService{
+		config: normalizeMessageSearchConfig(MessageSearchConfig{
+			Backend:              messageSearchBackendHybrid,
+			QueryRewriteEnabled:  true,
+			MultiTurnEnabled:     true,
+			LowConfidenceScore:   0.50,
+			RerankEnabled:        false,
+			RerankCandidateLimit: 10,
+			DynamicTopKEnabled:   false,
+			MinRecallWindow:      20,
+			MaxRecallWindow:      80,
+			RRFK:                 60,
+		}),
+		keyword:  keyword,
+		semantic: semantic,
+	}
+
+	_, err := service.SearchMessages(context.Background(), "alice", "请问 帮我 查一下 postgres timeout", 10, 0)
+	if err != nil {
+		t.Fatalf("SearchMessages() error = %v", err)
+	}
+	if len(keyword.queries) < 2 {
+		t.Fatalf("expected rewritten retrieval pass, got queries=%#v", keyword.queries)
+	}
+	if keyword.queries[1] != "postgres timeout" {
+		t.Fatalf("expected rewritten query, got %#v", keyword.queries)
+	}
+}
+
+func TestMessageSearchServiceHybridReranksRelevantCandidate(t *testing.T) {
+	now := time.Now()
+	keyword := &stubMessageSearchStore{results: []MessageSearchResult{
+		{SessionID: "s1", MessageIndex: 0, Content: "general discussion", CreatedAt: now, Source: "elasticsearch", Score: 10},
+		{SessionID: "s2", MessageIndex: 0, Content: "postgres timeout root cause and fix", CreatedAt: now, Source: "elasticsearch", Score: 1},
+	}}
+	service := &MessageSearchService{
+		config: normalizeMessageSearchConfig(MessageSearchConfig{
+			Backend:              messageSearchBackendHybrid,
+			RerankEnabled:        true,
+			RerankCandidateLimit: 10,
+		}),
+		keyword: keyword,
+	}
+
+	results, err := service.SearchMessages(context.Background(), "alice", "postgres timeout", 10, 0)
+	if err != nil {
+		t.Fatalf("SearchMessages() error = %v", err)
+	}
+	if len(results) < 2 || results[0].SessionID != "s2" {
+		t.Fatalf("expected relevant candidate to rerank first, got %#v", results)
 	}
 }
 

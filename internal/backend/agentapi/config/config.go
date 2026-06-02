@@ -65,6 +65,14 @@ type Config struct {
 	MessageSearchEmbeddingIndexTaskType     string
 	MessageSearchEmbeddingAutoTruncate      bool
 	MessageSearchRRFK                       int
+	MessageSearchQueryRewriteEnabled        bool
+	MessageSearchDynamicTopKEnabled         bool
+	MessageSearchMinRecallWindow            int
+	MessageSearchMaxRecallWindow            int
+	MessageSearchMultiTurnEnabled           bool
+	MessageSearchRerankEnabled              bool
+	MessageSearchRerankCandidateLimit       int
+	MessageSearchLowConfidenceScore         float64
 	MemoryVectorEnabled                     bool
 	MemoryVectorQdrantEndpoint              string
 	MemoryVectorQdrantCollection            string
@@ -291,6 +299,14 @@ func Default() Config {
 		MessageSearchEmbeddingIndexTaskType:     FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_INDEX_TASK_TYPE"), "RETRIEVAL_DOCUMENT"),
 		MessageSearchEmbeddingAutoTruncate:      EnvBool("AGENT_API_MESSAGE_SEARCH_EMBEDDING_AUTO_TRUNCATE", true),
 		MessageSearchRRFK:                       EnvInt("AGENT_API_MESSAGE_SEARCH_RRF_K", 60),
+		MessageSearchQueryRewriteEnabled:        EnvBool("AGENT_API_MESSAGE_SEARCH_QUERY_REWRITE_ENABLED", true),
+		MessageSearchDynamicTopKEnabled:         EnvBool("AGENT_API_MESSAGE_SEARCH_DYNAMIC_TOPK_ENABLED", true),
+		MessageSearchMinRecallWindow:            EnvInt("AGENT_API_MESSAGE_SEARCH_MIN_RECALL_WINDOW", 50),
+		MessageSearchMaxRecallWindow:            EnvInt("AGENT_API_MESSAGE_SEARCH_MAX_RECALL_WINDOW", 120),
+		MessageSearchMultiTurnEnabled:           EnvBool("AGENT_API_MESSAGE_SEARCH_MULTI_TURN_ENABLED", true),
+		MessageSearchRerankEnabled:              EnvBool("AGENT_API_MESSAGE_SEARCH_RERANK_ENABLED", true),
+		MessageSearchRerankCandidateLimit:       EnvInt("AGENT_API_MESSAGE_SEARCH_RERANK_CANDIDATE_LIMIT", 50),
+		MessageSearchLowConfidenceScore:         EnvFloat64("AGENT_API_MESSAGE_SEARCH_LOW_CONFIDENCE_SCORE", 0.04),
 		MemoryVectorEnabled:                     EnvBool("AGENT_API_MEMORY_VECTOR_ENABLED", true),
 		MemoryVectorQdrantEndpoint:              FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_QDRANT_ENDPOINT"), os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_ENDPOINT"), os.Getenv("AGENT_API_QDRANT_ENDPOINT")),
 		MemoryVectorQdrantCollection:            FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_QDRANT_COLLECTION"), "agent_memories"),
@@ -518,6 +534,14 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.StringVar(&cfg.MessageSearchEmbeddingIndexTaskType, "message-search-embedding-index-task-type", cfg.MessageSearchEmbeddingIndexTaskType, "Vertex AI embedding task_type for indexed message documents")
 	flags.BoolVar(&cfg.MessageSearchEmbeddingAutoTruncate, "message-search-embedding-auto-truncate", cfg.MessageSearchEmbeddingAutoTruncate, "allow Vertex AI embedding input auto truncation")
 	flags.IntVar(&cfg.MessageSearchRRFK, "message-search-rrf-k", cfg.MessageSearchRRFK, "RRF k constant for hybrid message search ranking")
+	flags.BoolVar(&cfg.MessageSearchQueryRewriteEnabled, "message-search-query-rewrite-enabled", cfg.MessageSearchQueryRewriteEnabled, "enable deterministic query rewrite variants for message search recall")
+	flags.BoolVar(&cfg.MessageSearchDynamicTopKEnabled, "message-search-dynamic-topk-enabled", cfg.MessageSearchDynamicTopKEnabled, "enable adaptive recall window sizing for message search")
+	flags.IntVar(&cfg.MessageSearchMinRecallWindow, "message-search-min-recall-window", cfg.MessageSearchMinRecallWindow, "minimum candidate recall window for adaptive message search")
+	flags.IntVar(&cfg.MessageSearchMaxRecallWindow, "message-search-max-recall-window", cfg.MessageSearchMaxRecallWindow, "maximum candidate recall window for adaptive message search")
+	flags.BoolVar(&cfg.MessageSearchMultiTurnEnabled, "message-search-multi-turn-enabled", cfg.MessageSearchMultiTurnEnabled, "enable extra rewritten retrieval passes when initial message search confidence is low")
+	flags.BoolVar(&cfg.MessageSearchRerankEnabled, "message-search-rerank-enabled", cfg.MessageSearchRerankEnabled, "enable lightweight local reranking for message search candidates")
+	flags.IntVar(&cfg.MessageSearchRerankCandidateLimit, "message-search-rerank-candidate-limit", cfg.MessageSearchRerankCandidateLimit, "max message search candidates reranked locally")
+	flags.Float64Var(&cfg.MessageSearchLowConfidenceScore, "message-search-low-confidence-score", cfg.MessageSearchLowConfidenceScore, "score threshold that triggers rewritten message search retrieval")
 	flags.BoolVar(&cfg.MemoryVectorEnabled, "memory-vector-enabled", cfg.MemoryVectorEnabled, "enable Qdrant vector indexing and retrieval for saved memory when embeddings are configured")
 	flags.StringVar(&cfg.MemoryVectorQdrantEndpoint, "memory-vector-qdrant-endpoint", cfg.MemoryVectorQdrantEndpoint, "Qdrant endpoint for saved memory vector retrieval")
 	flags.StringVar(&cfg.MemoryVectorQdrantCollection, "memory-vector-qdrant-collection", cfg.MemoryVectorQdrantCollection, "Qdrant collection for saved memory vectors")
