@@ -407,3 +407,31 @@ type AgentUser struct {
 	UpdatedAt       time.Time    `json:"updated_at"`
 	LastLoginAt     sql.NullTime `json:"last_login_at"`
 }
+
+type AgentWorkflowRun struct {
+	ID         string          `json:"id"`
+	UserID     string          `json:"user_id"`
+	SessionID  string          `json:"session_id"`
+	JobID      string          `json:"job_id"`
+	Name       string          `json:"name"`
+	Version    string          `json:"version"`
+	Status     string          `json:"status"`
+	StateJson  json.RawMessage `json:"state_json"`
+	Error      string          `json:"error"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+	StartedAt  sql.NullTime    `json:"started_at"`
+	FinishedAt sql.NullTime    `json:"finished_at"`
+}
+
+type AgentWorkflowStep struct {
+	ID         string          `json:"id"`
+	RunID      string          `json:"run_id"`
+	StepName   string          `json:"step_name"`
+	Status     string          `json:"status"`
+	InputJson  json.RawMessage `json:"input_json"`
+	OutputJson json.RawMessage `json:"output_json"`
+	Error      string          `json:"error"`
+	StartedAt  time.Time       `json:"started_at"`
+	FinishedAt sql.NullTime    `json:"finished_at"`
+}
