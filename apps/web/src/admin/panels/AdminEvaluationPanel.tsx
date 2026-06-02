@@ -147,6 +147,10 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
   };
 
   const createRun = async () => {
+    if (subjectType === "golden_case") {
+      await runGoldenEvaluation();
+      return;
+    }
     if (!token || !cleanUserID) {
       setError("Enter a user ID before running evaluation.");
       return;
@@ -401,6 +405,7 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
   const contextPrecision = metricNumber(metrics, "context_precision_avg");
   const contextRecall = metricNumber(metrics, "context_recall_avg");
   const hasRagasMetrics = ["answer_correctness_avg", "answer_relevancy_avg", "faithfulness_avg", "context_precision_avg", "context_recall_avg"].some((key) => metrics[key] != null);
+  const isGoldenSubject = subjectType === "golden_case";
   const evaluationTabs: Array<AdminTabOption<typeof evaluationTab>> = [
     { id: "results", label: "Results", icon: <Activity size={15} />, count: results.length },
     { id: "selected", label: "Selected", icon: <Info size={15} /> },
@@ -464,9 +469,9 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
             <Input value={model} onChange={(event) => setModel(event.currentTarget.value)} placeholder="model" aria-label="Evaluation model" />
           </div>
           <div className="admin-action-row compact evaluation-actions">
-            <Button className="primary skill-action" onClick={createRun} disabled={running || !token || !cleanUserID}>
-              <PlayCircle size={16} />
-              <span>{running ? "Running" : "Run eval"}</span>
+            <Button className="primary skill-action" onClick={createRun} disabled={running || !token || (isGoldenSubject ? goldenBusy === "run" || !selectedGoldenSet?.cases.length : !cleanUserID)}>
+              {isGoldenSubject ? <Sparkles size={16} /> : <PlayCircle size={16} />}
+              <span>{isGoldenSubject ? (goldenBusy === "run" ? "Running" : "Run golden eval") : (running ? "Running" : "Run eval")}</span>
             </Button>
             <Button className="skill-action" onClick={() => loadEvaluation()} disabled={loading || !token}>
               <RefreshCw size={16} />
