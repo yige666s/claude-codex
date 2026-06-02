@@ -1,6 +1,7 @@
 package run
 
 import (
+	"strings"
 	"time"
 
 	"claude-codex/internal/backend/agentapi/bootstrap"
@@ -56,6 +57,19 @@ func llmGovernanceConfigFromStartup(cfg startupconfig.Config, llmCfg bootstrap.L
 		FailureThreshold:       cfg.LLMFailureThreshold,
 		CircuitBreakerCooldown: cfg.LLMCircuitCooldown,
 	}
+}
+
+func evaluationJudgeFromStartup(cfg startupconfig.Config, llmCfg bootstrap.LLMConfig, manager *agentruntime.LLMGovernanceConfigManager, usageStore agentruntime.LLMUsageStore) agentruntime.GoldenJudge {
+	if !cfg.EvalJudgeEnabled && strings.TrimSpace(cfg.EvalJudgeModel) == "" {
+		return nil
+	}
+	runtimeLLMConfig := manager.Get()
+	effectiveLLMConfig := bootstrap.ApplyRuntimeLLMConfig(llmCfg, runtimeLLMConfig)
+	judge, err := bootstrap.NewGoldenJudge(effectiveLLMConfig, cfg.LLMFallbacks, runtimeLLMConfig.ModelRoutes, cfg.EvalJudgeModel, cfg.EvalJudgePromptVersion, usageStore, runtimeLLMConfig)
+	if err != nil {
+		logFatalf("configure evaluation judge: %v", err)
+	}
+	return judge
 }
 
 func skillShellSandboxConfigFromStartup(cfg startupconfig.Config) agentruntime.SkillShellSandboxConfig {

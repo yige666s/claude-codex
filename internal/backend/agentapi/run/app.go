@@ -301,6 +301,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	server.SetSkillRegistry(skillRegistrySetup.registry)
 	server.SetLLMUsageStore(llmUsageStore)
 	server.SetEvaluationStore(evaluationStore)
+	server.SetEvaluationJudge(evaluationJudgeFromStartup(cfg, llmCfg, llmConfigManager, llmUsageStore))
 	server.SetLLMGovernanceConfigManager(llmConfigManager)
 	stopDailyEvaluation := server.StartDailyEvaluationScheduler(dailyEvaluationConfigFromStartup(cfg))
 	defer stopDailyEvaluation()

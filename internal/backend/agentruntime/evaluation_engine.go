@@ -24,6 +24,7 @@ type EvaluationRunReport struct {
 
 type EvaluationEngine struct {
 	Source EvaluationTraceSource
+	Judge  GoldenJudge
 	Now    func() time.Time
 }
 

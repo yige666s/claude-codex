@@ -45,6 +45,7 @@ type Server struct {
 	risk             RiskStore
 	riskScanner      RiskScanner
 	evaluation       EvaluationStore
+	evaluationJudge  GoldenJudge
 	instrumentHTTP   func(http.Handler) http.Handler
 	operationLimiter *OperationRateLimiter
 	adminToken       string
@@ -157,6 +158,13 @@ func (s *Server) SetEvaluationStore(store EvaluationStore) {
 		return
 	}
 	s.evaluation = store
+}
+
+func (s *Server) SetEvaluationJudge(judge GoldenJudge) {
+	if s == nil {
+		return
+	}
+	s.evaluationJudge = judge
 }
 
 func (s *Server) SetLLMGovernanceConfigManager(manager *LLMGovernanceConfigManager) {

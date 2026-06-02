@@ -55,6 +55,286 @@ func (s *Server) handleAdminOpsCreateEvaluationRun(w http.ResponseWriter, r *htt
 	})
 }
 
+func (s *Server) handleAdminOpsUpsertGoldenSet(w http.ResponseWriter, r *http.Request, actor User) {
+	set, err := readGoldenSetPayload(r)
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	if err := validateGoldenSetForStorage(set); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	created, err := s.evaluation.UpsertGoldenSet(r.Context(), set)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "admin_eval_golden_set_upsert", actor, map[string]any{
+		"golden_set_id":      created.ID,
+		"golden_set_version": created.Version,
+		"case_count":         len(created.Cases),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"set": created})
+}
+
+func (s *Server) handleAdminOpsListGoldenSets(w http.ResponseWriter, r *http.Request) {
+	sets, err := s.evaluation.ListGoldenSets(r.Context(), GoldenSetFilter{
+		ID:      strings.TrimSpace(r.URL.Query().Get("id")),
+		Version: strings.TrimSpace(r.URL.Query().Get("version")),
+		Limit:   parseBoundedInt(r.URL.Query().Get("limit"), 100, 1, 500),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sets": sets})
+}
+
+func (s *Server) handleAdminOpsGetGoldenSet(w http.ResponseWriter, r *http.Request, setID string) {
+	version := strings.TrimSpace(r.URL.Query().Get("version"))
+	set, err := s.evaluation.GetGoldenSetVersion(r.Context(), setID, version)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": "golden set not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"set": set})
+}
+
+func (s *Server) handleAdminOpsCreateGoldenSetVersion(w http.ResponseWriter, r *http.Request, actor User, setID string) {
+	var body struct {
+		SourceVersion string         `json:"source_version"`
+		TargetVersion string         `json:"target_version"`
+		Name          string         `json:"name"`
+		Description   string         `json:"description"`
+		Metadata      map[string]any `json:"metadata"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	targetVersion := strings.TrimSpace(body.TargetVersion)
+	if targetVersion == "" {
+		writeJSONError(w, fmt.Errorf("target version is required"))
+		return
+	}
+	source, err := s.evaluation.GetGoldenSetVersion(r.Context(), setID, body.SourceVersion)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			source = normalizeGoldenSet(GoldenSet{
+				ID:      strings.TrimSpace(setID),
+				Name:    strings.TrimSpace(setID),
+				Version: firstNonEmptyString(body.TargetVersion, body.SourceVersion, "v1"),
+			})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "golden set not found"})
+			return
+		}
+	}
+	next := cloneGoldenSet(source)
+	next.Version = targetVersion
+	if strings.TrimSpace(body.Name) != "" {
+		next.Name = body.Name
+	}
+	if strings.TrimSpace(body.Description) != "" {
+		next.Description = body.Description
+	}
+	if next.Metadata == nil {
+		next.Metadata = map[string]any{}
+	}
+	for key, value := range body.Metadata {
+		next.Metadata[key] = value
+	}
+	next.Metadata["source_version"] = source.Version
+	next.CreatedAt = time.Time{}
+	next.UpdatedAt = time.Time{}
+	created, err := s.evaluation.UpsertGoldenSet(r.Context(), next)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "admin_eval_golden_set_version_create", actor, map[string]any{
+		"golden_set_id":  created.ID,
+		"source_version": source.Version,
+		"target_version": created.Version,
+		"case_count":     len(created.Cases),
+	})
+	writeJSON(w, http.StatusCreated, map[string]any{"set": created})
+}
+
+func (s *Server) handleAdminOpsCreateGoldenCasesFromTrace(w http.ResponseWriter, r *http.Request, actor User, setID string) {
+	var body GoldenTraceCaptureRequest
+	if err := readJSON(r, &body); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	body.SetID = setID
+	source, err := s.evaluation.GetGoldenSetVersion(r.Context(), setID, body.SourceVersion)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			source = normalizeGoldenSet(GoldenSet{
+				ID:      strings.TrimSpace(setID),
+				Name:    strings.TrimSpace(setID),
+				Version: firstNonEmptyString(body.TargetVersion, body.SourceVersion, "v1"),
+			})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "golden set not found"})
+			return
+		}
+	}
+	traceSource := RuntimeEvaluationTraceSource{Runtime: s.runtime, LLMUsage: s.llmUsage, Risk: s.risk}
+	cases, err := BuildGoldenCasesFromRuntimeTraces(r.Context(), traceSource, body)
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	next := cloneGoldenSet(source)
+	if strings.TrimSpace(body.TargetVersion) != "" {
+		next.Version = strings.TrimSpace(body.TargetVersion)
+		next.CreatedAt = time.Time{}
+		next.Metadata = cloneEvaluationMap(next.Metadata)
+		next.Metadata["source_version"] = source.Version
+	}
+	next.Cases = upsertGoldenCases(next.Cases, cases)
+	next.UpdatedAt = time.Time{}
+	updated, err := s.evaluation.UpsertGoldenSet(r.Context(), next)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "admin_eval_golden_cases_from_trace", actor, map[string]any{
+		"golden_set_id":      updated.ID,
+		"golden_set_version": updated.Version,
+		"case_count":         len(cases),
+		"total_case_count":   len(updated.Cases),
+	})
+	writeJSON(w, http.StatusCreated, map[string]any{"set": updated, "cases": cases})
+}
+
+func (s *Server) handleAdminOpsDeleteGoldenSet(w http.ResponseWriter, r *http.Request, actor User, setID string) {
+	if err := s.evaluation.DeleteGoldenSet(r.Context(), setID); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": "golden set not found"})
+		return
+	}
+	s.auditEvent(r, "admin_eval_golden_set_delete", actor, map[string]any{"golden_set_id": strings.TrimSpace(setID)})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleAdminOpsCreateGoldenEvaluationRun(w http.ResponseWriter, r *http.Request, actor User) {
+	var req struct {
+		ID         string               `json:"id"`
+		Name       string               `json:"name"`
+		Trigger    string               `json:"trigger"`
+		SetID      string               `json:"set_id"`
+		SetVersion string               `json:"set_version"`
+		Judge      string               `json:"judge"`
+		Candidates []GoldenCandidate    `json:"candidates"`
+		Thresholds EvaluationThresholds `json:"thresholds"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	setID := strings.TrimSpace(req.SetID)
+	if setID == "" {
+		writeJSONError(w, fmt.Errorf("golden set id is required"))
+		return
+	}
+	set, err := s.evaluation.GetGoldenSetVersion(r.Context(), setID, req.SetVersion)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": "golden set not found"})
+		return
+	}
+	engine := NewEvaluationEngine(RuntimeEvaluationTraceSource{
+		Runtime:  s.runtime,
+		LLMUsage: s.llmUsage,
+		Risk:     s.risk,
+	})
+	judgeMode := strings.ToLower(strings.TrimSpace(req.Judge))
+	if judgeMode == "" {
+		judgeMode = "heuristic"
+	}
+	switch judgeMode {
+	case "heuristic":
+	case "llm", "llm-as-judge":
+		if s.evaluationJudge == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "evaluation judge is not configured"})
+			return
+		}
+		engine.Judge = s.evaluationJudge
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported golden judge"})
+		return
+	}
+	report, err := engine.EvaluateGolden(r.Context(), GoldenEvaluationRequest{
+		ID:         req.ID,
+		Name:       req.Name,
+		Trigger:    firstNonEmptyString(req.Trigger, "manual_golden"),
+		Set:        set,
+		Candidates: req.Candidates,
+		Thresholds: req.Thresholds,
+	})
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	persisted, err := s.persistEvaluationRunReport(r, report)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "admin_eval_golden_run_create", actor, map[string]any{
+		"eval_run_id":        persisted.Run.ID,
+		"golden_set_id":      set.ID,
+		"golden_set_version": set.Version,
+		"judge":              judgeMode,
+		"total":              persisted.Run.Total,
+		"passed":             persisted.Run.Passed,
+		"failed":             persisted.Run.Failed,
+		"warning":            persisted.Run.Warning,
+	})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"run":     persisted.Run,
+		"results": persisted.Results,
+		"reviews": persisted.Reviews,
+		"summary": persisted.Summary,
+	})
+}
+
+func readGoldenSetPayload(r *http.Request) (GoldenSet, error) {
+	var payload map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		return GoldenSet{}, err
+	}
+	var set GoldenSet
+	if raw := payload["set"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &set); err != nil {
+			return GoldenSet{}, err
+		}
+		return set, nil
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return GoldenSet{}, err
+	}
+	if err := json.Unmarshal(raw, &set); err != nil {
+		return GoldenSet{}, err
+	}
+	return set, nil
+}
+
 func (s *Server) persistEvaluationRunReport(r *http.Request, report EvaluationRunReport) (EvaluationRunReport, error) {
 	ctx := context.Background()
 	if r != nil {

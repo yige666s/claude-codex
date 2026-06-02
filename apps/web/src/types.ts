@@ -616,6 +616,52 @@ export type EvaluationRunReport = {
   summary: EvaluationRunSummary;
 };
 
+export type GoldenEvidence = {
+  id: string;
+  content: string;
+  source?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type GoldenCase = {
+  id: string;
+  query: string;
+  expected_answer?: string;
+  expected_facts?: string[];
+  gold_evidence?: GoldenEvidence[];
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+};
+
+export type GoldenCandidate = {
+  case_id: string;
+  output: string;
+  retrieved_evidence?: GoldenEvidence[];
+  metadata?: Record<string, unknown>;
+};
+
+export type GoldenSet = {
+  id: string;
+  name: string;
+  description?: string;
+  version?: string;
+  metadata?: Record<string, unknown>;
+  cases: GoldenCase[];
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type GoldenTraceCaptureRequest = {
+  source_version?: string;
+  target_version?: string;
+  scope: EvaluationScope;
+  subject_id?: string;
+  expected_answer?: string;
+  expected_facts?: string[];
+  tags?: string[];
+  max_cases?: number;
+};
+
 export type Asset = {
   id: string;
   kind: "attachment" | "artifact";

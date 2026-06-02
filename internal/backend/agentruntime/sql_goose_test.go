@@ -36,6 +36,8 @@ func TestRunPostgresGooseMigrationsFreshSchema(t *testing.T) {
 		"agent_skills",
 		"agent_skill_executions",
 		"agent_eval_runs",
+		"agent_eval_golden_sets",
+		"agent_eval_golden_cases",
 		"agent_risk_events",
 		"agent_llm_usage",
 		"agent_runtime_config",

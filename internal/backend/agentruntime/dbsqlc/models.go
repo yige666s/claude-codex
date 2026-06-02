@@ -72,6 +72,31 @@ type AgentEmailVerificationToken struct {
 	UsedAt    sql.NullTime `json:"used_at"`
 }
 
+type AgentEvalGoldenCase struct {
+	ID             string    `json:"id"`
+	SetID          string    `json:"set_id"`
+	SetVersion     string    `json:"set_version"`
+	Position       int64     `json:"position"`
+	Query          string    `json:"query"`
+	ExpectedAnswer string    `json:"expected_answer"`
+	ExpectedFacts  string    `json:"expected_facts"`
+	GoldEvidence   string    `json:"gold_evidence"`
+	Tags           string    `json:"tags"`
+	Metadata       string    `json:"metadata"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type AgentEvalGoldenSet struct {
+	ID          string    `json:"id"`
+	Version     string    `json:"version"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Metadata    string    `json:"metadata"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 type AgentEvalResult struct {
 	ID          string    `json:"id"`
 	RunID       string    `json:"run_id"`

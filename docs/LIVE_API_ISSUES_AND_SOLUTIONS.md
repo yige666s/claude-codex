@@ -15,6 +15,10 @@
 
 当前 Live 模式不是普通 Chat API 的“每轮完整 messages 请求”。
 
+完整技术方案见：
+
+- `docs/LIVE_API_TECHNICAL_DESIGN.md`
+
 整体链路：
 
 ```text

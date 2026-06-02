@@ -44,3 +44,30 @@ CREATE TABLE agent_eval_reviews (
 	created_at TIMESTAMPTZ NOT NULL,
 	updated_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE TABLE agent_eval_golden_sets (
+	id TEXT NOT NULL,
+	version TEXT NOT NULL DEFAULT 'v1',
+	name TEXT NOT NULL,
+	description TEXT NOT NULL DEFAULT '',
+	metadata TEXT NOT NULL DEFAULT '{}',
+	created_at TIMESTAMPTZ NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL,
+	PRIMARY KEY (id, version)
+);
+
+CREATE TABLE agent_eval_golden_cases (
+	id TEXT NOT NULL,
+	set_id TEXT NOT NULL,
+	set_version TEXT NOT NULL DEFAULT 'v1',
+	position BIGINT NOT NULL DEFAULT 0,
+	query TEXT NOT NULL,
+	expected_answer TEXT NOT NULL DEFAULT '',
+	expected_facts TEXT NOT NULL DEFAULT '[]',
+	gold_evidence TEXT NOT NULL DEFAULT '[]',
+	tags TEXT NOT NULL DEFAULT '[]',
+	metadata TEXT NOT NULL DEFAULT '{}',
+	created_at TIMESTAMPTZ NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL,
+	PRIMARY KEY (set_id, set_version, id)
+);

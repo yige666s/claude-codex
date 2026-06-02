@@ -208,3 +208,115 @@ func TestAdminOpsEvaluationRequiresAdminToken(t *testing.T) {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestAdminOpsGoldenSetRoutesAndLLMJudgeRun(t *testing.T) {
+	server := NewServer(testRuntime(t), HeaderAuthenticator{UserHeader: "X-User-ID"}, NoopRateLimiter{}, nil)
+	server.SetAdminToken("secret")
+	server.SetEvaluationStore(NewMemoryEvaluationStore())
+	server.SetEvaluationJudge(fixedGoldenJudge{result: GoldenJudgeResult{
+		AnswerCorrectness: 0.92,
+		AnswerRelevancy:   0.81,
+		Faithfulness:      0.88,
+		ContextPrecision:  0.76,
+		ContextRecall:     0.79,
+		Metadata:          map[string]any{"judge": "llm-as-judge", "model": "judge-model"},
+	}})
+
+	createBody := `{"id":"support-rag","name":"Support RAG","version":"v1","cases":[{"id":"case-1","query":"如何提高准确率？","expected_facts":["权限过滤"],"gold_evidence":[{"id":"doc-1","content":"需要权限过滤"}]}]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/admin/ops/eval/golden-sets", bytes.NewBufferString(createBody))
+	createReq.Header.Set("X-User-ID", "admin")
+	createReq.Header.Set("X-Admin-Token", "secret")
+	createRec := httptest.NewRecorder()
+	server.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create golden set status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	if !strings.Contains(createRec.Body.String(), `"id":"support-rag"`) {
+		t.Fatalf("create golden set missing id: %s", createRec.Body.String())
+	}
+
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/v1/admin/ops/eval/golden-sets", nil),
+		httptest.NewRequest(http.MethodGet, "/v1/admin/ops/eval/golden-sets/support-rag", nil),
+	} {
+		req.Header.Set("X-User-ID", "admin")
+		req.Header.Set("X-Admin-Token", "secret")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "support-rag") {
+			t.Fatalf("%s status = %d body=%s", req.URL.Path, rec.Code, rec.Body.String())
+		}
+	}
+
+	runBody := `{"set_id":"support-rag","judge":"llm","candidates":[{"case_id":"case-1","output":"回答需要权限过滤","retrieved_evidence":[{"id":"doc-1","content":"需要权限过滤"}]}]}`
+	runReq := httptest.NewRequest(http.MethodPost, "/v1/admin/ops/eval/golden-runs", bytes.NewBufferString(runBody))
+	runReq.Header.Set("X-User-ID", "admin")
+	runReq.Header.Set("X-Admin-Token", "secret")
+	runRec := httptest.NewRecorder()
+	server.ServeHTTP(runRec, runReq)
+	if runRec.Code != http.StatusCreated {
+		t.Fatalf("create golden run status = %d body=%s", runRec.Code, runRec.Body.String())
+	}
+	if !strings.Contains(runRec.Body.String(), `"subject_type":"golden_case"`) || !strings.Contains(runRec.Body.String(), `"judge_model":"judge-model"`) {
+		t.Fatalf("golden run response missing judge result: %s", runRec.Body.String())
+	}
+}
+
+func TestAdminOpsGoldenCasesFromRuntimeTraceCreatesVersionedSet(t *testing.T) {
+	ctx := context.Background()
+	runtime := testRuntime(t)
+	runtime.SetJobStore(NewMemoryJobStore())
+	store := NewMemoryEvaluationStore()
+	server := NewServer(runtime, HeaderAuthenticator{UserHeader: "X-User-ID"}, NoopRateLimiter{}, nil)
+	server.SetAdminToken("secret")
+	server.SetEvaluationStore(store)
+
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	session.AddUserMessage("如何提升 RAG 准确率？")
+	session.AddAssistantMessage("通过权限过滤和证据支撑提升 RAG 准确率。")
+	if err := runtime.sessions.Save(ctx, "alice", session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	job, err := runtime.CreateJob(ctx, ChatRequest{UserID: "alice", SessionID: session.ID, Content: "如何提升 RAG 准确率？"}, "chat")
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	finished := time.Now().UTC()
+	if err := runtime.jobs.UpdateJobStatus(ctx, job.UserID, job.ID, JobStatusSucceeded, "", finished); err != nil {
+		t.Fatalf("finish job: %v", err)
+	}
+
+	body := `{"target_version":"v1","scope":{"subject_type":"job","user_id":"alice","session_id":"` + session.ID + `"},"subject_id":"` + job.ID + `","tags":["badcase"],"max_cases":1}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/ops/eval/golden-sets/support-rag/cases/from-trace", bytes.NewBufferString(body))
+	req.Header.Set("X-User-ID", "admin")
+	req.Header.Set("X-Admin-Token", "secret")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("capture status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"version":"v1"`) || !strings.Contains(rec.Body.String(), `"runtime_trace"`) {
+		t.Fatalf("capture response missing versioned trace case: %s", rec.Body.String())
+	}
+
+	versionReq := httptest.NewRequest(http.MethodPost, "/v1/admin/ops/eval/golden-sets/support-rag/versions", bytes.NewBufferString(`{"source_version":"v1","target_version":"v2","metadata":{"reason":"prompt-change"}}`))
+	versionReq.Header.Set("X-User-ID", "admin")
+	versionReq.Header.Set("X-Admin-Token", "secret")
+	versionRec := httptest.NewRecorder()
+	server.ServeHTTP(versionRec, versionReq)
+	if versionRec.Code != http.StatusCreated {
+		t.Fatalf("version status = %d body=%s", versionRec.Code, versionRec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/admin/ops/eval/golden-sets/support-rag?version=v1", nil)
+	getReq.Header.Set("X-User-ID", "admin")
+	getReq.Header.Set("X-Admin-Token", "secret")
+	getRec := httptest.NewRecorder()
+	server.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK || !strings.Contains(getRec.Body.String(), `"version":"v1"`) {
+		t.Fatalf("get v1 status = %d body=%s", getRec.Code, getRec.Body.String())
+	}
+}

@@ -1,6 +1,6 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
 import { userFacingErrorMessage } from "./errorMessages";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -586,6 +586,84 @@ export class ApiClient {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
       body: JSON.stringify(payload)
+    });
+    return normalizeEvaluationReport(response);
+  }
+
+  async upsertGoldenSet(adminToken: string, set: GoldenSet): Promise<GoldenSet> {
+    const response = await this.fetchJSON<{ set: GoldenSet }>("/v1/admin/ops/eval/golden-sets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify(set)
+    });
+    return response.set;
+  }
+
+  async adminOpsGoldenSets(adminToken: string, options: { id?: string; version?: string; limit?: number } = {}): Promise<GoldenSet[]> {
+    const params = new URLSearchParams();
+    if (options.id) params.set("id", options.id);
+    if (options.version) params.set("version", options.version);
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    const payload = await this.fetchJSON<{ sets: GoldenSet[] }>(`/v1/admin/ops/eval/golden-sets${query ? `?${query}` : ""}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return payload.sets || [];
+  }
+
+  async adminOpsGoldenSet(adminToken: string, id: string, version = ""): Promise<GoldenSet> {
+    const params = new URLSearchParams();
+    if (version) params.set("version", version);
+    const query = params.toString();
+    const payload = await this.fetchJSON<{ set: GoldenSet }>(`/v1/admin/ops/eval/golden-sets/${encodeURIComponent(id)}${query ? `?${query}` : ""}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return payload.set;
+  }
+
+  async createGoldenSetVersion(adminToken: string, id: string, payload: { sourceVersion?: string; targetVersion: string; name?: string; description?: string; metadata?: Record<string, unknown> }): Promise<GoldenSet> {
+    const response = await this.fetchJSON<{ set: GoldenSet }>(`/v1/admin/ops/eval/golden-sets/${encodeURIComponent(id)}/versions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({
+        source_version: payload.sourceVersion,
+        target_version: payload.targetVersion,
+        name: payload.name,
+        description: payload.description,
+        metadata: payload.metadata
+      })
+    });
+    return response.set;
+  }
+
+  async createGoldenCasesFromTrace(adminToken: string, id: string, payload: GoldenTraceCaptureRequest): Promise<{ set: GoldenSet; cases: GoldenCase[] }> {
+    return this.fetchJSON<{ set: GoldenSet; cases: GoldenCase[] }>(`/v1/admin/ops/eval/golden-sets/${encodeURIComponent(id)}/cases/from-trace`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify(payload)
+    });
+  }
+
+  async deleteGoldenSet(adminToken: string, id: string): Promise<void> {
+    await this.fetchText(`/v1/admin/ops/eval/golden-sets/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { "X-Admin-Token": adminToken }
+    });
+  }
+
+  async createGoldenEvaluationRun(adminToken: string, payload: { setId: string; setVersion?: string; judge?: "heuristic" | "llm" | string; candidates: GoldenCandidate[]; name?: string; trigger?: string; thresholds?: EvaluationThresholds }): Promise<EvaluationRunReport> {
+    const response = await this.fetchJSON<EvaluationRunReport>("/v1/admin/ops/eval/golden-runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({
+        set_id: payload.setId,
+        set_version: payload.setVersion,
+        judge: payload.judge,
+        candidates: payload.candidates,
+        name: payload.name,
+        trigger: payload.trigger,
+        thresholds: payload.thresholds
+      })
     });
     return normalizeEvaluationReport(response);
   }

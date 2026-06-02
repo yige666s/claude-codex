@@ -27,20 +27,27 @@ type EvaluationStore interface {
 	UpdateEvaluationReview(ctx context.Context, review EvaluationReview) (EvaluationReview, error)
 	ListEvaluationReviews(ctx context.Context, filter EvaluationReviewFilter) ([]EvaluationReview, error)
 	SummarizeEvaluationRun(ctx context.Context, runID string) (EvaluationRunSummary, error)
+	UpsertGoldenSet(ctx context.Context, set GoldenSet) (GoldenSet, error)
+	GetGoldenSet(ctx context.Context, id string) (GoldenSet, error)
+	GetGoldenSetVersion(ctx context.Context, id, version string) (GoldenSet, error)
+	ListGoldenSets(ctx context.Context, filter GoldenSetFilter) ([]GoldenSet, error)
+	DeleteGoldenSet(ctx context.Context, id string) error
 }
 
 type MemoryEvaluationStore struct {
-	mu      sync.Mutex
-	runs    map[string]EvaluationRun
-	results map[string]EvaluationResult
-	reviews map[string]EvaluationReview
+	mu         sync.Mutex
+	runs       map[string]EvaluationRun
+	results    map[string]EvaluationResult
+	reviews    map[string]EvaluationReview
+	goldenSets map[string]GoldenSet
 }
 
 func NewMemoryEvaluationStore() *MemoryEvaluationStore {
 	return &MemoryEvaluationStore{
-		runs:    map[string]EvaluationRun{},
-		results: map[string]EvaluationResult{},
-		reviews: map[string]EvaluationReview{},
+		runs:       map[string]EvaluationRun{},
+		results:    map[string]EvaluationResult{},
+		reviews:    map[string]EvaluationReview{},
+		goldenSets: map[string]GoldenSet{},
 	}
 }
 
@@ -237,8 +244,18 @@ func (s *SQLEvaluationStore) Init(ctx context.Context) error {
 	); err != nil {
 		return err
 	}
-	return requireSQLColumns(ctx, s.db, "agent_eval_reviews",
+	if err := requireSQLColumns(ctx, s.db, "agent_eval_reviews",
 		"id", "result_id", "status", "reviewer", "note", "created_at", "updated_at",
+	); err != nil {
+		return err
+	}
+	if err := requireSQLColumns(ctx, s.db, "agent_eval_golden_sets",
+		"id", "name", "description", "version", "metadata", "created_at", "updated_at",
+	); err != nil {
+		return err
+	}
+	return requireSQLColumns(ctx, s.db, "agent_eval_golden_cases",
+		"id", "set_id", "set_version", "position", "query", "expected_answer", "expected_facts", "gold_evidence", "tags", "metadata", "created_at", "updated_at",
 	)
 }
 
@@ -1066,6 +1083,8 @@ func normalizeEvaluationSubjectType(value string) string {
 		return EvaluationSubjectSession
 	case EvaluationSubjectSkillExecution:
 		return EvaluationSubjectSkillExecution
+	case EvaluationSubjectGoldenCase:
+		return EvaluationSubjectGoldenCase
 	default:
 		return ""
 	}

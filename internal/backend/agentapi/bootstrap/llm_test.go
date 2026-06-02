@@ -19,3 +19,13 @@ func TestApplyRoutedModelForScopeRebindsVertexLocation(t *testing.T) {
 		t.Fatalf("vertex location = %q, want global", got.VertexLocation)
 	}
 }
+
+func TestRoutedModelSupportsEvaluationJudgeRoute(t *testing.T) {
+	got := RoutedModel("gemini-2.5-pro", "default=gemini-2.5-pro,judge=gemini-3.5-flash,skill=gemini-3.1-flash-lite", agentruntime.Scope{
+		SkillScoped: true,
+		SkillName:   "evaluation_judge",
+	})
+	if got != "gemini-3.5-flash" {
+		t.Fatalf("judge routed model = %q, want gemini-3.5-flash", got)
+	}
+}

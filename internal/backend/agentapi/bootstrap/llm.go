@@ -124,6 +124,19 @@ func NewGovernedPlannerForScope(primary LLMConfig, fallbackSpec, modelRoutes str
 	return agentruntime.NewGovernedPlanner(backends, usageStore, governance)
 }
 
+func NewGoldenJudge(primary LLMConfig, fallbackSpec, modelRoutes, judgeModel, promptVersion string, usageStore agentruntime.LLMUsageStore, governance agentruntime.LLMGovernanceConfig) (agentruntime.PlannerGoldenJudge, error) {
+	scope := agentruntime.Scope{SkillScoped: true, SkillName: "evaluation_judge"}
+	if strings.TrimSpace(judgeModel) != "" {
+		modelRoutes = appendModelRoute(modelRoutes, "judge", judgeModel)
+	}
+	planner, err := NewGovernedPlannerForScope(primary, fallbackSpec, modelRoutes, scope, usageStore, governance)
+	if err != nil {
+		return agentruntime.PlannerGoldenJudge{}, err
+	}
+	effective := applyRoutedModelForScope(primary, modelRoutes, scope)
+	return agentruntime.PlannerGoldenJudge{Planner: planner, Model: effective.Model, PromptVersion: promptVersion}, nil
+}
+
 func applyRoutedModelForScope(config LLMConfig, modelRoutes string, scope agentruntime.Scope) LLMConfig {
 	config.Model = RoutedModel(config.Model, modelRoutes, scope)
 	if option, ok := agentruntime.LLMModelOptionFor(config.Model); ok {
@@ -208,6 +221,11 @@ func ParseLLMFallbacks(value string, timeout int) []LLMConfig {
 
 func RoutedModel(currentModel, routes string, scope agentruntime.Scope) string {
 	routeMap := ParseModelRoutes(routes)
+	if scope.SkillName == "evaluation_judge" {
+		if model := routeMap["judge"]; model != "" {
+			return model
+		}
+	}
 	if scope.SkillName != "" {
 		if model := routeMap["skill:"+scope.SkillName]; model != "" {
 			return model
@@ -231,6 +249,20 @@ func RoutedModel(currentModel, routes string, scope agentruntime.Scope) string {
 		return model
 	}
 	return currentModel
+}
+
+func appendModelRoute(routes, key, model string) string {
+	key = strings.TrimSpace(key)
+	model = strings.TrimSpace(model)
+	if key == "" || model == "" {
+		return routes
+	}
+	item := key + "=" + model
+	routes = strings.TrimSpace(routes)
+	if routes == "" {
+		return item
+	}
+	return routes + "," + item
 }
 
 func chatRouteClass(prompt string) string {

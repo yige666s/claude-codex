@@ -265,6 +265,12 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
   const estimatedCostUSD = metricNumber(metrics, "estimated_cost_usd");
   const toolErrorRate = metricNumber(metrics, "tool_error_rate");
   const llmErrorRate = metricNumber(metrics, "llm_error_rate");
+  const answerCorrectness = metricNumber(metrics, "answer_correctness_avg");
+  const answerRelevancy = metricNumber(metrics, "answer_relevancy_avg");
+  const faithfulness = metricNumber(metrics, "faithfulness_avg");
+  const contextPrecision = metricNumber(metrics, "context_precision_avg");
+  const contextRecall = metricNumber(metrics, "context_recall_avg");
+  const hasRagasMetrics = ["answer_correctness_avg", "answer_relevancy_avg", "faithfulness_avg", "context_precision_avg", "context_recall_avg"].some((key) => metrics[key] != null);
   const evaluationTabs: Array<AdminTabOption<typeof evaluationTab>> = [
     { id: "results", label: "Results", icon: <Activity size={15} />, count: results.length },
     { id: "selected", label: "Selected", icon: <Info size={15} /> },
@@ -285,6 +291,7 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
               <option value="job">Jobs</option>
               <option value="session">Sessions</option>
               <option value="skill_execution">Skill executions</option>
+              <option value="golden_case">Golden cases</option>
             </select>
             <select value={String(days)} onChange={(event) => setDays(Number(event.currentTarget.value))} aria-label="Evaluation time window">
               <option value="1">Last 24h</option>
@@ -391,6 +398,11 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
           <AdminMetric label="Tokens" value={formatNumber(totalTokens)} />
           <AdminMetric label="Tool fail rate" value={formatPercent(toolErrorRate)} />
           <AdminMetric label="LLM fail rate" value={formatPercent(llmErrorRate)} />
+          {hasRagasMetrics && <AdminMetric label="Answer correctness" value={formatPercent(answerCorrectness)} />}
+          {hasRagasMetrics && <AdminMetric label="Answer relevancy" value={formatPercent(answerRelevancy)} />}
+          {hasRagasMetrics && <AdminMetric label="Faithfulness" value={formatPercent(faithfulness)} />}
+          {hasRagasMetrics && <AdminMetric label="Context precision" value={formatPercent(contextPrecision)} />}
+          {hasRagasMetrics && <AdminMetric label="Context recall" value={formatPercent(contextRecall)} />}
           <AdminMetric label="Pending reviews" value={String(reviews.filter((review) => review.status === "pending").length)} />
         </div>
         <AdminTabs tabs={evaluationTabs} active={evaluationTab} onChange={setEvaluationTab} label="Evaluation detail sections" compact />
@@ -428,6 +440,11 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
                 <SkillFact label="Created" value={formatTime(selectedResult.created_at)} />
                 <SkillFact label="Session" value={selectedResult.session_id || "none"} />
                 <SkillFact label="Job" value={selectedResult.job_id || "none"} />
+                {selectedResult.subject_type === "golden_case" && <SkillFact label="RAGAS" value={[
+                  `correct ${formatPercent(metricNumber(selectedResult.metrics || {}, "answer_correctness"))}`,
+                  `faith ${formatPercent(metricNumber(selectedResult.metrics || {}, "faithfulness"))}`,
+                  `recall ${formatPercent(metricNumber(selectedResult.metrics || {}, "context_recall"))}`
+                ].join(" · ")} />}
               </div>
             ) : (
               <p className="muted-text">Select a result to inspect findings.</p>

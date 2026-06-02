@@ -147,6 +147,50 @@ func TestMemoryEvaluationStoreClonesMutableFields(t *testing.T) {
 	}
 }
 
+func TestMemoryEvaluationStoreGoldenSetLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryEvaluationStore()
+	set, err := store.UpsertGoldenSet(ctx, GoldenSet{
+		ID:      "support-rag",
+		Name:    "Support RAG",
+		Version: "v1",
+		Cases: []GoldenCase{{
+			ID:            "case-1",
+			Query:         "如何提高回答准确率？",
+			ExpectedFacts: []string{"权限过滤"},
+			GoldEvidence:  []GoldenEvidence{{ID: "doc-1", Content: "需要权限过滤"}},
+			Tags:          []string{"rag"},
+			Metadata:      map[string]any{"owner": "qa"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("UpsertGoldenSet() error = %v", err)
+	}
+	set.Cases[0].Metadata["owner"] = "mutated"
+
+	loaded, err := store.GetGoldenSet(ctx, "support-rag")
+	if err != nil {
+		t.Fatalf("GetGoldenSet() error = %v", err)
+	}
+	if loaded.Cases[0].Metadata["owner"] != "qa" {
+		t.Fatalf("stored golden set mutated: %#v", loaded.Cases[0].Metadata)
+	}
+
+	listed, err := store.ListGoldenSets(ctx, GoldenSetFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListGoldenSets() error = %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != "support-rag" {
+		t.Fatalf("unexpected golden sets: %#v", listed)
+	}
+	if err := store.DeleteGoldenSet(ctx, "support-rag"); err != nil {
+		t.Fatalf("DeleteGoldenSet() error = %v", err)
+	}
+	if _, err := store.GetGoldenSet(ctx, "support-rag"); err != sql.ErrNoRows {
+		t.Fatalf("GetGoldenSet after delete error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestSQLEvaluationStorePostgresLifecycle(t *testing.T) {
 	dsn := os.Getenv("AGENT_RUNTIME_TEST_PG_DSN")
 	if dsn == "" {

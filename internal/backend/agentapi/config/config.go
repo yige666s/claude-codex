@@ -160,6 +160,9 @@ type Config struct {
 	EvalDailyUserIDs                        string
 	EvalDailyBatchLimit                     int
 	EvalDailyTimeout                        time.Duration
+	EvalJudgeEnabled                        bool
+	EvalJudgeModel                          string
+	EvalJudgePromptVersion                  string
 	TrustedUserHeader                       string
 	TrustedSecretHeader                     string
 	TrustedSecret                           string
@@ -383,6 +386,9 @@ func Default() Config {
 		EvalDailyUserIDs:                        os.Getenv("AGENT_API_EVAL_DAILY_USER_IDS"),
 		EvalDailyBatchLimit:                     EnvInt("AGENT_API_EVAL_DAILY_BATCH_LIMIT", 200),
 		EvalDailyTimeout:                        EnvDuration("AGENT_API_EVAL_DAILY_TIMEOUT", 10*time.Minute),
+		EvalJudgeEnabled:                        EnvBool("AGENT_API_EVAL_JUDGE_ENABLED", strings.TrimSpace(os.Getenv("AGENT_API_EVAL_JUDGE_MODEL")) != ""),
+		EvalJudgeModel:                          os.Getenv("AGENT_API_EVAL_JUDGE_MODEL"),
+		EvalJudgePromptVersion:                  FirstNonEmpty(os.Getenv("AGENT_API_EVAL_JUDGE_PROMPT_VERSION"), agentruntime.DefaultGoldenJudgePromptVersion),
 		TrustedUserHeader:                       FirstNonEmpty(os.Getenv("AGENT_API_TRUSTED_USER_HEADER"), "X-User-ID"),
 		TrustedSecretHeader:                     os.Getenv("AGENT_API_TRUSTED_SECRET_HEADER"),
 		TrustedSecret:                           os.Getenv("AGENT_API_TRUSTED_SECRET"),
@@ -607,6 +613,9 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.StringVar(&cfg.EvalDailyUserIDs, "eval-daily-user-ids", cfg.EvalDailyUserIDs, "comma-separated user IDs for daily evaluation; empty uses active built-in users when available")
 	flags.IntVar(&cfg.EvalDailyBatchLimit, "eval-daily-batch-limit", cfg.EvalDailyBatchLimit, "max users processed per daily evaluation pass")
 	flags.DurationVar(&cfg.EvalDailyTimeout, "eval-daily-timeout", cfg.EvalDailyTimeout, "timeout for one daily evaluation pass")
+	flags.BoolVar(&cfg.EvalJudgeEnabled, "eval-judge-enabled", cfg.EvalJudgeEnabled, "enable LLM-as-Judge for golden set evaluation runs")
+	flags.StringVar(&cfg.EvalJudgeModel, "eval-judge-model", cfg.EvalJudgeModel, "model used by LLM-as-Judge; also supports AGENT_API_LLM_MODEL_ROUTES judge=<model>")
+	flags.StringVar(&cfg.EvalJudgePromptVersion, "eval-judge-prompt-version", cfg.EvalJudgePromptVersion, "prompt version label recorded by LLM-as-Judge evaluation results")
 	flags.StringVar(&cfg.TrustedUserHeader, "trusted-user-header", cfg.TrustedUserHeader, "trusted gateway user ID header")
 	flags.StringVar(&cfg.TrustedSecretHeader, "trusted-secret-header", cfg.TrustedSecretHeader, "header required for trusted-header auth")
 	flags.StringVar(&cfg.TrustedSecret, "trusted-secret", cfg.TrustedSecret, "secret value required for trusted-header auth")

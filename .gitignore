@@ -121,3 +121,6 @@ secrets.json
 .omx/
 docs/*
 !docs/LIVE_API_ISSUES_AND_SOLUTIONS.md
+!docs/LIVE_API_TECHNICAL_DESIGN.md
+!docs/interview/
+!docs/interview/1.md
