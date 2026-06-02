@@ -236,12 +236,29 @@ func (j PlannerGoldenJudge) JudgeGoldenCase(ctx context.Context, req GoldenJudge
 	}
 	result, err := parseGoldenJudgeJSON(plan.AssistantText)
 	if err != nil {
-		return GoldenJudgeResult{}, err
+		repaired, repairErr := j.repairGoldenJudgeJSON(ctx, req, plan.AssistantText, err)
+		if repairErr != nil {
+			fallback, fallbackErr := HeuristicGoldenJudge{}.JudgeGoldenCase(ctx, req)
+			if fallbackErr != nil {
+				return GoldenJudgeResult{}, err
+			}
+			result = fallback
+			if result.Metadata == nil {
+				result.Metadata = map[string]any{}
+			}
+			result.Metadata["judge"] = "llm-as-judge-fallback"
+			result.Metadata["fallback_reason"] = err.Error()
+			result.Metadata["raw_response_excerpt"] = truncateEvaluationString(plan.AssistantText, 512)
+		} else {
+			result = repaired
+		}
 	}
 	if result.Metadata == nil {
 		result.Metadata = map[string]any{}
 	}
-	result.Metadata["judge"] = "llm-as-judge"
+	if judgeName, ok := result.Metadata["judge"]; !ok || strings.TrimSpace(fmt.Sprint(judgeName)) == "" {
+		result.Metadata["judge"] = "llm-as-judge"
+	}
 	if model := strings.TrimSpace(j.Model); model != "" {
 		result.Metadata["model"] = model
 	}
@@ -336,7 +353,18 @@ Score the candidate answer from 0 to 1 on:
 - context_precision: is retrieved evidence relevant?
 - context_recall: did retrieval cover gold evidence/facts?
 
-Return only JSON with numeric fields answer_correctness, answer_relevancy, faithfulness, context_precision, context_recall, and optional findings.`
+Return only valid JSON. Do not use Markdown, prose, code fences, or explanations.
+The JSON object must match this shape:
+{
+  "answer_correctness": 0.0,
+  "answer_relevancy": 0.0,
+  "faithfulness": 0.0,
+  "context_precision": 0.0,
+  "context_recall": 0.0,
+  "findings": [
+    {"severity": "warning", "code": "short_code", "message": "short reason"}
+  ]
+}`
 }
 
 func (j PlannerGoldenJudge) systemPrompt() string {
@@ -364,6 +392,48 @@ func goldenJudgeUserPrompt(req GoldenJudgeRequest) string {
 	}
 	raw, _ := json.MarshalIndent(payload, "", "  ")
 	return string(raw)
+}
+
+func (j PlannerGoldenJudge) repairGoldenJudgeJSON(ctx context.Context, req GoldenJudgeRequest, invalidResponse string, cause error) (GoldenJudgeResult, error) {
+	session := &state.Session{
+		ID:        "golden-judge-repair",
+		UserID:    "evaluation",
+		StartedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		Messages: []state.Message{
+			{Role: state.MessageRoleSystem, Content: `Convert the evaluation into valid JSON only. Do not use Markdown, prose, or code fences.`, Hidden: true, CreatedAt: time.Now().UTC()},
+			{Role: state.MessageRoleUser, Content: goldenJudgeRepairPrompt(req, invalidResponse, cause), CreatedAt: time.Now().UTC()},
+		},
+	}
+	plan, err := j.Planner.Next(ctx, session, nil)
+	if err != nil {
+		return GoldenJudgeResult{}, err
+	}
+	return parseGoldenJudgeJSON(plan.AssistantText)
+}
+
+func goldenJudgeRepairPrompt(req GoldenJudgeRequest, invalidResponse string, cause error) string {
+	payload := map[string]any{
+		"parse_error":        cause.Error(),
+		"invalid_response":   truncateEvaluationString(invalidResponse, 2048),
+		"required_schema":    map[string]float64{"answer_correctness": 0, "answer_relevancy": 0, "faithfulness": 0, "context_precision": 0, "context_recall": 0},
+		"evaluation_payload": json.RawMessage(goldenJudgePayloadJSON(req)),
+	}
+	raw, _ := json.MarshalIndent(payload, "", "  ")
+	return string(raw)
+}
+
+func goldenJudgePayloadJSON(req GoldenJudgeRequest) []byte {
+	payload := map[string]any{
+		"query":              req.Case.Query,
+		"expected_answer":    req.Case.ExpectedAnswer,
+		"expected_facts":     req.Case.ExpectedFacts,
+		"gold_evidence":      req.Case.GoldEvidence,
+		"candidate_answer":   req.Candidate.Output,
+		"retrieved_evidence": req.Candidate.RetrievedEvidence,
+	}
+	raw, _ := json.MarshalIndent(payload, "", "  ")
+	return raw
 }
 
 func parseGoldenJudgeJSON(text string) (GoldenJudgeResult, error) {

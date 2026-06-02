@@ -187,3 +187,71 @@ func TestPlannerGoldenJudgeParsesLLMJudgeJSON(t *testing.T) {
 		t.Fatalf("metadata = %#v", result.Metadata)
 	}
 }
+
+type sequenceJudgePlanner struct {
+	responses []string
+	calls     int
+}
+
+func (p *sequenceJudgePlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (plannerapi.Plan, error) {
+	if p.calls >= len(p.responses) {
+		return plannerapi.Plan{}, nil
+	}
+	response := p.responses[p.calls]
+	p.calls++
+	return plannerapi.Plan{AssistantText: response}, nil
+}
+
+func TestPlannerGoldenJudgeRepairsNonJSONResponse(t *testing.T) {
+	planner := &sequenceJudgePlanner{responses: []string{
+		"Scores look good overall.",
+		`{"answer_correctness":1,"answer_relevancy":0.8,"faithfulness":0.7,"context_precision":0.6,"context_recall":0.5}`,
+	}}
+	judge := PlannerGoldenJudge{Planner: planner}
+	result, err := judge.JudgeGoldenCase(context.Background(), GoldenJudgeRequest{
+		Case:      GoldenCase{ID: "case-1", Query: "问题", ExpectedFacts: []string{"事实"}},
+		Candidate: GoldenCandidate{CaseID: "case-1", Output: "回答"},
+	})
+	if err != nil {
+		t.Fatalf("JudgeGoldenCase returned error: %v", err)
+	}
+	if planner.calls != 2 {
+		t.Fatalf("planner calls = %d, want 2", planner.calls)
+	}
+	if result.AnswerCorrectness != 1 || result.ContextRecall != 0.5 {
+		t.Fatalf("unexpected scores: %+v", result)
+	}
+	if result.Metadata["judge"] != "llm-as-judge" {
+		t.Fatalf("metadata = %#v", result.Metadata)
+	}
+}
+
+func TestPlannerGoldenJudgeFallsBackWhenJSONRepairFails(t *testing.T) {
+	planner := &sequenceJudgePlanner{responses: []string{"not json", "still not json"}}
+	judge := PlannerGoldenJudge{Planner: planner, Model: "judge-model"}
+	result, err := judge.JudgeGoldenCase(context.Background(), GoldenJudgeRequest{
+		Case: GoldenCase{
+			ID:            "case-1",
+			Query:         "What is the codename?",
+			ExpectedFacts: []string{"Aurora Smoke"},
+			GoldEvidence:  []GoldenEvidence{{Content: "Aurora Smoke is the codename."}},
+		},
+		Candidate: GoldenCandidate{
+			CaseID:            "case-1",
+			Output:            "Aurora Smoke is the codename.",
+			RetrievedEvidence: []GoldenEvidence{{Content: "Aurora Smoke is the codename."}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("JudgeGoldenCase returned error: %v", err)
+	}
+	if planner.calls != 2 {
+		t.Fatalf("planner calls = %d, want 2", planner.calls)
+	}
+	if result.Metadata["judge"] != "llm-as-judge-fallback" || result.Metadata["model"] != "judge-model" {
+		t.Fatalf("metadata = %#v", result.Metadata)
+	}
+	if result.AnswerCorrectness <= 0 {
+		t.Fatalf("fallback did not score candidate: %+v", result)
+	}
+}
