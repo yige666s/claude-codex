@@ -722,6 +722,34 @@ export type JobEvent = {
   created_at: string;
 };
 
+export type WorkflowRun = {
+  id: string;
+  user_id?: string;
+  session_id?: string;
+  job_id?: string;
+  name: string;
+  version: string;
+  status: string;
+  state?: Record<string, unknown>;
+  error?: string;
+  created_at: string;
+  updated_at: string;
+  started_at?: string;
+  finished_at?: string;
+};
+
+export type WorkflowStepRun = {
+  id: string;
+  run_id: string;
+  step_name: string;
+  status: string;
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  error?: string;
+  started_at: string;
+  finished_at?: string;
+};
+
 export type ReadinessCheck = {
   name: string;
   status: "ok" | "error" | string;

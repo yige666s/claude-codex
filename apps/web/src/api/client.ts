@@ -1,6 +1,6 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
 import { userFacingErrorMessage } from "./errorMessages";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -400,6 +400,27 @@ export class ApiClient {
       headers: { "X-Admin-Token": adminToken }
     });
     return payload.events || [];
+  }
+
+  async adminOpsWorkflows(adminToken: string, userId: string, options: { sessionId?: string; jobId?: string; name?: string; status?: string; limit?: number } = {}): Promise<WorkflowRun[]> {
+    const params = new URLSearchParams({ user_id: userId });
+    if (options.sessionId) params.set("session_id", options.sessionId);
+    if (options.jobId) params.set("job_id", options.jobId);
+    if (options.name) params.set("name", options.name);
+    if (options.status && options.status !== "all") params.set("status", options.status);
+    if (options.limit) params.set("limit", String(options.limit));
+    const payload = await this.fetchJSON<{ workflows: WorkflowRun[] }>(`/v1/admin/ops/workflows?${params.toString()}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return payload.workflows || [];
+  }
+
+  async adminOpsWorkflow(adminToken: string, userId: string, runId: string): Promise<{ workflow: WorkflowRun; steps: WorkflowStepRun[] }> {
+    const params = new URLSearchParams({ user_id: userId });
+    const payload = await this.fetchJSON<{ workflow: WorkflowRun; steps: WorkflowStepRun[] }>(`/v1/admin/ops/workflows/${encodeURIComponent(runId)}?${params.toString()}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return { workflow: payload.workflow, steps: payload.steps || [] };
   }
 
   async adminOpsCancelJob(adminToken: string, userId: string, jobId: string): Promise<void> {

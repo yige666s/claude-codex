@@ -33,7 +33,7 @@ import {
   type AdminTabOption
 } from "../shared";
 import { sessionTitle } from "../../lib/sessionTitle";
-import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, RiskReviewSummary, RiskSummary, Session } from "../../types";
+import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, RiskReviewSummary, RiskSummary, Session, WorkflowRun, WorkflowStepRun } from "../../types";
 
 export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string }) {
   const [userID, setUserID] = useState("");
@@ -44,21 +44,26 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
   const [jobs, setJobs] = useState<Job[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [events, setEvents] = useState<JobEvent[]>([]);
+  const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
+  const [workflowSteps, setWorkflowSteps] = useState<WorkflowStepRun[]>([]);
   const [selectedSessionID, setSelectedSessionID] = useState("");
   const [selectedJobID, setSelectedJobID] = useState("");
+  const [selectedWorkflowID, setSelectedWorkflowID] = useState("");
   const [loading, setLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [opsTab, setOpsTab] = useState<"session" | "jobs" | "events" | "assets">("jobs");
+  const [opsTab, setOpsTab] = useState<"session" | "jobs" | "events" | "workflows" | "assets">("jobs");
   const token = adminToken.trim();
   const cleanUserID = userID.trim();
   const selectedSession = sessions.find((session) => session.id === selectedSessionID) || null;
   const selectedJob = jobs.find((job) => job.id === selectedJobID) || null;
+  const selectedWorkflow = workflows.find((workflow) => workflow.id === selectedWorkflowID) || null;
   const opsTabs: Array<AdminTabOption<typeof opsTab>> = [
     { id: "session", label: "Session", icon: <MessageCircle size={15} />, count: sessions.length },
     { id: "jobs", label: "Jobs", icon: <Briefcase size={15} />, count: jobs.length },
     { id: "events", label: "Events", icon: <Activity size={15} />, count: events.length },
+    { id: "workflows", label: "Workflows", icon: <Settings size={15} />, count: workflows.length },
     { id: "assets", label: "Assets", icon: <FileUp size={15} />, count: assets.length }
   ];
 
@@ -70,25 +75,35 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
     setLoading(true);
     setError("");
     try {
-      const [nextSessions, nextJobs, nextAssets] = await Promise.all([
+      const [nextSessions, nextJobs, nextAssets, nextWorkflows] = await Promise.all([
         api.adminOpsSessions(token, cleanUserID, { q: query, limit: 100 }),
         api.adminOpsJobs(token, cleanUserID, { sessionId: sessionID, q: query, status: statusFilter, limit: 100 }),
-        api.adminOpsAssets(token, cleanUserID, { sessionId: sessionID, jobId: jobID, q: query, kind: assetKind, limit: 100 })
+        api.adminOpsAssets(token, cleanUserID, { sessionId: sessionID, jobId: jobID, q: query, kind: assetKind, limit: 100 }),
+        api.adminOpsWorkflows(token, cleanUserID, { sessionId: sessionID, jobId: jobID, status: statusFilter, limit: 100 })
       ]);
       setSessions(nextSessions);
       setJobs(nextJobs);
       setAssets(nextAssets);
+      setWorkflows(nextWorkflows);
       const nextSessionID = sessionID && nextSessions.some((session) => session.id === sessionID) ? sessionID : "";
       const nextJobID = jobID && nextJobs.some((job) => job.id === jobID) ? jobID : nextJobs[0]?.id || "";
+      const nextWorkflowID = selectedWorkflowID && nextWorkflows.some((workflow) => workflow.id === selectedWorkflowID) ? selectedWorkflowID : nextWorkflows[0]?.id || "";
       setSelectedSessionID(nextSessionID);
       setSelectedJobID(nextJobID);
+      setSelectedWorkflowID(nextWorkflowID);
       if (nextJobID) {
         const nextEvents = await api.adminOpsJobEvents(token, cleanUserID, nextJobID, 500);
         setEvents(nextEvents);
       } else {
         setEvents([]);
       }
-      setNotice(`Loaded ${nextSessions.length} sessions, ${nextJobs.length} jobs, ${nextAssets.length} assets`);
+      if (nextWorkflowID) {
+        const detail = await api.adminOpsWorkflow(token, cleanUserID, nextWorkflowID);
+        setWorkflowSteps(detail.steps);
+      } else {
+        setWorkflowSteps([]);
+      }
+      setNotice(`Loaded ${nextSessions.length} sessions, ${nextJobs.length} jobs, ${nextWorkflows.length} workflows, ${nextAssets.length} assets`);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -99,7 +114,9 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
   const openSession = async (sessionID: string) => {
     setSelectedSessionID(sessionID);
     setSelectedJobID("");
+    setSelectedWorkflowID("");
     setEvents([]);
+    setWorkflowSteps([]);
     await loadOps(sessionID, "");
   };
 
@@ -108,7 +125,32 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
     if (!token || !cleanUserID) return;
     setError("");
     try {
-      setEvents(await api.adminOpsJobEvents(token, cleanUserID, jobID, 500));
+      const [nextEvents, nextWorkflows] = await Promise.all([
+        api.adminOpsJobEvents(token, cleanUserID, jobID, 500),
+        api.adminOpsWorkflows(token, cleanUserID, { sessionId: selectedSessionID, jobId: jobID, status: statusFilter, limit: 100 })
+      ]);
+      setEvents(nextEvents);
+      setWorkflows(nextWorkflows);
+      const nextWorkflowID = nextWorkflows[0]?.id || "";
+      setSelectedWorkflowID(nextWorkflowID);
+      if (nextWorkflowID) {
+        const detail = await api.adminOpsWorkflow(token, cleanUserID, nextWorkflowID);
+        setWorkflowSteps(detail.steps);
+      } else {
+        setWorkflowSteps([]);
+      }
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
+  const openWorkflow = async (runID: string) => {
+    setSelectedWorkflowID(runID);
+    if (!token || !cleanUserID) return;
+    setError("");
+    try {
+      const detail = await api.adminOpsWorkflow(token, cleanUserID, runID);
+      setWorkflowSteps(detail.steps);
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -213,6 +255,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
             <div className="admin-metrics">
               <AdminMetric label="Sessions" value={String(sessions.length)} />
               <AdminMetric label="Jobs" value={String(jobs.length)} />
+              <AdminMetric label="Workflows" value={String(workflows.length)} />
               <AdminMetric label="Assets" value={String(assets.length)} />
               <AdminMetric label="Events" value={String(events.length)} />
             </div>
@@ -269,6 +312,50 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
                   {!events.length && <p className="muted-text">Select a job to inspect replay events.</p>}
                 </div>
               </section>}
+              {opsTab === "workflows" && <section className="admin-card wide">
+                <div className="admin-card-head">
+                  <h3>Workflow runs</h3>
+                  {selectedWorkflow && <StatusBadge value={selectedWorkflow.status} />}
+                </div>
+                <div className="admin-table">
+                  {workflows.slice(0, 12).map((workflow) => (
+                    <Button key={workflow.id} className={`admin-table-row button-row ${workflow.id === selectedWorkflowID ? "active" : ""}`} onClick={() => openWorkflow(workflow.id)}>
+                      <StatusBadge value={workflow.status} />
+                      <span>{workflow.name}<small>/{workflow.version || "v1"}</small></span>
+                      <small>{workflow.id}</small>
+                      {workflow.job_id && <em>{workflow.job_id}</em>}
+                    </Button>
+                  ))}
+                  {!workflows.length && <p className="muted-text">No workflow runs found for this scope.</p>}
+                </div>
+                {selectedWorkflow && (
+                  <>
+                    <div className="admin-facts">
+                      <SkillFact label="Run ID" value={selectedWorkflow.id} />
+                      <SkillFact label="Session ID" value={selectedWorkflow.session_id || "None"} />
+                      <SkillFact label="Job ID" value={selectedWorkflow.job_id || "None"} />
+                      <SkillFact label="Started" value={formatTime(selectedWorkflow.started_at || selectedWorkflow.created_at)} />
+                      <SkillFact label="Finished" value={formatTime(selectedWorkflow.finished_at || "")} />
+                      <SkillFact label="Error" value={selectedWorkflow.error || "None"} />
+                    </div>
+                    <div className="admin-card-head">
+                      <h3>Steps</h3>
+                      <small>{workflowSteps.length}</small>
+                    </div>
+                    <div className="admin-table">
+                      {workflowSteps.map((step) => (
+                        <div key={step.id} className="admin-table-row">
+                          <StatusBadge value={step.status} />
+                          <span>{step.step_name}</span>
+                          <small>{formatWorkflowStepSummary(step)}</small>
+                          {step.error && <em>{step.error}</em>}
+                        </div>
+                      ))}
+                      {!workflowSteps.length && <p className="muted-text">No steps recorded for this workflow run.</p>}
+                    </div>
+                  </>
+                )}
+              </section>}
               {opsTab === "assets" && <section className="admin-card wide">
                 <div className="admin-card-head">
                   <h3>Assets</h3>
@@ -291,4 +378,28 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
       </section>
     </div>
   );
+}
+
+function formatWorkflowStepSummary(step: WorkflowStepRun): string {
+  const output = step.output || {};
+  const input = step.input || {};
+  const outputKeys = Object.keys(output);
+  const inputKeys = Object.keys(input);
+  const selectedKeys = [
+    "intent",
+    "execution_mode",
+    "result_count",
+    "candidate_count",
+    "changed_count",
+    "output_length",
+    "final_status"
+  ];
+  const parts = selectedKeys
+    .filter((key) => output[key] != null || input[key] != null)
+    .slice(0, 3)
+    .map((key) => `${key}=${String(output[key] ?? input[key])}`);
+  if (parts.length > 0) return parts.join(" · ");
+  if (outputKeys.length > 0) return `output: ${outputKeys.slice(0, 4).join(", ")}`;
+  if (inputKeys.length > 0) return `input: ${inputKeys.slice(0, 4).join(", ")}`;
+  return formatTime(step.started_at);
 }
