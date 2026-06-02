@@ -87,6 +87,7 @@ type Runtime struct {
 	jobEvents        JobEventBus
 	skills           SkillCatalog
 	skillExecutions  SkillExecutionStore
+	workflowStore    WorkflowStore
 	engineFactory    EngineFactory
 	riskScanner      RiskScanner
 	riskRecorder     func(context.Context, RiskEvent)
@@ -122,6 +123,19 @@ func (r *Runtime) SetSkillExecutionStore(store SkillExecutionStore) {
 	r.skillExecutions = store
 }
 
+func (r *Runtime) SetWorkflowStore(store WorkflowStore) {
+	if r == nil {
+		return
+	}
+	if store == nil {
+		store = NewMemoryWorkflowStore()
+	}
+	r.workflowStore = store
+	if memoryWorkflow, ok := r.memory.(*MemoryWorkflowService); ok {
+		r.memory = NewMemoryWorkflowService(memoryWorkflow.base, store, ContextWorkflowEventSink{})
+	}
+}
+
 func (r *Runtime) SetRiskScanner(scanner RiskScanner) {
 	r.riskScanner = scanner
 }
@@ -154,6 +168,7 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		memoryAbstract:        NewRuleMemoryAbstractor(),
 		memoryOrganizer:       NewRuleMemoryOrganizer(),
 		skills:                skills,
+		workflowStore:         NewMemoryWorkflowStore(),
 		engineFactory:         engineFactory,
 		logger:                logger,
 		clock:                 systemClock{},
@@ -165,7 +180,8 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		localVectorIndex:      true,
 	}
 	if memory != nil {
-		runtime.memory = NewMemoryVectorService(memory, config.MemoryVector, componentLogger(logger, "memory_vector"))
+		memory = NewMemoryVectorService(memory, config.MemoryVector, componentLogger(logger, "memory_vector"))
+		runtime.memory = NewMemoryWorkflowService(memory, runtime.workflowStore, ContextWorkflowEventSink{})
 	}
 	if _, ok := sessions.(MessageRepository); ok {
 		if metaStore, ok := sessions.(MessageEmbeddingMetaStore); ok && messageVectorIndexingEnabled(config.MessageSearch) {
@@ -1514,7 +1530,7 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 		}
 	}
 
-	result, err := r.run(turnCtx, req, session, func(token string) {
+	result, err := r.executeAgenticTaskWorkflow(turnCtx, req, session, func(token string) {
 		_ = sink.Send(ctx, Event{Type: "delta", SessionID: session.ID, Role: "assistant", Content: token})
 	})
 	if err != nil {
@@ -2912,6 +2928,27 @@ func (r *Runtime) SummarizeSkillExecutions(ctx context.Context, filter SkillExec
 	return r.skillExecutions.SummarizeSkillExecutions(ctx, filter)
 }
 
+func (r *Runtime) ListWorkflowRuns(ctx context.Context, filter WorkflowRunFilter) ([]*WorkflowRun, error) {
+	if r == nil || r.workflowStore == nil {
+		return []*WorkflowRun{}, nil
+	}
+	return r.workflowStore.ListWorkflowRuns(ctx, filter)
+}
+
+func (r *Runtime) GetWorkflowRun(ctx context.Context, runID string) (*WorkflowRun, error) {
+	if r == nil || r.workflowStore == nil {
+		return nil, fmt.Errorf("workflow store is not configured")
+	}
+	return r.workflowStore.GetWorkflowRun(ctx, runID)
+}
+
+func (r *Runtime) ListWorkflowSteps(ctx context.Context, runID string) ([]*WorkflowStepRun, error) {
+	if r == nil || r.workflowStore == nil {
+		return []*WorkflowStepRun{}, nil
+	}
+	return r.workflowStore.ListWorkflowStepRuns(ctx, runID)
+}
+
 func (r *Runtime) ListJobEvents(ctx context.Context, userID, jobID, afterID string, limit int) ([]*JobEvent, error) {
 	if r.jobs == nil {
 		return []*JobEvent{}, nil
@@ -3541,6 +3578,10 @@ func (r *Runtime) textAttachmentContext(ctx context.Context, req ChatRequest) (s
 }
 
 func (r *Runtime) runSkill(ctx context.Context, userID string, session *state.Session, skill *skills.SkillDefinition, args string, onToken func(string)) (runnerResult, error) {
+	return r.executeSkillWorkflow(ctx, userID, session, skill, args, onToken)
+}
+
+func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *state.Session, skill *skills.SkillDefinition, args string, onToken func(string)) (runnerResult, error) {
 	startedAt := time.Now().UTC()
 	status := SkillExecutionStatusFailed
 	errText := ""

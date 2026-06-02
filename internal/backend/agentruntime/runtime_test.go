@@ -4169,6 +4169,32 @@ func TestSkillExecutionHistoryRecordsSuccessAndFailure(t *testing.T) {
 	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "/demo ok"}, &collectSink{}); err != nil {
 		t.Fatalf("chat success: %v", err)
 	}
+	if !memoryWorkflowStoreHasRun(t, runtime.workflowStore, agenticTaskWorkflowName, WorkflowStatusSucceeded) {
+		t.Fatalf("expected successful agentic task workflow run")
+	}
+	if !memoryWorkflowStoreHasRun(t, runtime.workflowStore, skillExecutionWorkflowName, WorkflowStatusSucceeded) {
+		t.Fatalf("expected successful skill workflow run")
+	}
+	agenticRuns, err := runtime.ListWorkflowRuns(context.Background(), WorkflowRunFilter{
+		UserID:    "alice",
+		SessionID: session.ID,
+		Name:      agenticTaskWorkflowName,
+		Status:    WorkflowStatusSucceeded,
+		Limit:     1,
+	})
+	if err != nil {
+		t.Fatalf("list agentic workflows: %v", err)
+	}
+	if len(agenticRuns) != 1 {
+		t.Fatalf("expected one filtered agentic workflow, got %#v", agenticRuns)
+	}
+	agenticSteps, err := runtime.ListWorkflowSteps(context.Background(), agenticRuns[0].ID)
+	if err != nil {
+		t.Fatalf("list agentic workflow steps: %v", err)
+	}
+	if len(agenticSteps) != len(agenticTaskWorkflowDefinition(time.Minute).Steps) {
+		t.Fatalf("unexpected agentic workflow steps: %#v", agenticSteps)
+	}
 
 	failing := NewRuntime(
 		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
@@ -4196,6 +4222,64 @@ func TestSkillExecutionHistoryRecordsSuccessAndFailure(t *testing.T) {
 	if summary.Total != 2 || summary.Succeeded != 1 || summary.Failed != 1 {
 		t.Fatalf("unexpected summary: %#v", summary)
 	}
+}
+
+func TestMemoryWorkflowServiceRecordsAfterTurnSteps(t *testing.T) {
+	store := NewMemoryWorkflowStore()
+	memory := NewMemoryWorkflowService(NewFileMemoryService(t.TempDir()), store, NoopWorkflowEventSink{})
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("remember that project beta is important")
+	session.AddAssistantMessage("noted")
+
+	if err := memory.AfterTurn(context.Background(), "alice", session); err != nil {
+		t.Fatalf("workflow memory after turn: %v", err)
+	}
+	run := workflowStoreFirstRun(t, store, memoryUpdateWorkflowName)
+	if run.Status != WorkflowStatusSucceeded {
+		t.Fatalf("unexpected memory workflow run: %#v", run)
+	}
+	steps, err := store.ListWorkflowStepRuns(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("list workflow steps: %v", err)
+	}
+	expected := []string{"extract_candidates", "load_existing", "apply_memory_update", "index_vectors"}
+	if len(steps) != len(expected) {
+		t.Fatalf("expected %d memory workflow steps, got %#v", len(expected), steps)
+	}
+	for i, step := range steps {
+		if step.StepName != expected[i] || step.Status != WorkflowStepStatusSucceeded {
+			t.Fatalf("unexpected memory workflow step %d: %#v", i, step)
+		}
+	}
+	items, err := memory.(MemoryItemService).ListMemoryItems(context.Background(), "alice", MemoryItemFilter{})
+	if err != nil {
+		t.Fatalf("list workflow memory items: %v", err)
+	}
+	if len(items) != 1 || !strings.Contains(items[0].Content, "project beta") {
+		t.Fatalf("expected saved memory item, got %#v", items)
+	}
+}
+
+func memoryWorkflowStoreHasRun(t *testing.T, store WorkflowStore, name, status string) bool {
+	t.Helper()
+	run := workflowStoreFirstRun(t, store, name)
+	return run != nil && run.Status == status
+}
+
+func workflowStoreFirstRun(t *testing.T, store WorkflowStore, name string) *WorkflowRun {
+	t.Helper()
+	memoryStore, ok := store.(*MemoryWorkflowStore)
+	if !ok || memoryStore == nil {
+		t.Fatalf("expected memory workflow store, got %T", store)
+	}
+	memoryStore.mu.Lock()
+	defer memoryStore.mu.Unlock()
+	for _, run := range memoryStore.runs {
+		if run.Name == name {
+			return cloneWorkflowRun(run)
+		}
+	}
+	return nil
 }
 
 func TestSkillExecutionHistoryRecordsDiagnostics(t *testing.T) {
@@ -4708,6 +4792,19 @@ func TestAdminOpsTroubleshootingRoutes(t *testing.T) {
 	if _, err := runtime.CreateArtifact(context.Background(), "alice", session.ID, "report.md", "text/markdown", []byte("# report")); err != nil {
 		t.Fatalf("create artifact: %v", err)
 	}
+	workflowEngine := NewWorkflowEngine(runtime.workflowStore, NoopWorkflowEventSink{})
+	workflowEngine.RegisterStepHandler("observe", func(context.Context, *WorkflowRun, map[string]any) (map[string]any, error) {
+		return map[string]any{"result_count": 1}, nil
+	})
+	workflowRun, err := workflowEngine.Execute(context.Background(), WorkflowRequest{
+		Definition: WorkflowDefinition{Name: "agentic_task", Version: "v1", Steps: []WorkflowStepDefinition{{Name: "observe"}}},
+		UserID:     "alice",
+		SessionID:  session.ID,
+		JobID:      job.ID,
+	})
+	if err != nil {
+		t.Fatalf("create workflow run: %v", err)
+	}
 
 	server := NewServer(runtime, HeaderAuthenticator{UserHeader: "X-User-ID"}, NoopRateLimiter{}, nil)
 	server.SetAdminToken("secret")
@@ -4718,6 +4815,8 @@ func TestAdminOpsTroubleshootingRoutes(t *testing.T) {
 		{"/v1/admin/ops/sessions?user_id=alice", session.ID},
 		{"/v1/admin/ops/jobs?user_id=alice&session_id=" + session.ID, job.ID},
 		{"/v1/admin/ops/jobs/" + job.ID + "/events?user_id=alice", "hello"},
+		{"/v1/admin/ops/workflows?user_id=alice&session_id=" + session.ID, workflowRun.ID},
+		{"/v1/admin/ops/workflows/" + workflowRun.ID + "?user_id=alice", "observe"},
 		{"/v1/admin/ops/assets?user_id=alice&session_id=" + session.ID, "report.md"},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)

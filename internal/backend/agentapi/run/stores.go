@@ -172,6 +172,21 @@ func buildSkillExecutionStore(cfg storeConfig) agentruntime.SkillExecutionStore 
 	return store
 }
 
+func buildWorkflowStore(cfg storeConfig) agentruntime.WorkflowStore {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		db := openSQLDB(cfg)
+		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+		store := agentruntime.NewSQLWorkflowStoreWithDialect(db, dialect)
+		if err := store.Init(ctx); err != nil {
+			logFatalf("init sql workflow store: %v", err)
+		}
+		return store
+	}
+	return agentruntime.NewMemoryWorkflowStore()
+}
+
 func buildEvaluationStore(cfg storeConfig) agentruntime.EvaluationStore {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

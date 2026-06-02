@@ -13,6 +13,7 @@ sql:
       - "internal/backend/agentruntime/sqlc/schema/runtime_config.sql"
       - "internal/backend/agentruntime/sqlc/schema/sessions_messages.sql"
       - "internal/backend/agentruntime/sqlc/schema/users.sql"
+      - "internal/backend/agentruntime/sqlc/schema/workflow.sql"
     queries:
       - "internal/backend/agentruntime/sqlc/query/audit.sql"
       - "internal/backend/agentruntime/sqlc/query/artifacts.sql"

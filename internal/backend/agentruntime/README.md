@@ -336,6 +336,37 @@ RAG retrieval tuning is controlled by
 `AGENT_API_MESSAGE_SEARCH_RERANK_CANDIDATE_LIMIT`, and
 `AGENT_API_MESSAGE_SEARCH_LOW_CONFIDENCE_SCORE`.
 
+Hybrid message search is also wrapped by the lightweight workflow runtime as
+`rag_search/v1`. The current steps are `normalize_query`, `query_rewrite`,
+`hybrid_retrieve`, `rerank`, and `select_results`. This keeps the public search
+API unchanged while giving the RAG path step checkpoints, metrics, and optional
+job-event progress output when a search runs inside a durable job context.
+
+## Workflow Runtime
+
+AgentAPI includes a lightweight workflow runtime for deterministic multi-step AI
+flows. It models `WorkflowDefinition`, `WorkflowRun`, `WorkflowStepRun`,
+`WorkflowStore`, and `StepHandler`, with memory and SQL-backed checkpoint stores
+plus job-event progress output when a workflow runs inside a job.
+
+Current workflow-backed paths:
+
+- `agentic_task/v1`: `intent_router`, `retrieve_context`,
+  `choose_tool_or_answer`, `execute_agent_turn`, `final_answer`.
+- `rag_search/v1`: `normalize_query`, `query_rewrite`, `hybrid_retrieve`,
+  `rerank`, `select_results`.
+- `skill_execution/v1`: `resolve_skill`, `policy_check`, `prepare_sandbox`,
+  `execute_skill`, `collect_result`.
+- `memory_update/v1`: `extract_candidates`, `load_existing`,
+  `apply_memory_update`, `index_vectors`.
+
+The workflows wrap existing runtime behavior instead of changing public API
+contracts. Admin troubleshooting can inspect workflow runs with
+`GET /v1/admin/ops/workflows?user_id=...` and run details with
+`GET /v1/admin/ops/workflows/{runID}?user_id=...`. When `store-backend=sql` is
+enabled, `SQLWorkflowStore` persists run and step checkpoints in
+`agent_workflow_runs` and `agent_workflow_steps` for long-lived Admin replay.
+
 Semantic search supports OpenAI-compatible embeddings and Vertex AI Gemini
 embeddings. For Vertex AI, set `AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER=vertex`,
 `AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID`, `AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION`,

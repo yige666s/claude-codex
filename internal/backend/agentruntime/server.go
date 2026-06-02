@@ -609,6 +609,45 @@ func (s *Server) handleAdminOpsCancelJob(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
+func (s *Server) handleAdminOpsListWorkflowRuns(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.adminOpsUserID(w, r)
+	if !ok {
+		return
+	}
+	limit := parseBoundedInt(r.URL.Query().Get("limit"), 100, 1, 300)
+	runs, err := s.runtime.ListWorkflowRuns(r.Context(), WorkflowRunFilter{
+		UserID:    userID,
+		SessionID: r.URL.Query().Get("session_id"),
+		JobID:     r.URL.Query().Get("job_id"),
+		Name:      r.URL.Query().Get("name"),
+		Status:    r.URL.Query().Get("status"),
+		Limit:     limit,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workflows": runs})
+}
+
+func (s *Server) handleAdminOpsGetWorkflowRun(w http.ResponseWriter, r *http.Request, runID string) {
+	userID, ok := s.adminOpsUserID(w, r)
+	if !ok {
+		return
+	}
+	run, err := s.runtime.GetWorkflowRun(r.Context(), runID)
+	if err != nil || run == nil || run.UserID != userID {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "workflow run not found"})
+		return
+	}
+	steps, err := s.runtime.ListWorkflowSteps(r.Context(), runID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workflow": run, "steps": steps})
+}
+
 func (s *Server) handleAdminOpsListAssets(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.adminOpsUserID(w, r)
 	if !ok {

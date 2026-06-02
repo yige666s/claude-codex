@@ -223,6 +223,64 @@ func TestMessageSearchServiceHybridReranksRelevantCandidate(t *testing.T) {
 	}
 }
 
+func TestMessageSearchServiceHybridRunsRAGWorkflow(t *testing.T) {
+	now := time.Now()
+	keyword := &stubMessageSearchStore{results: []MessageSearchResult{
+		{SessionID: "s1", MessageIndex: 0, Content: "postgres timeout notes", CreatedAt: now, Source: "elasticsearch"},
+	}}
+	semantic := &stubSemanticMessageSearcher{results: []MessageSearchResult{
+		{SessionID: "s2", MessageIndex: 0, Content: "database timeout root cause", CreatedAt: now, Source: "qdrant"},
+	}}
+	service := &MessageSearchService{
+		config: normalizeMessageSearchConfig(MessageSearchConfig{
+			Backend:              messageSearchBackendHybrid,
+			QueryRewriteEnabled:  true,
+			DynamicTopKEnabled:   true,
+			RerankEnabled:        true,
+			RerankCandidateLimit: 10,
+		}),
+		keyword:  keyword,
+		semantic: semantic,
+	}
+	service.workflow = newMessageSearchWorkflowEngine(service)
+
+	results, err := service.SearchMessages(context.Background(), "alice", "postgres timeout", 10, 0)
+	if err != nil {
+		t.Fatalf("SearchMessages() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected workflow search results, got %#v", results)
+	}
+	store := service.workflow.Store().(*MemoryWorkflowStore)
+	store.mu.Lock()
+	if len(store.runs) != 1 {
+		store.mu.Unlock()
+		t.Fatalf("expected one workflow run, got %d", len(store.runs))
+	}
+	var run *WorkflowRun
+	for _, item := range store.runs {
+		run = cloneWorkflowRun(item)
+		break
+	}
+	store.mu.Unlock()
+	if run.Name != ragSearchWorkflowName || run.Status != WorkflowStatusSucceeded || run.State["result_count"].(float64) != 2 {
+		t.Fatalf("unexpected workflow run: %#v", run)
+	}
+	steps, err := service.workflow.Store().ListWorkflowStepRuns(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("ListWorkflowStepRuns() error = %v", err)
+	}
+	expectedSteps := []string{"normalize_query", "query_rewrite", "hybrid_retrieve", "rerank", "select_results"}
+	if len(steps) != len(expectedSteps) {
+		t.Fatalf("expected %d workflow steps, got %#v", len(expectedSteps), steps)
+	}
+	for i, step := range steps {
+		if step.StepName != expectedSteps[i] || step.Status != WorkflowStepStatusSucceeded {
+			t.Fatalf("unexpected step %d: %#v", i, step)
+		}
+	}
+}
+
 func TestMessageSearchServiceBuildsVertexSemanticSearcher(t *testing.T) {
 	service := NewMessageSearchService(MessageSearchConfig{
 		Backend:              messageSearchBackendSemantic,

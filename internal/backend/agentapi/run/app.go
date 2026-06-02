@@ -72,6 +72,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	authService := buildAuthService(cfg.EnableUserSystem, storeCfg, authServiceConfigFromStartup(cfg))
 	artifactService := buildArtifactService(artifactConfigFromStartup(cfg, storeCfg))
 	assetInsightStore := buildAssetInsightStore(storeCfg)
+	workflowStore := buildWorkflowStore(storeCfg)
 	runtimeConfig := runtimeConfigFromStartup(cfg, skillShellSandboxConfig)
 	runtimeConfig.Logger = appLogger
 	runtime := agentruntime.NewRuntime(
@@ -81,6 +82,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		skillCatalog,
 		engineFactory,
 	)
+	runtime.SetWorkflowStore(workflowStore)
 	kafkaConfig := kafkaMessageEventConfigFromStartup(cfg)
 	publishKafkaEvents, localVectorIndexing := bootstrap.MessageEventsBackendMode(cfg.MessageEventsBackend)
 	runtime.SetLocalMessageVectorIndexing(localVectorIndexing)

@@ -51,6 +51,7 @@ type MessageSearchService struct {
 	keyword  MessageSearchStore
 	semantic SemanticMessageSearcher
 	hydrator MessageSearchResultHydrator
+	workflow *WorkflowEngine
 }
 
 func NewMessageSearchService(config MessageSearchConfig, fallback MessageSearchStore) *MessageSearchService {
@@ -73,6 +74,7 @@ func NewMessageSearchService(config MessageSearchConfig, fallback MessageSearchS
 			service.semantic = NewQdrantSemanticMessageSearcher(config)
 		}
 	}
+	service.workflow = newMessageSearchWorkflowEngine(service)
 	return service
 }
 
@@ -136,6 +138,28 @@ func (s *MessageSearchService) searchFallback(ctx context.Context, userID, query
 }
 
 func (s *MessageSearchService) searchHybrid(ctx context.Context, userID, query string, limit, offset int) ([]MessageSearchResult, error) {
+	if s != nil && s.workflow != nil {
+		run, err := s.workflow.Execute(ctx, WorkflowRequest{
+			Definition: ragSearchWorkflowDefinition(),
+			UserID:     userID,
+			JobID:      jobIDFromContext(ctx),
+			State: map[string]any{
+				"user_id": userID,
+				"query":   query,
+				"limit":   limit,
+				"offset":  offset,
+				"backend": s.config.Backend,
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return messageResultsFromWorkflowState(run.State, "results"), nil
+	}
+	return s.searchHybridDirect(ctx, userID, query, limit, offset)
+}
+
+func (s *MessageSearchService) searchHybridDirect(ctx context.Context, userID, query string, limit, offset int) ([]MessageSearchResult, error) {
 	plan := buildMessageSearchPlan(query, limit, offset, s.config)
 
 	var keywordResults []MessageSearchResult

@@ -142,6 +142,8 @@ func (s *Server) mountAdminRoutes(r chi.Router) {
 			r.Get("/v1/admin/ops/jobs/{jobID}", s.withParam("jobID", s.handleAdminOpsGetJob))
 			r.Get("/v1/admin/ops/jobs/{jobID}/events", s.withParam("jobID", s.handleAdminOpsListJobEvents))
 			r.Post("/v1/admin/ops/jobs/{jobID}/cancel", s.withUserParam("jobID", s.handleAdminOpsCancelJob))
+			r.Get("/v1/admin/ops/workflows", s.handleAdminOpsListWorkflowRuns)
+			r.Get("/v1/admin/ops/workflows/{runID}", s.withParam("runID", s.handleAdminOpsGetWorkflowRun))
 			r.Get("/v1/admin/ops/assets", s.handleAdminOpsListAssets)
 			r.Get("/v1/admin/ops/health", s.handleAdminOpsHealth)
 			r.Get("/v1/admin/ops/llm-usage", s.handleAdminOpsLLMUsage)
