@@ -3235,6 +3235,35 @@ label.composer-upload {
   margin: 0;
   font-size: 16px;
 }
+.golden-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.golden-form-grid .admin-field.wide {
+  grid-column: 1 / -1;
+}
+.golden-form-grid select,
+.golden-form-grid textarea {
+  min-width: 0;
+  width: 100%;
+}
+.golden-form-grid textarea {
+  min-height: 74px;
+  padding: 9px 10px;
+  resize: vertical;
+}
+.golden-actions {
+  align-items: center;
+  margin-bottom: 12px;
+}
+.golden-actions select {
+  min-height: 36px;
+}
+.golden-case-list {
+  margin-top: 8px;
+}
 .admin-code-block {
   max-height: 260px;
   margin: 12px 0 0;

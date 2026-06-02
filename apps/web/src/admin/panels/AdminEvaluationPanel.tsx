@@ -33,7 +33,14 @@ import {
   type AdminTabOption
 } from "../shared";
 import { sessionTitle } from "../../lib/sessionTitle";
-import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, RiskReviewSummary, RiskSummary, Session } from "../../types";
+import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, GoldenCandidate, GoldenSet, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, RiskReviewSummary, RiskSummary, Session } from "../../types";
+
+function splitGoldenLines(value: string): string[] {
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
 
 export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken: string }) {
   const [runs, setRuns] = useState<EvaluationRun[]>([]);
@@ -58,11 +65,32 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
   const [reviewBusy, setReviewBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [evaluationTab, setEvaluationTab] = useState<"results" | "selected" | "reviews" | "io">("results");
+  const [evaluationTab, setEvaluationTab] = useState<"results" | "selected" | "reviews" | "io" | "golden">("results");
+  const [goldenSets, setGoldenSets] = useState<GoldenSet[]>([]);
+  const [goldenSetID, setGoldenSetID] = useState("runtime-golden");
+  const [goldenSourceVersion, setGoldenSourceVersion] = useState("");
+  const [goldenTargetVersion, setGoldenTargetVersion] = useState("v1");
+  const [goldenTraceSubjectType, setGoldenTraceSubjectType] = useState("job");
+  const [goldenSubjectID, setGoldenSubjectID] = useState("");
+  const [goldenMaxCases, setGoldenMaxCases] = useState(5);
+  const [goldenTags, setGoldenTags] = useState("from-runtime");
+  const [goldenExpectedAnswer, setGoldenExpectedAnswer] = useState("");
+  const [goldenExpectedFacts, setGoldenExpectedFacts] = useState("");
+  const [goldenJudge, setGoldenJudge] = useState("heuristic");
+  const [goldenBusy, setGoldenBusy] = useState("");
   const token = adminToken.trim();
   const cleanUserID = userID.trim();
   const selectedRun = runs.find((run) => run.id === selectedRunID) || runs[0] || null;
   const selectedResult = results.find((result) => result.id === selectedResultID) || results[0] || null;
+  const selectedGoldenSet = useMemo(() => {
+    const cleanID = goldenSetID.trim();
+    const cleanVersion = goldenTargetVersion.trim() || goldenSourceVersion.trim();
+    return goldenSets.find((set) => set.id === cleanID && (!cleanVersion || set.version === cleanVersion))
+      || goldenSets.find((set) => set.id === cleanID)
+      || goldenSets[0]
+      || null;
+  }, [goldenSetID, goldenSets, goldenSourceVersion, goldenTargetVersion]);
+  const selectedGoldenSetKey = selectedGoldenSet ? `${selectedGoldenSet.id}::${selectedGoldenSet.version || ""}` : "";
   const reviewsByResultID = useMemo(() => {
     const map = new Map<string, EvaluationReview[]>();
     reviews.forEach((review) => {
@@ -243,8 +271,110 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
     }
   };
 
+  const loadGoldenSets = async () => {
+    if (!token) return;
+    setError("");
+    try {
+      const sets = await api.adminOpsGoldenSets(token, { limit: 200 });
+      setGoldenSets(sets);
+      if (!goldenSetID.trim() && sets[0]) {
+        setGoldenSetID(sets[0].id);
+        setGoldenTargetVersion(sets[0].version || "v1");
+      }
+      setNotice(`Loaded ${sets.length} golden set versions`);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
+  const createGoldenCases = async () => {
+    const cleanSetID = goldenSetID.trim();
+    if (!token || !cleanSetID) {
+      setError("Enter a Golden Set ID before generating cases.");
+      return;
+    }
+    setGoldenBusy("capture");
+    setError("");
+    try {
+      const payload = await api.createGoldenCasesFromTrace(token, cleanSetID, {
+        source_version: goldenSourceVersion.trim(),
+        target_version: goldenTargetVersion.trim() || "v1",
+        scope: {
+          subject_type: goldenTraceSubjectType,
+          user_id: cleanUserID,
+          session_id: sessionID.trim(),
+          job_id: jobID.trim(),
+          skill_name: skillName.trim(),
+          provider: provider.trim(),
+          model: model.trim()
+        },
+        subject_id: goldenSubjectID.trim(),
+        expected_answer: goldenExpectedAnswer.trim(),
+        expected_facts: splitGoldenLines(goldenExpectedFacts),
+        tags: splitGoldenLines(goldenTags),
+        max_cases: Math.max(1, Math.min(100, goldenMaxCases || 1))
+      });
+      setGoldenSets((current) => [payload.set, ...current.filter((set) => !(set.id === payload.set.id && set.version === payload.set.version))]);
+      setGoldenSetID(payload.set.id);
+      setGoldenTargetVersion(payload.set.version || goldenTargetVersion || "v1");
+      setGoldenSourceVersion(payload.set.version || goldenTargetVersion || "v1");
+      setNotice(`Generated ${payload.cases.length} golden cases`);
+      setEvaluationTab("golden");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setGoldenBusy("");
+    }
+  };
+
+  const runGoldenEvaluation = async () => {
+    const set = selectedGoldenSet;
+    if (!token || !set) {
+      setError("Select or generate a Golden Set before running evaluation.");
+      return;
+    }
+    if (!set.cases.length) {
+      setError("Selected Golden Set has no cases.");
+      return;
+    }
+    setGoldenBusy("run");
+    setError("");
+    try {
+      const candidates: GoldenCandidate[] = set.cases.map((item) => ({
+        case_id: item.id,
+        output: item.expected_answer || item.expected_facts?.join("\n") || item.query,
+        retrieved_evidence: item.gold_evidence || [],
+        metadata: { source: "admin_baseline" }
+      }));
+      const report = await api.createGoldenEvaluationRun(token, {
+        setId: set.id,
+        setVersion: set.version || "",
+        judge: goldenJudge,
+        name: `${set.id}_${set.version || "latest"}_${goldenJudge}_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}`,
+        trigger: "admin_ui",
+        candidates
+      });
+      setRuns((current) => [report.run, ...current.filter((run) => run.id !== report.run.id)]);
+      setSummary(report.summary);
+      setResults(report.results);
+      setReviews((current) => mergeEvaluationReviews(current, report.reviews));
+      setSelectedRunID(report.run.id);
+      setSelectedResultID(report.results[0]?.id || "");
+      setSubjectType("golden_case");
+      setEvaluationTab("results");
+      setNotice(`Golden evaluation completed: ${report.run.passed} passed, ${report.run.failed} failed, ${report.run.warning} warnings`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setGoldenBusy("");
+    }
+  };
+
   useEffect(() => {
-    if (token) void loadEvaluation();
+    if (token) {
+      void loadEvaluation();
+      void loadGoldenSets();
+    }
   }, [token]);
 
   const selectedResultReviews = selectedResult ? reviewsByResultID.get(selectedResult.id) || [] : [];
@@ -275,7 +405,8 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
     { id: "results", label: "Results", icon: <Activity size={15} />, count: results.length },
     { id: "selected", label: "Selected", icon: <Info size={15} /> },
     { id: "reviews", label: "Reviews", icon: <ShieldCheck size={15} />, count: selectedResultReviews.length },
-    { id: "io", label: "I/O", icon: <FileText size={15} /> }
+    { id: "io", label: "I/O", icon: <FileText size={15} /> },
+    { id: "golden", label: "Golden", icon: <Database size={15} />, count: selectedGoldenSet?.cases.length || 0 }
   ];
 
   return (
@@ -493,6 +624,117 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
               output: selectedResult.output || "",
               metrics: selectedResult.metrics || {}
             }, null, 2) : "{}"}</pre>
+          </section>}
+          {evaluationTab === "golden" && <section className="admin-card wide golden-admin-card">
+            <div className="admin-card-head">
+              <h3>Golden sets</h3>
+              <Button className="small ghost" onClick={loadGoldenSets} disabled={goldenBusy === "load" || !token}>
+                <RefreshCw size={14} />
+                <span>Refresh</span>
+              </Button>
+            </div>
+            <div className="golden-form-grid">
+              <label className="admin-field">
+                <span>Existing set</span>
+                <select
+                  value={selectedGoldenSetKey}
+                  onChange={(event) => {
+                    const [id, version] = event.currentTarget.value.split("::");
+                    setGoldenSetID(id || "");
+                    setGoldenTargetVersion(version || "v1");
+                    setGoldenSourceVersion(version || "");
+                  }}
+                  aria-label="Existing Golden Set"
+                >
+                  <option value="">No set selected</option>
+                  {goldenSets.map((set) => (
+                    <option key={`${set.id}::${set.version || ""}`} value={`${set.id}::${set.version || ""}`}>
+                      {set.id} · {set.version || "latest"} · {set.cases.length} cases
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="admin-field">
+                <span>Set ID</span>
+                <Input value={goldenSetID} onChange={(event) => setGoldenSetID(event.currentTarget.value)} placeholder="runtime-golden" aria-label="Golden Set ID" />
+              </label>
+              <label className="admin-field">
+                <span>Source version</span>
+                <Input value={goldenSourceVersion} onChange={(event) => setGoldenSourceVersion(event.currentTarget.value)} placeholder="optional" aria-label="Golden source version" />
+              </label>
+              <label className="admin-field">
+                <span>Target version</span>
+                <Input value={goldenTargetVersion} onChange={(event) => setGoldenTargetVersion(event.currentTarget.value)} placeholder="v1" aria-label="Golden target version" />
+              </label>
+              <label className="admin-field">
+                <span>Trace subject</span>
+                <select value={goldenTraceSubjectType} onChange={(event) => setGoldenTraceSubjectType(event.currentTarget.value)} aria-label="Golden trace subject">
+                  <option value="job">Jobs</option>
+                  <option value="session">Sessions</option>
+                  <option value="skill_execution">Skill executions</option>
+                </select>
+              </label>
+              <label className="admin-field">
+                <span>Subject ID</span>
+                <Input value={goldenSubjectID} onChange={(event) => setGoldenSubjectID(event.currentTarget.value)} placeholder="job/session id" aria-label="Golden trace subject ID" />
+              </label>
+              <label className="admin-field">
+                <span>Max cases</span>
+                <Input type="number" min={1} max={100} value={String(goldenMaxCases)} onChange={(event) => setGoldenMaxCases(Number(event.currentTarget.value))} aria-label="Golden max cases" />
+              </label>
+              <label className="admin-field">
+                <span>Tags</span>
+                <Input value={goldenTags} onChange={(event) => setGoldenTags(event.currentTarget.value)} placeholder="from-runtime, smoke" aria-label="Golden tags" />
+              </label>
+              <label className="admin-field wide">
+                <span>Expected answer override</span>
+                <Textarea value={goldenExpectedAnswer} onChange={(event) => setGoldenExpectedAnswer(event.currentTarget.value)} rows={3} placeholder="optional" aria-label="Golden expected answer override" />
+              </label>
+              <label className="admin-field wide">
+                <span>Expected facts</span>
+                <Textarea value={goldenExpectedFacts} onChange={(event) => setGoldenExpectedFacts(event.currentTarget.value)} rows={3} placeholder="one fact per line" aria-label="Golden expected facts" />
+              </label>
+            </div>
+            <div className="admin-action-row golden-actions">
+              <Button className="primary skill-action" onClick={createGoldenCases} disabled={goldenBusy === "capture" || !token || !goldenSetID.trim()}>
+                <Archive size={16} />
+                <span>{goldenBusy === "capture" ? "Generating" : "Generate cases"}</span>
+              </Button>
+              <select value={goldenJudge} onChange={(event) => setGoldenJudge(event.currentTarget.value)} aria-label="Golden judge">
+                <option value="heuristic">Heuristic judge</option>
+                <option value="llm">LLM judge</option>
+              </select>
+              <Button className="skill-action" onClick={runGoldenEvaluation} disabled={goldenBusy === "run" || !token || !selectedGoldenSet?.cases.length}>
+                <Sparkles size={16} />
+                <span>{goldenBusy === "run" ? "Running" : "Run golden eval"}</span>
+              </Button>
+            </div>
+            <div className="admin-table golden-case-list">
+              {selectedGoldenSet ? (
+                <>
+                  <div className="admin-table-row">
+                    <StatusBadge value={selectedGoldenSet.cases.length ? "ready" : "empty"} />
+                    <span>
+                      <strong>{selectedGoldenSet.id} · {selectedGoldenSet.version || "latest"}</strong>
+                      <small>{selectedGoldenSet.name || "Golden set"} · {selectedGoldenSet.updated_at ? formatTime(selectedGoldenSet.updated_at) : "not persisted"}</small>
+                    </span>
+                    <small>{selectedGoldenSet.cases.length} cases</small>
+                  </div>
+                  {selectedGoldenSet.cases.slice(0, 8).map((item) => (
+                    <div key={item.id} className="admin-table-row">
+                      <FileText size={16} />
+                      <span>
+                        <strong>{item.query}</strong>
+                        <small>{item.expected_answer || item.expected_facts?.join(" · ") || item.id}</small>
+                      </span>
+                      <small>{item.tags?.join(", ") || "case"}</small>
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <p className="muted-text">No Golden Set loaded.</p>
+              )}
+            </div>
           </section>}
         </div>
       </section>
