@@ -1054,13 +1054,14 @@ type llmUsageScanner interface {
 
 func scanLLMUsageRecord(row llmUsageScanner) (LLMUsageRecord, error) {
 	var record LLMUsageRecord
+	var requestID, skillName, errorText sql.NullString
 	var createdAt any
 	if err := row.Scan(
 		&record.ID,
 		&record.UserID,
 		&record.SessionID,
-		&record.RequestID,
-		&record.SkillName,
+		&requestID,
+		&skillName,
 		&record.PromptID,
 		&record.PromptVersion,
 		&record.PromptHash,
@@ -1074,13 +1075,16 @@ func scanLLMUsageRecord(row llmUsageScanner) (LLMUsageRecord, error) {
 		&record.EstimatedCostUSD,
 		&record.Attempt,
 		&record.Status,
-		&record.Error,
+		&errorText,
 		&record.LatencyMs,
 		&record.TTFTMs,
 		&createdAt,
 	); err != nil {
 		return LLMUsageRecord{}, err
 	}
+	record.RequestID = requestID.String
+	record.SkillName = skillName.String
+	record.Error = errorText.String
 	parsed, err := parseSQLTime(createdAt)
 	if err != nil {
 		return LLMUsageRecord{}, err
