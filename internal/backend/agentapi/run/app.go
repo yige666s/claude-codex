@@ -34,7 +34,19 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	riskStore := buildRiskStore(storeCfg)
 	jobStore := buildJobStore(storeCfg)
 	skillExecutionStore := buildSkillExecutionStore(storeCfg)
+	toolCallLedgerStore := buildToolCallLedgerStore(storeCfg)
 	evaluationStore := buildEvaluationStore(storeCfg)
+	promptStore := buildPromptStore(storeCfg)
+	cacheStore, cacheRedisClient := bootstrap.BuildCacheStore(cfg.CacheBackend, cfg.CacheRedisURL, cfg.CachePrefix, cfg.CacheDefaultTTL)
+	if cacheRedisClient != nil {
+		defer func() {
+			if err := cacheRedisClient.Close(); err != nil {
+				logInfof("close cache redis client: %v", err)
+			}
+		}()
+	}
+	cacheMetrics := agentruntime.NewCacheMetrics()
+	promptStore = agentruntime.NewCacheInvalidatingPromptStore(promptStore, cacheStore)
 	llmGovernanceCfg := llmGovernanceConfigFromStartup(cfg, llmCfg)
 	llmConfigManager := agentruntime.NewLLMGovernanceConfigManager(llmGovernanceCfg, buildRuntimeConfigStore(storeCfg))
 	if err := llmConfigManager.Load(context.Background()); err != nil {
@@ -64,6 +76,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		llmConfigManager:        llmConfigManager,
 		llmUsageStore:           llmUsageStore,
 		riskStore:               riskStore,
+		toolCallLedger:          toolCallLedgerStore,
 	})
 
 	sessionStore, memoryService := buildStores(storeCfg)
@@ -75,6 +88,10 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	workflowStore := buildWorkflowStore(storeCfg)
 	runtimeConfig := runtimeConfigFromStartup(cfg, skillShellSandboxConfig)
 	runtimeConfig.Logger = appLogger
+	runtimeConfig.CacheStore = cacheStore
+	runtimeConfig.CacheMetrics = cacheMetrics
+	runtimeConfig.CacheDefaultTTL = cfg.CacheDefaultTTL
+	runtimeConfig.CacheFailOpen = cfg.CacheFailOpen
 	runtime := agentruntime.NewRuntime(
 		runtimeConfig,
 		sessionStore,
@@ -83,6 +100,8 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		engineFactory,
 	)
 	runtime.SetWorkflowStore(workflowStore)
+	runtime.SetToolCallLedgerStore(toolCallLedgerStore)
+	runtime.SetPromptStore(promptStore)
 	kafkaConfig := kafkaMessageEventConfigFromStartup(cfg)
 	publishKafkaEvents, localVectorIndexing := bootstrap.MessageEventsBackendMode(cfg.MessageEventsBackend)
 	runtime.SetLocalMessageVectorIndexing(localVectorIndexing)
@@ -182,8 +201,10 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	if kafkaMessagePublisher != nil {
 		runtime.SetMessageEventPublisher(kafkaMessagePublisher)
 	}
+	llmMemoryExtractor := agentruntime.NewLLMMemoryExtractor(engineFactory)
+	llmMemoryExtractor.PromptResolver = agentruntime.NewCachedPromptResolver(promptStore, nil, cacheStore, cfg.CacheDefaultTTL, cfg.CacheFailOpen, cacheMetrics)
 	runtime.SetMemoryExtractor(agentruntime.NewHybridMemoryExtractor(
-		agentruntime.NewLLMMemoryExtractor(engineFactory),
+		llmMemoryExtractor,
 		agentruntime.NewRuleMemoryExtractor(),
 	))
 	runtime.SetMemoryOrganizer(agentruntime.NewHybridMemoryOrganizer(
@@ -303,6 +324,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	server.SetSkillRegistry(skillRegistrySetup.registry)
 	server.SetLLMUsageStore(llmUsageStore)
 	server.SetEvaluationStore(evaluationStore)
+	server.SetPromptStore(promptStore)
 	server.SetEvaluationJudge(evaluationJudgeFromStartup(cfg, llmCfg, llmConfigManager, llmUsageStore))
 	server.SetLLMGovernanceConfigManager(llmConfigManager)
 	stopDailyEvaluation := server.StartDailyEvaluationScheduler(dailyEvaluationConfigFromStartup(cfg))
@@ -318,6 +340,9 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.RateLimitBackend), "redis") {
 		server.AddReadinessCheck("redis", agentruntime.RedisReadinessCheck(limiter))
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.CacheBackend), "redis") && cacheRedisClient != nil {
+		server.AddReadinessCheck("cache", agentruntime.RedisClientReadinessCheck(cacheRedisClient))
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.MessageContextCacheBackend), "redis") && messageContextRedisClient != nil {
 		server.AddReadinessCheck("message_context_cache", agentruntime.RedisClientReadinessCheck(messageContextRedisClient))

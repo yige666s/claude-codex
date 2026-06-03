@@ -187,6 +187,21 @@ func buildWorkflowStore(cfg storeConfig) agentruntime.WorkflowStore {
 	return agentruntime.NewMemoryWorkflowStore()
 }
 
+func buildToolCallLedgerStore(cfg storeConfig) agentruntime.ToolCallLedgerStore {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		db := openSQLDB(cfg)
+		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+		store := agentruntime.NewSQLToolCallLedgerStoreWithDialect(db, dialect)
+		if err := store.Init(ctx); err != nil {
+			logFatalf("init sql tool call ledger store: %v", err)
+		}
+		return store
+	}
+	return agentruntime.NewMemoryToolCallLedgerStore()
+}
+
 func buildEvaluationStore(cfg storeConfig) agentruntime.EvaluationStore {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -202,6 +217,25 @@ func buildEvaluationStore(cfg storeConfig) agentruntime.EvaluationStore {
 	store := agentruntime.NewMemoryEvaluationStore()
 	if err := store.Init(ctx); err != nil {
 		logFatalf("init memory evaluation store: %v", err)
+	}
+	return store
+}
+
+func buildPromptStore(cfg storeConfig) agentruntime.PromptStore {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		db := openSQLDB(cfg)
+		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+		store := agentruntime.NewSQLPromptStoreWithDialect(db, dialect)
+		if err := store.Init(ctx); err != nil {
+			logFatalf("init sql prompt store: %v", err)
+		}
+		return store
+	}
+	store := agentruntime.NewMemoryPromptStore()
+	if err := store.Init(ctx); err != nil {
+		logFatalf("init memory prompt store: %v", err)
 	}
 	return store
 }

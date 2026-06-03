@@ -61,6 +61,26 @@ func TestNewQueryEngine(t *testing.T) {
 	}
 }
 
+func TestConfiguredToolCallValidatesDescriptorSchema(t *testing.T) {
+	var executed bool
+	tool := newConfiguredToolFromDescriptor(toolkit.Descriptor{
+		Name:        "search",
+		Description: "Search",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
+	}, func(context.Context, string, json.RawMessage) (string, error) {
+		executed = true
+		return "ok", nil
+	})
+
+	_, err := tool.Call(context.Background(), map[string]interface{}{"query": 123}, htool.NewToolUseContext(context.Background()))
+	if err == nil {
+		t.Fatal("expected schema validation error")
+	}
+	if executed {
+		t.Fatal("tool executor should not run after validation failure")
+	}
+}
+
 func TestNewQueryEngine_WithInitialMessages(t *testing.T) {
 	initialMessages := []types.Message{
 		{

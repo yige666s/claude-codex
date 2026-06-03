@@ -239,7 +239,7 @@ func (s *SQLEvaluationStore) Init(ctx context.Context) error {
 	}
 	if err := requireSQLColumns(ctx, s.db, "agent_eval_results",
 		"id", "run_id", "subject_type", "subject_id", "user_id", "session_id", "job_id",
-		"skill_name", "provider", "model", "status", "score", "input", "output",
+		"skill_name", "provider", "model", "prompt_id", "prompt_version", "prompt_hash", "experiment_id", "variant_id", "status", "score", "input", "output",
 		"metrics", "findings", "created_at",
 	); err != nil {
 		return err
@@ -402,36 +402,11 @@ func (s *SQLEvaluationStore) CreateEvaluationResult(ctx context.Context, result 
 	if err != nil {
 		return EvaluationResult{}, err
 	}
-	if s.dialect == SQLDialectPostgres && s.queries != nil {
-		err = s.queries.InsertEvaluationResult(ctx, dbsqlc.InsertEvaluationResultParams{
-			ID:          result.ID,
-			RunID:       result.RunID,
-			SubjectType: result.SubjectType,
-			SubjectID:   result.SubjectID,
-			UserID:      result.UserID,
-			SessionID:   result.SessionID,
-			JobID:       result.JobID,
-			SkillName:   result.SkillName,
-			Provider:    result.Provider,
-			Model:       result.Model,
-			Status:      result.Status,
-			Score:       result.Score,
-			Input:       result.Input,
-			Output:      result.Output,
-			Metrics:     string(metrics),
-			Findings:    string(findings),
-			CreatedAt:   result.CreatedAt.UTC(),
-		})
-		if err != nil {
-			return EvaluationResult{}, err
-		}
-		return result, nil
-	}
 	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
-INSERT INTO agent_eval_results (id, run_id, subject_type, subject_id, user_id, session_id, job_id, skill_name, provider, model, status, score, input, output, metrics, findings, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+INSERT INTO agent_eval_results (id, run_id, subject_type, subject_id, user_id, session_id, job_id, skill_name, provider, model, prompt_id, prompt_version, prompt_hash, experiment_id, variant_id, status, score, input, output, metrics, findings, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		result.ID, result.RunID, result.SubjectType, result.SubjectID, result.UserID, result.SessionID, result.JobID, result.SkillName, result.Provider, result.Model,
-		result.Status, result.Score, result.Input, result.Output, string(metrics), string(findings), sqlTimeValue(result.CreatedAt, s.dialect))
+		result.PromptID, result.PromptVersion, result.PromptHash, result.ExperimentID, result.VariantID, result.Status, result.Score, result.Input, result.Output, string(metrics), string(findings), sqlTimeValue(result.CreatedAt, s.dialect))
 	if err != nil {
 		return EvaluationResult{}, err
 	}
@@ -440,25 +415,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 
 func (s *SQLEvaluationStore) ListEvaluationResults(ctx context.Context, filter EvaluationResultFilter) ([]EvaluationResult, error) {
 	filter = normalizeEvaluationResultFilter(filter)
-	if s.dialect == SQLDialectPostgres && s.queries != nil {
-		rows, err := s.queries.ListEvaluationResults(ctx, dbsqlc.ListEvaluationResultsParams{
-			RunID:       filter.RunID,
-			Status:      filter.Status,
-			SubjectType: filter.SubjectType,
-			UserID:      filter.UserID,
-			SessionID:   filter.SessionID,
-			JobID:       filter.JobID,
-			SkillName:   filter.SkillName,
-			Provider:    filter.Provider,
-			Model:       filter.Model,
-			LimitCount:  int32(filter.Limit),
-		})
-		if err != nil {
-			return nil, err
-		}
-		return evaluationResultsFromSQLC(rows), nil
-	}
-	query := `SELECT id, run_id, subject_type, subject_id, user_id, session_id, job_id, skill_name, provider, model, status, score, input, output, metrics, findings, created_at FROM agent_eval_results`
+	query := `SELECT id, run_id, subject_type, subject_id, user_id, session_id, job_id, skill_name, provider, model, prompt_id, prompt_version, prompt_hash, experiment_id, variant_id, status, score, input, output, metrics, findings, created_at FROM agent_eval_results`
 	where, args := evaluationResultWhere(filter)
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -633,7 +590,7 @@ func scanEvaluationResult(row evaluationScanner) (EvaluationResult, error) {
 	var result EvaluationResult
 	var metrics, findings string
 	var createdAt any
-	if err := row.Scan(&result.ID, &result.RunID, &result.SubjectType, &result.SubjectID, &result.UserID, &result.SessionID, &result.JobID, &result.SkillName, &result.Provider, &result.Model, &result.Status, &result.Score, &result.Input, &result.Output, &metrics, &findings, &createdAt); err != nil {
+	if err := row.Scan(&result.ID, &result.RunID, &result.SubjectType, &result.SubjectID, &result.UserID, &result.SessionID, &result.JobID, &result.SkillName, &result.Provider, &result.Model, &result.PromptID, &result.PromptVersion, &result.PromptHash, &result.ExperimentID, &result.VariantID, &result.Status, &result.Score, &result.Input, &result.Output, &metrics, &findings, &createdAt); err != nil {
 		return EvaluationResult{}, err
 	}
 	_ = json.Unmarshal([]byte(metrics), &result.Metrics)
@@ -817,6 +774,26 @@ func evaluationResultWhere(filter EvaluationResultFilter) ([]string, []any) {
 		where = append(where, "model = ?")
 		args = append(args, filter.Model)
 	}
+	if filter.PromptID != "" {
+		where = append(where, "prompt_id = ?")
+		args = append(args, filter.PromptID)
+	}
+	if filter.PromptVersion != "" {
+		where = append(where, "prompt_version = ?")
+		args = append(args, filter.PromptVersion)
+	}
+	if filter.PromptHash != "" {
+		where = append(where, "prompt_hash = ?")
+		args = append(args, filter.PromptHash)
+	}
+	if filter.ExperimentID != "" {
+		where = append(where, "experiment_id = ?")
+		args = append(args, filter.ExperimentID)
+	}
+	if filter.VariantID != "" {
+		where = append(where, "variant_id = ?")
+		args = append(args, filter.VariantID)
+	}
 	return where, args
 }
 
@@ -889,6 +866,11 @@ func normalizeEvaluationResult(result EvaluationResult) EvaluationResult {
 	result.SkillName = strings.TrimSpace(result.SkillName)
 	result.Provider = strings.TrimSpace(result.Provider)
 	result.Model = strings.TrimSpace(result.Model)
+	result.PromptID = strings.TrimSpace(result.PromptID)
+	result.PromptVersion = strings.TrimSpace(result.PromptVersion)
+	result.PromptHash = strings.TrimSpace(result.PromptHash)
+	result.ExperimentID = strings.TrimSpace(result.ExperimentID)
+	result.VariantID = strings.TrimSpace(result.VariantID)
 	result.Status = normalizeEvaluationResultStatus(result.Status)
 	if result.Score < 0 {
 		result.Score = 0
@@ -947,6 +929,11 @@ func normalizeEvaluationScope(scope EvaluationScope) EvaluationScope {
 	scope.SkillName = strings.TrimSpace(scope.SkillName)
 	scope.Provider = strings.TrimSpace(scope.Provider)
 	scope.Model = strings.TrimSpace(scope.Model)
+	scope.PromptID = strings.TrimSpace(scope.PromptID)
+	scope.PromptVersion = strings.TrimSpace(scope.PromptVersion)
+	scope.PromptHash = strings.TrimSpace(scope.PromptHash)
+	scope.ExperimentID = strings.TrimSpace(scope.ExperimentID)
+	scope.VariantID = strings.TrimSpace(scope.VariantID)
 	return scope
 }
 
@@ -987,6 +974,11 @@ func normalizeEvaluationResultFilter(filter EvaluationResultFilter) EvaluationRe
 	filter.SkillName = strings.TrimSpace(filter.SkillName)
 	filter.Provider = strings.TrimSpace(filter.Provider)
 	filter.Model = strings.TrimSpace(filter.Model)
+	filter.PromptID = strings.TrimSpace(filter.PromptID)
+	filter.PromptVersion = strings.TrimSpace(filter.PromptVersion)
+	filter.PromptHash = strings.TrimSpace(filter.PromptHash)
+	filter.ExperimentID = strings.TrimSpace(filter.ExperimentID)
+	filter.VariantID = strings.TrimSpace(filter.VariantID)
 	filter.Limit = normalizeEvaluationLimit(filter.Limit)
 	return filter
 }
@@ -1135,6 +1127,21 @@ func evaluationResultMatches(result EvaluationResult, filter EvaluationResultFil
 		return false
 	}
 	if filter.Model != "" && result.Model != filter.Model {
+		return false
+	}
+	if filter.PromptID != "" && result.PromptID != filter.PromptID {
+		return false
+	}
+	if filter.PromptVersion != "" && result.PromptVersion != filter.PromptVersion {
+		return false
+	}
+	if filter.PromptHash != "" && result.PromptHash != filter.PromptHash {
+		return false
+	}
+	if filter.ExperimentID != "" && result.ExperimentID != filter.ExperimentID {
+		return false
+	}
+	if filter.VariantID != "" && result.VariantID != filter.VariantID {
 		return false
 	}
 	return true

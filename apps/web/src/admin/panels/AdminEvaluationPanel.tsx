@@ -33,13 +33,34 @@ import {
   type AdminTabOption
 } from "../shared";
 import { sessionTitle } from "../../lib/sessionTitle";
-import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, GoldenCandidate, GoldenSet, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, RiskReviewSummary, RiskSummary, Session } from "../../types";
+import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, GoldenCandidate, GoldenSet, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, PromptExperiment, PromptTemplate, PromptVersion, RiskReviewSummary, RiskSummary, Session } from "../../types";
 
 function splitGoldenLines(value: string): string[] {
   return value
     .split(/[\n,]/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+type PromptEvalSide = {
+  version: string;
+  report: EvaluationRunReport;
+};
+
+type PromptEvalComparison = {
+  promptID: string;
+  baseline: PromptEvalSide;
+  candidate: PromptEvalSide;
+};
+
+function promptEvalMetric(summary: EvaluationRunSummary | undefined, key: string): number {
+  return metricNumber(summary?.metrics || {}, key);
+}
+
+function promptEvalDelta(candidate: number, baseline: number, formatter: (value: number) => string): string {
+  const delta = candidate - baseline;
+  const sign = delta > 0 ? "+" : "";
+  return `${sign}${formatter(delta)}`;
 }
 
 export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; adminToken: string }) {
@@ -55,6 +76,11 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
   const [skillName, setSkillName] = useState("");
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
+  const [promptResultID, setPromptResultID] = useState("");
+  const [promptResultVersion, setPromptResultVersion] = useState("");
+  const [promptResultHash, setPromptResultHash] = useState("");
+  const [experimentID, setExperimentID] = useState("");
+  const [variantID, setVariantID] = useState("");
   const [subjectType, setSubjectType] = useState("job");
   const [runStatusFilter, setRunStatusFilter] = useState("all");
   const [resultStatusFilter, setResultStatusFilter] = useState("all");
@@ -78,6 +104,15 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
   const [goldenExpectedFacts, setGoldenExpectedFacts] = useState("");
   const [goldenJudge, setGoldenJudge] = useState("heuristic");
   const [goldenBusy, setGoldenBusy] = useState("");
+  const [promptCatalog, setPromptCatalog] = useState<PromptTemplate[]>([]);
+  const [promptEvalID, setPromptEvalID] = useState("live_setup");
+  const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
+  const [promptBaselineVersion, setPromptBaselineVersion] = useState("");
+  const [promptCandidateVersion, setPromptCandidateVersion] = useState("");
+  const [promptBusy, setPromptBusy] = useState("");
+  const [promptComparison, setPromptComparison] = useState<PromptEvalComparison | null>(null);
+  const [promptExperiments, setPromptExperiments] = useState<PromptExperiment[]>([]);
+  const [selectedExperimentID, setSelectedExperimentID] = useState("");
   const token = adminToken.trim();
   const cleanUserID = userID.trim();
   const selectedRun = runs.find((run) => run.id === selectedRunID) || runs[0] || null;
@@ -126,7 +161,12 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
           skillName: skillName.trim(),
           provider: provider.trim(),
           model: model.trim(),
-          subjectType
+          subjectType,
+          promptID: promptResultID.trim(),
+          promptVersion: promptResultVersion.trim(),
+          promptHash: promptResultHash.trim(),
+          experimentID: experimentID.trim(),
+          variantID: variantID.trim()
         });
         setResults(filtered);
         setReviews((current) => mergeEvaluationReviews(current, report.reviews));
@@ -170,7 +210,12 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
           job_id: jobID.trim(),
           skill_name: skillName.trim(),
           provider: provider.trim(),
-          model: model.trim()
+          model: model.trim(),
+          prompt_id: promptResultID.trim(),
+          prompt_version: promptResultVersion.trim(),
+          prompt_hash: promptResultHash.trim(),
+          experiment_id: experimentID.trim(),
+          variant_id: variantID.trim()
         }
       });
       setRuns((current) => [report.run, ...current.filter((run) => run.id !== report.run.id)]);
@@ -202,7 +247,12 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
         skillName: skillName.trim(),
         provider: provider.trim(),
         model: model.trim(),
-        subjectType
+        subjectType,
+        promptID: promptResultID.trim(),
+        promptVersion: promptResultVersion.trim(),
+        promptHash: promptResultHash.trim(),
+        experimentID: experimentID.trim(),
+        variantID: variantID.trim()
       });
       setResults(filtered);
       setReviews((current) => mergeEvaluationReviews(current, report.reviews));
@@ -247,6 +297,11 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
         skillName: skillName.trim(),
         provider: provider.trim(),
         model: model.trim(),
+        promptId: promptResultID.trim(),
+        promptVersion: promptResultVersion.trim(),
+        promptHash: promptResultHash.trim(),
+        experimentId: experimentID.trim(),
+        variantId: variantID.trim(),
         subjectType,
         limit: 1000
       });
@@ -288,6 +343,80 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
       setNotice(`Loaded ${sets.length} golden set versions`);
     } catch (err) {
       setError(errorMessage(err));
+    }
+  };
+
+  const loadPromptVersions = async (id: string, quiet = false, resetDefaults = false) => {
+    const cleanID = id.trim();
+    if (!token || !cleanID) return;
+    if (!quiet) setPromptBusy("load");
+    setError("");
+    try {
+      const detail = await api.adminOpsPrompt(token, cleanID);
+      const versions = detail.versions || [];
+      const published = detail.published_version || versions.find((item) => item.status === "published") || versions[0];
+      const candidate = versions.find((item) => item.status !== "published" && item.version !== published?.version) || versions.find((item) => item.version !== published?.version) || published;
+      setPromptVersions(versions);
+      setPromptEvalID(detail.prompt.id);
+      setPromptBaselineVersion((current) => resetDefaults ? (published?.version || "") : (current || published?.version || ""));
+      setPromptCandidateVersion((current) => resetDefaults ? (candidate?.version || published?.version || "") : (current || candidate?.version || published?.version || ""));
+      if (!quiet) setNotice(`Loaded ${versions.length} versions for ${detail.prompt.id}`);
+    } catch (err) {
+      setPromptVersions([]);
+      if (!quiet) setError(errorMessage(err));
+    } finally {
+      if (!quiet) setPromptBusy("");
+    }
+  };
+
+  const loadPromptCatalog = async () => {
+    if (!token) return;
+    setPromptBusy("catalog");
+    setError("");
+    try {
+      const prompts = await api.adminOpsPrompts(token, { limit: 200 });
+      setPromptCatalog(prompts);
+      const nextID = promptEvalID.trim() || prompts[0]?.id || "";
+      if (nextID) await loadPromptVersions(nextID, true);
+      if (nextID) await loadPromptExperiments(nextID);
+      setNotice(`Loaded ${prompts.length} prompts`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setPromptBusy("");
+    }
+  };
+
+  const loadPromptExperiments = async (promptID = promptEvalID) => {
+    const cleanPromptID = promptID.trim();
+    if (!token || !cleanPromptID) return;
+    setPromptBusy("experiments");
+    setError("");
+    try {
+      const experiments = await api.adminOpsPromptExperiments(token, { promptId: cleanPromptID, limit: 50 });
+      setPromptExperiments(experiments);
+      setSelectedExperimentID((current) => current && experiments.some((item) => item.id === current) ? current : experiments[0]?.id || "");
+      setNotice(`Loaded ${experiments.length} prompt experiments`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setPromptBusy("");
+    }
+  };
+
+  const updatePromptExperiment = async (action: "start" | "pause" | "complete") => {
+    if (!token || !selectedExperimentID) return;
+    setPromptBusy(action);
+    setError("");
+    try {
+      const detail = await api.updatePromptExperimentStatus(token, selectedExperimentID, action);
+      setPromptExperiments((current) => [detail.experiment, ...current.filter((item) => item.id !== detail.experiment.id)]);
+      setSelectedExperimentID(detail.experiment.id);
+      setNotice(`Experiment ${detail.experiment.id} ${detail.experiment.status}`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setPromptBusy("");
     }
   };
 
@@ -374,10 +503,71 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
     }
   };
 
+  const runPromptABEvaluation = async () => {
+    const set = selectedGoldenSet;
+    const cleanPromptID = promptEvalID.trim();
+    const baselineVersion = promptBaselineVersion.trim();
+    const candidateVersion = promptCandidateVersion.trim();
+    if (!token || !set || !cleanPromptID || !baselineVersion || !candidateVersion) {
+      setError("Select a prompt, two versions, and a Golden Set before running prompt comparison.");
+      return;
+    }
+    if (!set.cases.length) {
+      setError("Selected Golden Set has no cases.");
+      return;
+    }
+    setPromptBusy("compare");
+    setError("");
+    try {
+      const candidates: GoldenCandidate[] = set.cases.map((item) => ({
+        case_id: item.id,
+        output: item.expected_answer || item.expected_facts?.join("\n") || item.query,
+        retrieved_evidence: item.gold_evidence || [],
+        metadata: { source: "admin_prompt_compare" }
+      }));
+      const now = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+      const baseline = await api.createPromptVersionEvaluationRun(token, cleanPromptID, baselineVersion, {
+        setId: set.id,
+        setVersion: set.version || "",
+        judge: goldenJudge,
+        name: `${cleanPromptID}_${baselineVersion}_baseline_${now}`,
+        trigger: "admin_prompt_compare",
+        candidates
+      });
+      const candidate = await api.createPromptVersionEvaluationRun(token, cleanPromptID, candidateVersion, {
+        setId: set.id,
+        setVersion: set.version || "",
+        judge: goldenJudge,
+        name: `${cleanPromptID}_${candidateVersion}_candidate_${now}`,
+        trigger: "admin_prompt_compare",
+        candidates
+      });
+      setPromptComparison({
+        promptID: cleanPromptID,
+        baseline: { version: baselineVersion, report: baseline },
+        candidate: { version: candidateVersion, report: candidate }
+      });
+      setRuns((current) => [candidate.run, baseline.run, ...current.filter((run) => run.id !== candidate.run.id && run.id !== baseline.run.id)]);
+      setSummary(candidate.summary);
+      setResults([...candidate.results, ...baseline.results]);
+      setReviews((current) => mergeEvaluationReviews(current, [...candidate.reviews, ...baseline.reviews]));
+      setSelectedRunID(candidate.run.id);
+      setSelectedResultID(candidate.results[0]?.id || baseline.results[0]?.id || "");
+      setSubjectType("golden_case");
+      setEvaluationTab("golden");
+      setNotice(`Prompt comparison completed: ${baselineVersion} vs ${candidateVersion}`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setPromptBusy("");
+    }
+  };
+
   useEffect(() => {
     if (token) {
       void loadEvaluation();
       void loadGoldenSets();
+      void loadPromptCatalog();
     }
   }, [token]);
 
@@ -468,6 +658,18 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
             <Input value={provider} onChange={(event) => setProvider(event.currentTarget.value)} placeholder="provider" aria-label="Evaluation provider" />
             <Input value={model} onChange={(event) => setModel(event.currentTarget.value)} placeholder="model" aria-label="Evaluation model" />
           </div>
+          <div className="admin-filter-row">
+            <Input value={promptResultID} onChange={(event) => setPromptResultID(event.currentTarget.value)} placeholder="prompt id" aria-label="Evaluation prompt ID" />
+            <Input value={promptResultVersion} onChange={(event) => setPromptResultVersion(event.currentTarget.value)} placeholder="prompt version" aria-label="Evaluation prompt version" />
+          </div>
+          <label className="admin-field">
+            <span>Prompt hash</span>
+            <Input value={promptResultHash} onChange={(event) => setPromptResultHash(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation prompt hash" />
+          </label>
+          <div className="admin-filter-row">
+            <Input value={experimentID} onChange={(event) => setExperimentID(event.currentTarget.value)} placeholder="experiment id" aria-label="Evaluation experiment ID" />
+            <Input value={variantID} onChange={(event) => setVariantID(event.currentTarget.value)} placeholder="variant id" aria-label="Evaluation variant ID" />
+          </div>
           <div className="admin-action-row compact evaluation-actions">
             <Button className="primary skill-action" onClick={createRun} disabled={running || !token || (isGoldenSubject ? goldenBusy === "run" || !selectedGoldenSet?.cases.length : !cleanUserID)}>
               {isGoldenSubject ? <Sparkles size={16} /> : <PlayCircle size={16} />}
@@ -554,7 +756,7 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
                   <StatusBadge value={result.status} />
                   <span>
                     <strong>{result.subject_type}:{result.subject_id}</strong>
-                    <small>{[result.user_id, result.session_id, result.job_id, result.skill_name].filter(Boolean).join(" · ") || "runtime record"}</small>
+                    <small>{[result.user_id, result.session_id, result.job_id, result.skill_name, result.prompt_id && `${result.prompt_id}@${result.prompt_version || "unknown"}`, result.experiment_id && `${result.experiment_id}/${result.variant_id || "variant"}`].filter(Boolean).join(" · ") || "runtime record"}</small>
                   </span>
                   <small>{formatNumber(Math.round((result.score || 0) * 100))}</small>
                   {(result.findings || []).slice(0, 2).map((finding) => <em key={`${result.id}-${finding.code}`}>{finding.code}: {finding.message}</em>)}
@@ -573,6 +775,9 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
                 <SkillFact label="Subject" value={`${selectedResult.subject_type}:${selectedResult.subject_id}`} />
                 <SkillFact label="Score" value={String(selectedResult.score)} />
                 <SkillFact label="Provider" value={[selectedResult.provider, selectedResult.model].filter(Boolean).join(" / ") || "none"} />
+                <SkillFact label="Prompt" value={[selectedResult.prompt_id, selectedResult.prompt_version].filter(Boolean).join(" @ ") || "none"} />
+                {selectedResult.prompt_hash && <SkillFact label="Prompt hash" value={selectedResult.prompt_hash} />}
+                <SkillFact label="Experiment" value={[selectedResult.experiment_id, selectedResult.variant_id].filter(Boolean).join(" / ") || "none"} />
                 <SkillFact label="Created" value={formatTime(selectedResult.created_at)} />
                 <SkillFact label="Session" value={selectedResult.session_id || "none"} />
                 <SkillFact label="Job" value={selectedResult.job_id || "none"} />
@@ -627,6 +832,13 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
             <pre className="admin-code-block">{selectedResult ? JSON.stringify({
               input: selectedResult.input || "",
               output: selectedResult.output || "",
+              prompt: {
+                id: selectedResult.prompt_id || "",
+                version: selectedResult.prompt_version || "",
+                hash: selectedResult.prompt_hash || "",
+                experiment_id: selectedResult.experiment_id || "",
+                variant_id: selectedResult.variant_id || ""
+              },
               metrics: selectedResult.metrics || {}
             }, null, 2) : "{}"}</pre>
           </section>}
@@ -713,6 +925,89 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
                 <Sparkles size={16} />
                 <span>{goldenBusy === "run" ? "Running" : "Run golden eval"}</span>
               </Button>
+            </div>
+            <div className="prompt-eval-box">
+              <div className="admin-card-head">
+                <h3>Prompt version comparison</h3>
+                <Button className="small ghost" onClick={loadPromptCatalog} disabled={promptBusy === "catalog" || !token}>
+                  <RefreshCw size={14} />
+                  <span>{promptBusy === "catalog" ? "Loading" : "Load prompts"}</span>
+                </Button>
+              </div>
+              <div className="golden-form-grid">
+                <label className="admin-field">
+                  <span>Prompt</span>
+                  <select
+                    value={promptEvalID}
+                    onChange={(event) => {
+                      const nextID = event.currentTarget.value;
+                      setPromptEvalID(nextID);
+                      setPromptBaselineVersion("");
+                      setPromptCandidateVersion("");
+                      void loadPromptVersions(nextID, false, true);
+                      void loadPromptExperiments(nextID);
+                    }}
+                    aria-label="Prompt for Golden comparison"
+                  >
+                    <option value="">Select prompt</option>
+                    {promptCatalog.map((prompt) => (
+                      <option key={prompt.id} value={prompt.id}>{prompt.id} · {prompt.scope || "runtime"}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="admin-field">
+                  <span>Baseline version</span>
+                  <select value={promptBaselineVersion} onChange={(event) => setPromptBaselineVersion(event.currentTarget.value)} aria-label="Prompt baseline version">
+                    <option value="">Select version</option>
+                    {promptVersions.map((version) => (
+                      <option key={`baseline-${version.version}`} value={version.version}>{version.version} · {version.status}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="admin-field">
+                  <span>Candidate version</span>
+                  <select value={promptCandidateVersion} onChange={(event) => setPromptCandidateVersion(event.currentTarget.value)} aria-label="Prompt candidate version">
+                    <option value="">Select version</option>
+                    {promptVersions.map((version) => (
+                      <option key={`candidate-${version.version}`} value={version.version}>{version.version} · {version.status}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="admin-field">
+                  <span>Selected hash</span>
+                  <Input value={promptVersions.find((version) => version.version === promptCandidateVersion)?.content_hash || ""} readOnly aria-label="Selected prompt hash" />
+                </label>
+              </div>
+              <div className="admin-action-row golden-actions">
+                <Button className="skill-action primary" onClick={runPromptABEvaluation} disabled={promptBusy === "compare" || !token || !selectedGoldenSet?.cases.length || !promptEvalID.trim() || !promptBaselineVersion.trim() || !promptCandidateVersion.trim()}>
+                  <Sparkles size={16} />
+                  <span>{promptBusy === "compare" ? "Comparing" : "Run baseline vs candidate"}</span>
+                </Button>
+                <small className="muted-text">{promptVersions.length ? `${promptVersions.length} versions loaded` : "Load a prompt to choose versions"}</small>
+              </div>
+              <div className="prompt-experiment-row">
+                <select value={selectedExperimentID} onChange={(event) => setSelectedExperimentID(event.currentTarget.value)} aria-label="Prompt experiment">
+                  <option value="">No experiment selected</option>
+                  {promptExperiments.map((experiment) => (
+                    <option key={experiment.id} value={experiment.id}>{experiment.id} · {experiment.status}</option>
+                  ))}
+                </select>
+                <Button className="small ghost" onClick={() => loadPromptExperiments()} disabled={promptBusy === "experiments" || !token || !promptEvalID.trim()}>
+                  <RefreshCw size={14} />
+                  <span>{promptBusy === "experiments" ? "Loading" : "Experiments"}</span>
+                </Button>
+                <Button className="small ghost" onClick={() => updatePromptExperiment("start")} disabled={!selectedExperimentID || promptBusy === "start"}>Start</Button>
+                <Button className="small ghost" onClick={() => updatePromptExperiment("pause")} disabled={!selectedExperimentID || promptBusy === "pause"}>Pause</Button>
+                <Button className="small ghost" onClick={() => updatePromptExperiment("complete")} disabled={!selectedExperimentID || promptBusy === "complete"}>Complete</Button>
+              </div>
+              {promptComparison && (
+                <div className="prompt-comparison-grid">
+                  <AdminMetric label="Baseline pass" value={formatPercent(promptComparison.baseline.report.summary.pass_rate)} />
+                  <AdminMetric label="Candidate pass" value={`${formatPercent(promptComparison.candidate.report.summary.pass_rate)} (${promptEvalDelta(promptComparison.candidate.report.summary.pass_rate, promptComparison.baseline.report.summary.pass_rate, formatPercent)})`} />
+                  <AdminMetric label="Failed / warning delta" value={`${(promptComparison.candidate.report.summary.failed + promptComparison.candidate.report.summary.warning) - (promptComparison.baseline.report.summary.failed + promptComparison.baseline.report.summary.warning)}`} />
+                  <AdminMetric label="Cost delta" value={promptEvalDelta(promptEvalMetric(promptComparison.candidate.report.summary, "estimated_cost_usd"), promptEvalMetric(promptComparison.baseline.report.summary, "estimated_cost_usd"), formatUSD)} />
+                </div>
+              )}
             </div>
             <div className="admin-table golden-case-list">
               {selectedGoldenSet ? (

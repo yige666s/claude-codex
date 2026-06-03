@@ -52,6 +52,7 @@ type MessageSearchService struct {
 	semantic SemanticMessageSearcher
 	hydrator MessageSearchResultHydrator
 	workflow *WorkflowEngine
+	cache    *TypedCache[[]MessageSearchResult]
 }
 
 func NewMessageSearchService(config MessageSearchConfig, fallback MessageSearchStore) *MessageSearchService {
@@ -74,6 +75,13 @@ func NewMessageSearchService(config MessageSearchConfig, fallback MessageSearchS
 			service.semantic = NewQdrantSemanticMessageSearcher(config)
 		}
 	}
+	if config.CacheStore != nil {
+		service.cache = NewTypedCache[[]MessageSearchResult](config.CacheStore, CachePolicy{
+			Namespace: "message_search",
+			TTL:       cacheTTLOrDefault(config.CacheDefaultTTL),
+			FailOpen:  config.CacheFailOpen,
+		}, config.CacheMetrics)
+	}
 	service.workflow = newMessageSearchWorkflowEngine(service)
 	return service
 }
@@ -87,11 +95,23 @@ func (s *MessageSearchService) SearchMessages(ctx context.Context, userID, query
 		return []MessageSearchResult{}, nil
 	}
 	limit, offset = normalizeSearchPage(limit, offset)
+	cacheKey := ""
+	if s.cache != nil {
+		cacheKey = s.cacheKey(userID, query, limit, offset)
+		if cached, ok, err := s.cache.Get(ctx, cacheKey); err != nil {
+			return nil, err
+		} else if ok {
+			return cloneMessageSearchResults(cached), nil
+		}
+	}
 
+	var results []MessageSearchResult
+	var err error
 	switch s.config.Backend {
 	case messageSearchBackendElasticsearch, messageSearchBackendOpenSearch:
 		if s.keyword != nil {
-			return s.keyword.SearchMessages(ctx, userID, query, limit, offset)
+			results, err = s.keyword.SearchMessages(ctx, userID, query, limit, offset)
+			return s.cacheAndReturn(ctx, cacheKey, results, err)
 		}
 		return nil, errMessageSearchNotConfigured("full-text backend")
 	case messageSearchBackendSemantic:
@@ -111,14 +131,60 @@ func (s *MessageSearchService) SearchMessages(ctx context.Context, userID, query
 			if s.config.RerankEnabled {
 				results = rerankMessageSearchResults(query, results, s.config)
 			}
-			return sliceSearchResults(results, limit, offset), nil
+			return s.cacheAndReturn(ctx, cacheKey, sliceSearchResults(results, limit, offset), nil)
 		}
-		return s.searchFallback(ctx, userID, query, limit, offset)
+		results, err = s.searchFallback(ctx, userID, query, limit, offset)
+		return s.cacheAndReturn(ctx, cacheKey, results, err)
 	case messageSearchBackendHybrid:
-		return s.searchHybrid(ctx, userID, query, limit, offset)
+		results, err = s.searchHybrid(ctx, userID, query, limit, offset)
+		return s.cacheAndReturn(ctx, cacheKey, results, err)
 	default:
-		return s.searchFallback(ctx, userID, query, limit, offset)
+		results, err = s.searchFallback(ctx, userID, query, limit, offset)
+		return s.cacheAndReturn(ctx, cacheKey, results, err)
 	}
+}
+
+func (s *MessageSearchService) cacheAndReturn(ctx context.Context, cacheKey string, results []MessageSearchResult, err error) ([]MessageSearchResult, error) {
+	if err != nil {
+		return nil, err
+	}
+	results = cloneMessageSearchResults(results)
+	if s != nil && s.cache != nil && strings.TrimSpace(cacheKey) != "" {
+		_ = s.cache.Set(ctx, cacheKey, results)
+	}
+	return results, nil
+}
+
+func (s *MessageSearchService) InvalidateUserCache(ctx context.Context, userID string) error {
+	if s == nil || s.config.CacheStore == nil {
+		return nil
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil
+	}
+	return s.config.CacheStore.DeletePrefix(ctx, "message_search:"+userPathID(userID)+":")
+}
+
+func (s *MessageSearchService) cacheKey(userID, query string, limit, offset int) string {
+	if s == nil {
+		return ""
+	}
+	userPrefix := userPathID(userID)
+	if userPrefix == "" {
+		userPrefix = "anonymous"
+	}
+	version := messageSearchCacheVersion(s.config)
+	hash := BuildCacheKey(CacheKeyOptions{
+		Namespace: "message_search",
+		Version:   version,
+		Parts: []string{
+			"query=" + strings.TrimSpace(query),
+			"limit=" + strconv.Itoa(limit),
+			"offset=" + strconv.Itoa(offset),
+		},
+	})
+	return userPrefix + ":" + hash
 }
 
 func (s *MessageSearchService) searchFallback(ctx context.Context, userID, query string, limit, offset int) ([]MessageSearchResult, error) {
@@ -372,6 +438,30 @@ func normalizeSearchPage(limit, offset int) (int, int) {
 		offset = 0
 	}
 	return limit, offset
+}
+
+func messageSearchCacheVersion(config MessageSearchConfig) string {
+	config = normalizeMessageSearchConfig(config)
+	return cacheHashKey(
+		"backend="+config.Backend,
+		"index="+config.Index,
+		"write_alias="+config.IndexWriteAlias,
+		"qdrant="+config.QdrantCollection,
+		"embedding="+messageEmbeddingModelVersion(config),
+		"rrf="+strconv.Itoa(config.RRFK),
+		"rewrite="+boolCachePart(config.QueryRewriteEnabled),
+		"dynamic_topk="+boolCachePart(config.DynamicTopKEnabled),
+		"multi_turn="+boolCachePart(config.MultiTurnEnabled),
+		"rerank="+boolCachePart(config.RerankEnabled),
+		"rerank_limit="+strconv.Itoa(config.RerankCandidateLimit),
+	)
+}
+
+func cloneMessageSearchResults(results []MessageSearchResult) []MessageSearchResult {
+	if len(results) == 0 {
+		return []MessageSearchResult{}
+	}
+	return append([]MessageSearchResult(nil), results...)
 }
 
 func rrfMergeMessageSearchResultsWithK(k int, lists ...[]MessageSearchResult) []MessageSearchResult {

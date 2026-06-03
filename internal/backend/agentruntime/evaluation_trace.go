@@ -235,9 +235,14 @@ func (s RuntimeEvaluationTraceSource) llmUsageRecords(ctx context.Context, scope
 		limit = 100
 	}
 	summary, err := s.LLMUsage.SummarizeLLMUsage(ctx, LLMUsageAdminFilter{
-		UserID: userID,
-		Since:  since,
-		Limit:  limit,
+		UserID:        userID,
+		Since:         since,
+		Limit:         limit,
+		PromptID:      scope.PromptID,
+		PromptVersion: scope.PromptVersion,
+		PromptHash:    scope.PromptHash,
+		ExperimentID:  scope.ExperimentID,
+		VariantID:     scope.VariantID,
 	})
 	if err != nil {
 		return nil
@@ -332,6 +337,21 @@ func llmRecordMatchesEvaluationScope(record LLMUsageRecord, scope EvaluationScop
 		return false
 	}
 	if scope.Model != "" && record.Model != scope.Model {
+		return false
+	}
+	if scope.PromptID != "" && record.PromptID != scope.PromptID {
+		return false
+	}
+	if scope.PromptVersion != "" && record.PromptVersion != scope.PromptVersion {
+		return false
+	}
+	if scope.PromptHash != "" && record.PromptHash != scope.PromptHash {
+		return false
+	}
+	if scope.ExperimentID != "" && record.ExperimentID != scope.ExperimentID {
+		return false
+	}
+	if scope.VariantID != "" && record.VariantID != scope.VariantID {
 		return false
 	}
 	if scope.From != nil && record.CreatedAt.Before(*scope.From) {

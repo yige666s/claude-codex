@@ -88,6 +88,9 @@ type Runtime struct {
 	skills           SkillCatalog
 	skillExecutions  SkillExecutionStore
 	workflowStore    WorkflowStore
+	toolCallLedger   ToolCallLedgerStore
+	promptStore      PromptStore
+	promptResolver   PromptResolver
 	engineFactory    EngineFactory
 	riskScanner      RiskScanner
 	riskRecorder     func(context.Context, RiskEvent)
@@ -134,6 +137,27 @@ func (r *Runtime) SetWorkflowStore(store WorkflowStore) {
 	if memoryWorkflow, ok := r.memory.(*MemoryWorkflowService); ok {
 		r.memory = NewMemoryWorkflowService(memoryWorkflow.base, store, ContextWorkflowEventSink{})
 	}
+	if r.messageSearch != nil {
+		r.messageSearch.SetWorkflowStore(store, ContextWorkflowEventSink{})
+	}
+}
+
+func (r *Runtime) SetToolCallLedgerStore(store ToolCallLedgerStore) {
+	if r == nil {
+		return
+	}
+	if store == nil {
+		store = NewMemoryToolCallLedgerStore()
+	}
+	r.toolCallLedger = store
+}
+
+func (r *Runtime) SetPromptStore(store PromptStore) {
+	if r == nil {
+		return
+	}
+	r.promptStore = store
+	r.promptResolver = NewCachedPromptResolver(store, nil, r.config.CacheStore, r.config.CacheDefaultTTL, r.config.CacheFailOpen, r.config.CacheMetrics)
 }
 
 func (r *Runtime) SetRiskScanner(scanner RiskScanner) {
@@ -158,6 +182,14 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 	if config.SkillShellTimeout <= 0 {
 		config.SkillShellTimeout = 90 * time.Second
 	}
+	config.MessageSearch.CacheStore = config.CacheStore
+	config.MessageSearch.CacheMetrics = config.CacheMetrics
+	config.MessageSearch.CacheDefaultTTL = config.CacheDefaultTTL
+	config.MessageSearch.CacheFailOpen = config.CacheFailOpen
+	config.MemoryVector.CacheStore = config.CacheStore
+	config.MemoryVector.CacheMetrics = config.CacheMetrics
+	config.MemoryVector.CacheDefaultTTL = config.CacheDefaultTTL
+	config.MemoryVector.CacheFailOpen = config.CacheFailOpen
 	config.SkillShellSandbox = config.SkillShellSandbox.normalized()
 	logger := componentLogger(config.Logger, "runtime")
 	runtime := &Runtime{
@@ -169,6 +201,8 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		memoryOrganizer:       NewRuleMemoryOrganizer(),
 		skills:                skills,
 		workflowStore:         NewMemoryWorkflowStore(),
+		toolCallLedger:        NewMemoryToolCallLedgerStore(),
+		promptResolver:        NewPromptResolver(nil, nil),
 		engineFactory:         engineFactory,
 		logger:                logger,
 		clock:                 systemClock{},
@@ -294,7 +328,14 @@ func (r *Runtime) WriteMessage(ctx context.Context, req MessageWriteRequest) (st
 	if r == nil || r.messageWriter == nil {
 		return state.Message{}, fmt.Errorf("message write service is not configured")
 	}
-	return r.messageWriter.Write(ctx, req)
+	message, err := r.messageWriter.Write(ctx, req)
+	if err != nil {
+		return state.Message{}, err
+	}
+	if r.messageSearch != nil {
+		_ = r.messageSearch.InvalidateUserCache(ctx, req.UserID)
+	}
+	return message, nil
 }
 
 func (r *Runtime) LoadSessionContext(ctx context.Context, userID, sessionID string, opts SessionLoadOptions) ([]state.Message, error) {
@@ -1611,7 +1652,13 @@ func (r *Runtime) LiveSystemInstruction(ctx context.Context, userID, sessionID s
 			parts = append(parts, memory)
 		}
 	}
-	return strings.Join(parts, "\n\n")
+	content := strings.Join(parts, "\n\n")
+	if resolution, err := r.promptResolver.Resolve(ctx, PromptResolveRequest{PromptID: PromptIDLiveSetup, UserID: userID, SessionID: sessionID, RuntimeMode: "live"}); err == nil {
+		if rendered, err := RenderPrompt(resolution, map[string]any{"content": content}); err == nil {
+			return rendered.Content
+		}
+	}
+	return content
 }
 
 func (r *Runtime) LiveInitialHistory(ctx context.Context, userID, sessionID string) ([]state.Message, error) {
@@ -1705,6 +1752,14 @@ func (r *Runtime) ExecuteLiveToolFunctionCall(ctx context.Context, userID, sessi
 	if len(args) == 0 {
 		args = json.RawMessage(`{}`)
 	}
+	preparedArgs, fallbackLevel, err := prepareLiveHarnessToolInput(ctx, runner, toolName, args, displayText)
+	if err != nil {
+		return true, "", err
+	}
+	args = preparedArgs
+	if sink != nil && fallbackLevel != "" {
+		_ = sink.Send(ctx, Event{Type: "live_tool_fallback", SessionID: session.ID, Role: state.MessageRoleTool, Content: fallbackLevel, Data: liveJSON(map[string]any{"tool": toolName, "fallback": fallbackLevel})})
+	}
 	callID = strings.TrimSpace(callID)
 	if callID == "" {
 		callID = fmt.Sprintf("live-call-%d", time.Now().UnixNano())
@@ -1759,12 +1814,35 @@ func (r *Runtime) executeLiveWebResearchFunctionCall(ctx context.Context, userID
 	if runner == nil || session == nil {
 		return true, "", fmt.Errorf("live web research runner is not configured")
 	}
+	if len(args) == 0 {
+		args = json.RawMessage(`{}`)
+	}
+	initialSchema := liveWebResearchStructuredSchema(false)
+	if result := ValidateStructuredJSON(args, initialSchema); !result.Valid() {
+		emitStructuredOutputValidationFailure(ctx, initialSchema, liveWebResearchFunctionName, result)
+		repaired, repairErr := repairStructuredJSONWithRunner(ctx, runner, initialSchema, string(args), result.Error(), "Latest live utterance: "+strings.TrimSpace(displayText))
+		if repairErr != nil {
+			emitStructuredOutputFallbackEvent(ctx, initialSchema, liveWebResearchFunctionName, structuredFallbackStopAutoExecute, repairErr)
+			return true, "", fmt.Errorf("web_research input invalid after %s: %w; repair failed: %v", structuredFallbackRepairRetry, result.Error(), repairErr)
+		}
+		args = repaired
+	}
 	input := liveWebResearchArgs(args)
 	if strings.TrimSpace(input.Query) == "" {
 		input.Query = strings.TrimSpace(displayText)
 	}
+	normalizedInput, err := json.Marshal(input)
+	if err != nil {
+		return true, "", err
+	}
+	requiredSchema := liveWebResearchStructuredSchema(true)
+	if result := ValidateStructuredJSON(normalizedInput, requiredSchema); !result.Valid() {
+		emitStructuredOutputValidationFailure(ctx, requiredSchema, liveWebResearchFunctionName, result)
+		return true, "", result.Error()
+	}
 	if strings.TrimSpace(input.Query) == "" {
-		return true, "", fmt.Errorf("web_research requires a query")
+		emitStructuredOutputFallbackEvent(ctx, requiredSchema, liveWebResearchFunctionName, structuredFallbackUserClarification, fmt.Errorf("web_research requires a query"))
+		return true, "", fmt.Errorf("web_research requires a query; fallback=%s", structuredFallbackUserClarification)
 	}
 	callID = strings.TrimSpace(callID)
 	if callID == "" {
@@ -1799,16 +1877,12 @@ func (r *Runtime) executeLiveWebResearchFunctionCall(ctx context.Context, userID
 		output = "No reliable web research result was produced."
 	}
 
-	callInput, marshalErr := json.Marshal(input)
-	if marshalErr != nil {
-		callInput = args
-	}
 	session.AddAssistantMessageWithTools("", []state.ToolCall{{
 		ID:    callID,
 		Name:  liveWebResearchFunctionName,
-		Input: json.RawMessage(callInput),
+		Input: json.RawMessage(normalizedInput),
 	}})
-	session.AddToolResult(callID, liveWebResearchFunctionName, json.RawMessage(callInput), output)
+	session.AddToolResult(callID, liveWebResearchFunctionName, json.RawMessage(normalizedInput), output)
 	if persistErr := r.persistChatSession(ctx, userID, session, startMessageCount); persistErr != nil {
 		if err != nil {
 			return true, output, errors.Join(err, persistErr)
@@ -1911,6 +1985,102 @@ func liveWebResearchFunctionDeclaration() map[string]any {
 			"required": []string{"query"},
 		},
 	}
+}
+
+func liveWebResearchStructuredSchema(requireQuery bool) StructuredSchema {
+	required := []string{}
+	if requireQuery {
+		required = []string{"query"}
+	}
+	return StructuredSchema{
+		Name:    liveWebResearchFunctionName,
+		Version: "v1",
+		Schema: map[string]any{
+			"type":                 "object",
+			"required":             required,
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"query":        map[string]any{"type": "string"},
+				"requirements": map[string]any{"type": "string"},
+				"reason":       map[string]any{"type": "string"},
+			},
+		},
+	}
+}
+
+func prepareLiveHarnessToolInput(ctx context.Context, runner liveHarnessToolRunner, toolName string, args json.RawMessage, displayText string) (json.RawMessage, string, error) {
+	schema, err := liveHarnessToolInputStructuredSchema(runner.Descriptors(), toolName)
+	if err != nil || len(schema.Schema) == 0 {
+		return args, "", err
+	}
+	result := ValidateStructuredJSON(args, schema)
+	if result.Valid() {
+		return args, "", nil
+	}
+	emitStructuredOutputValidationFailure(ctx, schema, toolName, result)
+	repaired, repairErr := repairStructuredJSONWithRunner(ctx, runner, schema, string(args), result.Error(), liveToolRepairContext(toolName, displayText))
+	if repairErr == nil {
+		return repaired, structuredFallbackRepairRetry, nil
+	}
+	if fallbackArgs, ok := deterministicLiveHarnessToolInput(toolName, args, displayText); ok {
+		if fallbackResult := ValidateStructuredJSON(fallbackArgs, schema); fallbackResult.Valid() {
+			emitStructuredOutputFallbackEvent(ctx, schema, toolName, structuredFallbackDeterministic, nil)
+			return fallbackArgs, structuredFallbackDeterministic, nil
+		}
+	}
+	emitStructuredOutputFallbackEvent(ctx, schema, toolName, structuredFallbackStopAutoExecute, repairErr)
+	return args, structuredFallbackStopAutoExecute, fmt.Errorf("live tool input invalid after %s: %w; repair failed: %v", structuredFallbackRepairRetry, result.Error(), repairErr)
+}
+
+func liveHarnessToolInputStructuredSchema(descriptors []toolkit.Descriptor, toolName string) (StructuredSchema, error) {
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return StructuredSchema{}, fmt.Errorf("live tool name is required")
+	}
+	for _, descriptor := range descriptors {
+		if !strings.EqualFold(strings.TrimSpace(descriptor.Name), toolName) {
+			continue
+		}
+		if len(descriptor.InputSchema) == 0 {
+			return StructuredSchema{Name: descriptor.Name, Version: "v1"}, nil
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(descriptor.InputSchema, &schema); err != nil {
+			return StructuredSchema{}, fmt.Errorf("decode %s input schema: %w", descriptor.Name, err)
+		}
+		return StructuredSchema{Name: descriptor.Name, Version: "v1", Schema: schema}, nil
+	}
+	return StructuredSchema{}, fmt.Errorf("live tool descriptor not found: %s", toolName)
+}
+
+func deterministicLiveHarnessToolInput(toolName string, args json.RawMessage, displayText string) (json.RawMessage, bool) {
+	if !strings.EqualFold(strings.TrimSpace(toolName), "WebSearch") || strings.TrimSpace(displayText) == "" {
+		return nil, false
+	}
+	var payload map[string]any
+	if len(args) > 0 {
+		_ = json.Unmarshal(args, &payload)
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["query"] = strings.TrimSpace(displayText)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	return json.RawMessage(data), true
+}
+
+func liveToolRepairContext(toolName, displayText string) string {
+	var builder strings.Builder
+	if strings.TrimSpace(toolName) != "" {
+		fmt.Fprintf(&builder, "Tool: %s\n", strings.TrimSpace(toolName))
+	}
+	if strings.TrimSpace(displayText) != "" {
+		fmt.Fprintf(&builder, "Latest live utterance: %s\n", strings.TrimSpace(displayText))
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 func liveHarnessToolDescription(descriptor toolkit.Descriptor) string {
@@ -2227,6 +2397,25 @@ type liveSkillSelection struct {
 	Reason     string  `json:"reason"`
 }
 
+func liveSkillSelectionStructuredSchema() StructuredSchema {
+	return StructuredSchema{
+		Name:    "live_skill_selection",
+		Version: "v1",
+		Schema: map[string]any{
+			"type":                 "object",
+			"required":             []string{"action", "skill", "args", "confidence", "reason"},
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"action":     map[string]any{"type": "string", "enum": []any{"skill_call", "none"}},
+				"skill":      map[string]any{"type": "string"},
+				"args":       map[string]any{"type": "string"},
+				"confidence": map[string]any{"type": "number"},
+				"reason":     map[string]any{"type": "string"},
+			},
+		},
+	}
+}
+
 func (r *Runtime) selectLiveSkillCommand(ctx context.Context, userID, sessionID, text string) (string, bool) {
 	text = strings.TrimSpace(text)
 	if r == nil || text == "" || r.engineFactory == nil {
@@ -2252,8 +2441,18 @@ func (r *Runtime) selectLiveSkillCommand(ctx context.Context, userID, sessionID,
 	if err != nil {
 		return "", false
 	}
-	selection, ok := parseLiveSkillSelection(result.Output)
-	if !ok || !strings.EqualFold(strings.TrimSpace(selection.Action), "skill_call") {
+	selection, parseErr := parseLiveSkillSelectionWithError(result.Output)
+	if parseErr != nil {
+		schema := liveSkillSelectionStructuredSchema()
+		emitStructuredOutputValidationFailure(callCtx, schema, "live_skill_selection", ExtractAndValidateStructuredObject(result.Output, schema))
+		repaired, repairErr := repairStructuredJSONWithRunner(callCtx, runner, schema, result.Output, parseErr, "Latest live utterance: "+text)
+		if repairErr != nil {
+			emitStructuredOutputFallbackEvent(callCtx, schema, "live_skill_selection", structuredFallbackStopAutoExecute, repairErr)
+			return "", false
+		}
+		selection, parseErr = parseLiveSkillSelectionWithError(string(repaired))
+	}
+	if parseErr != nil || !strings.EqualFold(strings.TrimSpace(selection.Action), "skill_call") {
 		return "", false
 	}
 	if selection.Confidence > 0 && selection.Confidence < 0.55 {
@@ -2374,18 +2573,28 @@ func liveSkillSelectionRecentContext(session *state.Session, maxMessages int) st
 }
 
 func parseLiveSkillSelection(output string) (liveSkillSelection, bool) {
+	selection, err := parseLiveSkillSelectionWithError(output)
+	return selection, err == nil
+}
+
+func parseLiveSkillSelectionWithError(output string) (liveSkillSelection, error) {
 	output = strings.TrimSpace(output)
 	if output == "" {
-		return liveSkillSelection{}, false
+		return liveSkillSelection{}, fmt.Errorf("live skill selection output is empty")
 	}
-	if extracted := extractFirstJSONValue(output); extracted != "" {
-		output = extracted
+	result := ExtractAndValidateStructuredObject(output, liveSkillSelectionStructuredSchema())
+	if !result.Valid() {
+		return liveSkillSelection{}, result.Error()
+	}
+	data, err := json.Marshal(result.Value)
+	if err != nil {
+		return liveSkillSelection{}, err
 	}
 	var selection liveSkillSelection
-	if err := json.Unmarshal([]byte(output), &selection); err != nil {
-		return liveSkillSelection{}, false
+	if err := json.Unmarshal(data, &selection); err != nil {
+		return liveSkillSelection{}, err
 	}
-	return selection, true
+	return selection, nil
 }
 
 func liveSkillLabels(skill *skills.SkillDefinition) []string {
@@ -2500,6 +2709,9 @@ func (r *Runtime) persistChatSession(ctx context.Context, userID string, session
 			return err
 		}
 		copy(session.Messages[startMessageCount:], created)
+		if r.messageSearch != nil {
+			_ = r.messageSearch.InvalidateUserCache(ctx, userID)
+		}
 	}
 	if metadataStore, ok := r.sessions.(SessionMetadataStore); ok && metadataStore != nil {
 		return metadataStore.SaveSessionMetadata(ctx, userID, session)
@@ -2947,6 +3159,141 @@ func (r *Runtime) ListWorkflowSteps(ctx context.Context, runID string) ([]*Workf
 		return []*WorkflowStepRun{}, nil
 	}
 	return r.workflowStore.ListWorkflowStepRuns(ctx, runID)
+}
+
+func (r *Runtime) ListToolCalls(ctx context.Context, filter ToolCallLedgerFilter) ([]engine.ToolLedgerEntry, error) {
+	if r == nil || r.toolCallLedger == nil {
+		return []engine.ToolLedgerEntry{}, nil
+	}
+	return r.toolCallLedger.ListToolCalls(ctx, filter)
+}
+
+type WorkflowRecoveryResult struct {
+	RunID  string `json:"run_id"`
+	Name   string `json:"name,omitempty"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+func (r *Runtime) ResumeWorkflowRun(ctx context.Context, runID string) (*WorkflowRun, error) {
+	if r == nil || r.workflowStore == nil {
+		return nil, fmt.Errorf("workflow store is not configured")
+	}
+	run, err := r.workflowStore.GetWorkflowRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	switch run.Name {
+	case deepAgentTaskWorkflowName:
+		result, err := r.ResumeDeepAgentTask(ctx, DeepAgentResumeRequest{RunID: run.ID}, nil, nil, nil)
+		if result != nil && result.Run != nil {
+			return result.Run, err
+		}
+		return run, err
+	default:
+		return run, fmt.Errorf("workflow resume is unsupported for %s", run.Name)
+	}
+}
+
+func (r *Runtime) CancelWorkflowRun(ctx context.Context, runID string) (*WorkflowRun, error) {
+	if r == nil || r.workflowStore == nil {
+		return nil, fmt.Errorf("workflow store is not configured")
+	}
+	run, err := r.workflowStore.GetWorkflowRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.Status == WorkflowStatusSucceeded || run.Status == WorkflowStatusCancelled {
+		return run, nil
+	}
+	now := time.Now().UTC()
+	run.Status = WorkflowStatusCancelled
+	run.Error = "cancelled by admin"
+	run.UpdatedAt = now
+	run.FinishedAt = &now
+	if err := r.workflowStore.UpdateWorkflowRun(ctx, run); err != nil {
+		return nil, err
+	}
+	return run, nil
+}
+
+func (r *Runtime) RecoverStaleWorkflowRuns(ctx context.Context, userID string, limit int) ([]WorkflowRecoveryResult, error) {
+	if r == nil || r.workflowStore == nil {
+		return []WorkflowRecoveryResult{}, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	candidates := []*WorkflowRun{}
+	for _, status := range []string{WorkflowStatusRunning, WorkflowStatusFailed} {
+		runs, err := r.workflowStore.ListWorkflowRuns(ctx, WorkflowRunFilter{UserID: userID, Status: status, Limit: limit})
+		if err != nil {
+			return nil, err
+		}
+		for _, run := range runs {
+			if run != nil && run.Recoverable {
+				candidates = append(candidates, run)
+			}
+			if len(candidates) >= limit {
+				break
+			}
+		}
+		if len(candidates) >= limit {
+			break
+		}
+	}
+	results := make([]WorkflowRecoveryResult, 0, len(candidates))
+	for _, run := range candidates {
+		result := WorkflowRecoveryResult{RunID: run.ID, Name: run.Name, Status: "skipped"}
+		resumed, err := r.ResumeWorkflowRun(ctx, run.ID)
+		if err != nil {
+			result.Error = err.Error()
+		} else if resumed != nil {
+			result.Status = resumed.Status
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func (r *Runtime) ExecuteDeepAgentTask(ctx context.Context, req DeepAgentTaskRequest, planner DeepAgentPlanner, executor DeepAgentExecutor, verifier DeepAgentVerifier) (*DeepAgentTaskResult, error) {
+	if r == nil {
+		return nil, fmt.Errorf("runtime is not configured")
+	}
+	store := r.workflowStore
+	if store == nil {
+		store = NewMemoryWorkflowStore()
+	}
+	if planner == nil {
+		planner = NewRuntimeDeepAgentPlanner(r)
+	}
+	if executor == nil {
+		executor = NewRuntimeDeepAgentExecutor(r)
+	}
+	controller := NewDeepAgentController(store, ContextWorkflowEventSink{}, planner, executor, verifier)
+	controller.SetRiskGate(NewRuntimeDeepAgentRiskGate(r))
+	controller.SetLearningSink(NewRuntimeDeepAgentLearningSink(r))
+	return controller.Execute(ctx, req)
+}
+
+func (r *Runtime) ResumeDeepAgentTask(ctx context.Context, req DeepAgentResumeRequest, planner DeepAgentPlanner, executor DeepAgentExecutor, verifier DeepAgentVerifier) (*DeepAgentTaskResult, error) {
+	if r == nil {
+		return nil, fmt.Errorf("runtime is not configured")
+	}
+	store := r.workflowStore
+	if store == nil {
+		store = NewMemoryWorkflowStore()
+	}
+	if planner == nil {
+		planner = NewRuntimeDeepAgentPlanner(r)
+	}
+	if executor == nil {
+		executor = NewRuntimeDeepAgentExecutor(r)
+	}
+	controller := NewDeepAgentController(store, ContextWorkflowEventSink{}, planner, executor, verifier)
+	controller.SetRiskGate(NewRuntimeDeepAgentRiskGate(r))
+	controller.SetLearningSink(NewRuntimeDeepAgentLearningSink(r))
+	return controller.Resume(ctx, req)
 }
 
 func (r *Runtime) ListJobEvents(ctx context.Context, userID, jobID, afterID string, limit int) ([]*JobEvent, error) {

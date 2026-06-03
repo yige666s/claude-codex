@@ -420,6 +420,10 @@ type RuntimeConfig struct {
 	MessageSearch         MessageSearchConfig
 	MemoryVector          MemoryVectorConfig
 	Live                  LiveConfig
+	CacheStore            CacheStore    `json:"-"`
+	CacheMetrics          *CacheMetrics `json:"-"`
+	CacheDefaultTTL       time.Duration
+	CacheFailOpen         bool
 	Logger                *slog.Logger `json:"-"`
 }
 
@@ -492,6 +496,11 @@ type MessageSearchConfig struct {
 	RerankEnabled        bool
 	RerankCandidateLimit int
 	LowConfidenceScore   float64
+
+	CacheStore      CacheStore    `json:"-"`
+	CacheMetrics    *CacheMetrics `json:"-"`
+	CacheDefaultTTL time.Duration
+	CacheFailOpen   bool
 }
 
 type MemoryVectorConfig struct {
@@ -517,6 +526,11 @@ type MemoryVectorConfig struct {
 
 	Timeout time.Duration
 	RRFK    int
+
+	CacheStore      CacheStore    `json:"-"`
+	CacheMetrics    *CacheMetrics `json:"-"`
+	CacheDefaultTTL time.Duration
+	CacheFailOpen   bool
 }
 
 type ToolPolicy struct {

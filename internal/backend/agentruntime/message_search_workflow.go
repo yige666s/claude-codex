@@ -26,13 +26,24 @@ func ragSearchWorkflowDefinition() WorkflowDefinition {
 }
 
 func newMessageSearchWorkflowEngine(service *MessageSearchService) *WorkflowEngine {
-	engine := NewWorkflowEngine(NewMemoryWorkflowStore(), ContextWorkflowEventSink{})
+	return newMessageSearchWorkflowEngineWithStore(service, NewMemoryWorkflowStore(), ContextWorkflowEventSink{})
+}
+
+func newMessageSearchWorkflowEngineWithStore(service *MessageSearchService, store WorkflowStore, events WorkflowEventSink) *WorkflowEngine {
+	engine := NewWorkflowEngine(store, events)
 	engine.RegisterStepHandler("normalize_query", service.workflowNormalizeQuery)
 	engine.RegisterStepHandler("query_rewrite", service.workflowQueryRewrite)
 	engine.RegisterStepHandler("hybrid_retrieve", service.workflowHybridRetrieve)
 	engine.RegisterStepHandler("rerank", service.workflowRerank)
 	engine.RegisterStepHandler("select_results", service.workflowSelectResults)
 	return engine
+}
+
+func (s *MessageSearchService) SetWorkflowStore(store WorkflowStore, events WorkflowEventSink) {
+	if s == nil {
+		return
+	}
+	s.workflow = newMessageSearchWorkflowEngineWithStore(s, store, events)
 }
 
 func (s *MessageSearchService) workflowNormalizeQuery(_ context.Context, _ *WorkflowRun, input map[string]any) (map[string]any, error) {

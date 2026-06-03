@@ -62,6 +62,29 @@ func evaluateTraceFindings(trace EvaluationTrace, metrics EvaluationTraceMetrics
 			Metadata: map[string]any{"count": metrics.SkillFailureCount},
 		})
 	}
+	if metrics.StructuredOutputErrorCount > 0 {
+		findings = append(findings, EvaluationFinding{
+			Severity: "warning",
+			Code:     "structured_output_errors",
+			Message:  fmt.Sprintf("%d structured output validation error(s) found", metrics.StructuredOutputErrorCount),
+			Metadata: map[string]any{
+				"count":           metrics.StructuredOutputErrorCount,
+				"repair_attempts": metrics.StructuredOutputRepairAttemptCount,
+				"repair_success":  metrics.StructuredOutputRepairSuccessCount,
+			},
+		})
+	}
+	if metrics.StructuredOutputFallbackCount > 0 {
+		findings = append(findings, EvaluationFinding{
+			Severity: "warning",
+			Code:     "structured_output_fallbacks",
+			Message:  fmt.Sprintf("%d structured output fallback(s) used", metrics.StructuredOutputFallbackCount),
+			Metadata: map[string]any{
+				"count":  metrics.StructuredOutputFallbackCount,
+				"levels": metrics.StructuredOutputFallbackLevels,
+			},
+		})
+	}
 	if metrics.LLMFailures > 0 {
 		findings = append(findings, EvaluationFinding{
 			Severity: "warning",

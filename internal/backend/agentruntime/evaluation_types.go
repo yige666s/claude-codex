@@ -23,16 +23,21 @@ const (
 )
 
 type EvaluationScope struct {
-	From        *time.Time `json:"from,omitempty"`
-	To          *time.Time `json:"to,omitempty"`
-	SubjectType string     `json:"subject_type,omitempty"`
-	UserID      string     `json:"user_id,omitempty"`
-	SessionID   string     `json:"session_id,omitempty"`
-	JobID       string     `json:"job_id,omitempty"`
-	JobStatus   string     `json:"job_status,omitempty"`
-	SkillName   string     `json:"skill_name,omitempty"`
-	Provider    string     `json:"provider,omitempty"`
-	Model       string     `json:"model,omitempty"`
+	From          *time.Time `json:"from,omitempty"`
+	To            *time.Time `json:"to,omitempty"`
+	SubjectType   string     `json:"subject_type,omitempty"`
+	UserID        string     `json:"user_id,omitempty"`
+	SessionID     string     `json:"session_id,omitempty"`
+	JobID         string     `json:"job_id,omitempty"`
+	JobStatus     string     `json:"job_status,omitempty"`
+	SkillName     string     `json:"skill_name,omitempty"`
+	Provider      string     `json:"provider,omitempty"`
+	Model         string     `json:"model,omitempty"`
+	PromptID      string     `json:"prompt_id,omitempty"`
+	PromptVersion string     `json:"prompt_version,omitempty"`
+	PromptHash    string     `json:"prompt_hash,omitempty"`
+	ExperimentID  string     `json:"experiment_id,omitempty"`
+	VariantID     string     `json:"variant_id,omitempty"`
 }
 
 type EvaluationRun struct {
@@ -53,23 +58,28 @@ type EvaluationRun struct {
 }
 
 type EvaluationResult struct {
-	ID          string              `json:"id"`
-	RunID       string              `json:"run_id"`
-	SubjectType string              `json:"subject_type"`
-	SubjectID   string              `json:"subject_id"`
-	UserID      string              `json:"user_id,omitempty"`
-	SessionID   string              `json:"session_id,omitempty"`
-	JobID       string              `json:"job_id,omitempty"`
-	SkillName   string              `json:"skill_name,omitempty"`
-	Provider    string              `json:"provider,omitempty"`
-	Model       string              `json:"model,omitempty"`
-	Status      string              `json:"status"`
-	Score       float64             `json:"score"`
-	Input       string              `json:"input,omitempty"`
-	Output      string              `json:"output,omitempty"`
-	Metrics     map[string]any      `json:"metrics,omitempty"`
-	Findings    []EvaluationFinding `json:"findings,omitempty"`
-	CreatedAt   time.Time           `json:"created_at"`
+	ID            string              `json:"id"`
+	RunID         string              `json:"run_id"`
+	SubjectType   string              `json:"subject_type"`
+	SubjectID     string              `json:"subject_id"`
+	UserID        string              `json:"user_id,omitempty"`
+	SessionID     string              `json:"session_id,omitempty"`
+	JobID         string              `json:"job_id,omitempty"`
+	SkillName     string              `json:"skill_name,omitempty"`
+	Provider      string              `json:"provider,omitempty"`
+	Model         string              `json:"model,omitempty"`
+	PromptID      string              `json:"prompt_id,omitempty"`
+	PromptVersion string              `json:"prompt_version,omitempty"`
+	PromptHash    string              `json:"prompt_hash,omitempty"`
+	ExperimentID  string              `json:"experiment_id,omitempty"`
+	VariantID     string              `json:"variant_id,omitempty"`
+	Status        string              `json:"status"`
+	Score         float64             `json:"score"`
+	Input         string              `json:"input,omitempty"`
+	Output        string              `json:"output,omitempty"`
+	Metrics       map[string]any      `json:"metrics,omitempty"`
+	Findings      []EvaluationFinding `json:"findings,omitempty"`
+	CreatedAt     time.Time           `json:"created_at"`
 }
 
 type EvaluationFinding struct {
@@ -96,16 +106,21 @@ type EvaluationRunFilter struct {
 }
 
 type EvaluationResultFilter struct {
-	RunID       string
-	Status      string
-	SubjectType string
-	UserID      string
-	SessionID   string
-	JobID       string
-	SkillName   string
-	Provider    string
-	Model       string
-	Limit       int
+	RunID         string
+	Status        string
+	SubjectType   string
+	UserID        string
+	SessionID     string
+	JobID         string
+	SkillName     string
+	Provider      string
+	Model         string
+	PromptID      string
+	PromptVersion string
+	PromptHash    string
+	ExperimentID  string
+	VariantID     string
+	Limit         int
 }
 
 type EvaluationReviewFilter struct {

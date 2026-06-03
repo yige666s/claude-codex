@@ -320,6 +320,11 @@ export type LLMUsageRecord = {
   session_id: string;
   request_id?: string;
   skill_name?: string;
+  prompt_id?: string;
+  prompt_version?: string;
+  prompt_hash?: string;
+  experiment_id?: string;
+  variant_id?: string;
   provider: string;
   model: string;
   input_tokens: number;
@@ -530,6 +535,11 @@ export type EvaluationScope = {
   skill_name?: string;
   provider?: string;
   model?: string;
+  prompt_id?: string;
+  prompt_version?: string;
+  prompt_hash?: string;
+  experiment_id?: string;
+  variant_id?: string;
 };
 
 export type EvaluationThresholds = {
@@ -577,6 +587,11 @@ export type EvaluationResult = {
   skill_name?: string;
   provider?: string;
   model?: string;
+  prompt_id?: string;
+  prompt_version?: string;
+  prompt_hash?: string;
+  experiment_id?: string;
+  variant_id?: string;
   status: "passed" | "failed" | "warning" | string;
   score: number;
   input?: string;
@@ -614,6 +629,82 @@ export type EvaluationRunReport = {
   results: EvaluationResult[];
   reviews: EvaluationReview[];
   summary: EvaluationRunSummary;
+};
+
+export type PromptTemplate = {
+  id: string;
+  name: string;
+  description?: string;
+  scope?: string;
+  owner?: string;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type PromptVersion = {
+  prompt_id: string;
+  version: string;
+  status: "draft" | "review_pending" | "published" | "archived" | string;
+  content: string;
+  variables_schema?: Record<string, unknown>;
+  render_config?: Record<string, unknown>;
+  content_hash: string;
+  base_version?: string;
+  changelog?: string;
+  created_by?: string;
+  reviewed_by?: string;
+  created_at?: string;
+  published_at?: string;
+};
+
+export type PromptDetail = {
+  prompt: PromptTemplate;
+  versions: PromptVersion[];
+  published_version?: PromptVersion;
+};
+
+export type PromptRenderResult = {
+  prompt_id: string;
+  prompt_version: string;
+  prompt_hash: string;
+  content: string;
+  rendered_preview?: string;
+  token_estimate?: number;
+  missing_variables?: string[];
+  metadata?: Record<string, unknown>;
+};
+
+export type PromptExperiment = {
+  id: string;
+  name: string;
+  prompt_id: string;
+  status: "draft" | "running" | "paused" | "completed" | string;
+  traffic_scope: "user" | "session" | "tenant" | string;
+  allocation?: Record<string, unknown>;
+  guardrails?: Record<string, unknown>;
+  winner_variant_id?: string;
+  created_by?: string;
+  updated_by?: string;
+  started_at?: string;
+  ended_at?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type PromptExperimentVariant = {
+  experiment_id: string;
+  variant_id: string;
+  prompt_version: string;
+  weight: number;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+};
+
+export type PromptExperimentDetail = {
+  experiment: PromptExperiment;
+  variants: PromptExperimentVariant[];
+  usage_by_variant?: Array<Record<string, unknown>>;
 };
 
 export type GoldenEvidence = {
@@ -736,6 +827,59 @@ export type WorkflowRun = {
   updated_at: string;
   started_at?: string;
   finished_at?: string;
+};
+
+export type DeepAgentWorkflowSummary = {
+  present: boolean;
+  goal?: string;
+  status?: string;
+  blocker?: string;
+  current_step_id?: string;
+  current_step?: {
+    id: string;
+    title: string;
+    intent?: string;
+    status: string;
+    done_condition?: string;
+    risk_level?: string;
+    metadata?: Record<string, unknown>;
+  };
+  plan?: {
+    goal?: string;
+    steps?: Array<{
+      id: string;
+      title: string;
+      intent?: string;
+      status: string;
+      done_condition?: string;
+      risk_level?: string;
+      metadata?: Record<string, unknown>;
+    }>;
+  };
+  action_history?: Array<{
+    id?: string;
+    step_id: string;
+    tool: string;
+    args?: Record<string, unknown>;
+    hash?: string;
+  }>;
+  learnings?: Array<{
+    id: string;
+    type: string;
+    content: string;
+    status: string;
+    source?: string;
+    user_id?: string;
+    session_id?: string;
+    run_id?: string;
+    step_id?: string;
+    metadata?: Record<string, unknown>;
+    created_at: string;
+  }>;
+  completed_count: number;
+  failed_count: number;
+  action_count: number;
+  no_progress_count: number;
 };
 
 export type WorkflowStepRun = {

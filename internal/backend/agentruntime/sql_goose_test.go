@@ -46,6 +46,7 @@ func TestRunPostgresGooseMigrationsFreshSchema(t *testing.T) {
 		"agent_personalization_settings",
 		"agent_workflow_runs",
 		"agent_workflow_steps",
+		"agent_tool_call_ledger",
 	} {
 		assertPostgresTableExists(t, db, table)
 	}

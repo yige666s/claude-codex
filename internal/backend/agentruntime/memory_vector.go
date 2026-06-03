@@ -20,12 +20,14 @@ import (
 const (
 	defaultMemoryVectorCollection = "agent_memories"
 	defaultMemoryVectorLimit      = 12
+	memoryRetrievalCacheNamespace = "memory_retrieval"
 )
 
 type MemoryVectorService struct {
 	base    MemoryService
 	items   MemoryItemService
 	indexer *QdrantMemoryVectorIndex
+	cache   *TypedCache[[]MemoryItem]
 	logger  *slog.Logger
 }
 
@@ -41,7 +43,15 @@ func NewMemoryVectorService(base MemoryService, config MemoryVectorConfig, logge
 	if indexer == nil {
 		return base
 	}
-	return &MemoryVectorService{base: base, items: items, indexer: indexer, logger: componentLogger(structuredLogger(logger), "memory_vector")}
+	service := &MemoryVectorService{base: base, items: items, indexer: indexer, logger: componentLogger(structuredLogger(logger), "memory_vector")}
+	if config.CacheStore != nil {
+		service.cache = NewTypedCache[[]MemoryItem](config.CacheStore, CachePolicy{
+			Namespace: memoryRetrievalCacheNamespace,
+			TTL:       cacheTTLOrDefault(config.CacheDefaultTTL),
+			FailOpen:  config.CacheFailOpen,
+		}, config.CacheMetrics)
+	}
+	return service
 }
 
 func (s *MemoryVectorService) LoadContext(ctx context.Context, userID string, session *state.Session) (string, error) {
@@ -54,6 +64,20 @@ func (s *MemoryVectorService) LoadContext(ctx context.Context, userID string, se
 	query := lastVisibleUserMessage(session)
 	if strings.TrimSpace(query) == "" {
 		return s.base.LoadContext(ctx, userID, session)
+	}
+	cacheKey := s.cacheKey(userID, session.ID, query)
+	if s.cache != nil {
+		if cached, ok, err := s.cache.Get(ctx, cacheKey); err != nil {
+			return "", err
+		} else if ok {
+			selected, err := s.hydrateCachedItems(ctx, userID, cached)
+			if err != nil {
+				return "", err
+			}
+			if len(selected) > 0 {
+				return s.recordAndFormatMemoryContext(ctx, userID, session.ID, query, selected)
+			}
+		}
 	}
 	vectorItems, vectorErr := s.indexer.SearchMemoryItems(ctx, userID, query, session.ID, defaultMemoryVectorLimit*3, s.items)
 	allItems, listErr := s.items.ListMemoryItems(ctx, userID, MemoryItemFilter{Status: MemoryStatusActive})
@@ -68,9 +92,16 @@ func (s *MemoryVectorService) LoadContext(ctx context.Context, userID string, se
 		}
 		return s.base.LoadContext(ctx, userID, session)
 	}
+	if s.cache != nil {
+		_ = s.cache.Set(ctx, cacheKey, selected)
+	}
+	return s.recordAndFormatMemoryContext(ctx, userID, session.ID, query, selected)
+}
+
+func (s *MemoryVectorService) recordAndFormatMemoryContext(ctx context.Context, userID, sessionID, query string, selected []MemoryItem) (string, error) {
 	now := time.Now().UTC()
 	for i := range selected {
-		selected[i] = recordMemoryInjection(selected[i], session.ID, query, now)
+		selected[i] = recordMemoryInjection(selected[i], sessionID, query, now)
 		updated, err := s.items.UpdateMemoryItem(ctx, userID, selected[i])
 		if err != nil {
 			return "", err
@@ -78,6 +109,29 @@ func (s *MemoryVectorService) LoadContext(ctx context.Context, userID string, se
 		selected[i] = updated
 	}
 	return "# Memory\n\n" + formatMemoryItems(selected), nil
+}
+
+func (s *MemoryVectorService) hydrateCachedItems(ctx context.Context, userID string, cached []MemoryItem) ([]MemoryItem, error) {
+	if s == nil || s.items == nil || len(cached) == 0 {
+		return []MemoryItem{}, nil
+	}
+	out := make([]MemoryItem, 0, len(cached))
+	for _, item := range cached {
+		itemID := strings.TrimSpace(item.ID)
+		if itemID == "" {
+			continue
+		}
+		current, err := s.items.GetMemoryItem(ctx, userID, itemID)
+		if err != nil {
+			continue
+		}
+		current = normalizeMemoryItem(current)
+		if current.Status != MemoryStatusActive || strings.TrimSpace(current.Content) == "" {
+			continue
+		}
+		out = append(out, current)
+	}
+	return out, nil
 }
 
 func (s *MemoryVectorService) LoadUserMemory(ctx context.Context, userID string) (string, error) {
@@ -111,6 +165,7 @@ func (s *MemoryVectorService) AfterTurn(ctx context.Context, userID string, sess
 		if old, ok := before[item.ID]; ok && old.UpdatedAt.Equal(item.UpdatedAt) && old.RawHash == item.RawHash {
 			continue
 		}
+		_ = s.invalidateUserCache(ctx, userID)
 		_, _ = s.syncMemoryVector(ctx, userID, item)
 	}
 	return nil
@@ -120,6 +175,7 @@ func (s *MemoryVectorService) DeleteSession(ctx context.Context, userID, session
 	if err := s.base.DeleteSession(ctx, userID, sessionID); err != nil {
 		return err
 	}
+	_ = s.invalidateUserCache(ctx, userID)
 	s.deleteSessionVectors(ctx, userID, sessionID)
 	return nil
 }
@@ -128,6 +184,7 @@ func (s *MemoryVectorService) DeleteUser(ctx context.Context, userID string) err
 	if err := s.base.DeleteUser(ctx, userID); err != nil {
 		return err
 	}
+	_ = s.invalidateUserCache(ctx, userID)
 	s.deleteUserVectors(ctx, userID)
 	return nil
 }
@@ -137,6 +194,7 @@ func (s *MemoryVectorService) DeleteSavedMemory(ctx context.Context, userID stri
 		if err := service.DeleteSavedMemory(ctx, userID); err != nil {
 			return err
 		}
+		_ = s.invalidateUserCache(ctx, userID)
 		s.deleteUserVectors(ctx, userID)
 		return nil
 	}
@@ -170,9 +228,11 @@ func (s *MemoryVectorService) PruneBefore(ctx context.Context, cutoff time.Time)
 	for _, item := range before {
 		current, ok := afterByID[item.ID]
 		if !ok || current.Status != MemoryStatusActive || strings.TrimSpace(current.Content) == "" {
+			_ = s.invalidateUserCache(ctx, item.UserID)
 			s.deleteMemoryVector(ctx, item)
 			continue
 		}
+		_ = s.invalidateUserCache(ctx, current.UserID)
 		_, _ = s.syncMemoryVector(ctx, current.UserID, current)
 	}
 	return n, nil
@@ -191,6 +251,7 @@ func (s *MemoryVectorService) UpdateMemoryItem(ctx context.Context, userID strin
 	if err != nil {
 		return MemoryItem{}, err
 	}
+	_ = s.invalidateUserCache(ctx, userID)
 	return s.syncMemoryVector(ctx, userID, saved)
 }
 
@@ -200,6 +261,7 @@ func (s *MemoryVectorService) DeleteMemoryItem(ctx context.Context, userID, item
 		return err
 	}
 	if getErr == nil {
+		_ = s.invalidateUserCache(ctx, userID)
 		s.deleteMemoryVector(ctx, item)
 	}
 	return nil
@@ -214,7 +276,11 @@ func (s *MemoryVectorService) GetMemorySettings(ctx context.Context, userID stri
 
 func (s *MemoryVectorService) UpdateMemorySettings(ctx context.Context, userID string, settings MemorySettings) (MemorySettings, error) {
 	if service, ok := s.base.(MemorySettingsService); ok {
-		return service.UpdateMemorySettings(ctx, userID, settings)
+		updated, err := service.UpdateMemorySettings(ctx, userID, settings)
+		if err == nil {
+			_ = s.invalidateUserCache(ctx, userID)
+		}
+		return updated, err
 	}
 	return normalizeMemorySettings(settings), nil
 }
@@ -228,16 +294,58 @@ func (s *MemoryVectorService) GetPersonalizationSettings(ctx context.Context, us
 
 func (s *MemoryVectorService) UpdatePersonalizationSettings(ctx context.Context, userID string, settings PersonalizationSettings) (PersonalizationSettings, error) {
 	if service, ok := s.base.(PersonalizationSettingsService); ok {
-		return service.UpdatePersonalizationSettings(ctx, userID, settings)
+		updated, err := service.UpdatePersonalizationSettings(ctx, userID, settings)
+		if err == nil {
+			_ = s.invalidateUserCache(ctx, userID)
+		}
+		return updated, err
 	}
 	return normalizePersonalizationSettings(settings), nil
 }
 
 func (s *MemoryVectorService) DeletePersonalizationSettings(ctx context.Context, userID string) error {
 	if service, ok := s.base.(PersonalizationSettingsService); ok {
-		return service.DeletePersonalizationSettings(ctx, userID)
+		err := service.DeletePersonalizationSettings(ctx, userID)
+		if err == nil {
+			_ = s.invalidateUserCache(ctx, userID)
+		}
+		return err
 	}
 	return nil
+}
+
+func (s *MemoryVectorService) cacheKey(userID, sessionID, query string) string {
+	if s == nil {
+		return ""
+	}
+	userPrefix := userPathID(userID)
+	if userPrefix == "" {
+		userPrefix = "anonymous"
+	}
+	hash := BuildCacheKey(CacheKeyOptions{
+		Namespace: memoryRetrievalCacheNamespace,
+		UserID:    userID,
+		SessionID: sessionID,
+		Version:   s.indexer.modelVersion,
+		Parts: []string{
+			"query=" + strings.TrimSpace(query),
+			"collection=" + strings.TrimSpace(s.indexer.config.QdrantCollection),
+			"rrf=" + fmt.Sprintf("%d", s.indexer.config.RRFK),
+			"limit=" + fmt.Sprintf("%d", defaultMemoryVectorLimit),
+		},
+	})
+	return userPrefix + ":" + hash
+}
+
+func (s *MemoryVectorService) invalidateUserCache(ctx context.Context, userID string) error {
+	if s == nil || s.indexer == nil || s.indexer.config.CacheStore == nil {
+		return nil
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil
+	}
+	return s.indexer.config.CacheStore.DeletePrefix(ctx, memoryRetrievalCacheNamespace+":"+userPathID(userID)+":")
 }
 
 func (s *MemoryVectorService) syncMemoryVector(ctx context.Context, userID string, item MemoryItem) (MemoryItem, error) {
@@ -584,6 +692,10 @@ func MemoryVectorConfigFromMessageSearch(config MessageSearchConfig) MemoryVecto
 		EmbeddingAutoTruncate:  config.EmbeddingAutoTruncate,
 		Timeout:                config.Timeout,
 		RRFK:                   config.RRFK,
+		CacheStore:             config.CacheStore,
+		CacheMetrics:           config.CacheMetrics,
+		CacheDefaultTTL:        config.CacheDefaultTTL,
+		CacheFailOpen:          config.CacheFailOpen,
 	}
 }
 
@@ -612,6 +724,10 @@ func memoryVectorMessageSearchConfig(config MemoryVectorConfig, index bool) Mess
 		EmbeddingAutoTruncate:  config.EmbeddingAutoTruncate,
 		Timeout:                config.Timeout,
 		RRFK:                   config.RRFK,
+		CacheStore:             config.CacheStore,
+		CacheMetrics:           config.CacheMetrics,
+		CacheDefaultTTL:        config.CacheDefaultTTL,
+		CacheFailOpen:          config.CacheFailOpen,
 	}
 }
 

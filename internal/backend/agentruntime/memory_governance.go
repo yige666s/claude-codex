@@ -97,13 +97,14 @@ func (e HybridMemoryExtractor) Extract(ctx context.Context, input MemoryExtracti
 }
 
 type LLMMemoryExtractor struct {
-	RunnerFactory EngineFactory
-	Timeout       time.Duration
-	MaxAttempts   int
+	RunnerFactory  EngineFactory
+	Timeout        time.Duration
+	MaxAttempts    int
+	PromptResolver PromptResolver
 }
 
 func NewLLMMemoryExtractor(factory EngineFactory) LLMMemoryExtractor {
-	return LLMMemoryExtractor{RunnerFactory: factory, Timeout: 8 * time.Second, MaxAttempts: 2}
+	return LLMMemoryExtractor{RunnerFactory: factory, Timeout: 8 * time.Second, MaxAttempts: 2, PromptResolver: NewPromptResolver(nil, nil)}
 }
 
 func (e LLMMemoryExtractor) Extract(ctx context.Context, input MemoryExtractionInput) ([]MemoryCandidate, error) {
@@ -111,12 +112,22 @@ func (e LLMMemoryExtractor) Extract(ctx context.Context, input MemoryExtractionI
 		return nil, fmt.Errorf("memory LLM extractor has no runner factory")
 	}
 	prompt := memoryExtractionPrompt(input)
+	promptMeta := PromptMetadata{}
+	if resolution, err := e.promptResolver().Resolve(ctx, PromptResolveRequest{PromptID: PromptIDMemoryExtract, UserID: input.UserID, SessionID: input.SessionID, RuntimeMode: "memory"}); err == nil {
+		if rendered, err := RenderPrompt(resolution, memoryExtractionVariables(input)); err == nil {
+			prompt = rendered.Content
+			promptMeta = PromptMetadataFromRender(rendered)
+		}
+	}
 	timeout := e.Timeout
 	if timeout <= 0 {
 		timeout = 8 * time.Second
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if promptMeta.PromptID != "" {
+		callCtx = WithPromptMetadata(callCtx, promptMeta)
+	}
 	runner := e.RunnerFactory(Scope{UserID: input.UserID, SessionID: input.SessionID})
 	attempts := e.MaxAttempts
 	if attempts <= 0 {
@@ -150,6 +161,13 @@ func (e LLMMemoryExtractor) Extract(ctx context.Context, input MemoryExtractionI
 		return nil, lastErr
 	}
 	return nil, nil
+}
+
+func (e LLMMemoryExtractor) promptResolver() PromptResolver {
+	if e.PromptResolver.Store != nil || len(e.PromptResolver.Fallbacks) > 0 {
+		return e.PromptResolver
+	}
+	return NewPromptResolver(nil, nil)
 }
 
 type MemoryAbstractor interface {
@@ -358,8 +376,16 @@ func extractMemoryCandidates(text string) []MemoryCandidate {
 }
 
 func memoryExtractionPrompt(input MemoryExtractionInput) string {
+	return renderPromptContent(memoryExtractionPromptTemplate(), memoryExtractionVariables(input))
+}
+
+func memoryExtractionVariables(input MemoryExtractionInput) map[string]any {
 	messages := recentVisibleConversation(input.Messages, 8)
 	payload, _ := json.MarshalIndent(messages, "", "  ")
+	return map[string]any{"conversation_json": string(payload)}
+}
+
+func memoryExtractionPromptTemplate() string {
 	return `Extract durable user memory candidates from this conversation.
 
 Return ONLY JSON in this exact shape:
@@ -373,7 +399,7 @@ Rules:
 - Prefer fewer high-confidence memories.
 
 Conversation JSON:
-` + string(payload)
+{{conversation_json}}`
 }
 
 func memoryExtractionRepairPrompt(output string, parseErr error, input MemoryExtractionInput) string {

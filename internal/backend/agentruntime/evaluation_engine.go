@@ -124,24 +124,46 @@ func evaluateTraceResult(runID string, trace EvaluationTrace) EvaluationResult {
 	metrics := calculateTraceMetrics(trace)
 	findings := evaluateTraceFindings(trace, metrics)
 	status := evaluationStatusFromFindings(findings)
+	prompt := evaluationTracePromptMetadata(trace)
 	return normalizeEvaluationResult(EvaluationResult{
-		RunID:       runID,
-		SubjectType: trace.SubjectType,
-		SubjectID:   trace.SubjectID,
-		UserID:      trace.UserID,
-		SessionID:   trace.SessionID,
-		JobID:       trace.JobID,
-		SkillName:   trace.SkillName,
-		Provider:    trace.Provider,
-		Model:       trace.Model,
-		Status:      status,
-		Score:       evaluationScoreFromStatus(status),
-		Input:       trace.Input,
-		Output:      trace.Output,
-		Metrics:     evaluationTraceMetricsMap(metrics),
-		Findings:    findings,
-		CreatedAt:   firstNonZeroTime(trace.CompletedAt, trace.CreatedAt, time.Now().UTC()),
+		RunID:         runID,
+		SubjectType:   trace.SubjectType,
+		SubjectID:     trace.SubjectID,
+		UserID:        trace.UserID,
+		SessionID:     trace.SessionID,
+		JobID:         trace.JobID,
+		SkillName:     trace.SkillName,
+		Provider:      trace.Provider,
+		Model:         trace.Model,
+		PromptID:      prompt.PromptID,
+		PromptVersion: prompt.PromptVersion,
+		PromptHash:    prompt.PromptHash,
+		ExperimentID:  prompt.ExperimentID,
+		VariantID:     prompt.VariantID,
+		Status:        status,
+		Score:         evaluationScoreFromStatus(status),
+		Input:         trace.Input,
+		Output:        trace.Output,
+		Metrics:       evaluationTraceMetricsMap(metrics),
+		Findings:      findings,
+		CreatedAt:     firstNonZeroTime(trace.CompletedAt, trace.CreatedAt, time.Now().UTC()),
 	})
+}
+
+func evaluationTracePromptMetadata(trace EvaluationTrace) PromptMetadata {
+	for _, record := range trace.LLMUsage {
+		if record.PromptID == "" && record.PromptVersion == "" && record.ExperimentID == "" && record.VariantID == "" {
+			continue
+		}
+		return PromptMetadata{
+			PromptID:      record.PromptID,
+			PromptVersion: record.PromptVersion,
+			PromptHash:    record.PromptHash,
+			ExperimentID:  record.ExperimentID,
+			VariantID:     record.VariantID,
+		}
+	}
+	return PromptMetadata{}
 }
 
 func (e *EvaluationEngine) now() time.Time {

@@ -34,6 +34,8 @@ type Engine struct {
 	telemetryTracer     telemetry.SessionTracer
 	runner              engineRuntime
 	pendingProviders    []func(context.Context) []string
+	toolLedger          ToolLedger
+	defaultToolScope    ToolExecutionScope
 }
 
 type Result struct {
@@ -69,6 +71,20 @@ func NewWithDir(planner Planner, registry *toolkit.Registry, checker *permission
 // SetProgressCallback sets a callback to receive progress events during tool execution
 func (e *Engine) SetProgressCallback(callback func(toolkit.ProgressEvent)) {
 	e.progressCallback = callback
+}
+
+func (e *Engine) SetToolLedger(ledger ToolLedger) {
+	if e == nil {
+		return
+	}
+	e.toolLedger = ledger
+}
+
+func (e *Engine) SetDefaultToolExecutionScope(scope ToolExecutionScope) {
+	if e == nil {
+		return
+	}
+	e.defaultToolScope = scope
 }
 
 func (e *Engine) SetTelemetryTracer(tracer telemetry.SessionTracer) {
@@ -424,6 +440,9 @@ func (e *Engine) executeToolCall(
 	call ToolCall,
 	progressReporter toolkit.ProgressReporter,
 ) state.Message {
+	if e.defaultToolScope != (ToolExecutionScope{}) {
+		ctx = WithToolExecutionScope(ctx, e.defaultToolScope)
+	}
 	tool, err := e.registry.Get(call.Name)
 	if err != nil {
 		output := formatToolExecutionError(call, err)
@@ -451,6 +470,62 @@ func (e *Engine) executeToolCall(
 		}
 	}
 
+	var ledgerKey string
+	if e.toolLedger != nil {
+		scope := ToolExecutionScopeFromContext(ctx)
+		if scope.SessionID == "" && session != nil {
+			scope.SessionID = session.ID
+		}
+		argsHash := toolArgsHash(call.Input)
+		ledgerKey = toolCallIdempotencyKey(scope, session.ID, interactionID, call, argsHash)
+		entry := ToolLedgerEntry{
+			UserID:            scope.UserID,
+			SessionID:         firstNonEmptyString(scope.SessionID, session.ID),
+			JobID:             scope.JobID,
+			WorkflowRunID:     scope.WorkflowRunID,
+			WorkflowStepID:    scope.WorkflowStepID,
+			WorkflowStepIndex: scope.WorkflowStepIndex,
+			ToolCallID:        call.ID,
+			ToolName:          call.Name,
+			ArgsHash:          argsHash,
+			IdempotencyKey:    ledgerKey,
+			Status:            ToolLedgerStatusRunning,
+			Input:             call.Input,
+			Metadata: map[string]any{
+				"interaction_id": interactionID,
+				"permission":     string(request.Level),
+				"summary":        request.Summary,
+			},
+		}
+		record, reused, err := e.toolLedger.BeginToolCall(ctx, entry)
+		if err != nil {
+			output := formatToolExecutionError(call, err)
+			e.recordToolTrace(session.ID, interactionID, call, request, "error", map[string]any{"error": err.Error(), "ledger": "begin"})
+			return toolFailureMessage(call, output)
+		}
+		if reused && record.Status == ToolLedgerStatusSucceeded {
+			e.recordToolTrace(session.ID, interactionID, call, request, "reused", map[string]any{
+				"ledger_id":       record.ID,
+				"idempotency_key": record.IdempotencyKey,
+				"output_chars":    len(record.Output),
+			})
+			progressReporter.Report(toolkit.ProgressEvent{
+				ToolName: call.Name,
+				Status:   "completed",
+				Message:  "reused previous tool result",
+				Progress: 1.0,
+				Metadata: cloneStringMap(request.Metadata),
+			})
+			return state.Message{
+				Role:       "tool",
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				ToolInput:  call.Input,
+				ToolOutput: record.Output,
+			}
+		}
+	}
+
 	e.recordToolTrace(session.ID, interactionID, call, request, "start", nil)
 	progressReporter.Report(toolkit.ProgressEvent{
 		ToolName: call.Name,
@@ -469,6 +544,9 @@ func (e *Engine) executeToolCall(
 
 	if err != nil {
 		output := formatToolExecutionError(call, err)
+		if e.toolLedger != nil && ledgerKey != "" {
+			_ = e.toolLedger.FailToolCall(ctx, ledgerKey, output, map[string]any{"interaction_id": interactionID})
+		}
 		e.recordToolTrace(session.ID, interactionID, call, request, "error", map[string]any{"error": err.Error()})
 		progressReporter.Report(toolkit.ProgressEvent{
 			ToolName: call.Name,
@@ -479,6 +557,12 @@ func (e *Engine) executeToolCall(
 		return toolFailureMessage(call, output)
 	}
 
+	if e.toolLedger != nil && ledgerKey != "" {
+		_ = e.toolLedger.CompleteToolCall(ctx, ledgerKey, result.Output, map[string]any{
+			"interaction_id": interactionID,
+			"output_chars":   len(result.Output),
+		})
+	}
 	e.recordToolTrace(session.ID, interactionID, call, request, "end", map[string]any{
 		"status":       "ok",
 		"output_chars": len(result.Output),

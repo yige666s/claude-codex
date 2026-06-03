@@ -18,6 +18,7 @@ type engineFactoryConfig struct {
 	llmConfigManager        *agentruntime.LLMGovernanceConfigManager
 	llmUsageStore           agentruntime.LLMUsageStore
 	riskStore               agentruntime.RiskStore
+	toolCallLedger          agentruntime.ToolCallLedgerStore
 }
 
 func buildEngineFactory(cfg engineFactoryConfig) (func(agentruntime.Scope) agentruntime.Runner, func() agentruntime.LLMGovernanceStatus) {
@@ -74,6 +75,11 @@ func buildEngineFactory(cfg engineFactoryConfig) (func(agentruntime.Scope) agent
 		llmStatusMu.Unlock()
 		eng := engine.NewWithDir(planner, registry, checker, 0, root)
 		eng.SetSkillManager(publishedSkillManager)
+		eng.SetToolLedger(cfg.toolCallLedger)
+		eng.SetDefaultToolExecutionScope(engine.ToolExecutionScope{
+			UserID:    scope.UserID,
+			SessionID: scope.SessionID,
+		})
 		return eng
 	}
 

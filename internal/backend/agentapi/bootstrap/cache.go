@@ -15,6 +15,24 @@ type RedisHealthCloser interface {
 	Close() error
 }
 
+func BuildCacheStore(backend, redisURL, prefix string, ttl time.Duration) (agentruntime.CacheStore, RedisHealthCloser) {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "redis":
+		client, err := agentruntime.NewRedisClientFromURL(redisURL)
+		if err != nil {
+			logFatalf("init redis cache store: %v", err)
+		}
+		if strings.TrimSpace(prefix) == "" {
+			prefix = agentruntime.RedisPrefixFromURL(redisURL)
+		}
+		return agentruntime.NewRedisCacheStoreWithPrefix(client, ttl, prefix), client
+	case "none", "off", "disabled":
+		return agentruntime.NoopCacheStore{}, nil
+	default:
+		return agentruntime.NewMemoryCacheStore(ttl), nil
+	}
+}
+
 func BuildRateLimiter(backend, redisURL string, limit int, window time.Duration, redisFailOpen bool) agentruntime.RateLimitPolicy {
 	switch strings.ToLower(strings.TrimSpace(backend)) {
 	case "redis":

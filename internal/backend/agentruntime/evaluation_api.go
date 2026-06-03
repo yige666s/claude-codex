@@ -257,25 +257,17 @@ func (s *Server) handleAdminOpsCreateGoldenEvaluationRun(w http.ResponseWriter, 
 		writeJSON(w, status, map[string]string{"error": "golden set not found"})
 		return
 	}
-	engine := NewEvaluationEngine(RuntimeEvaluationTraceSource{
-		Runtime:  s.runtime,
-		LLMUsage: s.llmUsage,
-		Risk:     s.risk,
-	})
 	judgeMode := strings.ToLower(strings.TrimSpace(req.Judge))
 	if judgeMode == "" {
 		judgeMode = "heuristic"
 	}
-	switch judgeMode {
-	case "heuristic":
-	case "llm", "llm-as-judge":
-		if s.evaluationJudge == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "evaluation judge is not configured"})
-			return
-		}
-		engine.Judge = s.evaluationJudge
-	default:
+	if judgeMode != "heuristic" && judgeMode != "llm" && judgeMode != "llm-as-judge" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported golden judge"})
+		return
+	}
+	engine := s.goldenEvaluationEngineForRequest(r.Context(), judgeMode)
+	if engine == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "evaluation judge is not configured"})
 		return
 	}
 	report, err := engine.EvaluateGolden(r.Context(), GoldenEvaluationRequest{
@@ -556,16 +548,21 @@ func (s *Server) handleAdminOpsEvaluationSummary(w http.ResponseWriter, r *http.
 func evaluationResultFilterFromRequest(r *http.Request) EvaluationResultFilter {
 	query := r.URL.Query()
 	return EvaluationResultFilter{
-		RunID:       strings.TrimSpace(query.Get("run_id")),
-		Status:      strings.TrimSpace(query.Get("status")),
-		SubjectType: strings.TrimSpace(query.Get("subject_type")),
-		UserID:      strings.TrimSpace(query.Get("user_id")),
-		SessionID:   strings.TrimSpace(query.Get("session_id")),
-		JobID:       strings.TrimSpace(query.Get("job_id")),
-		SkillName:   strings.TrimSpace(query.Get("skill_name")),
-		Provider:    strings.TrimSpace(query.Get("provider")),
-		Model:       strings.TrimSpace(query.Get("model")),
-		Limit:       parseBoundedInt(query.Get("limit"), 200, 1, 1000),
+		RunID:         strings.TrimSpace(query.Get("run_id")),
+		Status:        strings.TrimSpace(query.Get("status")),
+		SubjectType:   strings.TrimSpace(query.Get("subject_type")),
+		UserID:        strings.TrimSpace(query.Get("user_id")),
+		SessionID:     strings.TrimSpace(query.Get("session_id")),
+		JobID:         strings.TrimSpace(query.Get("job_id")),
+		SkillName:     strings.TrimSpace(query.Get("skill_name")),
+		Provider:      strings.TrimSpace(query.Get("provider")),
+		Model:         strings.TrimSpace(query.Get("model")),
+		PromptID:      strings.TrimSpace(query.Get("prompt_id")),
+		PromptVersion: strings.TrimSpace(query.Get("prompt_version")),
+		PromptHash:    strings.TrimSpace(query.Get("prompt_hash")),
+		ExperimentID:  strings.TrimSpace(query.Get("experiment_id")),
+		VariantID:     strings.TrimSpace(query.Get("variant_id")),
+		Limit:         parseBoundedInt(query.Get("limit"), 200, 1, 1000),
 	}
 }
 
@@ -660,7 +657,7 @@ func writeEvaluationResultsCSV(w http.ResponseWriter, results []EvaluationResult
 	writer := csv.NewWriter(w)
 	_ = writer.Write([]string{
 		"id", "run_id", "subject_type", "subject_id", "user_id", "session_id", "job_id",
-		"skill_name", "provider", "model", "status", "score", "findings", "metrics", "created_at",
+		"skill_name", "provider", "model", "prompt_id", "prompt_version", "prompt_hash", "experiment_id", "variant_id", "status", "score", "findings", "metrics", "created_at",
 	})
 	for _, result := range results {
 		_ = writer.Write([]string{
@@ -674,6 +671,11 @@ func writeEvaluationResultsCSV(w http.ResponseWriter, results []EvaluationResult
 			result.SkillName,
 			result.Provider,
 			result.Model,
+			result.PromptID,
+			result.PromptVersion,
+			result.PromptHash,
+			result.ExperimentID,
+			result.VariantID,
 			result.Status,
 			fmt.Sprintf("%.3f", result.Score),
 			evaluationJSONColumn(result.Findings),

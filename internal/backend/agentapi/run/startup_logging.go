@@ -37,6 +37,7 @@ func logStartup(cfg startupconfig.Config, llmCfg bootstrap.LLMConfig, llmConfigM
 	logInfof("admin API enabled: %t", strings.TrimSpace(cfg.AdminToken) != "")
 	logInfof("user system enabled: %t", authService != nil)
 	logInfof("rate limit backend: %s", cfg.RateLimitBackend)
+	logInfof("cache backend: %s ttl=%s fail_open=%t prefix=%s", cfg.CacheBackend, cfg.CacheDefaultTTL, cfg.CacheFailOpen, cfg.CachePrefix)
 	logInfof("message context cache backend: %s ttl=%s", cfg.MessageContextCacheBackend, cfg.MessageContextCacheTTL)
 	if strings.TrimSpace(cfg.LiveVoiceName) != "" || strings.TrimSpace(cfg.LiveLanguageCode) != "" {
 		logInfof("live voice: voice=%s language=%s", cfg.LiveVoiceName, cfg.LiveLanguageCode)

@@ -46,6 +46,7 @@ type Server struct {
 	riskScanner      RiskScanner
 	evaluation       EvaluationStore
 	evaluationJudge  GoldenJudge
+	promptStore      PromptStore
 	instrumentHTTP   func(http.Handler) http.Handler
 	operationLimiter *OperationRateLimiter
 	adminToken       string
@@ -645,7 +646,95 @@ func (s *Server) handleAdminOpsGetWorkflowRun(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"workflow": run, "steps": steps})
+	toolCalls, err := s.runtime.ListToolCalls(r.Context(), ToolCallLedgerFilter{UserID: userID, WorkflowRunID: runID, Limit: 500})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	payload := map[string]any{"workflow": run, "steps": steps, "tool_calls": toolCalls}
+	if summary, ok := DeepAgentSummaryFromWorkflowRun(run); ok {
+		payload["deep_agent"] = summary
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) handleAdminOpsListWorkflowToolCalls(w http.ResponseWriter, r *http.Request, runID string) {
+	userID, ok := s.adminOpsUserID(w, r)
+	if !ok {
+		return
+	}
+	run, err := s.runtime.GetWorkflowRun(r.Context(), runID)
+	if err != nil || run == nil || run.UserID != userID {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "workflow run not found"})
+		return
+	}
+	limit := parseBoundedInt(r.URL.Query().Get("limit"), 500, 1, 2000)
+	toolCalls, err := s.runtime.ListToolCalls(r.Context(), ToolCallLedgerFilter{
+		UserID:         userID,
+		WorkflowRunID:  runID,
+		WorkflowStepID: r.URL.Query().Get("workflow_step_id"),
+		ToolName:       r.URL.Query().Get("tool_name"),
+		Status:         r.URL.Query().Get("status"),
+		Limit:          limit,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tool_calls": toolCalls})
+}
+
+func (s *Server) handleAdminOpsResumeWorkflowRun(w http.ResponseWriter, r *http.Request, user User, runID string) {
+	userID, ok := s.adminOpsUserID(w, r)
+	if !ok {
+		return
+	}
+	run, err := s.runtime.GetWorkflowRun(r.Context(), runID)
+	if err != nil || run == nil || run.UserID != userID {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "workflow run not found"})
+		return
+	}
+	resumed, err := s.runtime.ResumeWorkflowRun(r.Context(), runID)
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	s.auditEvent(r, "admin_workflow_resume", user, map[string]any{"target_user_id": userID, "workflow_run_id": runID, "workflow_name": run.Name})
+	writeJSON(w, http.StatusOK, map[string]any{"workflow": resumed})
+}
+
+func (s *Server) handleAdminOpsCancelWorkflowRun(w http.ResponseWriter, r *http.Request, user User, runID string) {
+	userID, ok := s.adminOpsUserID(w, r)
+	if !ok {
+		return
+	}
+	run, err := s.runtime.GetWorkflowRun(r.Context(), runID)
+	if err != nil || run == nil || run.UserID != userID {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "workflow run not found"})
+		return
+	}
+	cancelled, err := s.runtime.CancelWorkflowRun(r.Context(), runID)
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	s.auditEvent(r, "admin_workflow_cancel", user, map[string]any{"target_user_id": userID, "workflow_run_id": runID, "workflow_name": run.Name})
+	writeJSON(w, http.StatusOK, map[string]any{"workflow": cancelled})
+}
+
+func (s *Server) handleAdminOpsRecoverStaleWorkflows(w http.ResponseWriter, r *http.Request, user User) {
+	userID, ok := s.adminOpsUserID(w, r)
+	if !ok {
+		return
+	}
+	limit := parseBoundedInt(r.URL.Query().Get("limit"), 50, 1, 200)
+	results, err := s.runtime.RecoverStaleWorkflowRuns(r.Context(), userID, limit)
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	s.auditEvent(r, "admin_workflow_recover_stale", user, map[string]any{"target_user_id": userID, "count": len(results)})
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
 func (s *Server) handleAdminOpsListAssets(w http.ResponseWriter, r *http.Request) {
@@ -750,8 +839,13 @@ func (s *Server) handleAdminOpsLLMUsage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	filter := LLMUsageAdminFilter{
-		UserID: strings.TrimSpace(r.URL.Query().Get("user_id")),
-		Limit:  parseBoundedInt(r.URL.Query().Get("limit"), 200, 1, 1000),
+		UserID:        strings.TrimSpace(r.URL.Query().Get("user_id")),
+		PromptID:      strings.TrimSpace(r.URL.Query().Get("prompt_id")),
+		PromptVersion: strings.TrimSpace(r.URL.Query().Get("prompt_version")),
+		PromptHash:    strings.TrimSpace(r.URL.Query().Get("prompt_hash")),
+		ExperimentID:  strings.TrimSpace(r.URL.Query().Get("experiment_id")),
+		VariantID:     strings.TrimSpace(r.URL.Query().Get("variant_id")),
+		Limit:         parseBoundedInt(r.URL.Query().Get("limit"), 200, 1, 1000),
 	}
 	days := parseBoundedInt(r.URL.Query().Get("days"), 1, 1, 90)
 	filter.Since = time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour)

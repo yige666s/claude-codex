@@ -143,7 +143,11 @@ func (s *Server) mountAdminRoutes(r chi.Router) {
 			r.Get("/v1/admin/ops/jobs/{jobID}/events", s.withParam("jobID", s.handleAdminOpsListJobEvents))
 			r.Post("/v1/admin/ops/jobs/{jobID}/cancel", s.withUserParam("jobID", s.handleAdminOpsCancelJob))
 			r.Get("/v1/admin/ops/workflows", s.handleAdminOpsListWorkflowRuns)
+			r.Post("/v1/admin/ops/workflows/recover-stale", s.withUser(s.handleAdminOpsRecoverStaleWorkflows))
 			r.Get("/v1/admin/ops/workflows/{runID}", s.withParam("runID", s.handleAdminOpsGetWorkflowRun))
+			r.Post("/v1/admin/ops/workflows/{runID}/resume", s.withUserParam("runID", s.handleAdminOpsResumeWorkflowRun))
+			r.Post("/v1/admin/ops/workflows/{runID}/cancel", s.withUserParam("runID", s.handleAdminOpsCancelWorkflowRun))
+			r.Get("/v1/admin/ops/workflows/{runID}/tool-calls", s.withParam("runID", s.handleAdminOpsListWorkflowToolCalls))
 			r.Get("/v1/admin/ops/assets", s.handleAdminOpsListAssets)
 			r.Get("/v1/admin/ops/health", s.handleAdminOpsHealth)
 			r.Get("/v1/admin/ops/llm-usage", s.handleAdminOpsLLMUsage)
@@ -156,6 +160,27 @@ func (s *Server) mountAdminRoutes(r chi.Router) {
 			r.Get("/v1/admin/ops/risk", s.handleAdminOpsRisk)
 			r.Get("/v1/admin/ops/risk/reviews", s.handleAdminOpsRiskReviews)
 			r.Patch("/v1/admin/ops/risk/reviews/{reviewID}", s.withUserParam("reviewID", s.handleAdminOpsUpdateRiskReview))
+
+			r.Group(func(r chi.Router) {
+				r.Use(s.promptStoreRequiredMiddleware)
+				r.Post("/v1/admin/ops/prompts", s.withUser(s.handleAdminOpsUpsertPrompt))
+				r.Get("/v1/admin/ops/prompts", s.handleAdminOpsListPrompts)
+				r.Get("/v1/admin/ops/prompts/{promptID}", s.withParam("promptID", s.handleAdminOpsGetPrompt))
+				r.Post("/v1/admin/ops/prompts/{promptID}/versions", s.withUserParam("promptID", s.handleAdminOpsCreatePromptVersion))
+				r.Get("/v1/admin/ops/prompts/{promptID}/versions", s.withParam("promptID", s.handleAdminOpsListPromptVersions))
+				r.Get("/v1/admin/ops/prompts/{promptID}/versions/diff", s.withParam("promptID", s.handleAdminOpsPromptVersionDiff))
+				r.Post("/v1/admin/ops/prompts/{promptID}/publish", s.withUserParam("promptID", s.handleAdminOpsPublishPrompt))
+				r.Post("/v1/admin/ops/prompts/{promptID}/rollback", s.withUserParam("promptID", s.handleAdminOpsRollbackPrompt))
+				r.Post("/v1/admin/ops/prompts/{promptID}/versions/{version}/render-preview", s.withTwoParams("promptID", "version", s.handleAdminOpsPromptRenderPreview))
+				r.Post("/v1/admin/ops/prompts/{promptID}/versions/{version}/eval", s.withUserTwoParams("promptID", "version", s.handleAdminOpsPromptVersionEval))
+				r.Post("/v1/admin/ops/prompts/{promptID}/optimize", s.withUserParam("promptID", s.handleAdminOpsPromptOptimize))
+				r.Post("/v1/admin/ops/prompt-experiments", s.withUser(s.handleAdminOpsUpsertPromptExperiment))
+				r.Get("/v1/admin/ops/prompt-experiments", s.handleAdminOpsListPromptExperiments)
+				r.Get("/v1/admin/ops/prompt-experiments/{experimentID}", s.withParam("experimentID", s.handleAdminOpsGetPromptExperiment))
+				r.Post("/v1/admin/ops/prompt-experiments/{experimentID}/{action}", s.withUserTwoParams("experimentID", "action", s.handleAdminOpsPromptExperimentAction))
+				r.Get("/v1/admin/ops/prompt-optimization-runs", s.handleAdminOpsListPromptOptimizationRuns)
+				r.Get("/v1/admin/ops/prompt-optimization-runs/{runID}", s.withParam("runID", s.handleAdminOpsGetPromptOptimizationRun))
+			})
 
 			r.Group(func(r chi.Router) {
 				r.Use(s.evaluationRequiredMiddleware)
@@ -487,6 +512,12 @@ func (s *Server) withUserTwoParams(firstParam, secondParam string, handler func(
 func (s *Server) withParam(param string, handler func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		handler(w, r, chi.URLParam(r, param))
+	}
+}
+
+func (s *Server) withTwoParams(firstParam, secondParam string, handler func(http.ResponseWriter, *http.Request, string, string)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		handler(w, r, chi.URLParam(r, firstParam), chi.URLParam(r, secondParam))
 	}
 }
 

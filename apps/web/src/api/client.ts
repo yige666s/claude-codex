@@ -1,6 +1,6 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
 import { userFacingErrorMessage } from "./errorMessages";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -415,12 +415,12 @@ export class ApiClient {
     return payload.workflows || [];
   }
 
-  async adminOpsWorkflow(adminToken: string, userId: string, runId: string): Promise<{ workflow: WorkflowRun; steps: WorkflowStepRun[] }> {
+  async adminOpsWorkflow(adminToken: string, userId: string, runId: string): Promise<{ workflow: WorkflowRun; steps: WorkflowStepRun[]; deepAgent?: DeepAgentWorkflowSummary }> {
     const params = new URLSearchParams({ user_id: userId });
-    const payload = await this.fetchJSON<{ workflow: WorkflowRun; steps: WorkflowStepRun[] }>(`/v1/admin/ops/workflows/${encodeURIComponent(runId)}?${params.toString()}`, {
+    const payload = await this.fetchJSON<{ workflow: WorkflowRun; steps: WorkflowStepRun[]; deep_agent?: DeepAgentWorkflowSummary }>(`/v1/admin/ops/workflows/${encodeURIComponent(runId)}?${params.toString()}`, {
       headers: { "X-Admin-Token": adminToken }
     });
-    return { workflow: payload.workflow, steps: payload.steps || [] };
+    return { workflow: payload.workflow, steps: payload.steps || [], deepAgent: payload.deep_agent };
   }
 
   async adminOpsCancelJob(adminToken: string, userId: string, jobId: string): Promise<void> {
@@ -450,10 +450,15 @@ export class ApiClient {
     });
   }
 
-  async adminOpsLLMUsage(adminToken: string, options: { userId?: string; days?: number; limit?: number } = {}): Promise<LLMUsageAdminSummary> {
+  async adminOpsLLMUsage(adminToken: string, options: { userId?: string; days?: number; limit?: number; promptId?: string; promptVersion?: string; promptHash?: string; experimentId?: string; variantId?: string } = {}): Promise<LLMUsageAdminSummary> {
     const params = new URLSearchParams();
     if (options.userId) params.set("user_id", options.userId);
     if (options.days) params.set("days", String(options.days));
+    if (options.promptId) params.set("prompt_id", options.promptId);
+    if (options.promptVersion) params.set("prompt_version", options.promptVersion);
+    if (options.promptHash) params.set("prompt_hash", options.promptHash);
+    if (options.experimentId) params.set("experiment_id", options.experimentId);
+    if (options.variantId) params.set("variant_id", options.variantId);
     if (options.limit) params.set("limit", String(options.limit));
     const query = params.toString();
     const payload = await this.fetchJSON<{ usage: LLMUsageAdminSummary }>(`/v1/admin/ops/llm-usage${query ? `?${query}` : ""}`, {
@@ -611,6 +616,127 @@ export class ApiClient {
     return normalizeEvaluationReport(response);
   }
 
+  async adminOpsPrompts(adminToken: string, options: { scope?: string; status?: string; q?: string; limit?: number } = {}): Promise<PromptTemplate[]> {
+    const params = new URLSearchParams();
+    if (options.scope) params.set("scope", options.scope);
+    if (options.status && options.status !== "all") params.set("status", options.status);
+    if (options.q) params.set("q", options.q);
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    const payload = await this.fetchJSON<{ prompts: PromptTemplate[] }>(`/v1/admin/ops/prompts${query ? `?${query}` : ""}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return payload.prompts || [];
+  }
+
+  async adminOpsPrompt(adminToken: string, id: string): Promise<PromptDetail> {
+    const payload = await this.fetchJSON<PromptDetail>(`/v1/admin/ops/prompts/${encodeURIComponent(id)}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return {
+      prompt: payload.prompt,
+      versions: payload.versions || [],
+      published_version: payload.published_version
+    };
+  }
+
+  async renderPromptVersionPreview(adminToken: string, promptID: string, version: string, variables: Record<string, unknown> = {}): Promise<PromptRenderResult> {
+    const payload = await this.fetchJSON<{ render: PromptRenderResult }>(`/v1/admin/ops/prompts/${encodeURIComponent(promptID)}/versions/${encodeURIComponent(version)}/render-preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({ variables })
+    });
+    return payload.render;
+  }
+
+  async createPromptVersionEvaluationRun(adminToken: string, promptID: string, version: string, payload: { setId: string; setVersion?: string; judge?: "heuristic" | "llm" | string; candidates: GoldenCandidate[]; name?: string; trigger?: string; thresholds?: EvaluationThresholds }): Promise<EvaluationRunReport> {
+    const response = await this.fetchJSON<EvaluationRunReport>(`/v1/admin/ops/prompts/${encodeURIComponent(promptID)}/versions/${encodeURIComponent(version)}/eval`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({
+        set_id: payload.setId,
+        set_version: payload.setVersion,
+        judge: payload.judge,
+        candidates: payload.candidates,
+        name: payload.name,
+        trigger: payload.trigger,
+        thresholds: payload.thresholds
+      })
+    });
+    return normalizeEvaluationReport(response);
+  }
+
+  async upsertPromptExperiment(adminToken: string, payload: { experiment: PromptExperiment; variants: PromptExperimentVariant[] }): Promise<PromptExperimentDetail> {
+    const response = await this.fetchJSON<PromptExperimentDetail>("/v1/admin/ops/prompt-experiments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify(payload)
+    });
+    return { ...response, variants: response.variants || [] };
+  }
+
+  async adminOpsPromptExperiments(adminToken: string, options: { promptId?: string; status?: string; q?: string; limit?: number } = {}): Promise<PromptExperiment[]> {
+    const params = new URLSearchParams();
+    if (options.promptId) params.set("prompt_id", options.promptId);
+    if (options.status && options.status !== "all") params.set("status", options.status);
+    if (options.q) params.set("q", options.q);
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    const payload = await this.fetchJSON<{ experiments: PromptExperiment[] }>(`/v1/admin/ops/prompt-experiments${query ? `?${query}` : ""}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return payload.experiments || [];
+  }
+
+  async adminOpsPromptExperiment(adminToken: string, id: string): Promise<PromptExperimentDetail> {
+    const payload = await this.fetchJSON<PromptExperimentDetail>(`/v1/admin/ops/prompt-experiments/${encodeURIComponent(id)}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return { ...payload, variants: payload.variants || [], usage_by_variant: payload.usage_by_variant || [] };
+  }
+
+  async updatePromptExperimentStatus(adminToken: string, id: string, action: "start" | "pause" | "complete" | string, winnerVariantId = ""): Promise<PromptExperimentDetail> {
+    const payload = await this.fetchJSON<PromptExperimentDetail>(`/v1/admin/ops/prompt-experiments/${encodeURIComponent(id)}/${encodeURIComponent(action)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({ winner_variant_id: winnerVariantId })
+    });
+    return { ...payload, variants: payload.variants || [] };
+  }
+
+  async optimizePrompt(adminToken: string, promptID: string, payload: { baselineVersion?: string; setId?: string; setVersion?: string; judge?: string; maxBadcases?: number; thresholds?: EvaluationThresholds } = {}): Promise<{ workflow: WorkflowRun; steps: WorkflowStepRun[] }> {
+    return this.fetchJSON<{ workflow: WorkflowRun; steps: WorkflowStepRun[] }>(`/v1/admin/ops/prompts/${encodeURIComponent(promptID)}/optimize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({
+        baseline_version: payload.baselineVersion,
+        set_id: payload.setId,
+        set_version: payload.setVersion,
+        judge: payload.judge,
+        max_badcases: payload.maxBadcases,
+        thresholds: payload.thresholds
+      })
+    });
+  }
+
+  async adminOpsPromptOptimizationRuns(adminToken: string, options: { status?: string; limit?: number } = {}): Promise<WorkflowRun[]> {
+    const params = new URLSearchParams();
+    if (options.status && options.status !== "all") params.set("status", options.status);
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    const payload = await this.fetchJSON<{ workflows: WorkflowRun[] }>(`/v1/admin/ops/prompt-optimization-runs${query ? `?${query}` : ""}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return payload.workflows || [];
+  }
+
+  async adminOpsPromptOptimizationRun(adminToken: string, id: string): Promise<{ workflow: WorkflowRun; steps: WorkflowStepRun[] }> {
+    const payload = await this.fetchJSON<{ workflow: WorkflowRun; steps: WorkflowStepRun[] }>(`/v1/admin/ops/prompt-optimization-runs/${encodeURIComponent(id)}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return { workflow: payload.workflow, steps: payload.steps || [] };
+  }
+
   async upsertGoldenSet(adminToken: string, set: GoldenSet): Promise<GoldenSet> {
     const response = await this.fetchJSON<{ set: GoldenSet }>("/v1/admin/ops/eval/golden-sets", {
       method: "POST",
@@ -709,7 +835,7 @@ export class ApiClient {
     return normalizeEvaluationReport(payload);
   }
 
-  async adminOpsEvaluationResults(adminToken: string, options: { runId?: string; status?: string; subjectType?: string; userId?: string; sessionId?: string; jobId?: string; skillName?: string; provider?: string; model?: string; limit?: number } = {}): Promise<EvaluationResult[]> {
+  async adminOpsEvaluationResults(adminToken: string, options: { runId?: string; status?: string; subjectType?: string; userId?: string; sessionId?: string; jobId?: string; skillName?: string; provider?: string; model?: string; promptId?: string; promptVersion?: string; promptHash?: string; experimentId?: string; variantId?: string; limit?: number } = {}): Promise<EvaluationResult[]> {
     const params = evaluationResultParams(options);
     const query = params.toString();
     const payload = await this.fetchJSON<{ results: EvaluationResult[] }>(`/v1/admin/ops/eval/results${query ? `?${query}` : ""}`, {
@@ -742,7 +868,7 @@ export class ApiClient {
     };
   }
 
-  async adminOpsEvaluationResultsCSV(adminToken: string, options: { runId?: string; status?: string; subjectType?: string; userId?: string; sessionId?: string; jobId?: string; skillName?: string; provider?: string; model?: string; limit?: number } = {}): Promise<string> {
+  async adminOpsEvaluationResultsCSV(adminToken: string, options: { runId?: string; status?: string; subjectType?: string; userId?: string; sessionId?: string; jobId?: string; skillName?: string; provider?: string; model?: string; promptId?: string; promptVersion?: string; promptHash?: string; experimentId?: string; variantId?: string; limit?: number } = {}): Promise<string> {
     const params = evaluationResultParams(options);
     params.set("format", "csv");
     const query = params.toString();
@@ -1085,7 +1211,7 @@ function normalizeEvaluationSummary(summary: EvaluationRunSummary | undefined): 
   };
 }
 
-function evaluationResultParams(options: { runId?: string; status?: string; subjectType?: string; userId?: string; sessionId?: string; jobId?: string; skillName?: string; provider?: string; model?: string; limit?: number } = {}): URLSearchParams {
+function evaluationResultParams(options: { runId?: string; status?: string; subjectType?: string; userId?: string; sessionId?: string; jobId?: string; skillName?: string; provider?: string; model?: string; promptId?: string; promptVersion?: string; promptHash?: string; experimentId?: string; variantId?: string; limit?: number } = {}): URLSearchParams {
   const params = new URLSearchParams();
   if (options.runId) params.set("run_id", options.runId);
   if (options.status && options.status !== "all") params.set("status", options.status);
@@ -1096,6 +1222,11 @@ function evaluationResultParams(options: { runId?: string; status?: string; subj
   if (options.skillName) params.set("skill_name", options.skillName);
   if (options.provider) params.set("provider", options.provider);
   if (options.model) params.set("model", options.model);
+  if (options.promptId) params.set("prompt_id", options.promptId);
+  if (options.promptVersion) params.set("prompt_version", options.promptVersion);
+  if (options.promptHash) params.set("prompt_hash", options.promptHash);
+  if (options.experimentId) params.set("experiment_id", options.experimentId);
+  if (options.variantId) params.set("variant_id", options.variantId);
   if (options.limit) params.set("limit", String(options.limit));
   return params;
 }

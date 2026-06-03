@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	harnessengine "claude-codex/internal/harness/engine"
 )
 
 const (
@@ -15,6 +17,7 @@ const (
 	WorkflowStatusRunning   = "running"
 	WorkflowStatusSucceeded = "succeeded"
 	WorkflowStatusFailed    = "failed"
+	WorkflowStatusCancelled = "cancelled"
 
 	WorkflowStepStatusPending   = "pending"
 	WorkflowStepStatusRunning   = "running"
@@ -35,31 +38,40 @@ type WorkflowStepDefinition struct {
 }
 
 type WorkflowRun struct {
-	ID         string         `json:"id"`
-	UserID     string         `json:"user_id,omitempty"`
-	SessionID  string         `json:"session_id,omitempty"`
-	JobID      string         `json:"job_id,omitempty"`
-	Name       string         `json:"name"`
-	Version    string         `json:"version"`
-	Status     string         `json:"status"`
-	State      map[string]any `json:"state,omitempty"`
-	Error      string         `json:"error,omitempty"`
-	CreatedAt  time.Time      `json:"created_at"`
-	UpdatedAt  time.Time      `json:"updated_at"`
-	StartedAt  *time.Time     `json:"started_at,omitempty"`
-	FinishedAt *time.Time     `json:"finished_at,omitempty"`
+	ID             string         `json:"id"`
+	UserID         string         `json:"user_id,omitempty"`
+	SessionID      string         `json:"session_id,omitempty"`
+	JobID          string         `json:"job_id,omitempty"`
+	RequestID      string         `json:"request_id,omitempty"`
+	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+	Name           string         `json:"name"`
+	Version        string         `json:"version"`
+	Status         string         `json:"status"`
+	State          map[string]any `json:"state,omitempty"`
+	Error          string         `json:"error,omitempty"`
+	LeaseOwner     string         `json:"lease_owner,omitempty"`
+	LeaseExpiresAt *time.Time     `json:"lease_expires_at,omitempty"`
+	Recoverable    bool           `json:"recoverable,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+	StartedAt      *time.Time     `json:"started_at,omitempty"`
+	FinishedAt     *time.Time     `json:"finished_at,omitempty"`
 }
 
 type WorkflowStepRun struct {
-	ID         string         `json:"id"`
-	RunID      string         `json:"run_id"`
-	StepName   string         `json:"step_name"`
-	Status     string         `json:"status"`
-	Input      map[string]any `json:"input,omitempty"`
-	Output     map[string]any `json:"output,omitempty"`
-	Error      string         `json:"error,omitempty"`
-	StartedAt  time.Time      `json:"started_at"`
-	FinishedAt *time.Time     `json:"finished_at,omitempty"`
+	ID             string         `json:"id"`
+	RunID          string         `json:"run_id"`
+	StepIndex      int            `json:"step_index"`
+	StepName       string         `json:"step_name"`
+	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+	Attempt        int            `json:"attempt,omitempty"`
+	Status         string         `json:"status"`
+	Input          map[string]any `json:"input,omitempty"`
+	Output         map[string]any `json:"output,omitempty"`
+	Error          string         `json:"error,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+	StartedAt      time.Time      `json:"started_at"`
+	FinishedAt     *time.Time     `json:"finished_at,omitempty"`
 }
 
 type WorkflowStore interface {
@@ -72,6 +84,11 @@ type WorkflowStore interface {
 	ListWorkflowStepRuns(ctx context.Context, runID string) ([]*WorkflowStepRun, error)
 }
 
+type WorkflowResumeStore interface {
+	FindWorkflowRunByIdempotencyKey(ctx context.Context, userID, name, idempotencyKey string) (*WorkflowRun, error)
+	GetWorkflowStepByIndex(ctx context.Context, runID string, stepIndex int) (*WorkflowStepRun, error)
+}
+
 type WorkflowRunFilter struct {
 	UserID    string
 	SessionID string
@@ -82,11 +99,14 @@ type WorkflowRunFilter struct {
 }
 
 type WorkflowRequest struct {
-	Definition WorkflowDefinition
-	UserID     string
-	SessionID  string
-	JobID      string
-	State      map[string]any
+	Definition     WorkflowDefinition
+	UserID         string
+	SessionID      string
+	JobID          string
+	RequestID      string
+	IdempotencyKey string
+	Recoverable    bool
+	State          map[string]any
 }
 
 type WorkflowStepHandler func(ctx context.Context, run *WorkflowRun, input map[string]any) (map[string]any, error)
@@ -121,35 +141,126 @@ func (e *WorkflowEngine) Execute(ctx context.Context, req WorkflowRequest) (*Wor
 	if req.Definition.Name == "" {
 		return nil, fmt.Errorf("workflow definition name is required")
 	}
+	req = normalizeWorkflowRequest(ctx, req, false)
 	now := time.Now().UTC()
 	run := &WorkflowRun{
-		ID:        NewWorkflowRunID(),
-		UserID:    req.UserID,
-		SessionID: req.SessionID,
-		JobID:     firstNonEmptyString(req.JobID, jobIDFromContext(ctx)),
-		Name:      req.Definition.Name,
-		Version:   req.Definition.Version,
-		Status:    WorkflowStatusRunning,
-		State:     cloneWorkflowMap(req.State),
-		CreatedAt: now,
-		UpdatedAt: now,
-		StartedAt: &now,
-	}
-	if run.Version == "" {
-		run.Version = "v1"
+		ID:             NewWorkflowRunID(),
+		UserID:         req.UserID,
+		SessionID:      req.SessionID,
+		JobID:          req.JobID,
+		RequestID:      req.RequestID,
+		IdempotencyKey: req.IdempotencyKey,
+		Name:           req.Definition.Name,
+		Version:        req.Definition.Version,
+		Status:         WorkflowStatusRunning,
+		State:          cloneWorkflowMap(req.State),
+		Recoverable:    req.Recoverable,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		StartedAt:      &now,
 	}
 	if err := e.store.CreateWorkflowRun(ctx, run); err != nil {
 		return nil, err
 	}
 	_ = e.events.EmitWorkflowEvent(ctx, WorkflowEvent{Run: cloneWorkflowRun(run), Status: run.Status, Type: "workflow_run_started"})
 
-	for _, stepDef := range req.Definition.Steps {
+	return e.executeRun(ctx, run, req.Definition, false)
+}
+
+func (e *WorkflowEngine) ExecuteOrResume(ctx context.Context, req WorkflowRequest) (*WorkflowRun, error) {
+	if e == nil {
+		return nil, fmt.Errorf("workflow engine is not configured")
+	}
+	if req.Definition.Name == "" {
+		return nil, fmt.Errorf("workflow definition name is required")
+	}
+	req = normalizeWorkflowRequest(ctx, req, true)
+	if req.IdempotencyKey != "" {
+		if resumeStore, ok := e.store.(WorkflowResumeStore); ok {
+			existing, err := resumeStore.FindWorkflowRunByIdempotencyKey(ctx, req.UserID, req.Definition.Name, req.IdempotencyKey)
+			if err != nil {
+				return nil, err
+			}
+			if existing != nil {
+				return e.resumeRun(ctx, existing, req.Definition)
+			}
+		}
+	}
+	return e.Execute(ctx, req)
+}
+
+func (e *WorkflowEngine) Resume(ctx context.Context, runID string, definition WorkflowDefinition) (*WorkflowRun, error) {
+	if e == nil {
+		return nil, fmt.Errorf("workflow engine is not configured")
+	}
+	if strings.TrimSpace(runID) == "" {
+		return nil, fmt.Errorf("workflow run id is required")
+	}
+	if definition.Name == "" {
+		return nil, fmt.Errorf("workflow definition name is required")
+	}
+	run, err := e.store.GetWorkflowRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run.Name != definition.Name {
+		return nil, fmt.Errorf("workflow run %s is %s, not %s", run.ID, run.Name, definition.Name)
+	}
+	if definition.Version == "" {
+		definition.Version = run.Version
+	}
+	return e.resumeRun(ctx, run, definition)
+}
+
+func (e *WorkflowEngine) resumeRun(ctx context.Context, run *WorkflowRun, definition WorkflowDefinition) (*WorkflowRun, error) {
+	if run == nil {
+		return nil, fmt.Errorf("workflow run is required")
+	}
+	if run.Status == WorkflowStatusSucceeded {
+		return cloneWorkflowRun(run), nil
+	}
+	now := time.Now().UTC()
+	run.Status = WorkflowStatusRunning
+	run.Error = ""
+	run.UpdatedAt = now
+	run.FinishedAt = nil
+	if run.StartedAt == nil {
+		run.StartedAt = &now
+	}
+	if definition.Version == "" {
+		definition.Version = firstNonEmptyString(run.Version, "v1")
+	}
+	run.Version = definition.Version
+	if err := e.store.UpdateWorkflowRun(ctx, run); err != nil {
+		return nil, err
+	}
+	_ = e.events.EmitWorkflowEvent(ctx, WorkflowEvent{Run: cloneWorkflowRun(run), Status: run.Status, Type: "workflow_run_resumed"})
+	return e.executeRun(ctx, run, definition, true)
+}
+
+func (e *WorkflowEngine) executeRun(ctx context.Context, run *WorkflowRun, definition WorkflowDefinition, resume bool) (*WorkflowRun, error) {
+	for stepIndex, stepDef := range definition.Steps {
 		handlerName := firstNonEmptyString(stepDef.Handler, stepDef.Name)
 		handler := e.handlers[handlerName]
 		if handler == nil {
 			return e.failRun(ctx, run, fmt.Errorf("workflow step handler not found: %s", handlerName))
 		}
-		step, output, err := e.executeStep(ctx, run, stepDef, handler)
+		if resume {
+			step, output, reused, err := e.reuseCompletedStep(ctx, run, stepIndex, stepDef)
+			if err != nil {
+				return e.failRun(ctx, run, err)
+			}
+			if reused {
+				mergeWorkflowState(run.State, output)
+				run.UpdatedAt = time.Now().UTC()
+				if err := e.store.UpdateWorkflowRun(ctx, run); err != nil {
+					return nil, err
+				}
+				_ = e.events.EmitWorkflowEvent(ctx, WorkflowEvent{Run: cloneWorkflowRun(run), Step: cloneWorkflowStepRun(step), Status: WorkflowStepStatusSucceeded, Type: "workflow_step_reused"})
+				continue
+			}
+		}
+		step, output, err := e.executeStep(ctx, run, stepIndex, stepDef, handler, resume)
 		if err != nil {
 			_ = e.events.EmitWorkflowEvent(ctx, WorkflowEvent{Run: cloneWorkflowRun(run), Step: cloneWorkflowStepRun(step), Status: WorkflowStepStatusFailed, Type: "workflow_step_failed"})
 			return e.failRun(ctx, run, err)
@@ -180,18 +291,76 @@ func (e *WorkflowEngine) Store() WorkflowStore {
 	return e.store
 }
 
-func (e *WorkflowEngine) executeStep(ctx context.Context, run *WorkflowRun, stepDef WorkflowStepDefinition, handler WorkflowStepHandler) (*WorkflowStepRun, map[string]any, error) {
-	started := time.Now().UTC()
-	step := &WorkflowStepRun{
-		ID:        NewWorkflowStepRunID(),
-		RunID:     run.ID,
-		StepName:  stepDef.Name,
-		Status:    WorkflowStepStatusRunning,
-		Input:     cloneWorkflowMap(run.State),
-		StartedAt: started,
+func (e *WorkflowEngine) reuseCompletedStep(ctx context.Context, run *WorkflowRun, stepIndex int, stepDef WorkflowStepDefinition) (*WorkflowStepRun, map[string]any, bool, error) {
+	resumeStore, ok := e.store.(WorkflowResumeStore)
+	if !ok {
+		return nil, nil, false, nil
 	}
-	if err := e.store.AddWorkflowStepRun(ctx, step); err != nil {
-		return step, nil, err
+	step, err := resumeStore.GetWorkflowStepByIndex(ctx, run.ID, stepIndex)
+	if err != nil {
+		return step, nil, false, err
+	}
+	if step == nil {
+		return nil, nil, false, nil
+	}
+	if step.StepName != stepDef.Name {
+		return step, nil, false, fmt.Errorf("workflow step %d is %s, not %s", stepIndex, step.StepName, stepDef.Name)
+	}
+	if step.Status != WorkflowStepStatusSucceeded {
+		return step, nil, false, nil
+	}
+	return step, cloneWorkflowMap(step.Output), true, nil
+}
+
+func (e *WorkflowEngine) executeStep(ctx context.Context, run *WorkflowRun, stepIndex int, stepDef WorkflowStepDefinition, handler WorkflowStepHandler, resume bool) (*WorkflowStepRun, map[string]any, error) {
+	started := time.Now().UTC()
+	isExistingStep := false
+	step := &WorkflowStepRun{
+		ID:             NewWorkflowStepRunID(),
+		RunID:          run.ID,
+		StepIndex:      stepIndex,
+		StepName:       stepDef.Name,
+		IdempotencyKey: workflowStepIdempotencyKey(run, stepIndex, stepDef.Name),
+		Attempt:        1,
+		Status:         WorkflowStepStatusRunning,
+		Input:          cloneWorkflowMap(run.State),
+		StartedAt:      started,
+	}
+	if resume {
+		if resumeStore, ok := e.store.(WorkflowResumeStore); ok {
+			existing, err := resumeStore.GetWorkflowStepByIndex(ctx, run.ID, stepIndex)
+			if err != nil {
+				return step, nil, err
+			}
+			if existing != nil {
+				isExistingStep = true
+				step = existing
+				step.Status = WorkflowStepStatusRunning
+				step.Input = cloneWorkflowMap(run.State)
+				step.Output = nil
+				step.Error = ""
+				step.Attempt++
+				if step.Attempt <= 0 {
+					step.Attempt = 1
+				}
+				step.StartedAt = started
+				step.FinishedAt = nil
+				if step.IdempotencyKey == "" {
+					step.IdempotencyKey = workflowStepIdempotencyKey(run, stepIndex, stepDef.Name)
+				}
+				if err := e.store.UpdateWorkflowStepRun(ctx, step); err != nil {
+					return step, nil, err
+				}
+			}
+		}
+	}
+	if step.ID == "" {
+		step.ID = NewWorkflowStepRunID()
+	}
+	if !isExistingStep {
+		if err := e.store.AddWorkflowStepRun(ctx, step); err != nil {
+			return step, nil, err
+		}
 	}
 	_ = e.events.EmitWorkflowEvent(ctx, WorkflowEvent{Run: cloneWorkflowRun(run), Step: cloneWorkflowStepRun(step), Status: step.Status, Type: "workflow_step_started"})
 
@@ -200,6 +369,15 @@ func (e *WorkflowEngine) executeStep(ctx context.Context, run *WorkflowRun, step
 	if stepDef.Timeout > 0 {
 		stepCtx, cancel = context.WithTimeout(ctx, stepDef.Timeout)
 	}
+	stepCtx = harnessengine.WithToolExecutionScope(stepCtx, harnessengine.ToolExecutionScope{
+		UserID:            run.UserID,
+		SessionID:         run.SessionID,
+		JobID:             run.JobID,
+		RequestID:         run.RequestID,
+		WorkflowRunID:     run.ID,
+		WorkflowStepID:    step.ID,
+		WorkflowStepIndex: step.StepIndex,
+	})
 	defer cancel()
 
 	output, err := handler(stepCtx, run, cloneWorkflowMap(run.State))
@@ -255,6 +433,13 @@ func (s *MemoryWorkflowStore) CreateWorkflowRun(_ context.Context, run *Workflow
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if run.IdempotencyKey != "" {
+		for _, existing := range s.runs {
+			if existing.UserID == run.UserID && existing.Name == run.Name && existing.IdempotencyKey == run.IdempotencyKey {
+				return fmt.Errorf("workflow run idempotency key already exists: %s", run.IdempotencyKey)
+			}
+		}
+	}
 	s.runs[run.ID] = cloneWorkflowRun(run)
 	return nil
 }
@@ -314,6 +499,18 @@ func (s *MemoryWorkflowStore) AddWorkflowStepRun(_ context.Context, step *Workfl
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, id := range s.stepList[step.RunID] {
+		existing := s.steps[id]
+		if existing == nil {
+			continue
+		}
+		if existing.StepIndex == step.StepIndex {
+			return fmt.Errorf("workflow step index already exists: %s[%d]", step.RunID, step.StepIndex)
+		}
+		if step.IdempotencyKey != "" && existing.IdempotencyKey == step.IdempotencyKey {
+			return fmt.Errorf("workflow step idempotency key already exists: %s", step.IdempotencyKey)
+		}
+	}
 	s.steps[step.ID] = cloneWorkflowStepRun(step)
 	s.stepList[step.RunID] = append(s.stepList[step.RunID], step.ID)
 	return nil
@@ -346,6 +543,38 @@ func (s *MemoryWorkflowStore) ListWorkflowStepRuns(_ context.Context, runID stri
 		}
 	}
 	return out, nil
+}
+
+func (s *MemoryWorkflowStore) FindWorkflowRunByIdempotencyKey(_ context.Context, userID, name, idempotencyKey string) (*WorkflowRun, error) {
+	if s == nil || strings.TrimSpace(idempotencyKey) == "" {
+		return nil, nil
+	}
+	userID = strings.TrimSpace(userID)
+	name = strings.TrimSpace(name)
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, run := range s.runs {
+		if run.UserID == userID && run.Name == name && run.IdempotencyKey == idempotencyKey {
+			return cloneWorkflowRun(run), nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *MemoryWorkflowStore) GetWorkflowStepByIndex(_ context.Context, runID string, stepIndex int) (*WorkflowStepRun, error) {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range s.stepList[runID] {
+		step := s.steps[id]
+		if step != nil && step.StepIndex == stepIndex {
+			return cloneWorkflowStepRun(step), nil
+		}
+	}
+	return nil, nil
 }
 
 type WorkflowEvent struct {
@@ -495,6 +724,7 @@ func cloneWorkflowStepRun(step *WorkflowStepRun) *WorkflowStepRun {
 	out := *step
 	out.Input = cloneWorkflowMap(step.Input)
 	out.Output = cloneWorkflowMap(step.Output)
+	out.Metadata = cloneWorkflowMap(step.Metadata)
 	return &out
 }
 
@@ -556,4 +786,54 @@ func workflowRunMatchesFilter(run *WorkflowRun, filter WorkflowRunFilter) bool {
 		return false
 	}
 	return true
+}
+
+func normalizeWorkflowRequest(ctx context.Context, req WorkflowRequest, deriveIdempotencyKey bool) WorkflowRequest {
+	req.UserID = strings.TrimSpace(req.UserID)
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	req.JobID = firstNonEmptyString(strings.TrimSpace(req.JobID), jobIDFromContext(ctx))
+	req.RequestID = firstNonEmptyString(strings.TrimSpace(req.RequestID), workflowStateString(req.State, "request_id"))
+	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	if deriveIdempotencyKey {
+		req.IdempotencyKey = firstNonEmptyString(req.IdempotencyKey, req.RequestID)
+	}
+	if req.Definition.Version == "" {
+		req.Definition.Version = "v1"
+	}
+	return req
+}
+
+func workflowStateString(state map[string]any, key string) string {
+	if state == nil || key == "" {
+		return ""
+	}
+	value, ok := state[key]
+	if !ok {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
+
+func workflowStepIdempotencyKey(run *WorkflowRun, stepIndex int, stepName string) string {
+	base := ""
+	if run != nil {
+		base = firstNonEmptyString(run.IdempotencyKey, run.ID)
+	}
+	return fmt.Sprintf("%s:%d:%s", base, stepIndex, stepName)
+}
+
+func nextWorkflowStepIndex(steps []*WorkflowStepRun) int {
+	next := 0
+	for _, step := range steps {
+		if step == nil {
+			continue
+		}
+		if step.StepIndex >= next {
+			next = step.StepIndex + 1
+		}
+	}
+	return next
 }

@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -11,6 +12,72 @@ import (
 type staticEvaluationTraceSource struct {
 	traces []EvaluationTrace
 	err    error
+}
+
+func TestEvaluationMetricsCountsStructuredOutputSignals(t *testing.T) {
+	now := time.Now().UTC()
+	structuredData := func(value map[string]any) json.RawMessage {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("Marshal() error = %v", err)
+		}
+		return data
+	}
+	engine := NewEvaluationEngine(staticEvaluationTraceSource{traces: []EvaluationTrace{{
+		SubjectType: EvaluationSubjectJob,
+		SubjectID:   "job-structured",
+		UserID:      "user-1",
+		SessionID:   "session-1",
+		JobID:       "job-structured",
+		Input:       "run structured task",
+		Output:      "done",
+		Job: &Job{
+			ID:         "job-structured",
+			UserID:     "user-1",
+			SessionID:  "session-1",
+			Status:     JobStatusSucceeded,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+			StartedAt:  &now,
+			FinishedAt: &now,
+		},
+		JobEvents: []*JobEvent{
+			{ID: "event-validation", JobID: "job-structured", UserID: "user-1", SessionID: "session-1", Type: structuredOutputValidationEvent, Event: Event{Type: structuredOutputValidationEvent, Data: structuredData(map[string]any{"schema_name": "tool", "status": structuredOutputStatusFailed})}, CreatedAt: now},
+			{ID: "event-repair", JobID: "job-structured", UserID: "user-1", SessionID: "session-1", Type: structuredOutputRepairEvent, Event: Event{Type: structuredOutputRepairEvent, Data: structuredData(map[string]any{"schema_name": "tool", "status": structuredOutputStatusSuccess, "repair_attempts": 1})}, CreatedAt: now},
+			{ID: "event-fallback", JobID: "job-structured", UserID: "user-1", SessionID: "session-1", Type: structuredOutputFallbackEvent, Event: Event{Type: structuredOutputFallbackEvent, Data: structuredData(map[string]any{"schema_name": "tool", "status": structuredOutputStatusSuccess, "fallback_level": structuredFallbackDeterministic})}, CreatedAt: now},
+		},
+		CreatedAt:   now,
+		CompletedAt: &now,
+	}}})
+
+	report, err := engine.Evaluate(context.Background(), EvaluationRunRequest{
+		Scope: EvaluationScope{SubjectType: EvaluationSubjectJob, UserID: "user-1"},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if got := report.Run.Metrics["structured_output_error_count"]; got != 1 {
+		t.Fatalf("structured_output_error_count = %#v, want 1", got)
+	}
+	if got := report.Run.Metrics["structured_output_repair_success_count"]; got != 1 {
+		t.Fatalf("structured_output_repair_success_count = %#v, want 1", got)
+	}
+	if got := report.Run.Metrics["structured_output_fallback_count"]; got != 1 {
+		t.Fatalf("structured_output_fallback_count = %#v, want 1", got)
+	}
+	levels, ok := report.Run.Metrics["structured_output_fallback_levels"].(map[string]int)
+	if !ok || levels[structuredFallbackDeterministic] != 1 {
+		t.Fatalf("unexpected fallback levels: %#v", report.Run.Metrics["structured_output_fallback_levels"])
+	}
+	var sawStructuredFinding bool
+	for _, finding := range report.Results[0].Findings {
+		if finding.Code == "structured_output_errors" {
+			sawStructuredFinding = true
+		}
+	}
+	if !sawStructuredFinding {
+		t.Fatalf("expected structured output finding, got %#v", report.Results[0].Findings)
+	}
 }
 
 func (s staticEvaluationTraceSource) ListEvaluationTraces(context.Context, EvaluationScope) ([]EvaluationTrace, error) {

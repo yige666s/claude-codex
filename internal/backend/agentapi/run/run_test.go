@@ -287,6 +287,35 @@ func TestBuildMessageContextCacheSelectsBackends(t *testing.T) {
 	}
 }
 
+func TestBuildCacheStoreSelectsBackends(t *testing.T) {
+	store, client := bootstrap.BuildCacheStore("memory", "", "agent:test", time.Hour)
+	if _, ok := store.(*agentruntime.MemoryCacheStore); !ok {
+		t.Fatalf("expected memory cache store, got %T", store)
+	}
+	if client != nil {
+		t.Fatalf("memory cache store should not create redis client")
+	}
+
+	store, client = bootstrap.BuildCacheStore("none", "", "agent:test", time.Hour)
+	if _, ok := store.(agentruntime.NoopCacheStore); !ok {
+		t.Fatalf("expected noop cache store, got %T", store)
+	}
+	if client != nil {
+		t.Fatalf("noop cache store should not create redis client")
+	}
+
+	store, client = bootstrap.BuildCacheStore("redis", "redis://localhost:6379/1?prefix=agentapi:cache", "", time.Hour)
+	if _, ok := store.(*agentruntime.RedisCacheStore); !ok {
+		t.Fatalf("expected redis cache store, got %T", store)
+	}
+	if client == nil {
+		t.Fatal("redis cache store should create redis client")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close redis client: %v", err)
+	}
+}
+
 func TestBuildMessageSequenceAllocatorSelectsBackends(t *testing.T) {
 	allocator, client := bootstrap.BuildMessageSequenceAllocator("sql", "")
 	if allocator != nil {

@@ -101,6 +101,11 @@ INSERT INTO agent_eval_results (
 	skill_name,
 	provider,
 	model,
+	prompt_id,
+	prompt_version,
+	prompt_hash,
+	experiment_id,
+	variant_id,
 	status,
 	score,
 	input,
@@ -125,7 +130,12 @@ INSERT INTO agent_eval_results (
 	$14,
 	$15,
 	$16,
-	$17
+	$17,
+	$18,
+	$19,
+	$20,
+	$21,
+	$22
 );
 
 -- name: ListEvaluationResults :many
@@ -140,6 +150,11 @@ SELECT
 	skill_name,
 	provider,
 	model,
+	prompt_id,
+	prompt_version,
+	prompt_hash,
+	experiment_id,
+	variant_id,
 	status,
 	score,
 	input,
@@ -157,6 +172,11 @@ WHERE (sqlc.arg('run_id')::text = '' OR run_id = sqlc.arg('run_id')::text)
   AND (sqlc.arg('skill_name')::text = '' OR skill_name = sqlc.arg('skill_name')::text)
   AND (sqlc.arg('provider')::text = '' OR provider = sqlc.arg('provider')::text)
   AND (sqlc.arg('model')::text = '' OR model = sqlc.arg('model')::text)
+  AND (sqlc.arg('prompt_id')::text = '' OR prompt_id = sqlc.arg('prompt_id')::text)
+  AND (sqlc.arg('prompt_version')::text = '' OR prompt_version = sqlc.arg('prompt_version')::text)
+  AND (sqlc.arg('prompt_hash')::text = '' OR prompt_hash = sqlc.arg('prompt_hash')::text)
+  AND (sqlc.arg('experiment_id')::text = '' OR experiment_id = sqlc.arg('experiment_id')::text)
+  AND (sqlc.arg('variant_id')::text = '' OR variant_id = sqlc.arg('variant_id')::text)
 ORDER BY created_at DESC
 LIMIT NULLIF(sqlc.arg('limit_count')::int, 0);
 

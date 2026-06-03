@@ -1,0 +1,22 @@
+CREATE TABLE agent_tool_call_ledger (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
+	job_id TEXT NOT NULL DEFAULT '',
+	workflow_run_id TEXT NOT NULL DEFAULT '',
+	workflow_step_id TEXT NOT NULL DEFAULT '',
+	workflow_step_index INTEGER NOT NULL DEFAULT 0,
+	tool_call_id TEXT NOT NULL DEFAULT '',
+	tool_name TEXT NOT NULL DEFAULT '',
+	args_hash TEXT NOT NULL DEFAULT '',
+	idempotency_key TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT '',
+	input_json JSONB NOT NULL DEFAULT '{}',
+	output_text TEXT NOT NULL DEFAULT '',
+	error TEXT NOT NULL DEFAULT '',
+	external_idempotency_key TEXT NOT NULL DEFAULT '',
+	attempt INTEGER NOT NULL DEFAULT 1,
+	metadata_json JSONB NOT NULL DEFAULT '{}',
+	started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	completed_at TIMESTAMPTZ
+);

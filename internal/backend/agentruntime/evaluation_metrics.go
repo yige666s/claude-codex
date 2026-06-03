@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -9,66 +10,77 @@ import (
 )
 
 type EvaluationTraceMetrics struct {
-	DurationMS        int64   `json:"duration_ms,omitempty"`
-	ChatLLMFullMS     int64   `json:"chat_llm_full_latency_ms,omitempty"`
-	FirstTokenMS      int64   `json:"first_token_latency_ms,omitempty"`
-	JobEndToEndMS     int64   `json:"job_end_to_end_latency_ms,omitempty"`
-	SkillExecutionMS  int64   `json:"skill_execution_latency_ms,omitempty"`
-	SandboxStartupMS  int64   `json:"sandbox_startup_latency_ms,omitempty"`
-	ArtifactLatencyMS int64   `json:"artifact_generation_latency_ms,omitempty"`
-	ToolCallCount     int     `json:"tool_call_count"`
-	ToolErrorCount    int     `json:"tool_error_count"`
-	SkillCount        int     `json:"skill_count"`
-	SkillFailureCount int     `json:"skill_failure_count"`
-	LLMRequests       int     `json:"llm_requests"`
-	LLMFailures       int     `json:"llm_failures"`
-	InputTokens       int     `json:"input_tokens"`
-	OutputTokens      int     `json:"output_tokens"`
-	TotalTokens       int     `json:"total_tokens"`
-	EstimatedCostUSD  float64 `json:"estimated_cost_usd"`
-	RiskHighCount     int     `json:"risk_high_count"`
-	RiskMediumCount   int     `json:"risk_medium_count"`
-	RiskLowCount      int     `json:"risk_low_count"`
-	ArtifactCount     int     `json:"artifact_count"`
-	EmptyOutput       bool    `json:"empty_output"`
+	DurationMS                         int64          `json:"duration_ms,omitempty"`
+	ChatLLMFullMS                      int64          `json:"chat_llm_full_latency_ms,omitempty"`
+	FirstTokenMS                       int64          `json:"first_token_latency_ms,omitempty"`
+	JobEndToEndMS                      int64          `json:"job_end_to_end_latency_ms,omitempty"`
+	SkillExecutionMS                   int64          `json:"skill_execution_latency_ms,omitempty"`
+	SandboxStartupMS                   int64          `json:"sandbox_startup_latency_ms,omitempty"`
+	ArtifactLatencyMS                  int64          `json:"artifact_generation_latency_ms,omitempty"`
+	ToolCallCount                      int            `json:"tool_call_count"`
+	ToolErrorCount                     int            `json:"tool_error_count"`
+	SkillCount                         int            `json:"skill_count"`
+	SkillFailureCount                  int            `json:"skill_failure_count"`
+	StructuredOutputErrorCount         int            `json:"structured_output_error_count"`
+	StructuredOutputRepairAttemptCount int            `json:"structured_output_repair_attempt_count"`
+	StructuredOutputRepairSuccessCount int            `json:"structured_output_repair_success_count"`
+	StructuredOutputFallbackCount      int            `json:"structured_output_fallback_count"`
+	StructuredOutputFallbackLevels     map[string]int `json:"structured_output_fallback_levels,omitempty"`
+	LLMRequests                        int            `json:"llm_requests"`
+	LLMFailures                        int            `json:"llm_failures"`
+	InputTokens                        int            `json:"input_tokens"`
+	OutputTokens                       int            `json:"output_tokens"`
+	TotalTokens                        int            `json:"total_tokens"`
+	EstimatedCostUSD                   float64        `json:"estimated_cost_usd"`
+	RiskHighCount                      int            `json:"risk_high_count"`
+	RiskMediumCount                    int            `json:"risk_medium_count"`
+	RiskLowCount                       int            `json:"risk_low_count"`
+	ArtifactCount                      int            `json:"artifact_count"`
+	EmptyOutput                        bool           `json:"empty_output"`
 }
 
 type EvaluationAggregateMetrics struct {
-	Total             int     `json:"total"`
-	Passed            int     `json:"passed"`
-	Failed            int     `json:"failed"`
-	Warning           int     `json:"warning"`
-	SuccessRate       float64 `json:"success_rate"`
-	FailureRate       float64 `json:"failure_rate"`
-	WarningRate       float64 `json:"warning_rate"`
-	AverageLatencyMS  float64 `json:"average_latency_ms"`
-	P50LatencyMS      int64   `json:"p50_latency_ms"`
-	P95LatencyMS      int64   `json:"p95_latency_ms"`
-	P99LatencyMS      int64   `json:"p99_latency_ms"`
-	ChatLLMP95MS      int64   `json:"chat_llm_full_p95_ms"`
-	FirstTokenP95MS   int64   `json:"first_token_p95_ms"`
-	JobEndToEndP95MS  int64   `json:"job_end_to_end_p95_ms"`
-	SkillP95MS        int64   `json:"skill_execution_p95_ms"`
-	SandboxP95MS      int64   `json:"sandbox_startup_p95_ms"`
-	ArtifactP95MS     int64   `json:"artifact_generation_p95_ms"`
-	ToolCallCount     int     `json:"tool_call_count"`
-	ToolErrorCount    int     `json:"tool_error_count"`
-	ToolErrorRate     float64 `json:"tool_error_rate"`
-	SkillCount        int     `json:"skill_count"`
-	SkillFailureCount int     `json:"skill_failure_count"`
-	SkillFailureRate  float64 `json:"skill_failure_rate"`
-	LLMRequests       int     `json:"llm_requests"`
-	LLMFailures       int     `json:"llm_failures"`
-	LLMErrorRate      float64 `json:"llm_error_rate"`
-	InputTokens       int     `json:"input_tokens"`
-	OutputTokens      int     `json:"output_tokens"`
-	TotalTokens       int     `json:"total_tokens"`
-	EstimatedCostUSD  float64 `json:"estimated_cost_usd"`
-	HighRiskCount     int     `json:"high_risk_count"`
-	MediumRiskCount   int     `json:"medium_risk_count"`
-	LowRiskCount      int     `json:"low_risk_count"`
-	ArtifactCount     int     `json:"artifact_count"`
-	EmptyOutputCount  int     `json:"empty_output_count"`
+	Total                              int            `json:"total"`
+	Passed                             int            `json:"passed"`
+	Failed                             int            `json:"failed"`
+	Warning                            int            `json:"warning"`
+	SuccessRate                        float64        `json:"success_rate"`
+	FailureRate                        float64        `json:"failure_rate"`
+	WarningRate                        float64        `json:"warning_rate"`
+	AverageLatencyMS                   float64        `json:"average_latency_ms"`
+	P50LatencyMS                       int64          `json:"p50_latency_ms"`
+	P95LatencyMS                       int64          `json:"p95_latency_ms"`
+	P99LatencyMS                       int64          `json:"p99_latency_ms"`
+	ChatLLMP95MS                       int64          `json:"chat_llm_full_p95_ms"`
+	FirstTokenP95MS                    int64          `json:"first_token_p95_ms"`
+	JobEndToEndP95MS                   int64          `json:"job_end_to_end_p95_ms"`
+	SkillP95MS                         int64          `json:"skill_execution_p95_ms"`
+	SandboxP95MS                       int64          `json:"sandbox_startup_p95_ms"`
+	ArtifactP95MS                      int64          `json:"artifact_generation_p95_ms"`
+	ToolCallCount                      int            `json:"tool_call_count"`
+	ToolErrorCount                     int            `json:"tool_error_count"`
+	ToolErrorRate                      float64        `json:"tool_error_rate"`
+	SkillCount                         int            `json:"skill_count"`
+	SkillFailureCount                  int            `json:"skill_failure_count"`
+	SkillFailureRate                   float64        `json:"skill_failure_rate"`
+	StructuredOutputErrorCount         int            `json:"structured_output_error_count"`
+	StructuredOutputRepairAttemptCount int            `json:"structured_output_repair_attempt_count"`
+	StructuredOutputRepairSuccessCount int            `json:"structured_output_repair_success_count"`
+	StructuredOutputRepairSuccessRate  float64        `json:"structured_output_repair_success_rate"`
+	StructuredOutputFallbackCount      int            `json:"structured_output_fallback_count"`
+	StructuredOutputFallbackLevels     map[string]int `json:"structured_output_fallback_levels,omitempty"`
+	LLMRequests                        int            `json:"llm_requests"`
+	LLMFailures                        int            `json:"llm_failures"`
+	LLMErrorRate                       float64        `json:"llm_error_rate"`
+	InputTokens                        int            `json:"input_tokens"`
+	OutputTokens                       int            `json:"output_tokens"`
+	TotalTokens                        int            `json:"total_tokens"`
+	EstimatedCostUSD                   float64        `json:"estimated_cost_usd"`
+	HighRiskCount                      int            `json:"high_risk_count"`
+	MediumRiskCount                    int            `json:"medium_risk_count"`
+	LowRiskCount                       int            `json:"low_risk_count"`
+	ArtifactCount                      int            `json:"artifact_count"`
+	EmptyOutputCount                   int            `json:"empty_output_count"`
 }
 
 func calculateTraceMetrics(trace EvaluationTrace) EvaluationTraceMetrics {
@@ -103,6 +115,26 @@ func calculateTraceMetrics(trace EvaluationTrace) EvaluationTraceMetrics {
 			metrics.SandboxStartupMS = maxInt64(metrics.SandboxStartupMS, eventDataInt64(data, "startup_ms"))
 		case "artifact_metric":
 			metrics.ArtifactLatencyMS = maxInt64(metrics.ArtifactLatencyMS, eventDataInt64(data, "duration_ms"))
+		case structuredOutputValidationEvent:
+			if strings.EqualFold(metricEventDataString(data, "status"), structuredOutputStatusFailed) {
+				metrics.StructuredOutputErrorCount++
+			}
+		case structuredOutputRepairEvent:
+			attempts := mapInt(data, "repair_attempts")
+			if attempts <= 0 {
+				attempts = 1
+			}
+			metrics.StructuredOutputRepairAttemptCount += attempts
+			if strings.EqualFold(metricEventDataString(data, "status"), structuredOutputStatusSuccess) {
+				metrics.StructuredOutputRepairSuccessCount++
+			}
+		case structuredOutputFallbackEvent, "live_tool_fallback":
+			metrics.StructuredOutputFallbackCount++
+			level := firstNonEmptyString(metricEventDataString(data, "fallback_level"), metricEventDataString(data, "fallback"), event.Event.Content, "unknown")
+			if metrics.StructuredOutputFallbackLevels == nil {
+				metrics.StructuredOutputFallbackLevels = map[string]int{}
+			}
+			metrics.StructuredOutputFallbackLevels[level]++
 		}
 	}
 	for _, record := range trace.SkillExecutions {
@@ -179,6 +211,11 @@ func aggregateEvaluationMetrics(results []EvaluationResult) EvaluationAggregateM
 		aggregate.ToolErrorCount += metrics.ToolErrorCount
 		aggregate.SkillCount += metrics.SkillCount
 		aggregate.SkillFailureCount += metrics.SkillFailureCount
+		aggregate.StructuredOutputErrorCount += metrics.StructuredOutputErrorCount
+		aggregate.StructuredOutputRepairAttemptCount += metrics.StructuredOutputRepairAttemptCount
+		aggregate.StructuredOutputRepairSuccessCount += metrics.StructuredOutputRepairSuccessCount
+		aggregate.StructuredOutputFallbackCount += metrics.StructuredOutputFallbackCount
+		mergeStringIntCounts(&aggregate.StructuredOutputFallbackLevels, metrics.StructuredOutputFallbackLevels)
 		aggregate.LLMRequests += metrics.LLMRequests
 		aggregate.LLMFailures += metrics.LLMFailures
 		aggregate.InputTokens += metrics.InputTokens
@@ -218,6 +255,9 @@ func aggregateEvaluationMetrics(results []EvaluationResult) EvaluationAggregateM
 	if aggregate.SkillCount > 0 {
 		aggregate.SkillFailureRate = float64(aggregate.SkillFailureCount) / float64(aggregate.SkillCount)
 	}
+	if aggregate.StructuredOutputRepairAttemptCount > 0 {
+		aggregate.StructuredOutputRepairSuccessRate = float64(aggregate.StructuredOutputRepairSuccessCount) / float64(aggregate.StructuredOutputRepairAttemptCount)
+	}
 	if aggregate.LLMRequests > 0 {
 		aggregate.LLMErrorRate = float64(aggregate.LLMFailures) / float64(aggregate.LLMRequests)
 	}
@@ -248,6 +288,11 @@ func evaluationTraceMetricsFromMap(values map[string]any) EvaluationTraceMetrics
 	metrics.ToolErrorCount = mapInt(values, "tool_error_count")
 	metrics.SkillCount = mapInt(values, "skill_count")
 	metrics.SkillFailureCount = mapInt(values, "skill_failure_count")
+	metrics.StructuredOutputErrorCount = mapInt(values, "structured_output_error_count")
+	metrics.StructuredOutputRepairAttemptCount = mapInt(values, "structured_output_repair_attempt_count")
+	metrics.StructuredOutputRepairSuccessCount = mapInt(values, "structured_output_repair_success_count")
+	metrics.StructuredOutputFallbackCount = mapInt(values, "structured_output_fallback_count")
+	metrics.StructuredOutputFallbackLevels = mapStringInt(values, "structured_output_fallback_levels")
 	metrics.LLMRequests = mapInt(values, "llm_requests")
 	metrics.LLMFailures = mapInt(values, "llm_failures")
 	metrics.InputTokens = mapInt(values, "input_tokens")
@@ -264,68 +309,79 @@ func evaluationTraceMetricsFromMap(values map[string]any) EvaluationTraceMetrics
 
 func evaluationTraceMetricsMap(metrics EvaluationTraceMetrics) map[string]any {
 	return map[string]any{
-		"duration_ms":                    metrics.DurationMS,
-		"chat_llm_full_latency_ms":       metrics.ChatLLMFullMS,
-		"first_token_latency_ms":         metrics.FirstTokenMS,
-		"job_end_to_end_latency_ms":      metrics.JobEndToEndMS,
-		"skill_execution_latency_ms":     metrics.SkillExecutionMS,
-		"sandbox_startup_latency_ms":     metrics.SandboxStartupMS,
-		"artifact_generation_latency_ms": metrics.ArtifactLatencyMS,
-		"tool_call_count":                metrics.ToolCallCount,
-		"tool_error_count":               metrics.ToolErrorCount,
-		"skill_count":                    metrics.SkillCount,
-		"skill_failure_count":            metrics.SkillFailureCount,
-		"llm_requests":                   metrics.LLMRequests,
-		"llm_failures":                   metrics.LLMFailures,
-		"input_tokens":                   metrics.InputTokens,
-		"output_tokens":                  metrics.OutputTokens,
-		"total_tokens":                   metrics.TotalTokens,
-		"estimated_cost_usd":             metrics.EstimatedCostUSD,
-		"risk_high_count":                metrics.RiskHighCount,
-		"risk_medium_count":              metrics.RiskMediumCount,
-		"risk_low_count":                 metrics.RiskLowCount,
-		"artifact_count":                 metrics.ArtifactCount,
-		"empty_output":                   metrics.EmptyOutput,
+		"duration_ms":                            metrics.DurationMS,
+		"chat_llm_full_latency_ms":               metrics.ChatLLMFullMS,
+		"first_token_latency_ms":                 metrics.FirstTokenMS,
+		"job_end_to_end_latency_ms":              metrics.JobEndToEndMS,
+		"skill_execution_latency_ms":             metrics.SkillExecutionMS,
+		"sandbox_startup_latency_ms":             metrics.SandboxStartupMS,
+		"artifact_generation_latency_ms":         metrics.ArtifactLatencyMS,
+		"tool_call_count":                        metrics.ToolCallCount,
+		"tool_error_count":                       metrics.ToolErrorCount,
+		"skill_count":                            metrics.SkillCount,
+		"skill_failure_count":                    metrics.SkillFailureCount,
+		"structured_output_error_count":          metrics.StructuredOutputErrorCount,
+		"structured_output_repair_attempt_count": metrics.StructuredOutputRepairAttemptCount,
+		"structured_output_repair_success_count": metrics.StructuredOutputRepairSuccessCount,
+		"structured_output_fallback_count":       metrics.StructuredOutputFallbackCount,
+		"structured_output_fallback_levels":      metrics.StructuredOutputFallbackLevels,
+		"llm_requests":                           metrics.LLMRequests,
+		"llm_failures":                           metrics.LLMFailures,
+		"input_tokens":                           metrics.InputTokens,
+		"output_tokens":                          metrics.OutputTokens,
+		"total_tokens":                           metrics.TotalTokens,
+		"estimated_cost_usd":                     metrics.EstimatedCostUSD,
+		"risk_high_count":                        metrics.RiskHighCount,
+		"risk_medium_count":                      metrics.RiskMediumCount,
+		"risk_low_count":                         metrics.RiskLowCount,
+		"artifact_count":                         metrics.ArtifactCount,
+		"empty_output":                           metrics.EmptyOutput,
 	}
 }
 
 func evaluationAggregateMetricsMap(metrics EvaluationAggregateMetrics) map[string]any {
 	return map[string]any{
-		"total":                      metrics.Total,
-		"passed":                     metrics.Passed,
-		"failed":                     metrics.Failed,
-		"warning":                    metrics.Warning,
-		"success_rate":               metrics.SuccessRate,
-		"failure_rate":               metrics.FailureRate,
-		"warning_rate":               metrics.WarningRate,
-		"average_latency_ms":         metrics.AverageLatencyMS,
-		"p50_latency_ms":             metrics.P50LatencyMS,
-		"p95_latency_ms":             metrics.P95LatencyMS,
-		"p99_latency_ms":             metrics.P99LatencyMS,
-		"chat_llm_full_p95_ms":       metrics.ChatLLMP95MS,
-		"first_token_p95_ms":         metrics.FirstTokenP95MS,
-		"job_end_to_end_p95_ms":      metrics.JobEndToEndP95MS,
-		"skill_execution_p95_ms":     metrics.SkillP95MS,
-		"sandbox_startup_p95_ms":     metrics.SandboxP95MS,
-		"artifact_generation_p95_ms": metrics.ArtifactP95MS,
-		"tool_call_count":            metrics.ToolCallCount,
-		"tool_error_count":           metrics.ToolErrorCount,
-		"tool_error_rate":            metrics.ToolErrorRate,
-		"skill_count":                metrics.SkillCount,
-		"skill_failure_count":        metrics.SkillFailureCount,
-		"skill_failure_rate":         metrics.SkillFailureRate,
-		"llm_requests":               metrics.LLMRequests,
-		"llm_failures":               metrics.LLMFailures,
-		"llm_error_rate":             metrics.LLMErrorRate,
-		"input_tokens":               metrics.InputTokens,
-		"output_tokens":              metrics.OutputTokens,
-		"total_tokens":               metrics.TotalTokens,
-		"estimated_cost_usd":         metrics.EstimatedCostUSD,
-		"high_risk_count":            metrics.HighRiskCount,
-		"medium_risk_count":          metrics.MediumRiskCount,
-		"low_risk_count":             metrics.LowRiskCount,
-		"artifact_count":             metrics.ArtifactCount,
-		"empty_output_count":         metrics.EmptyOutputCount,
+		"total":                                  metrics.Total,
+		"passed":                                 metrics.Passed,
+		"failed":                                 metrics.Failed,
+		"warning":                                metrics.Warning,
+		"success_rate":                           metrics.SuccessRate,
+		"failure_rate":                           metrics.FailureRate,
+		"warning_rate":                           metrics.WarningRate,
+		"average_latency_ms":                     metrics.AverageLatencyMS,
+		"p50_latency_ms":                         metrics.P50LatencyMS,
+		"p95_latency_ms":                         metrics.P95LatencyMS,
+		"p99_latency_ms":                         metrics.P99LatencyMS,
+		"chat_llm_full_p95_ms":                   metrics.ChatLLMP95MS,
+		"first_token_p95_ms":                     metrics.FirstTokenP95MS,
+		"job_end_to_end_p95_ms":                  metrics.JobEndToEndP95MS,
+		"skill_execution_p95_ms":                 metrics.SkillP95MS,
+		"sandbox_startup_p95_ms":                 metrics.SandboxP95MS,
+		"artifact_generation_p95_ms":             metrics.ArtifactP95MS,
+		"tool_call_count":                        metrics.ToolCallCount,
+		"tool_error_count":                       metrics.ToolErrorCount,
+		"tool_error_rate":                        metrics.ToolErrorRate,
+		"skill_count":                            metrics.SkillCount,
+		"skill_failure_count":                    metrics.SkillFailureCount,
+		"skill_failure_rate":                     metrics.SkillFailureRate,
+		"structured_output_error_count":          metrics.StructuredOutputErrorCount,
+		"structured_output_repair_attempt_count": metrics.StructuredOutputRepairAttemptCount,
+		"structured_output_repair_success_count": metrics.StructuredOutputRepairSuccessCount,
+		"structured_output_repair_success_rate":  metrics.StructuredOutputRepairSuccessRate,
+		"structured_output_fallback_count":       metrics.StructuredOutputFallbackCount,
+		"structured_output_fallback_levels":      metrics.StructuredOutputFallbackLevels,
+		"llm_requests":                           metrics.LLMRequests,
+		"llm_failures":                           metrics.LLMFailures,
+		"llm_error_rate":                         metrics.LLMErrorRate,
+		"input_tokens":                           metrics.InputTokens,
+		"output_tokens":                          metrics.OutputTokens,
+		"total_tokens":                           metrics.TotalTokens,
+		"estimated_cost_usd":                     metrics.EstimatedCostUSD,
+		"high_risk_count":                        metrics.HighRiskCount,
+		"medium_risk_count":                      metrics.MediumRiskCount,
+		"low_risk_count":                         metrics.LowRiskCount,
+		"artifact_count":                         metrics.ArtifactCount,
+		"empty_output_count":                     metrics.EmptyOutputCount,
 	}
 }
 
@@ -379,6 +435,20 @@ func eventDataInt64(values map[string]any, key string) int64 {
 	return mapInt64(values, key)
 }
 
+func metricEventDataString(values map[string]any, key string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	value, ok := values[key]
+	if !ok {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
 func mapInt(values map[string]any, key string) int {
 	return int(mapInt64(values, key))
 }
@@ -416,6 +486,58 @@ func mapFloat(values map[string]any, key string) float64 {
 		return parsed
 	default:
 		return 0
+	}
+}
+
+func mapStringInt(values map[string]any, key string) map[string]int {
+	raw, ok := values[key]
+	if !ok {
+		return nil
+	}
+	out := map[string]int{}
+	switch typed := raw.(type) {
+	case map[string]int:
+		for key, value := range typed {
+			out[key] = value
+		}
+	case map[string]any:
+		for key, value := range typed {
+			out[key] = int(mapAnyInt64(value))
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mapAnyInt64(value any) int64 {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed)
+	case int64:
+		return typed
+	case int32:
+		return int64(typed)
+	case float64:
+		return int64(typed)
+	case jsonNumber:
+		parsed, _ := typed.Int64()
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func mergeStringIntCounts(target *map[string]int, source map[string]int) {
+	if len(source) == 0 {
+		return
+	}
+	if *target == nil {
+		*target = map[string]int{}
+	}
+	for key, value := range source {
+		(*target)[key] += value
 	}
 }
 

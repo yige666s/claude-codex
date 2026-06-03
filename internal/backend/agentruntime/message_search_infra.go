@@ -325,10 +325,13 @@ type OpenAIEmbeddingService struct {
 
 func NewMessageQueryEmbedder(config MessageSearchConfig) QueryEmbedder {
 	config = normalizeMessageSearchConfig(config)
+	var embedder QueryEmbedder
 	if config.EmbeddingProvider == messageEmbeddingProviderVertex {
-		return NewVertexAIEmbeddingService(config)
+		embedder = NewVertexAIEmbeddingService(config)
+	} else {
+		embedder = NewOpenAIEmbeddingService(config)
 	}
-	return NewOpenAIEmbeddingService(config)
+	return NewCachedQueryEmbedder(embedder, config)
 }
 
 func NewOpenAIEmbeddingService(config MessageSearchConfig) *OpenAIEmbeddingService {

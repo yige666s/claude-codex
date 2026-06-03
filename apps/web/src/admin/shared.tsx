@@ -517,7 +517,7 @@ export function mergeEvaluationReviews(current: EvaluationReview[], next: Evalua
 }
 
 
-export function filterEvaluationResults(results: EvaluationResult[], filter: { status: string; userID: string; sessionID: string; jobID: string; skillName: string; provider: string; model: string; subjectType: string }): EvaluationResult[] {
+export function filterEvaluationResults(results: EvaluationResult[], filter: { status: string; userID: string; sessionID: string; jobID: string; skillName: string; provider: string; model: string; subjectType: string; promptID?: string; promptVersion?: string; promptHash?: string; experimentID?: string; variantID?: string }): EvaluationResult[] {
   return results.filter((result) => {
     if (filter.status !== "all" && result.status !== filter.status) return false;
     if (filter.subjectType !== "all" && result.subject_type !== filter.subjectType) return false;
@@ -527,6 +527,11 @@ export function filterEvaluationResults(results: EvaluationResult[], filter: { s
     if (filter.skillName && result.skill_name !== filter.skillName) return false;
     if (filter.provider && result.provider !== filter.provider) return false;
     if (filter.model && result.model !== filter.model) return false;
+    if (filter.promptID && result.prompt_id !== filter.promptID) return false;
+    if (filter.promptVersion && result.prompt_version !== filter.promptVersion) return false;
+    if (filter.promptHash && result.prompt_hash !== filter.promptHash) return false;
+    if (filter.experimentID && result.experiment_id !== filter.experimentID) return false;
+    if (filter.variantID && result.variant_id !== filter.variantID) return false;
     return true;
   });
 }

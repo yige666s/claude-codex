@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -23,13 +24,14 @@ func NewSQLWorkflowStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLWorkflow
 func (s *SQLWorkflowStore) Init(ctx context.Context) error {
 	if err := requireSQLColumns(ctx, s.db, "agent_workflow_runs",
 		"id", "user_id", "session_id", "job_id", "name", "version", "status",
-		"state_json", "error", "created_at", "updated_at", "started_at", "finished_at",
+		"request_id", "idempotency_key", "state_json", "error", "lease_owner",
+		"lease_expires_at", "recoverable", "created_at", "updated_at", "started_at", "finished_at",
 	); err != nil {
 		return err
 	}
 	return requireSQLColumns(ctx, s.db, "agent_workflow_steps",
-		"id", "run_id", "step_name", "status", "input_json", "output_json",
-		"error", "started_at", "finished_at",
+		"id", "run_id", "step_index", "step_name", "idempotency_key", "attempt", "status",
+		"input_json", "output_json", "error", "metadata_json", "started_at", "finished_at",
 	)
 }
 
@@ -42,17 +44,22 @@ func (s *SQLWorkflowStore) CreateWorkflowRun(ctx context.Context, run *WorkflowR
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
-INSERT INTO agent_workflow_runs (id, user_id, session_id, job_id, name, version, status, state_json, error, created_at, updated_at, started_at, finished_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+INSERT INTO agent_workflow_runs (id, user_id, session_id, job_id, request_id, idempotency_key, name, version, status, state_json, error, lease_owner, lease_expires_at, recoverable, created_at, updated_at, started_at, finished_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		run.ID,
 		run.UserID,
 		run.SessionID,
 		run.JobID,
+		run.RequestID,
+		run.IdempotencyKey,
 		run.Name,
 		run.Version,
 		run.Status,
 		stateJSON,
 		run.Error,
+		run.LeaseOwner,
+		nullableSQLTimeValue(run.LeaseExpiresAt, s.dialect),
+		run.Recoverable,
 		sqlTimeValue(run.CreatedAt, s.dialect),
 		sqlTimeValue(run.UpdatedAt, s.dialect),
 		nullableSQLTimeValue(run.StartedAt, s.dialect),
@@ -71,16 +78,21 @@ func (s *SQLWorkflowStore) UpdateWorkflowRun(ctx context.Context, run *WorkflowR
 	}
 	result, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_workflow_runs
-SET user_id = ?, session_id = ?, job_id = ?, name = ?, version = ?, status = ?, state_json = ?, error = ?, updated_at = ?, started_at = ?, finished_at = ?
+SET user_id = ?, session_id = ?, job_id = ?, request_id = ?, idempotency_key = ?, name = ?, version = ?, status = ?, state_json = ?, error = ?, lease_owner = ?, lease_expires_at = ?, recoverable = ?, updated_at = ?, started_at = ?, finished_at = ?
 WHERE id = ?`),
 		run.UserID,
 		run.SessionID,
 		run.JobID,
+		run.RequestID,
+		run.IdempotencyKey,
 		run.Name,
 		run.Version,
 		run.Status,
 		stateJSON,
 		run.Error,
+		run.LeaseOwner,
+		nullableSQLTimeValue(run.LeaseExpiresAt, s.dialect),
+		run.Recoverable,
 		sqlTimeValue(run.UpdatedAt, s.dialect),
 		nullableSQLTimeValue(run.StartedAt, s.dialect),
 		nullableSQLTimeValue(run.FinishedAt, s.dialect),
@@ -100,7 +112,7 @@ func (s *SQLWorkflowStore) GetWorkflowRun(ctx context.Context, runID string) (*W
 		return nil, fmt.Errorf("workflow run id is required")
 	}
 	row := s.db.QueryRowContext(ctx, s.dialect.Bind(`
-SELECT id, user_id, session_id, job_id, name, version, status, state_json, error, created_at, updated_at, started_at, finished_at
+SELECT id, user_id, session_id, job_id, request_id, idempotency_key, name, version, status, state_json, error, lease_owner, lease_expires_at, recoverable, created_at, updated_at, started_at, finished_at
 FROM agent_workflow_runs
 WHERE id = ?`), runID)
 	return scanSQLWorkflowRun(row)
@@ -111,7 +123,7 @@ func (s *SQLWorkflowStore) ListWorkflowRuns(ctx context.Context, filter Workflow
 		return []*WorkflowRun{}, nil
 	}
 	filter = normalizeWorkflowRunFilter(filter)
-	query := `SELECT id, user_id, session_id, job_id, name, version, status, state_json, error, created_at, updated_at, started_at, finished_at FROM agent_workflow_runs`
+	query := `SELECT id, user_id, session_id, job_id, request_id, idempotency_key, name, version, status, state_json, error, lease_owner, lease_expires_at, recoverable, created_at, updated_at, started_at, finished_at FROM agent_workflow_runs`
 	where, args := workflowRunWhere(filter)
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -149,16 +161,24 @@ func (s *SQLWorkflowStore) AddWorkflowStepRun(ctx context.Context, step *Workflo
 	if err != nil {
 		return err
 	}
+	metadataJSON, err := marshalWorkflowJSON(step.Metadata)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
-INSERT INTO agent_workflow_steps (id, run_id, step_name, status, input_json, output_json, error, started_at, finished_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+INSERT INTO agent_workflow_steps (id, run_id, step_index, step_name, idempotency_key, attempt, status, input_json, output_json, error, metadata_json, started_at, finished_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		step.ID,
 		step.RunID,
+		step.StepIndex,
 		step.StepName,
+		step.IdempotencyKey,
+		step.Attempt,
 		step.Status,
 		inputJSON,
 		outputJSON,
 		step.Error,
+		metadataJSON,
 		sqlTimeValue(step.StartedAt, s.dialect),
 		nullableSQLTimeValue(step.FinishedAt, s.dialect),
 	)
@@ -177,16 +197,24 @@ func (s *SQLWorkflowStore) UpdateWorkflowStepRun(ctx context.Context, step *Work
 	if err != nil {
 		return err
 	}
+	metadataJSON, err := marshalWorkflowJSON(step.Metadata)
+	if err != nil {
+		return err
+	}
 	result, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_workflow_steps
-SET run_id = ?, step_name = ?, status = ?, input_json = ?, output_json = ?, error = ?, started_at = ?, finished_at = ?
+SET run_id = ?, step_index = ?, step_name = ?, idempotency_key = ?, attempt = ?, status = ?, input_json = ?, output_json = ?, error = ?, metadata_json = ?, started_at = ?, finished_at = ?
 WHERE id = ?`),
 		step.RunID,
+		step.StepIndex,
 		step.StepName,
+		step.IdempotencyKey,
+		step.Attempt,
 		step.Status,
 		inputJSON,
 		outputJSON,
 		step.Error,
+		metadataJSON,
 		sqlTimeValue(step.StartedAt, s.dialect),
 		nullableSQLTimeValue(step.FinishedAt, s.dialect),
 		step.ID,
@@ -205,10 +233,10 @@ func (s *SQLWorkflowStore) ListWorkflowStepRuns(ctx context.Context, runID strin
 		return []*WorkflowStepRun{}, nil
 	}
 	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
-SELECT id, run_id, step_name, status, input_json, output_json, error, started_at, finished_at
+SELECT id, run_id, step_index, step_name, idempotency_key, attempt, status, input_json, output_json, error, metadata_json, started_at, finished_at
 FROM agent_workflow_steps
 WHERE run_id = ?
-ORDER BY started_at ASC, id ASC`), runID)
+ORDER BY step_index ASC, started_at ASC, id ASC`), runID)
 	if err != nil {
 		return nil, err
 	}
@@ -222,6 +250,40 @@ ORDER BY started_at ASC, id ASC`), runID)
 		out = append(out, step)
 	}
 	return out, rows.Err()
+}
+
+func (s *SQLWorkflowStore) FindWorkflowRunByIdempotencyKey(ctx context.Context, userID, name, idempotencyKey string) (*WorkflowRun, error) {
+	if s == nil || strings.TrimSpace(idempotencyKey) == "" {
+		return nil, nil
+	}
+	row := s.db.QueryRowContext(ctx, s.dialect.Bind(`
+SELECT id, user_id, session_id, job_id, request_id, idempotency_key, name, version, status, state_json, error, lease_owner, lease_expires_at, recoverable, created_at, updated_at, started_at, finished_at
+FROM agent_workflow_runs
+WHERE user_id = ? AND name = ? AND idempotency_key = ?
+ORDER BY created_at DESC
+LIMIT 1`), strings.TrimSpace(userID), strings.TrimSpace(name), strings.TrimSpace(idempotencyKey))
+	run, err := scanSQLWorkflowRun(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return run, err
+}
+
+func (s *SQLWorkflowStore) GetWorkflowStepByIndex(ctx context.Context, runID string, stepIndex int) (*WorkflowStepRun, error) {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return nil, nil
+	}
+	row := s.db.QueryRowContext(ctx, s.dialect.Bind(`
+SELECT id, run_id, step_index, step_name, idempotency_key, attempt, status, input_json, output_json, error, metadata_json, started_at, finished_at
+FROM agent_workflow_steps
+WHERE run_id = ? AND step_index = ?
+ORDER BY started_at DESC, id DESC
+LIMIT 1`), strings.TrimSpace(runID), stepIndex)
+	step, err := scanSQLWorkflowStepRun(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return step, err
 }
 
 func workflowRunWhere(filter WorkflowRunFilter) ([]string, []any) {
@@ -253,17 +315,22 @@ func workflowRunWhere(filter WorkflowRunFilter) ([]string, []any) {
 func scanSQLWorkflowRun(row workflowScanner) (*WorkflowRun, error) {
 	var run WorkflowRun
 	var stateJSON []byte
-	var createdAt, updatedAt, startedAt, finishedAt any
+	var createdAt, updatedAt, startedAt, finishedAt, leaseExpiresAt any
 	if err := row.Scan(
 		&run.ID,
 		&run.UserID,
 		&run.SessionID,
 		&run.JobID,
+		&run.RequestID,
+		&run.IdempotencyKey,
 		&run.Name,
 		&run.Version,
 		&run.Status,
 		&stateJSON,
 		&run.Error,
+		&run.LeaseOwner,
+		&leaseExpiresAt,
+		&run.Recoverable,
 		&createdAt,
 		&updatedAt,
 		&startedAt,
@@ -281,6 +348,9 @@ func scanSQLWorkflowRun(row workflowScanner) (*WorkflowRun, error) {
 	if run.UpdatedAt, err = parseSQLTime(updatedAt); err != nil {
 		return nil, err
 	}
+	if run.LeaseExpiresAt, err = parseNullableSQLTime(leaseExpiresAt); err != nil {
+		return nil, err
+	}
 	if run.StartedAt, err = parseNullableSQLTime(startedAt); err != nil {
 		return nil, err
 	}
@@ -292,16 +362,20 @@ func scanSQLWorkflowRun(row workflowScanner) (*WorkflowRun, error) {
 
 func scanSQLWorkflowStepRun(row workflowScanner) (*WorkflowStepRun, error) {
 	var step WorkflowStepRun
-	var inputJSON, outputJSON []byte
+	var inputJSON, outputJSON, metadataJSON []byte
 	var startedAt, finishedAt any
 	if err := row.Scan(
 		&step.ID,
 		&step.RunID,
+		&step.StepIndex,
 		&step.StepName,
+		&step.IdempotencyKey,
+		&step.Attempt,
 		&step.Status,
 		&inputJSON,
 		&outputJSON,
 		&step.Error,
+		&metadataJSON,
 		&startedAt,
 		&finishedAt,
 	); err != nil {
@@ -311,6 +385,9 @@ func scanSQLWorkflowStepRun(row workflowScanner) (*WorkflowStepRun, error) {
 		return nil, err
 	}
 	if err := unmarshalWorkflowJSON(outputJSON, &step.Output); err != nil {
+		return nil, err
+	}
+	if err := unmarshalWorkflowJSON(metadataJSON, &step.Metadata); err != nil {
 		return nil, err
 	}
 	var err error

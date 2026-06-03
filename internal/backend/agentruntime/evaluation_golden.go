@@ -94,6 +94,8 @@ type PlannerGoldenJudge struct {
 	Planner       plannerapi.Planner
 	Model         string
 	PromptVersion string
+	PromptID      string
+	PromptHash    string
 	SystemPrompt  string
 }
 
@@ -230,13 +232,17 @@ func (j PlannerGoldenJudge) JudgeGoldenCase(ctx context.Context, req GoldenJudge
 			{Role: state.MessageRoleUser, Content: goldenJudgeUserPrompt(req), CreatedAt: time.Now().UTC()},
 		},
 	}
-	plan, err := j.Planner.Next(ctx, session, nil)
+	planCtx := ctx
+	if j.PromptID != "" || j.PromptVersion != "" || j.PromptHash != "" {
+		planCtx = WithPromptMetadata(ctx, PromptMetadata{PromptID: firstNonEmptyString(j.PromptID, PromptIDEvalJudge), PromptVersion: j.promptVersion(), PromptHash: j.PromptHash})
+	}
+	plan, err := j.Planner.Next(planCtx, session, nil)
 	if err != nil {
 		return GoldenJudgeResult{}, err
 	}
 	result, err := parseGoldenJudgeJSON(plan.AssistantText)
 	if err != nil {
-		repaired, repairErr := j.repairGoldenJudgeJSON(ctx, req, plan.AssistantText, err)
+		repaired, repairErr := j.repairGoldenJudgeJSON(planCtx, req, plan.AssistantText, err)
 		if repairErr != nil {
 			fallback, fallbackErr := HeuristicGoldenJudge{}.JudgeGoldenCase(ctx, req)
 			if fallbackErr != nil {
@@ -282,16 +288,21 @@ func evaluateGoldenCaseResult(ctx context.Context, judge GoldenJudge, runID stri
 		status = EvaluationResultStatusFailed
 	}
 	return normalizeEvaluationResult(EvaluationResult{
-		RunID:       runID,
-		SubjectType: EvaluationSubjectGoldenCase,
-		SubjectID:   item.ID,
-		Status:      status,
-		Score:       score,
-		Input:       item.Query,
-		Output:      candidate.Output,
-		Metrics:     goldenJudgeMetricsMap(judgement, set, item, candidate),
-		Findings:    findings,
-		CreatedAt:   now,
+		RunID:         runID,
+		SubjectType:   EvaluationSubjectGoldenCase,
+		SubjectID:     item.ID,
+		PromptID:      goldenCandidateMetadataString(candidate, "prompt_id"),
+		PromptVersion: goldenCandidateMetadataString(candidate, "prompt_version"),
+		PromptHash:    goldenCandidateMetadataString(candidate, "prompt_hash"),
+		ExperimentID:  goldenCandidateMetadataString(candidate, "experiment_id"),
+		VariantID:     goldenCandidateMetadataString(candidate, "variant_id"),
+		Status:        status,
+		Score:         score,
+		Input:         item.Query,
+		Output:        candidate.Output,
+		Metrics:       goldenJudgeMetricsMap(judgement, set, item, candidate),
+		Findings:      findings,
+		CreatedAt:     now,
 	}), nil
 }
 
@@ -329,6 +340,11 @@ func goldenJudgeMetricsMap(result GoldenJudgeResult, set GoldenSet, item GoldenC
 		"case_tags":                       item.Tags,
 		"retrieved_evidence_count":        len(candidate.RetrievedEvidence),
 	}
+	for _, key := range []string{"prompt_id", "prompt_version", "prompt_hash", "experiment_id", "variant_id"} {
+		if value := goldenCandidateMetadataString(candidate, key); value != "" {
+			values[key] = value
+		}
+	}
 	for key, value := range result.Metadata {
 		if strings.TrimSpace(key) == "" {
 			continue
@@ -336,6 +352,13 @@ func goldenJudgeMetricsMap(result GoldenJudgeResult, set GoldenSet, item GoldenC
 		values["judge_"+key] = value
 	}
 	return values
+}
+
+func goldenCandidateMetadataString(candidate GoldenCandidate, key string) string {
+	if candidate.Metadata == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(candidate.Metadata[key]))
 }
 
 func goldenJudgeSystemPrompt() string {

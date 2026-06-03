@@ -180,6 +180,11 @@ type Config struct {
 	RateLimitBackend                        string
 	RateLimit                               int
 	OperationRateLimits                     string
+	CacheBackend                            string
+	CacheRedisURL                           string
+	CachePrefix                             string
+	CacheDefaultTTL                         time.Duration
+	CacheFailOpen                           bool
 	RedisURL                                string
 	RedisFailOpen                           bool
 	MessageContextCacheBackend              string
@@ -365,9 +370,9 @@ func Default() Config {
 		LiveVADPrefixPadding:                    EnvDuration("AGENT_API_LIVE_VAD_PREFIX_PADDING", 150*time.Millisecond),
 		LiveVADSilenceDuration:                  EnvDuration("AGENT_API_LIVE_VAD_SILENCE_DURATION", 350*time.Millisecond),
 		LiveSessionTimeout:                      EnvDuration("AGENT_API_LIVE_SESSION_TIMEOUT", 10*time.Minute),
-		LiveSetupPromptCacheBackend:             FirstNonEmpty(os.Getenv("AGENT_API_LIVE_SETUP_PROMPT_CACHE_BACKEND"), "memory"),
-		LiveSetupPromptCacheRedisURL:            FirstNonEmpty(os.Getenv("AGENT_API_LIVE_SETUP_PROMPT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
-		LiveSetupPromptCacheTTL:                 EnvDuration("AGENT_API_LIVE_SETUP_PROMPT_CACHE_TTL", time.Minute),
+		LiveSetupPromptCacheBackend:             FirstNonEmpty(os.Getenv("AGENT_API_LIVE_SETUP_PROMPT_CACHE_BACKEND"), os.Getenv("AGENT_API_CACHE_BACKEND"), "memory"),
+		LiveSetupPromptCacheRedisURL:            FirstNonEmpty(os.Getenv("AGENT_API_LIVE_SETUP_PROMPT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
+		LiveSetupPromptCacheTTL:                 EnvDuration("AGENT_API_LIVE_SETUP_PROMPT_CACHE_TTL", EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", time.Minute)),
 		AuthMode:                                FirstNonEmpty(os.Getenv("AGENT_API_AUTH_MODE"), "auto"),
 		AuthToken:                               os.Getenv("AGENT_API_AUTH_TOKEN"),
 		UserHeader:                              "X-User-ID",
@@ -414,14 +419,19 @@ func Default() Config {
 		RateLimitBackend:                        FirstNonEmpty(os.Getenv("AGENT_API_RATE_LIMIT_BACKEND"), "memory"),
 		RateLimit:                               60,
 		OperationRateLimits:                     os.Getenv("AGENT_API_OPERATION_RATE_LIMITS"),
+		CacheBackend:                            FirstNonEmpty(os.Getenv("AGENT_API_CACHE_BACKEND"), "memory"),
+		CacheRedisURL:                           FirstNonEmpty(os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
+		CachePrefix:                             FirstNonEmpty(os.Getenv("AGENT_API_CACHE_PREFIX"), "agent:cache"),
+		CacheDefaultTTL:                         EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", 10*time.Minute),
+		CacheFailOpen:                           EnvBool("AGENT_API_CACHE_FAIL_OPEN", EnvBool("AGENT_API_REDIS_FAIL_OPEN", false)),
 		RedisURL:                                os.Getenv("AGENT_API_REDIS_URL"),
 		RedisFailOpen:                           EnvBool("AGENT_API_REDIS_FAIL_OPEN", false),
-		MessageContextCacheBackend:              FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND"), "memory"),
-		MessageContextCacheRedisURL:             FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
-		MessageContextCacheTTL:                  EnvDuration("AGENT_API_MESSAGE_CONTEXT_CACHE_TTL", 24*time.Hour),
+		MessageContextCacheBackend:              FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND"), os.Getenv("AGENT_API_CACHE_BACKEND"), "memory"),
+		MessageContextCacheRedisURL:             FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
+		MessageContextCacheTTL:                  EnvDuration("AGENT_API_MESSAGE_CONTEXT_CACHE_TTL", EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", 24*time.Hour)),
 		SessionListCacheBackend:                 FirstNonEmpty(os.Getenv("AGENT_API_SESSION_LIST_CACHE_BACKEND"), "none"),
-		SessionListCacheRedisURL:                FirstNonEmpty(os.Getenv("AGENT_API_SESSION_LIST_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
-		SessionListCacheTTL:                     EnvDuration("AGENT_API_SESSION_LIST_CACHE_TTL", 10*time.Minute),
+		SessionListCacheRedisURL:                FirstNonEmpty(os.Getenv("AGENT_API_SESSION_LIST_CACHE_REDIS_URL"), os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
+		SessionListCacheTTL:                     EnvDuration("AGENT_API_SESSION_LIST_CACHE_TTL", EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", 10*time.Minute)),
 		MessageSequenceBackend:                  FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEQUENCE_BACKEND"), "redis"),
 		MessageSequenceRedisURL:                 FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEQUENCE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
 		MessageEventsBackend:                    FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_BACKEND"), "local"),
@@ -649,6 +659,11 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.StringVar(&cfg.RateLimitBackend, "rate-limit-backend", cfg.RateLimitBackend, "rate limit backend: memory, redis, gateway, none")
 	flags.IntVar(&cfg.RateLimit, "rate-limit", cfg.RateLimit, "max requests per user per minute")
 	flags.StringVar(&cfg.OperationRateLimits, "operation-rate-limits", cfg.OperationRateLimits, "comma-separated operation rate limits such as chat_message=60/m,job_create=20/m,data_export=5/h")
+	flags.StringVar(&cfg.CacheBackend, "cache-backend", cfg.CacheBackend, "default cache backend: memory, redis, or none")
+	flags.StringVar(&cfg.CacheRedisURL, "cache-redis-url", cfg.CacheRedisURL, "default Redis URL for cache-backed services")
+	flags.StringVar(&cfg.CachePrefix, "cache-prefix", cfg.CachePrefix, "default Redis key prefix for the unified cache store")
+	flags.DurationVar(&cfg.CacheDefaultTTL, "cache-default-ttl", cfg.CacheDefaultTTL, "default TTL for unified cache entries")
+	flags.BoolVar(&cfg.CacheFailOpen, "cache-fail-open", cfg.CacheFailOpen, "treat cache backend errors as misses for typed cache callers")
 	flags.StringVar(&cfg.RedisURL, "redis-url", cfg.RedisURL, "Redis URL for distributed rate limiting")
 	flags.BoolVar(&cfg.RedisFailOpen, "redis-fail-open", cfg.RedisFailOpen, "allow requests when Redis rate limit is unavailable")
 	flags.StringVar(&cfg.MessageContextCacheBackend, "message-context-cache-backend", cfg.MessageContextCacheBackend, "message context cache backend: memory, redis, or none")

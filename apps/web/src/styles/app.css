@@ -3261,6 +3261,29 @@ label.composer-upload {
 .golden-actions select {
   min-height: 36px;
 }
+.prompt-eval-box {
+  margin: 10px 0 12px;
+  padding: 12px;
+  border: 1px solid rgba(214, 225, 229, 0.9);
+  border-radius: 12px;
+  background: rgba(248, 252, 251, 0.82);
+}
+.prompt-comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.prompt-experiment-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(4, auto);
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+.prompt-experiment-row select {
+  min-width: 0;
+}
 .golden-case-list {
   margin-top: 8px;
 }
@@ -3294,6 +3317,13 @@ label.composer-upload {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+.admin-deep-agent-panel {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
 }
 .review-issue {
   margin-top: 10px;
@@ -4098,6 +4128,12 @@ label.composer-upload {
   }
   .admin-skill-layout {
     grid-template-columns: 1fr;
+  }
+  .prompt-comparison-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .prompt-experiment-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .admin-list-panel {
     max-height: 360px;

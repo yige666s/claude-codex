@@ -33,7 +33,7 @@ import {
   type AdminTabOption
 } from "../shared";
 import { sessionTitle } from "../../lib/sessionTitle";
-import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, RiskReviewSummary, RiskSummary, Session, WorkflowRun, WorkflowStepRun } from "../../types";
+import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, RiskReviewSummary, RiskSummary, Session, WorkflowRun, WorkflowStepRun } from "../../types";
 
 export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string }) {
   const [userID, setUserID] = useState("");
@@ -46,6 +46,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStepRun[]>([]);
+  const [deepAgentSummary, setDeepAgentSummary] = useState<DeepAgentWorkflowSummary | null>(null);
   const [selectedSessionID, setSelectedSessionID] = useState("");
   const [selectedJobID, setSelectedJobID] = useState("");
   const [selectedWorkflowID, setSelectedWorkflowID] = useState("");
@@ -100,8 +101,10 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
       if (nextWorkflowID) {
         const detail = await api.adminOpsWorkflow(token, cleanUserID, nextWorkflowID);
         setWorkflowSteps(detail.steps);
+        setDeepAgentSummary(detail.deepAgent || null);
       } else {
         setWorkflowSteps([]);
+        setDeepAgentSummary(null);
       }
       setNotice(`Loaded ${nextSessions.length} sessions, ${nextJobs.length} jobs, ${nextWorkflows.length} workflows, ${nextAssets.length} assets`);
     } catch (err) {
@@ -117,6 +120,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
     setSelectedWorkflowID("");
     setEvents([]);
     setWorkflowSteps([]);
+    setDeepAgentSummary(null);
     await loadOps(sessionID, "");
   };
 
@@ -136,8 +140,10 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
       if (nextWorkflowID) {
         const detail = await api.adminOpsWorkflow(token, cleanUserID, nextWorkflowID);
         setWorkflowSteps(detail.steps);
+        setDeepAgentSummary(detail.deepAgent || null);
       } else {
         setWorkflowSteps([]);
+        setDeepAgentSummary(null);
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -151,6 +157,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
     try {
       const detail = await api.adminOpsWorkflow(token, cleanUserID, runID);
       setWorkflowSteps(detail.steps);
+      setDeepAgentSummary(detail.deepAgent || null);
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -338,6 +345,53 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
                       <SkillFact label="Finished" value={formatTime(selectedWorkflow.finished_at || "")} />
                       <SkillFact label="Error" value={selectedWorkflow.error || "None"} />
                     </div>
+                    {deepAgentSummary?.present && (
+                      <div className="admin-deep-agent-panel">
+                        <div className="admin-card-head">
+                          <h3>DeepAgent</h3>
+                          <StatusBadge value={deepAgentSummary.status || "unknown"} />
+                        </div>
+                        <div className="admin-facts">
+                          <SkillFact label="Goal" value={deepAgentSummary.goal || "None"} />
+                          <SkillFact label="Current step" value={deepAgentSummary.current_step?.title || deepAgentSummary.current_step_id || "None"} />
+                          <SkillFact label="Actions" value={String(deepAgentSummary.action_count || 0)} />
+                          <SkillFact label="Completed / failed" value={`${deepAgentSummary.completed_count || 0} / ${deepAgentSummary.failed_count || 0}`} />
+                          <SkillFact label="Blocker" value={deepAgentSummary.blocker || "None"} />
+                        </div>
+                        <div className="admin-table">
+                          {(deepAgentSummary.plan?.steps || []).slice(0, 8).map((step) => (
+                            <div key={step.id} className="admin-table-row">
+                              <StatusBadge value={step.status || "pending"} />
+                              <span>{step.title || step.id}<small>{step.done_condition || step.intent || ""}</small></span>
+                              {step.risk_level && <em>{step.risk_level}</em>}
+                            </div>
+                          ))}
+                          {!(deepAgentSummary.plan?.steps || []).length && <p className="muted-text">No DeepAgent plan steps recorded.</p>}
+                        </div>
+                        {!!deepAgentSummary.action_history?.length && (
+                          <div className="admin-table compact">
+                            {deepAgentSummary.action_history.slice(-5).map((action, index) => (
+                              <div key={`${action.hash || action.step_id}-${index}`} className="admin-table-row">
+                                <StatusBadge value={action.tool || "action"} />
+                                <span>{action.step_id}</span>
+                                <small>{action.hash || "no hash"}</small>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {!!deepAgentSummary.learnings?.length && (
+                          <div className="admin-table compact">
+                            {deepAgentSummary.learnings.slice(0, 4).map((learning) => (
+                              <div key={learning.id} className="admin-table-row">
+                                <StatusBadge value={learning.type} />
+                                <span>{learning.content}</span>
+                                <small>{learning.status}</small>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div className="admin-card-head">
                       <h3>Steps</h3>
                       <small>{workflowSteps.length}</small>

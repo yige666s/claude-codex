@@ -113,6 +113,11 @@ type LLMUsageRecord struct {
 	SessionID        string    `json:"session_id"`
 	RequestID        string    `json:"request_id,omitempty"`
 	SkillName        string    `json:"skill_name,omitempty"`
+	PromptID         string    `json:"prompt_id,omitempty"`
+	PromptVersion    string    `json:"prompt_version,omitempty"`
+	PromptHash       string    `json:"prompt_hash,omitempty"`
+	ExperimentID     string    `json:"experiment_id,omitempty"`
+	VariantID        string    `json:"variant_id,omitempty"`
 	Provider         string    `json:"provider"`
 	Model            string    `json:"model"`
 	InputTokens      int       `json:"input_tokens"`
@@ -136,9 +141,14 @@ type LLMUsageSummary struct {
 }
 
 type LLMUsageAdminFilter struct {
-	UserID string
-	Since  time.Time
-	Limit  int
+	UserID        string
+	Since         time.Time
+	Limit         int
+	PromptID      string
+	PromptVersion string
+	PromptHash    string
+	ExperimentID  string
+	VariantID     string
 }
 
 type LLMUsageAdminSummary struct {
@@ -462,12 +472,18 @@ func (p *GovernedPlanner) record(ctx context.Context, scope LLMScope, backend LL
 		return nil
 	}
 	totalTokens := inputTokens + outputTokens
+	prompt := promptMetadataFromContext(ctx)
 	return p.store.RecordLLMUsage(ctx, LLMUsageRecord{
 		ID:               newLLMUsageID(),
 		UserID:           scope.UserID,
 		SessionID:        scope.SessionID,
 		RequestID:        scope.RequestID,
 		SkillName:        scope.SkillName,
+		PromptID:         prompt.PromptID,
+		PromptVersion:    prompt.PromptVersion,
+		PromptHash:       prompt.PromptHash,
+		ExperimentID:     prompt.ExperimentID,
+		VariantID:        prompt.VariantID,
 		Provider:         firstNonEmptyString(backend.Provider, backend.Name),
 		Model:            backend.Model,
 		InputTokens:      inputTokens,
@@ -705,6 +721,7 @@ func NewSQLLLMUsageStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLLLMUsage
 func (s *SQLLLMUsageStore) Init(ctx context.Context) error {
 	if err := requireSQLColumns(ctx, s.db, "agent_llm_usage",
 		"id", "user_id", "session_id", "request_id", "skill_name", "provider", "model",
+		"prompt_id", "prompt_version", "prompt_hash", "experiment_id", "variant_id",
 		"input_tokens", "output_tokens", "total_tokens", "estimated_cost_usd", "attempt",
 		"status", "error", "latency_ms", "ttft_ms", "created_at",
 	); err != nil {
@@ -723,34 +740,14 @@ func (s *SQLLLMUsageStore) RecordLLMUsage(ctx context.Context, record LLMUsageRe
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now().UTC()
 	}
-	if s.dialect == SQLDialectPostgres && s.queries != nil {
-		return s.queries.InsertLLMUsage(ctx, dbsqlc.InsertLLMUsageParams{
-			ID:               record.ID,
-			UserID:           record.UserID,
-			SessionID:        record.SessionID,
-			RequestID:        sqlNullString(record.RequestID),
-			SkillName:        sqlNullString(record.SkillName),
-			Provider:         record.Provider,
-			Model:            record.Model,
-			InputTokens:      int32(record.InputTokens),
-			OutputTokens:     int32(record.OutputTokens),
-			TotalTokens:      int32(record.TotalTokens),
-			EstimatedCostUsd: record.EstimatedCostUSD,
-			Attempt:          int32(record.Attempt),
-			Status:           record.Status,
-			Error:            sqlNullString(record.Error),
-			LatencyMs:        record.LatencyMs,
-			TtftMs:           record.TTFTMs,
-			CreatedAt:        record.CreatedAt.UTC(),
-		})
-	}
 	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_llm_usage (
-	id, user_id, session_id, request_id, skill_name, provider, model,
+	id, user_id, session_id, request_id, skill_name, prompt_id, prompt_version, prompt_hash, experiment_id, variant_id, provider, model,
 	input_tokens, output_tokens, total_tokens, estimated_cost_usd,
 	attempt, status, error, latency_ms, ttft_ms, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		record.ID, record.UserID, record.SessionID, record.RequestID, record.SkillName,
+		record.PromptID, record.PromptVersion, record.PromptHash, record.ExperimentID, record.VariantID,
 		record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.TotalTokens,
 		record.EstimatedCostUSD, record.Attempt, record.Status, record.Error, record.LatencyMs, record.TTFTMs,
 		sqlTimeValue(record.CreatedAt, s.dialect))
@@ -828,7 +825,7 @@ WHERE user_id = ? AND created_at >= ?`), userID, sqlTimeValue(since, s.dialect))
 
 func (s *SQLLLMUsageStore) SummarizeLLMUsage(ctx context.Context, filter LLMUsageAdminFilter) (LLMUsageAdminSummary, error) {
 	filter = normalizeLLMUsageAdminFilter(filter)
-	if s.dialect == SQLDialectPostgres && s.queries != nil {
+	if s.dialect == SQLDialectPostgres && s.queries != nil && !llmUsageFilterHasPromptExperiment(filter) {
 		userID := strings.TrimSpace(filter.UserID)
 		totals, err := s.queries.SummarizeLLMUsageTotals(ctx, dbsqlc.SummarizeLLMUsageTotalsParams{Since: filter.Since.UTC(), UserID: userID})
 		if err != nil {
@@ -859,24 +856,15 @@ func (s *SQLLLMUsageStore) SummarizeLLMUsage(ctx context.Context, filter LLMUsag
 				EstimatedCostUSD: math.Round(group.EstimatedCostUsd*1_000_000) / 1_000_000,
 			})
 		}
-		recent, err := s.queries.ListRecentLLMUsage(ctx, dbsqlc.ListRecentLLMUsageParams{
-			Since:      filter.Since.UTC(),
-			UserID:     userID,
-			LimitCount: int32(filter.Limit),
-		})
+		recent, err := s.listRecentLLMUsage(ctx, filter)
 		if err != nil {
 			return LLMUsageAdminSummary{}, err
 		}
-		summary.Recent = llmUsageRecordsFromSQLC(recent)
+		summary.Recent = recent
 		summary.EstimatedCostUSD = math.Round(summary.EstimatedCostUSD*1_000_000) / 1_000_000
 		return summary, nil
 	}
-	where := ` WHERE created_at >= ?`
-	args := []any{sqlTimeValue(filter.Since, s.dialect)}
-	if strings.TrimSpace(filter.UserID) != "" {
-		where += ` AND user_id = ?`
-		args = append(args, strings.TrimSpace(filter.UserID))
-	}
+	where, args := llmUsageWhere(filter, s.dialect)
 
 	summary := LLMUsageAdminSummary{Since: filter.Since}
 	err := s.db.QueryRowContext(ctx, s.dialect.Bind(`
@@ -926,7 +914,7 @@ ORDER BY COALESCE(SUM(estimated_cost_usd), 0) DESC, COUNT(*) DESC`), args...)
 
 	recentArgs := append([]any{}, args...)
 	recentArgs = append(recentArgs, filter.Limit)
-	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`SELECT id, user_id, session_id, request_id, skill_name, provider, model, input_tokens, output_tokens, total_tokens, estimated_cost_usd, attempt, status, error, latency_ms, ttft_ms, created_at FROM agent_llm_usage`+where+` ORDER BY created_at DESC LIMIT ?`), recentArgs...)
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`SELECT id, user_id, session_id, request_id, skill_name, prompt_id, prompt_version, prompt_hash, experiment_id, variant_id, provider, model, input_tokens, output_tokens, total_tokens, estimated_cost_usd, attempt, status, error, latency_ms, ttft_ms, created_at FROM agent_llm_usage`+where+` ORDER BY created_at DESC LIMIT ?`), recentArgs...)
 	if err != nil {
 		return LLMUsageAdminSummary{}, err
 	}
@@ -943,6 +931,25 @@ ORDER BY COALESCE(SUM(estimated_cost_usd), 0) DESC, COUNT(*) DESC`), args...)
 	}
 	summary.EstimatedCostUSD = math.Round(summary.EstimatedCostUSD*1_000_000) / 1_000_000
 	return summary, nil
+}
+
+func (s *SQLLLMUsageStore) listRecentLLMUsage(ctx context.Context, filter LLMUsageAdminFilter) ([]LLMUsageRecord, error) {
+	where, args := llmUsageWhere(filter, s.dialect)
+	args = append(args, filter.Limit)
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`SELECT id, user_id, session_id, request_id, skill_name, prompt_id, prompt_version, prompt_hash, experiment_id, variant_id, provider, model, input_tokens, output_tokens, total_tokens, estimated_cost_usd, attempt, status, error, latency_ms, ttft_ms, created_at FROM agent_llm_usage`+where+` ORDER BY created_at DESC LIMIT ?`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []LLMUsageRecord{}
+	for rows.Next() {
+		record, err := scanLLMUsageRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, record)
+	}
+	return out, rows.Err()
 }
 
 func (s *SQLLLMUsageStore) RecordLLMQuotaAdjustment(ctx context.Context, adjustment LLMQuotaAdjustment) error {
@@ -1054,6 +1061,11 @@ func scanLLMUsageRecord(row llmUsageScanner) (LLMUsageRecord, error) {
 		&record.SessionID,
 		&record.RequestID,
 		&record.SkillName,
+		&record.PromptID,
+		&record.PromptVersion,
+		&record.PromptHash,
+		&record.ExperimentID,
+		&record.VariantID,
 		&record.Provider,
 		&record.Model,
 		&record.InputTokens,
@@ -1216,6 +1228,11 @@ func clampLLMUsageSummary(summary LLMUsageSummary) LLMUsageSummary {
 
 func normalizeLLMUsageAdminFilter(filter LLMUsageAdminFilter) LLMUsageAdminFilter {
 	filter.UserID = strings.TrimSpace(filter.UserID)
+	filter.PromptID = strings.TrimSpace(filter.PromptID)
+	filter.PromptVersion = strings.TrimSpace(filter.PromptVersion)
+	filter.PromptHash = strings.TrimSpace(filter.PromptHash)
+	filter.ExperimentID = strings.TrimSpace(filter.ExperimentID)
+	filter.VariantID = strings.TrimSpace(filter.VariantID)
 	if filter.Since.IsZero() {
 		filter.Since = startOfUTCDay(time.Now())
 	}
@@ -1223,6 +1240,40 @@ func normalizeLLMUsageAdminFilter(filter LLMUsageAdminFilter) LLMUsageAdminFilte
 		filter.Limit = 200
 	}
 	return filter
+}
+
+func llmUsageFilterHasPromptExperiment(filter LLMUsageAdminFilter) bool {
+	return filter.PromptID != "" || filter.PromptVersion != "" || filter.PromptHash != "" || filter.ExperimentID != "" || filter.VariantID != ""
+}
+
+func llmUsageWhere(filter LLMUsageAdminFilter, dialect SQLDialect) (string, []any) {
+	where := ` WHERE created_at >= ?`
+	args := []any{sqlTimeValue(filter.Since, dialect)}
+	if filter.UserID != "" {
+		where += ` AND user_id = ?`
+		args = append(args, filter.UserID)
+	}
+	if filter.PromptID != "" {
+		where += ` AND prompt_id = ?`
+		args = append(args, filter.PromptID)
+	}
+	if filter.PromptVersion != "" {
+		where += ` AND prompt_version = ?`
+		args = append(args, filter.PromptVersion)
+	}
+	if filter.PromptHash != "" {
+		where += ` AND prompt_hash = ?`
+		args = append(args, filter.PromptHash)
+	}
+	if filter.ExperimentID != "" {
+		where += ` AND experiment_id = ?`
+		args = append(args, filter.ExperimentID)
+	}
+	if filter.VariantID != "" {
+		where += ` AND variant_id = ?`
+		args = append(args, filter.VariantID)
+	}
+	return where, args
 }
 
 func summarizeLLMUsageRecords(records []LLMUsageRecord, filter LLMUsageAdminFilter) LLMUsageAdminSummary {
@@ -1236,6 +1287,21 @@ func summarizeLLMUsageRecords(records []LLMUsageRecord, filter LLMUsageAdminFilt
 	var latencyCount int
 	for _, record := range records {
 		if strings.TrimSpace(filter.UserID) != "" && record.UserID != filter.UserID {
+			continue
+		}
+		if filter.PromptID != "" && record.PromptID != filter.PromptID {
+			continue
+		}
+		if filter.PromptVersion != "" && record.PromptVersion != filter.PromptVersion {
+			continue
+		}
+		if filter.PromptHash != "" && record.PromptHash != filter.PromptHash {
+			continue
+		}
+		if filter.ExperimentID != "" && record.ExperimentID != filter.ExperimentID {
+			continue
+		}
+		if filter.VariantID != "" && record.VariantID != filter.VariantID {
 			continue
 		}
 		if record.CreatedAt.Before(filter.Since) {

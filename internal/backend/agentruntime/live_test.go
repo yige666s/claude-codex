@@ -673,6 +673,109 @@ func TestRuntimeExecuteLiveToolFunctionCallRunsWebResearch(t *testing.T) {
 	}
 }
 
+func TestRuntimeExecuteLiveToolFunctionCallValidatesHarnessToolInput(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	runner := &liveHarnessRunner{
+		descriptors: []toolkit.Descriptor{{Name: "WebSearch", Description: "Search the web.", InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}`)}},
+		output:      "should not run",
+	}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, nil, func(Scope) Runner { return runner })
+	session, err := runtime.CreateSession(context.Background(), "alice", root)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	handled, _, err := runtime.ExecuteLiveToolFunctionCall(context.Background(), "alice", session.ID, "call-1", "WebSearch", json.RawMessage(`{"query":123}`), "", nil)
+	if !handled {
+		t.Fatal("expected invalid allowlisted live tool call to be handled as an error")
+	}
+	if err == nil || !strings.Contains(err.Error(), "$.query") {
+		t.Fatalf("expected structured validation error for query, got %v", err)
+	}
+	if runner.calledName != "" {
+		t.Fatalf("tool should not execute after schema validation failure, called %s", runner.calledName)
+	}
+}
+
+func TestRuntimeExecuteLiveToolFunctionCallRepairsHarnessToolInput(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	runner := &liveHarnessRunner{
+		descriptors: []toolkit.Descriptor{{Name: "WebSearch", Description: "Search the web.", InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`)}},
+		generated:   `{"query":"repaired query"}`,
+		output:      "search result",
+	}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, nil, func(Scope) Runner { return runner })
+	session, err := runtime.CreateSession(context.Background(), "alice", root)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	handled, output, err := runtime.ExecuteLiveToolFunctionCall(context.Background(), "alice", session.ID, "call-1", "WebSearch", json.RawMessage(`{"query":123}`), "search latest docs", nil)
+	if err != nil {
+		t.Fatalf("ExecuteLiveToolFunctionCall: %v", err)
+	}
+	if !handled || output != "search result" || runner.calledName != "WebSearch" {
+		t.Fatalf("unexpected repaired tool call handled=%v output=%q called=%s", handled, output, runner.calledName)
+	}
+	if !strings.Contains(string(runner.calledInput), "repaired query") {
+		t.Fatalf("expected repaired input, got %s", string(runner.calledInput))
+	}
+}
+
+func TestRuntimeExecuteLiveToolFunctionCallFallsBackToDisplayTextForWebSearch(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	runner := &liveHarnessRunner{
+		descriptors: []toolkit.Descriptor{{Name: "WebSearch", Description: "Search the web.", InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`)}},
+		output:      "search result",
+	}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, nil, func(Scope) Runner { return runner })
+	session, err := runtime.CreateSession(context.Background(), "alice", root)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	_, _, err = runtime.ExecuteLiveToolFunctionCall(context.Background(), "alice", session.ID, "call-1", "WebSearch", json.RawMessage(`{"query":123}`), "fallback query", nil)
+	if err != nil {
+		t.Fatalf("ExecuteLiveToolFunctionCall: %v", err)
+	}
+	if !strings.Contains(string(runner.calledInput), "fallback query") {
+		t.Fatalf("expected deterministic fallback query, got %s", string(runner.calledInput))
+	}
+}
+
+func TestParseLiveSkillSelectionValidatesSchema(t *testing.T) {
+	if _, ok := parseLiveSkillSelection(`{"action":"tool_call","skill":"demo","args":"","confidence":0.9,"reason":"bad enum"}`); ok {
+		t.Fatal("expected invalid action enum to be rejected")
+	}
+	selection, ok := parseLiveSkillSelection("```json\n{\"action\":\"none\",\"skill\":\"\",\"args\":\"\",\"confidence\":0,\"reason\":\"small talk\"}\n```")
+	if !ok || selection.Action != "none" {
+		t.Fatalf("expected valid selection from markdown JSON, got %#v ok=%v", selection, ok)
+	}
+}
+
+func TestRuntimeSelectLiveSkillCommandRepairsStructuredSelection(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileSessionStore(root)
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{Name: "diagram", Description: "Create diagrams.", UserInvocable: true}}}
+	runner := &repairingLiveSkillSelectorRunner{}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, catalog, func(Scope) Runner { return runner })
+	session, err := runtime.CreateSession(context.Background(), "alice", root)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	command, ok := runtime.selectLiveSkillCommand(context.Background(), "alice", session.ID, "画一个系统架构图")
+	if !ok || command != "/diagram 画一个系统架构图" {
+		t.Fatalf("expected repaired skill command, got %q ok=%v", command, ok)
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected initial selection plus repair call, got %d", runner.calls)
+	}
+}
+
 func TestRuntimeLiveSkillCommandIgnoresNaturalLanguageSkillNames(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileSessionStore(root)
@@ -858,6 +961,25 @@ func (r liveSkillSelectorRunner) RunGeneratedPrompt(_ context.Context, session *
 	session.AddSystemContext(prompt)
 	session.AddAssistantMessage(r.output)
 	return engine.Result{Output: r.output, Session: session}, nil
+}
+
+type repairingLiveSkillSelectorRunner struct {
+	calls int
+}
+
+func (r *repairingLiveSkillSelectorRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return r.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (r *repairingLiveSkillSelectorRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	r.calls++
+	output := `{"action":"tool_call","skill":"diagram","args":"画一个系统架构图","confidence":0.9,"reason":"bad enum"}`
+	if strings.Contains(prompt, "repairing a failed structured JSON") {
+		output = `{"action":"skill_call","skill":"diagram","args":"画一个系统架构图","confidence":0.9,"reason":"matches diagram skill"}`
+	}
+	session.AddSystemContext(prompt)
+	session.AddAssistantMessage(output)
+	return engine.Result{Output: output, Session: session}, nil
 }
 
 type contextAwareLiveSkillSelectorRunner struct {

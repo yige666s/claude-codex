@@ -5,6 +5,11 @@ INSERT INTO agent_llm_usage (
 	session_id,
 	request_id,
 	skill_name,
+	prompt_id,
+	prompt_version,
+	prompt_hash,
+	experiment_id,
+	variant_id,
 	provider,
 	model,
 	input_tokens,
@@ -34,7 +39,12 @@ INSERT INTO agent_llm_usage (
 	$14,
 	$15,
 	$16,
-	$17
+	$17,
+	$18,
+	$19,
+	$20,
+	$21,
+	$22
 );
 
 -- name: SumLLMUsageSuccess :one
@@ -95,6 +105,11 @@ SELECT
 	session_id,
 	request_id,
 	skill_name,
+	prompt_id,
+	prompt_version,
+	prompt_hash,
+	experiment_id,
+	variant_id,
 	provider,
 	model,
 	input_tokens,

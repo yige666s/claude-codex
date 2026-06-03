@@ -29,6 +29,7 @@ const (
 	RiskOperationAttachmentUpload = "attachment_upload"
 	RiskOperationAssetDownload    = "asset_download"
 	RiskOperationMemoryExtract    = "memory_extract"
+	RiskOperationDeepAgentAction  = "deep_agent_action"
 	RiskOperationDataExport       = "data_export"
 	RiskOperationAccountDelete    = "account_delete"
 	RiskOperationAdminAction      = "admin_action"
