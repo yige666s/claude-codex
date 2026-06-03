@@ -98,23 +98,28 @@ type AgentEvalGoldenSet struct {
 }
 
 type AgentEvalResult struct {
-	ID          string    `json:"id"`
-	RunID       string    `json:"run_id"`
-	SubjectType string    `json:"subject_type"`
-	SubjectID   string    `json:"subject_id"`
-	UserID      string    `json:"user_id"`
-	SessionID   string    `json:"session_id"`
-	JobID       string    `json:"job_id"`
-	SkillName   string    `json:"skill_name"`
-	Provider    string    `json:"provider"`
-	Model       string    `json:"model"`
-	Status      string    `json:"status"`
-	Score       float64   `json:"score"`
-	Input       string    `json:"input"`
-	Output      string    `json:"output"`
-	Metrics     string    `json:"metrics"`
-	Findings    string    `json:"findings"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	RunID         string    `json:"run_id"`
+	SubjectType   string    `json:"subject_type"`
+	SubjectID     string    `json:"subject_id"`
+	UserID        string    `json:"user_id"`
+	SessionID     string    `json:"session_id"`
+	JobID         string    `json:"job_id"`
+	SkillName     string    `json:"skill_name"`
+	Provider      string    `json:"provider"`
+	Model         string    `json:"model"`
+	PromptID      string    `json:"prompt_id"`
+	PromptVersion string    `json:"prompt_version"`
+	PromptHash    string    `json:"prompt_hash"`
+	ExperimentID  string    `json:"experiment_id"`
+	VariantID     string    `json:"variant_id"`
+	Status        string    `json:"status"`
+	Score         float64   `json:"score"`
+	Input         string    `json:"input"`
+	Output        string    `json:"output"`
+	Metrics       string    `json:"metrics"`
+	Findings      string    `json:"findings"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type AgentEvalReview struct {
@@ -188,6 +193,11 @@ type AgentLlmUsage struct {
 	SessionID        string         `json:"session_id"`
 	RequestID        sql.NullString `json:"request_id"`
 	SkillName        sql.NullString `json:"skill_name"`
+	PromptID         string         `json:"prompt_id"`
+	PromptVersion    string         `json:"prompt_version"`
+	PromptHash       string         `json:"prompt_hash"`
+	ExperimentID     string         `json:"experiment_id"`
+	VariantID        string         `json:"variant_id"`
 	Provider         string         `json:"provider"`
 	Model            string         `json:"model"`
 	InputTokens      int32          `json:"input_tokens"`
@@ -395,6 +405,29 @@ type AgentSession struct {
 	LastMessageAt sql.NullTime `json:"last_message_at"`
 }
 
+type AgentToolCallLedger struct {
+	ID                     string          `json:"id"`
+	UserID                 string          `json:"user_id"`
+	SessionID              string          `json:"session_id"`
+	JobID                  string          `json:"job_id"`
+	WorkflowRunID          string          `json:"workflow_run_id"`
+	WorkflowStepID         string          `json:"workflow_step_id"`
+	WorkflowStepIndex      int32           `json:"workflow_step_index"`
+	ToolCallID             string          `json:"tool_call_id"`
+	ToolName               string          `json:"tool_name"`
+	ArgsHash               string          `json:"args_hash"`
+	IdempotencyKey         string          `json:"idempotency_key"`
+	Status                 string          `json:"status"`
+	InputJson              json.RawMessage `json:"input_json"`
+	OutputText             string          `json:"output_text"`
+	Error                  string          `json:"error"`
+	ExternalIdempotencyKey string          `json:"external_idempotency_key"`
+	Attempt                int32           `json:"attempt"`
+	MetadataJson           json.RawMessage `json:"metadata_json"`
+	StartedAt              time.Time       `json:"started_at"`
+	CompletedAt            sql.NullTime    `json:"completed_at"`
+}
+
 type AgentUser struct {
 	UserID          string       `json:"user_id"`
 	Email           string       `json:"email"`
@@ -409,29 +442,38 @@ type AgentUser struct {
 }
 
 type AgentWorkflowRun struct {
-	ID         string          `json:"id"`
-	UserID     string          `json:"user_id"`
-	SessionID  string          `json:"session_id"`
-	JobID      string          `json:"job_id"`
-	Name       string          `json:"name"`
-	Version    string          `json:"version"`
-	Status     string          `json:"status"`
-	StateJson  json.RawMessage `json:"state_json"`
-	Error      string          `json:"error"`
-	CreatedAt  time.Time       `json:"created_at"`
-	UpdatedAt  time.Time       `json:"updated_at"`
-	StartedAt  sql.NullTime    `json:"started_at"`
-	FinishedAt sql.NullTime    `json:"finished_at"`
+	ID             string          `json:"id"`
+	UserID         string          `json:"user_id"`
+	SessionID      string          `json:"session_id"`
+	JobID          string          `json:"job_id"`
+	RequestID      string          `json:"request_id"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	Name           string          `json:"name"`
+	Version        string          `json:"version"`
+	Status         string          `json:"status"`
+	StateJson      json.RawMessage `json:"state_json"`
+	Error          string          `json:"error"`
+	LeaseOwner     string          `json:"lease_owner"`
+	LeaseExpiresAt sql.NullTime    `json:"lease_expires_at"`
+	Recoverable    bool            `json:"recoverable"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	StartedAt      sql.NullTime    `json:"started_at"`
+	FinishedAt     sql.NullTime    `json:"finished_at"`
 }
 
 type AgentWorkflowStep struct {
-	ID         string          `json:"id"`
-	RunID      string          `json:"run_id"`
-	StepName   string          `json:"step_name"`
-	Status     string          `json:"status"`
-	InputJson  json.RawMessage `json:"input_json"`
-	OutputJson json.RawMessage `json:"output_json"`
-	Error      string          `json:"error"`
-	StartedAt  time.Time       `json:"started_at"`
-	FinishedAt sql.NullTime    `json:"finished_at"`
+	ID             string          `json:"id"`
+	RunID          string          `json:"run_id"`
+	StepIndex      int32           `json:"step_index"`
+	StepName       string          `json:"step_name"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	Attempt        int32           `json:"attempt"`
+	Status         string          `json:"status"`
+	InputJson      json.RawMessage `json:"input_json"`
+	OutputJson     json.RawMessage `json:"output_json"`
+	Error          string          `json:"error"`
+	MetadataJson   json.RawMessage `json:"metadata_json"`
+	StartedAt      time.Time       `json:"started_at"`
+	FinishedAt     sql.NullTime    `json:"finished_at"`
 }

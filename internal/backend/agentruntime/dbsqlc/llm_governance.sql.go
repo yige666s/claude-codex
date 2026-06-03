@@ -73,6 +73,11 @@ INSERT INTO agent_llm_usage (
 	session_id,
 	request_id,
 	skill_name,
+	prompt_id,
+	prompt_version,
+	prompt_hash,
+	experiment_id,
+	variant_id,
 	provider,
 	model,
 	input_tokens,
@@ -102,7 +107,12 @@ INSERT INTO agent_llm_usage (
 	$14,
 	$15,
 	$16,
-	$17
+	$17,
+	$18,
+	$19,
+	$20,
+	$21,
+	$22
 )
 `
 
@@ -112,6 +122,11 @@ type InsertLLMUsageParams struct {
 	SessionID        string         `json:"session_id"`
 	RequestID        sql.NullString `json:"request_id"`
 	SkillName        sql.NullString `json:"skill_name"`
+	PromptID         string         `json:"prompt_id"`
+	PromptVersion    string         `json:"prompt_version"`
+	PromptHash       string         `json:"prompt_hash"`
+	ExperimentID     string         `json:"experiment_id"`
+	VariantID        string         `json:"variant_id"`
 	Provider         string         `json:"provider"`
 	Model            string         `json:"model"`
 	InputTokens      int32          `json:"input_tokens"`
@@ -133,6 +148,11 @@ func (q *Queries) InsertLLMUsage(ctx context.Context, arg InsertLLMUsageParams) 
 		arg.SessionID,
 		arg.RequestID,
 		arg.SkillName,
+		arg.PromptID,
+		arg.PromptVersion,
+		arg.PromptHash,
+		arg.ExperimentID,
+		arg.VariantID,
 		arg.Provider,
 		arg.Model,
 		arg.InputTokens,
@@ -274,6 +294,11 @@ SELECT
 	session_id,
 	request_id,
 	skill_name,
+	prompt_id,
+	prompt_version,
+	prompt_hash,
+	experiment_id,
+	variant_id,
 	provider,
 	model,
 	input_tokens,
@@ -314,6 +339,11 @@ func (q *Queries) ListRecentLLMUsage(ctx context.Context, arg ListRecentLLMUsage
 			&i.SessionID,
 			&i.RequestID,
 			&i.SkillName,
+			&i.PromptID,
+			&i.PromptVersion,
+			&i.PromptHash,
+			&i.ExperimentID,
+			&i.VariantID,
 			&i.Provider,
 			&i.Model,
 			&i.InputTokens,

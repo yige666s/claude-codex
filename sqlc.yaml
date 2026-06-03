@@ -12,6 +12,7 @@ sql:
       - "internal/backend/agentruntime/sqlc/schema/risk.sql"
       - "internal/backend/agentruntime/sqlc/schema/runtime_config.sql"
       - "internal/backend/agentruntime/sqlc/schema/sessions_messages.sql"
+      - "internal/backend/agentruntime/sqlc/schema/tool_call_ledger.sql"
       - "internal/backend/agentruntime/sqlc/schema/users.sql"
       - "internal/backend/agentruntime/sqlc/schema/workflow.sql"
     queries:

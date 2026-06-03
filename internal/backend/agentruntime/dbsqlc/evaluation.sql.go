@@ -93,6 +93,11 @@ INSERT INTO agent_eval_results (
 	skill_name,
 	provider,
 	model,
+	prompt_id,
+	prompt_version,
+	prompt_hash,
+	experiment_id,
+	variant_id,
 	status,
 	score,
 	input,
@@ -117,28 +122,38 @@ INSERT INTO agent_eval_results (
 	$14,
 	$15,
 	$16,
-	$17
+	$17,
+	$18,
+	$19,
+	$20,
+	$21,
+	$22
 )
 `
 
 type InsertEvaluationResultParams struct {
-	ID          string    `json:"id"`
-	RunID       string    `json:"run_id"`
-	SubjectType string    `json:"subject_type"`
-	SubjectID   string    `json:"subject_id"`
-	UserID      string    `json:"user_id"`
-	SessionID   string    `json:"session_id"`
-	JobID       string    `json:"job_id"`
-	SkillName   string    `json:"skill_name"`
-	Provider    string    `json:"provider"`
-	Model       string    `json:"model"`
-	Status      string    `json:"status"`
-	Score       float64   `json:"score"`
-	Input       string    `json:"input"`
-	Output      string    `json:"output"`
-	Metrics     string    `json:"metrics"`
-	Findings    string    `json:"findings"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	RunID         string    `json:"run_id"`
+	SubjectType   string    `json:"subject_type"`
+	SubjectID     string    `json:"subject_id"`
+	UserID        string    `json:"user_id"`
+	SessionID     string    `json:"session_id"`
+	JobID         string    `json:"job_id"`
+	SkillName     string    `json:"skill_name"`
+	Provider      string    `json:"provider"`
+	Model         string    `json:"model"`
+	PromptID      string    `json:"prompt_id"`
+	PromptVersion string    `json:"prompt_version"`
+	PromptHash    string    `json:"prompt_hash"`
+	ExperimentID  string    `json:"experiment_id"`
+	VariantID     string    `json:"variant_id"`
+	Status        string    `json:"status"`
+	Score         float64   `json:"score"`
+	Input         string    `json:"input"`
+	Output        string    `json:"output"`
+	Metrics       string    `json:"metrics"`
+	Findings      string    `json:"findings"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 func (q *Queries) InsertEvaluationResult(ctx context.Context, arg InsertEvaluationResultParams) error {
@@ -153,6 +168,11 @@ func (q *Queries) InsertEvaluationResult(ctx context.Context, arg InsertEvaluati
 		arg.SkillName,
 		arg.Provider,
 		arg.Model,
+		arg.PromptID,
+		arg.PromptVersion,
+		arg.PromptHash,
+		arg.ExperimentID,
+		arg.VariantID,
 		arg.Status,
 		arg.Score,
 		arg.Input,
@@ -290,6 +310,11 @@ SELECT
 	skill_name,
 	provider,
 	model,
+	prompt_id,
+	prompt_version,
+	prompt_hash,
+	experiment_id,
+	variant_id,
 	status,
 	score,
 	input,
@@ -307,21 +332,31 @@ WHERE ($1::text = '' OR run_id = $1::text)
   AND ($7::text = '' OR skill_name = $7::text)
   AND ($8::text = '' OR provider = $8::text)
   AND ($9::text = '' OR model = $9::text)
+  AND ($10::text = '' OR prompt_id = $10::text)
+  AND ($11::text = '' OR prompt_version = $11::text)
+  AND ($12::text = '' OR prompt_hash = $12::text)
+  AND ($13::text = '' OR experiment_id = $13::text)
+  AND ($14::text = '' OR variant_id = $14::text)
 ORDER BY created_at DESC
-LIMIT NULLIF($10::int, 0)
+LIMIT NULLIF($15::int, 0)
 `
 
 type ListEvaluationResultsParams struct {
-	RunID       string `json:"run_id"`
-	Status      string `json:"status"`
-	SubjectType string `json:"subject_type"`
-	UserID      string `json:"user_id"`
-	SessionID   string `json:"session_id"`
-	JobID       string `json:"job_id"`
-	SkillName   string `json:"skill_name"`
-	Provider    string `json:"provider"`
-	Model       string `json:"model"`
-	LimitCount  int32  `json:"limit_count"`
+	RunID         string `json:"run_id"`
+	Status        string `json:"status"`
+	SubjectType   string `json:"subject_type"`
+	UserID        string `json:"user_id"`
+	SessionID     string `json:"session_id"`
+	JobID         string `json:"job_id"`
+	SkillName     string `json:"skill_name"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	PromptID      string `json:"prompt_id"`
+	PromptVersion string `json:"prompt_version"`
+	PromptHash    string `json:"prompt_hash"`
+	ExperimentID  string `json:"experiment_id"`
+	VariantID     string `json:"variant_id"`
+	LimitCount    int32  `json:"limit_count"`
 }
 
 func (q *Queries) ListEvaluationResults(ctx context.Context, arg ListEvaluationResultsParams) ([]AgentEvalResult, error) {
@@ -335,6 +370,11 @@ func (q *Queries) ListEvaluationResults(ctx context.Context, arg ListEvaluationR
 		arg.SkillName,
 		arg.Provider,
 		arg.Model,
+		arg.PromptID,
+		arg.PromptVersion,
+		arg.PromptHash,
+		arg.ExperimentID,
+		arg.VariantID,
 		arg.LimitCount,
 	)
 	if err != nil {
@@ -355,6 +395,11 @@ func (q *Queries) ListEvaluationResults(ctx context.Context, arg ListEvaluationR
 			&i.SkillName,
 			&i.Provider,
 			&i.Model,
+			&i.PromptID,
+			&i.PromptVersion,
+			&i.PromptHash,
+			&i.ExperimentID,
+			&i.VariantID,
 			&i.Status,
 			&i.Score,
 			&i.Input,
