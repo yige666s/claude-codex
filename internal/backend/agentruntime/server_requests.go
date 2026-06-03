@@ -42,6 +42,7 @@ type chatMessageRequest struct {
 	AttachmentIDs  []string            `json:"attachment_ids"`
 	AttachmentURLs []ChatAttachmentURL `json:"attachment_urls"`
 	ThinkingMode   bool                `json:"thinking_mode,omitempty"`
+	AgentMode      string              `json:"agent_mode,omitempty"`
 }
 
 func (req chatMessageRequest) ValidateRequest() error {

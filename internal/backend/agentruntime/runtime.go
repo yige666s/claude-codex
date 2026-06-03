@@ -2300,7 +2300,7 @@ func (r *Runtime) executeLiveSkillCommand(ctx context.Context, userID, sessionID
 		if err := r.persistChatSession(ctx, userID, session, startMessageCount); err != nil {
 			return true, "", err
 		}
-		job, err := r.CreateJob(ctx, req, firstNonEmptyString(decision.JobType, "skill"))
+		job, err := r.CreateJob(ctx, req, firstNonEmptyString(decision.JobType, JobTypeSkill))
 		if err != nil {
 			return true, "", err
 		}
@@ -2957,7 +2957,7 @@ func (r *Runtime) CreateJob(ctx context.Context, req ChatRequest, jobType string
 		ID:             NewJobID(),
 		UserID:         req.UserID,
 		SessionID:      req.SessionID,
-		Type:           firstNonEmptyString(jobType, "chat"),
+		Type:           firstNonEmptyString(jobType, JobTypeChat),
 		Status:         JobStatusQueued,
 		Content:        req.Content,
 		AttachmentIDs:  append([]string(nil), req.AttachmentIDs...),
@@ -3077,7 +3077,13 @@ func (r *Runtime) runJob(ctx context.Context, job *Job) error {
 	}
 	sink := &jobEventSink{store: r.jobs, bus: r.jobEvents, fanout: r.jobEventFanout, job: job, logger: componentLogger(r.logger, "job_event_fanout")}
 	ctx = withJobEventEmitter(ctx, sink.Send)
-	err := r.Chat(ctx, ChatRequest{UserID: job.UserID, SessionID: job.SessionID, Content: job.Content, AttachmentIDs: job.AttachmentIDs, AttachmentURLs: job.AttachmentURLs}, sink)
+	var err error
+	switch job.Type {
+	case JobTypeDeepAgent:
+		err = r.runDeepAgentJob(ctx, job, sink)
+	default:
+		err = r.Chat(ctx, ChatRequest{UserID: job.UserID, SessionID: job.SessionID, Content: job.Content, AttachmentIDs: job.AttachmentIDs, AttachmentURLs: job.AttachmentURLs}, sink)
+	}
 	finishedAt := time.Now().UTC()
 	if current, loadErr := r.jobs.GetJob(context.Background(), job.UserID, job.ID); loadErr == nil && current.Status == JobStatusCancelled {
 		return nil
@@ -3096,6 +3102,156 @@ func (r *Runtime) runJob(ctx context.Context, job *Job) error {
 		}
 		return updateErr
 	}
+}
+
+func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink) error {
+	if r == nil {
+		return fmt.Errorf("runtime is not configured")
+	}
+	if job == nil {
+		return fmt.Errorf("job is required")
+	}
+	if sink == nil {
+		return fmt.Errorf("event sink is required")
+	}
+	goal := strings.TrimSpace(job.Content)
+	if goal == "" {
+		goal = "Please analyze the attached file(s)."
+	}
+	session, err := r.GetSession(ctx, job.UserID, job.SessionID)
+	if err != nil {
+		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
+		return err
+	}
+	turnCtx, cancel := context.WithCancel(ctx)
+	turnKey := sessionKey(job.UserID, session.ID)
+	if err := r.start(turnKey, cancel, true); err != nil {
+		cancel()
+		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
+		return err
+	}
+	defer cancel()
+	defer r.finish(turnKey)
+	startMessageCount := len(session.Messages)
+	ensureVisibleUserMessage(session, goal)
+	if err := r.persistChatSession(ctx, job.UserID, session, startMessageCount); err != nil {
+		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
+		return err
+	}
+	_ = sink.Send(ctx, Event{Type: "deep_agent_started", SessionID: job.SessionID, JobID: job.ID, Role: "workflow", Content: "Plan-and-execute task started"})
+	result, err := r.ExecuteDeepAgentTask(turnCtx, DeepAgentTaskRequest{
+		UserID:    job.UserID,
+		SessionID: job.SessionID,
+		JobID:     job.ID,
+		Goal:      goal,
+		Policy: DeepAgentPolicy{
+			MaxSteps:        6,
+			MaxActions:      12,
+			MaxDuration:     10 * time.Minute,
+			StepTimeout:     60 * time.Second,
+			NoProgressLimit: 2,
+		},
+		State: map[string]any{
+			"attachment_ids":  append([]string(nil), job.AttachmentIDs...),
+			"attachment_urls": append([]ChatAttachmentURL(nil), job.AttachmentURLs...),
+		},
+	}, nil, nil, nil)
+	if err != nil {
+		messageErr := r.appendDeepAgentResultMessage(ctx, job.UserID, job.SessionID, result, err)
+		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
+		if messageErr != nil {
+			return errors.Join(err, messageErr)
+		}
+		return err
+	}
+	if err := r.appendDeepAgentResultMessage(ctx, job.UserID, job.SessionID, result, nil); err != nil {
+		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
+		return err
+	}
+	_ = sink.Send(ctx, Event{Type: "deep_agent_completed", SessionID: job.SessionID, JobID: job.ID, Role: "workflow", Content: "Plan-and-execute task completed"})
+	return sink.Send(ctx, Event{Type: "done", SessionID: job.SessionID, JobID: job.ID})
+}
+
+func (r *Runtime) appendDeepAgentResultMessage(ctx context.Context, userID, sessionID string, result *DeepAgentTaskResult, runErr error) error {
+	if r == nil {
+		return fmt.Errorf("runtime is not configured")
+	}
+	session, err := r.GetSession(ctx, userID, sessionID)
+	if err != nil {
+		return err
+	}
+	startMessageCount := len(session.Messages)
+	session.AddAssistantMessage(formatDeepAgentResultMessage(result, runErr))
+	r.sanitizeSessionAttachmentBlocks(session)
+	if err := r.persistChatSession(ctx, userID, session, startMessageCount); err != nil {
+		return err
+	}
+	return r.afterTurnMemory(ctx, userID, session)
+}
+
+func formatDeepAgentResultMessage(result *DeepAgentTaskResult, runErr error) string {
+	var b strings.Builder
+	var state *DeepAgentState
+	if result != nil {
+		state = result.State
+	}
+	if runErr != nil {
+		b.WriteString("计划执行暂时中止。")
+		b.WriteString("\n\n原因：")
+		if state != nil && strings.TrimSpace(state.Blocker) != "" {
+			b.WriteString(strings.TrimSpace(state.Blocker))
+		} else {
+			b.WriteString(runErr.Error())
+		}
+	} else {
+		b.WriteString("计划执行完成。")
+	}
+	if state != nil {
+		if len(state.Plan.Steps) > 0 {
+			b.WriteString("\n\n计划：")
+			for i, step := range state.Plan.Steps {
+				title := strings.TrimSpace(firstNonEmptyString(step.Title, step.ID))
+				if title == "" {
+					title = fmt.Sprintf("Step %d", i+1)
+				}
+				status := strings.TrimSpace(step.Status)
+				if status == "" {
+					status = DeepAgentStepStatusPending
+				}
+				b.WriteString(fmt.Sprintf("\n%d. %s（%s）", i+1, title, status))
+			}
+		}
+		if len(state.CompletedSteps) > 0 {
+			b.WriteString("\n\n已完成步骤：")
+			for _, stepID := range state.CompletedSteps {
+				if strings.TrimSpace(stepID) == "" {
+					continue
+				}
+				b.WriteString("\n- ")
+				b.WriteString(strings.TrimSpace(stepID))
+			}
+		}
+		if len(state.FailedSteps) > 0 {
+			b.WriteString("\n\n失败步骤：")
+			for _, stepID := range state.FailedSteps {
+				if strings.TrimSpace(stepID) == "" {
+					continue
+				}
+				b.WriteString("\n- ")
+				b.WriteString(strings.TrimSpace(stepID))
+			}
+		}
+		if strings.TrimSpace(state.Blocker) != "" && runErr == nil {
+			b.WriteString("\n\n阻塞原因：")
+			b.WriteString(strings.TrimSpace(state.Blocker))
+		}
+		b.WriteString(fmt.Sprintf("\n\n动作次数：%d", state.ActionCount))
+	}
+	if result != nil && result.Run != nil && strings.TrimSpace(result.Run.ID) != "" {
+		b.WriteString("\n\nWorkflow Run：")
+		b.WriteString(result.Run.ID)
+	}
+	return b.String()
 }
 
 func (r *Runtime) GetJob(ctx context.Context, userID, jobID string) (*Job, error) {
@@ -3389,13 +3545,16 @@ func (r *Runtime) RouteChat(req ChatRequest) JobRoutingDecision {
 	if content == "" || r.jobs == nil {
 		return JobRoutingDecision{}
 	}
+	if strings.EqualFold(strings.TrimSpace(req.AgentMode), AgentModePlanExecute) {
+		return JobRoutingDecision{RunAsJob: true, JobType: JobTypeDeepAgent, Reason: "user selected plan-and-execute mode"}
+	}
 	if strings.HasPrefix(content, "/") {
 		skill, ok := r.skillForPrompt(content)
 		if !ok {
 			return JobRoutingDecision{}
 		}
 		if skill.RunAsJob || skill.ExecutionContext == skills.ContextFork {
-			return JobRoutingDecision{RunAsJob: true, JobType: "skill", Reason: "skill metadata requests durable job execution"}
+			return JobRoutingDecision{RunAsJob: true, JobType: JobTypeSkill, Reason: "skill metadata requests durable job execution"}
 		}
 		return JobRoutingDecision{}
 	}
@@ -4159,7 +4318,7 @@ func (r *Runtime) createSelectedSkillJob(ctx context.Context, req ChatRequest, s
 		AttachmentIDs:  append([]string(nil), req.AttachmentIDs...),
 		AttachmentURLs: append([]ChatAttachmentURL(nil), req.AttachmentURLs...),
 	}
-	return r.CreateJob(ctx, jobReq, "skill")
+	return r.CreateJob(ctx, jobReq, JobTypeSkill)
 }
 
 func (r *Runtime) recordInlineSkillExecutions(ctx context.Context, userID string, session *state.Session, startIndex int, startedAt time.Time, runErr error) {

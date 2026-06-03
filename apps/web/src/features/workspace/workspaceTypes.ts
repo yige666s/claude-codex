@@ -10,7 +10,7 @@ export type ServiceStatus = Status & {
 export type RightPanelTab = "skills" | "jobs" | "attachments" | "artifacts";
 export type RightPanelSearch = Record<RightPanelTab, string>;
 export type JobStreamStatus = "idle" | "connecting" | "live" | "reconnecting" | "failed";
-export type ComposerToolID = "image" | "web-search" | "thinking";
+export type ComposerToolID = "image" | "web-search" | "plan-execute";
 
 export type ConfirmDialog = {
   title: string;

@@ -3753,6 +3753,24 @@ func TestServerRoutesLongRunningChatToJob(t *testing.T) {
 	t.Fatal("routed job did not finish")
 }
 
+func TestRuntimeRoutesPlanExecuteModeToDeepAgentJob(t *testing.T) {
+	runtime := testRuntime(t)
+	runtime.SetJobStore(NewMemoryJobStore())
+
+	decision := runtime.RouteChat(ChatRequest{
+		UserID:    "alice",
+		SessionID: "session-1",
+		Content:   "/docx create a report",
+		AgentMode: AgentModePlanExecute,
+	})
+	if !decision.RunAsJob || decision.JobType != JobTypeDeepAgent {
+		t.Fatalf("plan-execute decision = %#v, want deep agent job", decision)
+	}
+	if decision.Reason != "user selected plan-and-execute mode" {
+		t.Fatalf("unexpected decision reason: %#v", decision)
+	}
+}
+
 func TestServerWebSocketStreamsChatEvents(t *testing.T) {
 	server := httptest.NewServer(NewServer(testRuntime(t), HeaderAuthenticator{}, NewRateLimiter(10, time.Minute), nil))
 	defer server.Close()

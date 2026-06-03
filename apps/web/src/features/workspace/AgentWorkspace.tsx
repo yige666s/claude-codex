@@ -1076,7 +1076,7 @@ export function AgentWorkspace() {
     setResponseTiming(null);
     setRuntimeError("");
     const displayContent = content || "Please analyze the attached file(s).";
-    const thinkingMode = selectedComposerTool === "thinking";
+    const agentMode = selectedComposerTool === "plan-execute" ? "plan_execute" : undefined;
     const requestContent = composerToolContent(selectedComposerTool, displayContent);
     setSelectedComposerTool("");
     const sentMessage: Message = {
@@ -1093,7 +1093,7 @@ export function AgentWorkspace() {
     setBusyChat(true);
     setStatus({ tone: "busy", text: "Generating" });
     try {
-      const response = await api.chatResponse(requestSessionId, requestContent, attachmentIds, abort.signal, { thinkingMode });
+      const response = await api.chatResponse(requestSessionId, requestContent, attachmentIds, abort.signal, { agentMode });
       const timingElapsed = (now: number) => Math.max(0, Math.round(now - streamStartedAt));
       const updateVisibleTiming = (now: number, firstVisible: boolean) => {
         lastVisibleAssistantAt = now;
@@ -2037,7 +2037,7 @@ function composerToolContent(toolId: ComposerToolID | "", content: string): stri
 function composerToolStatus(toolId: ComposerToolID): string {
   if (toolId === "image") return "Image generation ready";
   if (toolId === "web-search") return "Web search ready";
-  return "Thinking mode ready";
+  return "Plan and execute ready";
 }
 
 function appendJobEvent(events: JobEvent[], event: JobEvent): JobEvent[] {
@@ -2137,6 +2137,9 @@ function ServiceStatusPill({ status }: { status: ServiceStatus }) {
 }
 
 function jobStartedMessage(event: RuntimeEvent): string {
+  if (event.job?.type === "deep_agent") {
+    return "已进入计划执行模式，系统会先生成计划再逐步执行。你也可以从左侧 Jobs 查看进度。";
+  }
   if (event.job?.type === "skill") {
     return "已开始执行工作流，完成后会自动更新结果。你也可以从左侧 Jobs 查看进度。";
   }

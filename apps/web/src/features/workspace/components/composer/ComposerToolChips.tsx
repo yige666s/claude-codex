@@ -1,4 +1,4 @@
-import { Globe2, Image, Lightbulb, type LucideIcon } from "lucide-react";
+import { Globe2, Image, ListChecks, type LucideIcon } from "lucide-react";
 import type { ComposerToolID } from "../../workspaceTypes";
 
 type ComposerToolChipsProps = {
@@ -14,7 +14,7 @@ const composerTools: Array<{
   icon: LucideIcon;
 }> = [
   { id: "image", label: "生成图片", ariaLabel: "Use image generation", icon: Image },
-  { id: "thinking", label: "思考一下", ariaLabel: "Use model thinking", icon: Lightbulb },
+  { id: "plan-execute", label: "深入研究", ariaLabel: "Use plan and execute mode", icon: ListChecks },
   { id: "web-search", label: "查找资料", ariaLabel: "Use web search", icon: Globe2 }
 ];
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,6 +83,86 @@ func TestJobWorkerRunsQueuedJob(t *testing.T) {
 	}
 	if len(events) == 0 {
 		t.Fatal("expected persisted job events")
+	}
+}
+
+func TestJobWorkerRunsDeepAgentJob(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{TurnTimeout: time.Minute},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return deepAgentPlanJSONRunner{} },
+	)
+	runtime.SetJobStore(NewMemoryJobStore())
+	workflowStore := NewMemoryWorkflowStore()
+	runtime.SetWorkflowStore(workflowStore)
+
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	session.AddUserMessage("postgres timeout happened yesterday")
+	if err := runtime.sessions.Save(context.Background(), "alice", session); err != nil {
+		t.Fatalf("save seed session: %v", err)
+	}
+	job, err := runtime.CreateJob(context.Background(), ChatRequest{
+		UserID:    "alice",
+		SessionID: session.ID,
+		Content:   "summarize previous postgres issue",
+	}, JobTypeDeepAgent)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	if err := runtime.RunQueuedJob(context.Background(), JobQueueItem{JobID: job.ID, UserID: "alice"}); err != nil {
+		t.Fatalf("run deep agent job: %v", err)
+	}
+	loaded, err := runtime.GetJob(context.Background(), "alice", job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if loaded.Status != JobStatusSucceeded {
+		t.Fatalf("job status = %s, want succeeded: %#v", loaded.Status, loaded)
+	}
+	runs, err := workflowStore.ListWorkflowRuns(context.Background(), WorkflowRunFilter{Name: deepAgentTaskWorkflowName, JobID: job.ID})
+	if err != nil {
+		t.Fatalf("list workflow runs: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != WorkflowStatusSucceeded {
+		t.Fatalf("expected one succeeded deep agent workflow, got %#v", runs)
+	}
+	events, err := runtime.ListJobEvents(context.Background(), "alice", job.ID, "", 100)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	var sawStart, sawWorkflow, sawDone bool
+	for _, event := range events {
+		switch event.Type {
+		case "deep_agent_started":
+			sawStart = true
+		case "done":
+			sawDone = true
+		}
+		if strings.HasPrefix(event.Type, "workflow_") {
+			sawWorkflow = true
+		}
+	}
+	if !sawStart || !sawWorkflow || !sawDone {
+		t.Fatalf("missing deep agent job events start=%t workflow=%t done=%t events=%#v", sawStart, sawWorkflow, sawDone, events)
+	}
+	updated, err := runtime.GetSession(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	var final string
+	for _, message := range updated.Messages {
+		if message.Role == "assistant" && strings.Contains(message.Content, "计划执行完成") {
+			final = message.Content
+		}
+	}
+	if !strings.Contains(final, runs[0].ID) || !strings.Contains(final, "Search relevant history") {
+		t.Fatalf("unexpected final deep agent message: %q", final)
 	}
 }
 

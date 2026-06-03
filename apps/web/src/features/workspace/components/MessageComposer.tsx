@@ -127,6 +127,6 @@ export function MessageComposer({
 function placeholderForTool(toolId: ComposerToolID | ""): string {
   if (toolId === "image") return "Describe the image you want to generate...";
   if (toolId === "web-search") return "Ask what you want to look up...";
-  if (toolId === "thinking") return "Ask a question that needs deeper reasoning...";
+  if (toolId === "plan-execute") return "Describe the task you want planned and executed...";
   return "Initiate a query or send a command to the AI...";
 }

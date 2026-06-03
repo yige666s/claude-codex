@@ -328,6 +328,7 @@ type ChatRequest struct {
 	AttachmentIDs  []string
 	AttachmentURLs []ChatAttachmentURL
 	ThinkingMode   bool
+	AgentMode      string
 }
 
 type ChatAttachmentURL struct {
@@ -341,6 +342,17 @@ type JobRoutingDecision struct {
 	JobType  string `json:"job_type,omitempty"`
 	Reason   string `json:"reason,omitempty"`
 }
+
+const (
+	AgentModeChat        = "chat"
+	AgentModePlanExecute = "plan_execute"
+)
+
+const (
+	JobTypeChat      = "chat"
+	JobTypeSkill     = "skill"
+	JobTypeDeepAgent = "deep_agent"
+)
 
 const (
 	JobStatusQueued    = "queued"
