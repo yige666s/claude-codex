@@ -4445,6 +4445,69 @@ func TestArtifactProducingSkillFailsWhenNoArtifactCreated(t *testing.T) {
 	}
 }
 
+func TestArtifactProducingSkillRegistersGeneratedArtifactFile(t *testing.T) {
+	root := t.TempDir()
+	storeRoot := t.TempDir()
+	executions := NewMemorySkillExecutionStore()
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "docx",
+		UserInvocable: true,
+		Metadata: map[string]any{
+			"agentapi": map[string]any{"produces_artifacts": true},
+		},
+		GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+			return []skills.ContentBlock{{Type: "text", Text: "create docx for " + args}}, nil
+		},
+	}}}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(storeRoot),
+		NewFileMemoryService(storeRoot),
+		catalog,
+		func(scope Scope) Runner { return generatedArtifactFileRunner{workspace: scope.WorkingDir} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	runtime.SetSkillExecutionStore(executions)
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "/docx make a report"}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Filename != "runner-report.docx" {
+		t.Fatalf("unexpected artifacts: %#v", artifacts)
+	}
+	records, err := executions.ListSkillExecutions(context.Background(), SkillExecutionFilter{SkillName: "docx"})
+	if err != nil {
+		t.Fatalf("list executions: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v", records)
+	}
+	if records[0].Status != SkillExecutionStatusSucceeded || records[0].ArtifactCount != 1 {
+		t.Fatalf("unexpected execution record: %#v", records[0])
+	}
+	saved, err := runtime.sessions.Get(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get saved session: %v", err)
+	}
+	foundArtifactToolResult := false
+	for _, message := range saved.Messages {
+		if strings.EqualFold(message.ToolName, ArtifactToolName) {
+			foundArtifactToolResult = true
+			break
+		}
+	}
+	if !foundArtifactToolResult {
+		t.Fatalf("expected saved session to include Artifact tool result, got %#v", saved.Messages)
+	}
+}
+
 func TestRuntimeRoutesLLMSelectedRunAsJobSkillToJob(t *testing.T) {
 	root := t.TempDir()
 	storeRoot := t.TempDir()
@@ -5152,6 +5215,27 @@ func (echoRunner) RunGeneratedPrompt(ctx context.Context, session *state.Session
 	session.AddSystemContext(prompt)
 	session.AddAssistantMessage("assistant: " + prompt)
 	return engine.Result{Output: "assistant: " + prompt, Session: session}, nil
+}
+
+type generatedArtifactFileRunner struct {
+	workspace string
+}
+
+func (r generatedArtifactFileRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return r.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (r generatedArtifactFileRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	dir := filepath.Join(r.workspace, generatedArtifactStagingDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return engine.Result{}, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "runner-report.docx"), []byte("docx bytes"), 0o644); err != nil {
+		return engine.Result{}, err
+	}
+	session.AddSystemContext(prompt)
+	session.AddAssistantMessage("created docx file")
+	return engine.Result{Output: "created docx file", Session: session}, nil
 }
 
 type skillDiagnosticRunner struct{}

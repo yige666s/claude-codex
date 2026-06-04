@@ -4152,6 +4152,7 @@ func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *st
 		return runnerResult{}, err
 	}
 	startMessageCount := len(session.Messages)
+	generatedArtifactsBefore := snapshotGeneratedSkillArtifactFiles(workspace)
 	skillDir := workspace
 	if strings.TrimSpace(skill.SkillRoot) != "" {
 		skillDir = skill.SkillRoot
@@ -4213,11 +4214,28 @@ func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *st
 		})
 		return runnerResult{Output: result.Output, Session: result.Session}, err
 	}
+	if result.Session == nil {
+		result.Session = session
+	}
 	execDiagnostics = collectSkillExecutionDiagnostics(result.Session, startMessageCount)
 	if execDiagnostics.SkillError != "" || execDiagnostics.ErrorKind != "" {
 		status = SkillExecutionStatusFailed
 		errText = firstNonEmpty(execDiagnostics.SkillError, execDiagnostics.ErrorKind)
 		return runnerResult{Output: result.Output, Session: result.Session}, nil
+	}
+	if skillProducesArtifacts(skill) && execDiagnostics.ArtifactCount == 0 {
+		registered, registerErr := r.registerGeneratedSkillArtifacts(ctx, userID, session.ID, workspace, policy.ArtifactTypes, generatedArtifactsBefore, result.Session)
+		if registerErr != nil {
+			status = SkillExecutionStatusFailed
+			errText = registerErr.Error()
+			return runnerResult{Output: result.Output, Session: result.Session}, registerErr
+		}
+		if registered > 0 {
+			execDiagnostics = collectSkillExecutionDiagnostics(result.Session, startMessageCount)
+			if execDiagnostics.ArtifactCount == 0 {
+				execDiagnostics.ArtifactCount = registered
+			}
+		}
 	}
 	if skillProducesArtifacts(skill) && execDiagnostics.ArtifactCount == 0 {
 		status = SkillExecutionStatusFailed
@@ -4232,6 +4250,107 @@ func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *st
 	}
 	status = SkillExecutionStatusSucceeded
 	return runnerResult{Output: result.Output, Session: result.Session}, err
+}
+
+func snapshotGeneratedSkillArtifactFiles(workspace string) map[string]struct{} {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return nil
+	}
+	dir := filepath.Join(workspace, generatedArtifactStagingDir)
+	out := map[string]struct{}{}
+	_ = filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry == nil || entry.IsDir() {
+			return nil
+		}
+		if rel, relErr := filepath.Rel(dir, path); relErr == nil {
+			out[filepath.Clean(rel)] = struct{}{}
+		}
+		return nil
+	})
+	return out
+}
+
+func (r *Runtime) registerGeneratedSkillArtifacts(ctx context.Context, userID, sessionID, workspace string, allowedTypes []string, before map[string]struct{}, session *state.Session) (int64, error) {
+	if r == nil || r.artifacts == nil || strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(workspace) == "" {
+		return 0, nil
+	}
+	dir := filepath.Join(workspace, generatedArtifactStagingDir)
+	var count int64
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry == nil || entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.Clean(rel)
+		if _, seen := before[rel]; seen {
+			return nil
+		}
+		filename := filepath.Base(path)
+		contentType := generatedSkillArtifactContentType(filename)
+		if len(cleanStringSlice(allowedTypes)) > 0 && !artifactContentTypeAllowed(contentType, allowedTypes) {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		artifact, err := r.CreateArtifact(ctx, userID, sessionID, filename, contentType, data)
+		if err != nil {
+			return err
+		}
+		count++
+		recordArtifactToolResult(session, fmt.Sprintf("skill-generated-artifact-%d", count), artifact, "skill_generated_file")
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	return count, err
+}
+
+func generatedSkillArtifactContentType(filename string) string {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".docx":
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case ".xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case ".pptx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	default:
+		return mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))
+	}
+}
+
+func recordArtifactToolResult(session *state.Session, callID string, artifact *Artifact, source string) {
+	if session == nil || artifact == nil {
+		return
+	}
+	input, _ := json.Marshal(map[string]any{
+		"filename":     artifact.Filename,
+		"content_type": artifact.ContentType,
+		"source":       source,
+	})
+	output, _ := json.Marshal(artifactToolOutput{
+		ID:                   artifact.ID,
+		Kind:                 artifact.Kind,
+		Filename:             artifact.Filename,
+		ContentType:          artifact.ContentType,
+		SizeBytes:            artifact.SizeBytes,
+		DownloadPath:         "/v1/artifacts/" + artifact.ID,
+		AssistantInstruction: "Use this metadata as internal context only. Tell the user the generated artifact is ready in the Artifacts panel. Do not expose raw JSON, artifact IDs, object paths, or download paths unless the user explicitly asks for technical details.",
+	})
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		callID = "artifact-" + artifact.ID
+	}
+	session.AddToolResult(callID, ArtifactToolName, json.RawMessage(input), string(output))
 }
 
 type skillExecutionDiagnostics struct {

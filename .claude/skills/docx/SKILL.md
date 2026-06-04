@@ -42,11 +42,21 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/create_docx_artifact.py" <<'DOCX_INPUT'
 DOCX_INPUT
 ```
 
-Use the `Artifact` tool exactly once with the `artifact_file_path` printed above. The value is intentionally relative to the current workspace; do not rewrite it as an absolute path.
+Use the `Artifact` tool exactly once with the relative path printed as `artifact_file_path`. The value is intentionally relative to the current workspace; do not rewrite it as an absolute path. The Artifact tool argument name is `file_path`, not `artifact_file_path`.
 
 - `filename`: use the printed `filename`
 - `content_type`: `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
 - `file_path`: use the printed `artifact_file_path`
+
+Artifact tool input shape:
+
+```json
+{
+  "filename": "<printed filename>",
+  "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "file_path": "<printed artifact_file_path>"
+}
+```
 
 If the shell output contains `skill_error:`, do not call the `Artifact` tool. Reply in the user's language with the friendly error from `skill_error:` and, when useful, a concise next step. Do not expose stack traces, shell commands, artifact IDs, object paths, or download paths to the user.
 

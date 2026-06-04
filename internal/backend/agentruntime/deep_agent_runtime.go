@@ -685,22 +685,8 @@ func recordDeepAgentArtifactToolResult(session *state.Session, action DeepAgentA
 	if session == nil || artifact == nil {
 		return
 	}
-	input, _ := json.Marshal(map[string]any{
-		"filename":     artifact.Filename,
-		"content_type": artifact.ContentType,
-		"source":       "deep_agent_model_fallback",
-	})
-	output, _ := json.Marshal(artifactToolOutput{
-		ID:                   artifact.ID,
-		Kind:                 artifact.Kind,
-		Filename:             artifact.Filename,
-		ContentType:          artifact.ContentType,
-		SizeBytes:            artifact.SizeBytes,
-		DownloadPath:         "/v1/artifacts/" + artifact.ID,
-		AssistantInstruction: "Use this metadata as internal context only. Tell the user the generated artifact is ready in the Artifacts panel. Do not expose raw JSON, artifact IDs, object paths, or download paths unless the user explicitly asks for technical details.",
-	})
 	callID := "deep-agent-artifact-" + firstNonEmptyString(strings.TrimSpace(action.StepID), "result")
-	session.AddToolResult(callID, ArtifactToolName, json.RawMessage(input), string(output))
+	recordArtifactToolResult(session, callID, artifact, "deep_agent_model_fallback")
 }
 
 func (e *RuntimeDeepAgentExecutor) executeSkillAction(ctx context.Context, action DeepAgentAction, agentState *DeepAgentState) (DeepAgentActionResult, error) {
