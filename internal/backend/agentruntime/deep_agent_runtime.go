@@ -160,7 +160,15 @@ func (p *RuntimeDeepAgentPlanner) routeStepAction(ctx context.Context, state *De
 		return ruleDeepAgentPlanner{}.NextAction(ctx, state, step)
 	}
 	requiresArtifact := deepAgentStepRequiresArtifact(step)
-	mode := p.keywordRouteStep(step)
+	mode := ""
+	if deepAgentStepLooksLikeImageGeneration(step) {
+		if _, ok := p.selectSkillForStep(step); ok {
+			mode = DeepAgentToolModeSkill
+		}
+	}
+	if mode == "" {
+		mode = p.keywordRouteStep(step)
+	}
 	if mode == "" {
 		mode = p.llmRouteStep(ctx, state, step)
 	}
@@ -244,6 +252,18 @@ func (p *RuntimeDeepAgentPlanner) keywordRouteStep(step DeepAgentStep) string {
 		return DeepAgentToolModeModel
 	}
 	return ""
+}
+
+func deepAgentStepLooksLikeImageGeneration(step DeepAgentStep) bool {
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{step.Intent, step.Title, step.DoneCondition}, "\n")))
+	if text == "" {
+		return false
+	}
+	return deepAgentContainsAny(text,
+		"生成图片", "生成图像", "画一", "画张", "画一张", "画一个", "生图", "绘制", "插画", "图片", "图像",
+		"generate image", "generate an image", "generate a picture", "create image", "create an image",
+		"render image", "draw ", "paint ", "illustration", "picture",
+	)
 }
 
 func (p *RuntimeDeepAgentPlanner) llmRouteStep(ctx context.Context, agentState *DeepAgentState, step DeepAgentStep) string {
@@ -383,7 +403,10 @@ func deepAgentTextRequiresArtifact(text string) bool {
 	}
 	if deepAgentContainsAny(text,
 		"后续", "支撑", "下一步", "下一阶段", "后面",
+		"用于", "用来", "以便", "为了后续", "为撰写", "作为素材", "提供素材", "提供资料", "提供材料", "参考资料",
 		"later", "subsequent", "next step", "next-step", "next phase", "support later", "support subsequent",
+		"for generating", "for creating", "for writing", "can be used to", "used to generate", "used to create",
+		"provide material", "provide materials", "provide input", "material for", "materials for", "input for",
 	) &&
 		!deepAgentContainsAny(text, "artifact", "download", "downloadable", "可下载", "产物", "导出", "保存") {
 		return false
@@ -452,7 +475,10 @@ func deepAgentStepSkillScore(text string, skill *skills.SkillDefinition) int {
 	text = strings.ToLower(text)
 	haystack := strings.ToLower(strings.Join([]string{skill.Name, skill.DisplayName, skill.Description, skill.WhenToUse, skill.ArgumentHint}, "\n"))
 	score := 0
-	for _, token := range []string{"docx", "word", "document", "文档", "报告", "report", "markdown", ".md", "file", "artifact", "文件"} {
+	for _, token := range []string{
+		"docx", "word", "document", "文档", "报告", "report", "markdown", ".md", "file", "artifact", "文件",
+		"image", "picture", "draw", "render", "illustration", "图片", "图像", "画", "生图", "绘制",
+	} {
 		if strings.Contains(text, token) && strings.Contains(haystack, token) {
 			score += 4
 		}
@@ -462,7 +488,10 @@ func deepAgentStepSkillScore(text string, skill *skills.SkillDefinition) int {
 			score++
 		}
 	}
-	if skillProducesArtifacts(skill) && deepAgentContainsAny(text, "artifact", "download", "file", "markdown", "docx", "文档", "报告", "文件", "可下载", "产物") {
+	if skillProducesArtifacts(skill) && deepAgentContainsAny(text,
+		"artifact", "download", "file", "markdown", "docx", "image", "picture", "render", "illustration",
+		"文档", "报告", "文件", "图片", "图像", "可下载", "产物",
+	) {
 		score += 5
 	}
 	return score
@@ -539,6 +568,8 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	if strings.TrimSpace(prompt) == "" {
 		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: "model action prompt is required"}, fmt.Errorf("model action prompt is required")
 	}
+	requiresArtifact := forceArtifact || deepAgentActionRequiresArtifact(action)
+	allowedTools := deepAgentModelActionAllowedTools(action, agentState, forceArtifact)
 	session, err := e.deepAgentSession(ctx, userID, sessionID)
 	if err != nil {
 		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error()}, err
@@ -551,13 +582,28 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true}, saveErr
 		}
 	}
+	if satisfied, count := deepAgentPriorArtifactSatisfiesGenericDocument(agentState, requiresArtifact); satisfied {
+		return DeepAgentActionResult{
+			Status:    DeepAgentActionStatusSucceeded,
+			Output:    "A prior DeepAgent step already created an artifact that satisfies this deliverable.",
+			Completed: true,
+			Metadata: map[string]any{
+				"tool":                             firstNonEmptyString(strings.TrimSpace(action.Tool), DeepAgentToolModeModel),
+				"session_id":                       session.ID,
+				"artifact_count":                   count,
+				"artifact_satisfied_by_prior_step": true,
+				"tool_result_valid":                true,
+				"allowed_tools":                    append([]string(nil), allowedTools...),
+			},
+		}, nil
+	}
 	scope := Scope{
 		UserID:     userID,
 		SessionID:  session.ID,
 		WorkingDir: session.WorkingDir,
 		Prompt:     prompt,
 	}
-	if allowedTools := deepAgentModelActionAllowedTools(action, agentState, forceArtifact); len(allowedTools) > 0 {
+	if len(allowedTools) > 0 {
 		scope.AllowedTools = allowedTools
 	}
 	runner := e.runtime.runnerForScope(scope)
@@ -619,10 +665,12 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 		"artifact_count":    artifactCount,
 		"tool_result_valid": diagnostics.ErrorKind == "" && diagnostics.SkillError == "",
 	}
+	if len(allowedTools) > 0 {
+		metadata["allowed_tools"] = append([]string(nil), allowedTools...)
+	}
 	if storeArtifactCount > 0 && diagnostics.ArtifactCount == 0 {
 		metadata["artifact_detected_from_store"] = true
 	}
-	requiresArtifact := forceArtifact || deepAgentActionRequiresArtifact(action)
 	fallbackOutput := deepAgentModelArtifactFallbackOutput(result.Output, resultSession, startMessageCount)
 	invalidFallbackOutput := requiresArtifact && deepAgentModelArtifactFallbackLooksInvalid(fallbackOutput)
 	if invalidFallbackOutput {
@@ -630,8 +678,14 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	}
 	priorArtifactCount := deepAgentStatePriorArtifactCount(agentState)
 	artifactSatisfiedOutput := ""
-	if artifactCount == 0 && requiresArtifact && priorArtifactCount > 0 &&
-		deepAgentGenericDocumentArtifactGoal(stateGoal(agentState)) && !deepAgentExplicitDocxText(stateGoal(agentState)) {
+	priorArtifactSatisfies := false
+	if artifactCount == 0 {
+		if satisfied, count := deepAgentPriorArtifactSatisfiesGenericDocument(agentState, requiresArtifact); satisfied {
+			priorArtifactSatisfies = true
+			priorArtifactCount = count
+		}
+	}
+	if artifactCount == 0 && priorArtifactSatisfies && priorArtifactCount > 0 {
 		artifactCount = int64(priorArtifactCount)
 		metadata["artifact_count"] = priorArtifactCount
 		metadata["artifact_satisfied_by_prior_step"] = true
@@ -719,8 +773,11 @@ func (e *RuntimeDeepAgentExecutor) deepAgentArtifactIDSet(ctx context.Context, u
 	return out
 }
 
-func deepAgentModelActionAllowedTools(_ DeepAgentAction, agentState *DeepAgentState, forceArtifact bool) []string {
+func deepAgentModelActionAllowedTools(action DeepAgentAction, agentState *DeepAgentState, forceArtifact bool) []string {
 	goal := stateGoal(agentState)
+	if goal == "" {
+		goal = deepAgentActionString(action, "goal")
+	}
 	if !deepAgentGenericDocumentArtifactGoal(goal) || deepAgentExplicitDocxText(goal) {
 		return nil
 	}
@@ -735,6 +792,18 @@ func deepAgentGenericDocumentArtifactGoal(text string) bool {
 		"report", "document", "markdown", ".md",
 		"报告", "文档", "调研", "调查", "研究报告", "调研报告", "调研文档",
 	)
+}
+
+func deepAgentPriorArtifactSatisfiesGenericDocument(agentState *DeepAgentState, requiresArtifact bool) (bool, int) {
+	if !requiresArtifact {
+		return false, 0
+	}
+	goal := stateGoal(agentState)
+	if !deepAgentGenericDocumentArtifactGoal(goal) || deepAgentExplicitDocxText(goal) {
+		return false, 0
+	}
+	count := deepAgentStatePriorArtifactCount(agentState)
+	return count > 0, count
 }
 
 func deepAgentExplicitDocxText(text string) bool {

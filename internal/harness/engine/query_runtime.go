@@ -139,12 +139,14 @@ func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt i
 		output = final.Result
 	}
 	if strings.TrimSpace(output) == "" && !hasMeaningfulAssistantAfter(session.Messages, initialMessageCount) {
-		err := fmt.Errorf("queryengine empty response: no assistant text or tool calls")
+		details := queryEmptyResponseDiagnostics(final, session.Messages, initialMessageCount)
+		err := fmt.Errorf("queryengine empty response: no assistant text or tool calls (%s)", formatQueryEmptyResponseDiagnostics(details))
 		r.engine.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
 			"span_id": interactionID,
 			"status":  "error",
 			"error":   err.Error(),
 			"runtime": "queryengine",
+			"details": details,
 		})
 		return Result{}, err
 	}
@@ -557,4 +559,64 @@ func hasMeaningfulAssistantAfter(messages []state.Message, startIndex int) bool 
 		}
 	}
 	return false
+}
+
+func queryEmptyResponseDiagnostics(final queryengine.SDKMessage, messages []state.Message, startIndex int) map[string]any {
+	if startIndex < 0 || startIndex > len(messages) {
+		startIndex = 0
+	}
+	details := map[string]any{
+		"final_type":        strings.TrimSpace(final.Type),
+		"final_subtype":     strings.TrimSpace(final.Subtype),
+		"final_stop_reason": strings.TrimSpace(final.StopReason),
+		"final_result_len":  len(strings.TrimSpace(final.Result)),
+		"final_num_turns":   final.NumTurns,
+		"session_messages":  len(messages),
+		"new_messages":      len(messages) - startIndex,
+	}
+	var assistantMessages, visibleAssistantMessages, hiddenAssistantMessages, toolCalls, toolResults int
+	for _, msg := range messages[startIndex:] {
+		switch msg.Role {
+		case "assistant":
+			assistantMessages++
+			if msg.Hidden {
+				hiddenAssistantMessages++
+			} else {
+				visibleAssistantMessages++
+			}
+			toolCalls += len(msg.ToolCalls)
+		case "tool":
+			toolResults++
+		}
+	}
+	details["assistant_messages"] = assistantMessages
+	details["visible_assistant_messages"] = visibleAssistantMessages
+	details["hidden_assistant_messages"] = hiddenAssistantMessages
+	details["tool_calls"] = toolCalls
+	details["tool_results"] = toolResults
+	if final.Usage != nil {
+		details["input_tokens"] = final.Usage.InputTokens
+		details["output_tokens"] = final.Usage.OutputTokens
+	}
+	return details
+}
+
+func formatQueryEmptyResponseDiagnostics(details map[string]any) string {
+	if len(details) == 0 {
+		return "details=empty"
+	}
+	keys := []string{
+		"final_type", "final_subtype", "final_stop_reason", "final_result_len", "final_num_turns",
+		"session_messages", "new_messages", "assistant_messages", "visible_assistant_messages",
+		"hidden_assistant_messages", "tool_calls", "tool_results", "input_tokens", "output_tokens",
+	}
+	var parts []string
+	for _, key := range keys {
+		value, ok := details[key]
+		if !ok {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%v", key, value))
+	}
+	return strings.Join(parts, " ")
 }

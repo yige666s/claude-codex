@@ -6,6 +6,7 @@ apps/web/node_modules
 apps/web/dist
 .omc
 .omx
+.tmp
 .vscode
 
 agentapi

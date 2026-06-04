@@ -468,12 +468,16 @@ func TestRuntimeDeepAgentModelArtifactRestrictsGenericDocumentGoalToArtifactTool
 }
 
 func TestRuntimeDeepAgentModelActionDoesNotRequireArtifactFromGoalOrPrompt(t *testing.T) {
+	var captured Scope
 	runtime := NewRuntime(
 		RuntimeConfig{},
 		NewFileSessionStore(t.TempDir()),
 		nil,
 		nil,
-		func(Scope) Runner { return noOutputRunner{} },
+		func(scope Scope) Runner {
+			captured = scope
+			return noOutputRunner{}
+		},
 	)
 	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
 	session, err := runtime.CreateSession(context.Background(), "alice", "")
@@ -502,6 +506,14 @@ func TestRuntimeDeepAgentModelActionDoesNotRequireArtifactFromGoalOrPrompt(t *te
 	}
 	if got := deepAgentAnyInt(result.Metadata["artifact_count"], -1); got != 0 {
 		t.Fatalf("artifact_count = %d, want 0 in %#v", got, result.Metadata)
+	}
+	wantAllowed := []string{"WebSearch", "WebFetch"}
+	if strings.Join(captured.AllowedTools, ",") != strings.Join(wantAllowed, ",") {
+		t.Fatalf("AllowedTools = %#v, want %#v", captured.AllowedTools, wantAllowed)
+	}
+	rawAllowed, _ := result.Metadata["allowed_tools"].([]string)
+	if strings.Join(rawAllowed, ",") != strings.Join(wantAllowed, ",") {
+		t.Fatalf("metadata allowed_tools = %#v, want %#v", result.Metadata["allowed_tools"], wantAllowed)
 	}
 	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
 	if err != nil {
@@ -645,12 +657,13 @@ func TestRuntimeDeepAgentModelArtifactCountsStoreArtifactWithoutToolResult(t *te
 }
 
 func TestRuntimeDeepAgentModelArtifactUsesPriorArtifactInsteadOfSavingToolError(t *testing.T) {
+	runner := &countingErrorRunner{err: context.DeadlineExceeded}
 	runtime := NewRuntime(
 		RuntimeConfig{},
 		NewFileSessionStore(t.TempDir()),
 		nil,
 		nil,
-		func(Scope) Runner { return toolNotFoundArtifactRunner{} },
+		func(Scope) Runner { return runner },
 	)
 	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
 	session, err := runtime.CreateSession(context.Background(), "alice", "")
@@ -686,6 +699,9 @@ func TestRuntimeDeepAgentModelArtifactUsesPriorArtifactInsteadOfSavingToolError(
 	}, agentState)
 	if err != nil {
 		t.Fatalf("ExecuteDeepAgentAction() should accept prior artifact, got %v", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("prior artifact should satisfy before invoking model, calls = %d", runner.calls)
 	}
 	if result.Status != DeepAgentActionStatusSucceeded || !result.Completed {
 		t.Fatalf("unexpected result: %#v", result)
@@ -902,6 +918,41 @@ func TestRuntimeDeepAgentRouterDoesNotTreatReportOutlineAsArtifact(t *testing.T)
 	}
 }
 
+func TestRuntimeDeepAgentRouterUsesImageSkillForImageGeneration(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return echoRunner{} },
+	)
+	runtime.skills = fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "vertex-image-artifact",
+		Description:   "Generate one image with Vertex AI Imagen and save it as a generated artifact. Triggers include: 生成图片, 画一张, 生图, generate image, create image, render image.",
+		UserInvocable: true,
+		Metadata:      map[string]any{"produces_artifacts": true},
+	}}}
+	planner := NewRuntimeDeepAgentPlanner(runtime)
+	action, err := planner.NextAction(context.Background(), &DeepAgentState{
+		Goal:          "帮我画一只中华田园犬",
+		WorkingMemory: map[string]any{"user_id": "alice", "session_id": "session-1"},
+	}, DeepAgentStep{
+		ID:            "generate-dog-image",
+		Title:         "Generate dog image",
+		Intent:        "Generate an image of a Chinese Rural Dog.",
+		DoneCondition: "An image of a Chinese Rural Dog has been generated and provided to the user.",
+	})
+	if err != nil {
+		t.Fatalf("NextAction() error = %v", err)
+	}
+	if action.Tool != DeepAgentToolModeSkill {
+		t.Fatalf("image generation action tool = %q, want skill: %#v", action.Tool, action)
+	}
+	if got := deepAgentWorkflowString(action.Args, "skill_name"); got != "vertex-image-artifact" {
+		t.Fatalf("skill_name = %q, want vertex-image-artifact in %#v", got, action.Args)
+	}
+}
+
 func TestDeepAgentStepRequiresArtifactIgnoresLaterDocumentSupport(t *testing.T) {
 	step := DeepAgentStep{
 		ID:            "research",
@@ -917,14 +968,24 @@ func TestDeepAgentStepRequiresArtifactIgnoresLaterDocumentSupport(t *testing.T) 
 	if deepAgentStepRequiresArtifact(step) {
 		t.Fatalf("next-step support wording should not require artifact: %#v", step)
 	}
+
+	step.DoneCondition = "获取了关于Tolan AI产品的足够信息，可以用于生成调研文档。"
+	if deepAgentStepRequiresArtifact(step) {
+		t.Fatalf("used-for-generation wording should not require artifact: %#v", step)
+	}
+
+	step.DoneCondition = "找到了关于 Tolan 的详细信息，为撰写调研报告提供了充足的素材。"
+	if deepAgentStepRequiresArtifact(step) {
+		t.Fatalf("material-for-writing wording should not require artifact: %#v", step)
+	}
 }
 
 func TestNormalizeDeepAgentPlanRewritesUnrequestedWordDeliverable(t *testing.T) {
 	plan := normalizeDeepAgentPlan("帮我调研一下tolan这个产品，然后生成一个调研文档", DeepAgentPlan{Steps: []DeepAgentStep{{
 		ID:            "write",
-		Title:         "生成Word文档",
+		Title:         "生成Word调研文档",
 		Intent:        "生成一份Word格式的调研文档",
-		DoneCondition: "成功生成一份Word格式的调研文档，并将其作为产出物提供给用户。",
+		DoneCondition: "成功生成一份Word调研文档，并将其作为产出物提供给用户。",
 	}}})
 	step := plan.Steps[0]
 	joined := strings.Join([]string{step.Title, step.Intent, step.DoneCondition}, "\n")
@@ -1556,6 +1617,20 @@ func (toolNotFoundArtifactRunner) RunGeneratedPrompt(_ context.Context, session 
 	output := `工具未找到：Skill。抱歉，无法生成 Word 格式文档。`
 	session.AddAssistantMessage(output)
 	return engine.Result{Output: output, Session: session}, nil
+}
+
+type countingErrorRunner struct {
+	calls int
+	err   error
+}
+
+func (r *countingErrorRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return r.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (r *countingErrorRunner) RunGeneratedPrompt(context.Context, *state.Session, string) (engine.Result, error) {
+	r.calls++
+	return engine.Result{}, r.err
 }
 
 type runAsJobDocxMarkerRunner struct{}

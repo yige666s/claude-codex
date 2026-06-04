@@ -891,6 +891,7 @@ func normalizeDeepAgentStepDeliverableFormat(goal string, step *DeepAgentStep) {
 		"word document", "Markdown document",
 		".docx", ".md",
 		"docx", "Markdown",
+		"Word", "Markdown",
 	)
 	step.Title = replacer.Replace(step.Title)
 	step.Intent = replacer.Replace(step.Intent)

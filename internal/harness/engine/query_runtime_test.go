@@ -201,6 +201,11 @@ func TestQueryRuntimeRejectsEmptyAssistantResponse(t *testing.T) {
 	if !strings.Contains(err.Error(), "empty response") {
 		t.Fatalf("error = %v, want empty response marker", err)
 	}
+	for _, want := range []string{"final_type=", "assistant_messages=", "tool_calls=", "new_messages="} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want diagnostic %q", err, want)
+		}
+	}
 }
 
 type emptyPlanner struct{}
