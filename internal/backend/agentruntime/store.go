@@ -93,7 +93,11 @@ func (s *FileSessionStore) Save(_ context.Context, userID string, session *state
 	if err != nil {
 		return err
 	}
-	return fsutil.WriteFileAtomic(s.sessionPath(userID, session.ID), data, 0o644)
+	path := s.sessionPath(userID, session.ID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return fsutil.WriteFileAtomic(path, data, 0o644)
 }
 
 func (s *FileSessionStore) Delete(_ context.Context, userID, sessionID string) error {

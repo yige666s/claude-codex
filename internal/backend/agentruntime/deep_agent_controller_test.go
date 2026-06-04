@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -306,7 +307,7 @@ func TestRuntimeDeepAgentModelActionCreatesArtifactFallback(t *testing.T) {
 
 	result, err := NewRuntimeDeepAgentExecutor(runtime).ExecuteDeepAgentAction(context.Background(), DeepAgentAction{
 		StepID: "step-3",
-		Tool:   "model",
+		Tool:   "model_artifact",
 		Args: map[string]any{
 			"user_id":          "alice",
 			"session_id":       session.ID,
@@ -321,7 +322,7 @@ func TestRuntimeDeepAgentModelActionCreatesArtifactFallback(t *testing.T) {
 		t.Fatalf("ExecuteDeepAgentAction() error = %v", err)
 	}
 	if result.Status != DeepAgentActionStatusSucceeded || !result.Completed {
-		t.Fatalf("unexpected model action result: %#v", result)
+		t.Fatalf("unexpected model_artifact action result: %#v", result)
 	}
 	if got := deepAgentAnyInt(result.Metadata["artifact_count"], -1); got != 1 {
 		t.Fatalf("artifact_count = %d, want 1 in %#v", got, result.Metadata)
@@ -349,6 +350,52 @@ func TestRuntimeDeepAgentModelActionCreatesArtifactFallback(t *testing.T) {
 	}
 	if !foundToolResult {
 		t.Fatalf("expected saved session to include Artifact tool result, got %#v", saved.Messages)
+	}
+}
+
+func TestRuntimeDeepAgentModelArtifactSavesGeneratedSessionWithoutSessionID(t *testing.T) {
+	store := newTestSessionStore()
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		store,
+		nil,
+		nil,
+		func(Scope) Runner { return markdownReportRunner{} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+
+	result, err := NewRuntimeDeepAgentExecutor(runtime).ExecuteDeepAgentAction(context.Background(), DeepAgentAction{
+		StepID: "step-ephemeral",
+		Tool:   "model_artifact",
+		Args: map[string]any{
+			"user_id":          "alice",
+			"prompt":           "生成 Markdown 格式的调查报告",
+			"step_title":       "生成 Markdown 格式的调查报告",
+			"step_intent":      "生成一份 md 格式调查报告",
+			"done_condition":   "Markdown report artifact is available",
+			"success_criteria": "artifact count is at least 1",
+		},
+	}, &DeepAgentState{WorkingMemory: map[string]any{"user_id": "alice"}})
+	if err != nil {
+		t.Fatalf("ExecuteDeepAgentAction() error = %v", err)
+	}
+	sessionID := deepAgentWorkflowString(result.Metadata, "session_id")
+	if strings.TrimSpace(sessionID) == "" {
+		t.Fatalf("expected generated session id in metadata, got %#v", result.Metadata)
+	}
+	saved, err := runtime.sessions.Get(context.Background(), "alice", sessionID)
+	if err != nil {
+		t.Fatalf("expected generated session to be saved, get error = %v", err)
+	}
+	if saved == nil || saved.ID != sessionID {
+		t.Fatalf("unexpected saved session: %#v", saved)
+	}
+	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", sessionID)
+	if err != nil {
+		t.Fatalf("expected generated artifact to be listed, got error = %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Filename != "step-ephemeral.md" {
+		t.Fatalf("unexpected generated artifacts: %#v", artifacts)
 	}
 }
 
@@ -438,8 +485,8 @@ func TestRuntimeDeepAgentRouterLeavesResearchAndArtifactStepsForModelTools(t *te
 	if err != nil {
 		t.Fatalf("NextAction() error = %v", err)
 	}
-	if action.Tool != "model" {
-		t.Fatalf("artifact action tool = %q, want model with Artifact tool: %#v", action.Tool, action)
+	if action.Tool != "model_artifact" {
+		t.Fatalf("artifact action tool = %q, want model_artifact: %#v", action.Tool, action)
 	}
 	args := action.Args
 	if got := deepAgentWorkflowString(args, "prompt"); !strings.Contains(got, "Artifact") || !strings.Contains(got, "Tolan AI") {
@@ -458,8 +505,31 @@ func TestRuntimeDeepAgentChildJobArtifactCount(t *testing.T) {
 	if _, err := runtime.artifacts.CreateWithJob(context.Background(), AssetKindArtifact, "alice", session.ID, job.ID, "report.md", "text/markdown", []byte("# report")); err != nil {
 		t.Fatalf("create artifact: %v", err)
 	}
+	if _, err := runtime.artifacts.Create(context.Background(), AssetKindArtifact, "alice", session.ID, "old-report.md", "text/markdown", []byte("# old")); err != nil {
+		t.Fatalf("create session artifact without job: %v", err)
+	}
 	if got := NewRuntimeDeepAgentExecutor(runtime).deepAgentChildJobArtifactCount(context.Background(), job); got != 1 {
 		t.Fatalf("artifact count = %d, want 1", got)
+	}
+}
+
+func TestRuntimeDeepAgentLLMRouteStepPreservesArtifactIntentOnMulti(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return multiClassifyingDeepAgentRunner{} },
+	)
+	planner := NewRuntimeDeepAgentPlanner(runtime)
+	mode := planner.llmRouteStep(context.Background(), &DeepAgentState{WorkingMemory: map[string]any{"user_id": "alice"}}, DeepAgentStep{
+		ID:            "write",
+		Title:         "Write report",
+		Intent:        "Deliver the final Tolan AI report",
+		DoneCondition: "downloadable markdown artifact is available",
+	})
+	if mode != "model_artifact" {
+		t.Fatalf("llmRouteStep() = %q, want model_artifact", mode)
 	}
 }
 
@@ -992,6 +1062,84 @@ func (markdownReportRunner) RunGeneratedPrompt(_ context.Context, session *state
 	output := "# Tolan AI 调查报告\n\n## 摘要\n\nTolan AI 是一个 AI 产品。"
 	session.AddAssistantMessage(output)
 	return engine.Result{Output: output, Session: session}, nil
+}
+
+type testSessionStore struct {
+	sessions map[string]*state.Session
+}
+
+func newTestSessionStore() *testSessionStore {
+	return &testSessionStore{sessions: map[string]*state.Session{}}
+}
+
+func (s *testSessionStore) key(userID, sessionID string) string {
+	return userID + ":" + sessionID
+}
+
+func (s *testSessionStore) Create(_ context.Context, userID, workingDir string) (*state.Session, error) {
+	session := state.NewSession(workingDir)
+	if err := s.Save(context.Background(), userID, session); err != nil {
+		return nil, err
+	}
+	return session, nil
+}
+
+func (s *testSessionStore) Get(_ context.Context, userID, sessionID string) (*state.Session, error) {
+	session, ok := s.sessions[s.key(userID, sessionID)]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	clone := *session
+	return &clone, nil
+}
+
+func (s *testSessionStore) List(_ context.Context, userID string) ([]*state.Session, error) {
+	out := make([]*state.Session, 0, len(s.sessions))
+	for key, session := range s.sessions {
+		if strings.HasPrefix(key, userID+":") {
+			clone := *session
+			out = append(out, &clone)
+		}
+	}
+	return out, nil
+}
+
+func (s *testSessionStore) Save(_ context.Context, userID string, session *state.Session) error {
+	if session == nil {
+		return fmt.Errorf("session is required")
+	}
+	clone := *session
+	s.sessions[s.key(userID, session.ID)] = &clone
+	return nil
+}
+
+func (s *testSessionStore) Delete(_ context.Context, userID, sessionID string) error {
+	delete(s.sessions, s.key(userID, sessionID))
+	return nil
+}
+
+func (s *testSessionStore) DeleteUser(_ context.Context, userID string) error {
+	for key := range s.sessions {
+		if strings.HasPrefix(key, userID+":") {
+			delete(s.sessions, key)
+		}
+	}
+	return nil
+}
+
+func (s *testSessionStore) PruneBefore(_ context.Context, _ time.Time) (int, error) {
+	return 0, nil
+}
+
+type multiClassifyingDeepAgentRunner struct{}
+
+func (multiClassifyingDeepAgentRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return multiClassifyingDeepAgentRunner{}.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (multiClassifyingDeepAgentRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, _ string) (engine.Result, error) {
+	session.AddAssistantMessage("multi")
+	return engine.Result{Output: "multi", Session: session}, nil
 }
 
 type repairingDeepAgentPlanRunner struct {

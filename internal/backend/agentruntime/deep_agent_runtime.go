@@ -135,12 +135,17 @@ func (p *RuntimeDeepAgentPlanner) routeStepAction(ctx context.Context, state *De
 	if deepAgentWorkflowString(step.Metadata, "tool") != "" {
 		return ruleDeepAgentPlanner{}.NextAction(ctx, state, step)
 	}
+	requiresArtifact := deepAgentStepRequiresArtifact(step)
 	mode := p.keywordRouteStep(step)
 	if mode == "" {
 		mode = p.llmRouteStep(ctx, state, step)
 	}
 	if mode == "" {
-		mode = "model"
+		if requiresArtifact {
+			mode = "model_artifact"
+		} else {
+			mode = "model"
+		}
 	}
 	args := map[string]any{}
 	switch mode {
@@ -157,6 +162,8 @@ func (p *RuntimeDeepAgentPlanner) routeStepAction(ctx context.Context, state *De
 		mode = "rag_search"
 		args["query"] = firstNonEmptyString(step.Intent, step.Title, stateGoal(state))
 		args["limit"] = 5
+	case "model_artifact":
+		args["prompt"] = p.modelPromptForStep(state, step)
 	default:
 		mode = "model"
 		args["prompt"] = p.modelPromptForStep(state, step)
@@ -173,7 +180,7 @@ func (p *RuntimeDeepAgentPlanner) routeStepAction(ctx context.Context, state *De
 	if attempt > 1 {
 		args["attempt"] = attempt
 		args["retry_instruction"] = fmt.Sprintf("Previous attempt %d for step %q did not satisfy the success criteria. Use a different strategy and produce evidence for: %s", attempt-1, firstNonEmptyString(step.Title, step.ID), step.DoneCondition)
-		if mode == "model" {
+		if mode == "model" || mode == "model_artifact" {
 			args["prompt"] = strings.TrimSpace(deepAgentWorkflowString(args, "prompt") + "\n\nRetry instruction: " + deepAgentWorkflowString(args, "retry_instruction"))
 		}
 	}
@@ -204,6 +211,10 @@ func (p *RuntimeDeepAgentPlanner) keywordRouteStep(step DeepAgentStep) string {
 	}
 	if deepAgentContainsAny(text,
 		"artifact", "download", "file", ".md", "markdown", "report", "文档", "报告", "文件", "可下载", "产物", "导出",
+	) {
+		return "model_artifact"
+	}
+	if deepAgentContainsAny(text,
 		"搜索", "查询", "检索", "查找", "调研", "研究", "外部", "联网", "互联网", "官网", "产品", "竞品", "新闻",
 		"web", "internet", "external", "current", "latest", "research",
 	) {
@@ -218,10 +229,11 @@ func (p *RuntimeDeepAgentPlanner) llmRouteStep(ctx context.Context, agentState *
 	}
 	prompt := fmt.Sprintf(`Classify the next DeepAgent step execution mode.
 
-Return exactly one word: model, skill, rag_search, or multi.
+Return exactly one word: model, model_artifact, skill, rag_search, or multi.
 
 Definitions:
 - model: general step execution. The model may use provider tools such as WebSearch, WebFetch, Artifact, and Skill when needed.
+- model_artifact: generate a final deliverable and ensure a downloadable artifact/file is produced for this step.
 - skill: force a published skill only when the step explicitly requires a specific specialized skill.
 - rag_search: search prior conversation/session context only. Do not use this for external web/product research.
 - multi: broad step that should be decomposed; choose model if unsure.
@@ -237,11 +249,16 @@ Prior step context:
 	}
 	mode := strings.ToLower(strings.TrimSpace(result.Output))
 	switch {
+	case strings.Contains(mode, "model_artifact"):
+		return "model_artifact"
 	case strings.Contains(mode, "skill"):
 		return "skill"
 	case strings.Contains(mode, "rag_search") || strings.Contains(mode, "search"):
 		return "rag_search"
 	case strings.Contains(mode, "multi"):
+		if deepAgentStepRequiresArtifact(step) {
+			return "model_artifact"
+		}
 		return "model"
 	case strings.Contains(mode, "model"):
 		return "model"
@@ -305,6 +322,13 @@ func deepAgentToolUsageReminder() string {
 - Use Artifact directly when the step must create a Markdown/text/CSV/JSON/HTML file or another downloadable artifact.
 - Use Skill when a published skill is clearly the best specialized executor.
 - Do not claim you cannot browse the web, perform real-time research, or create files when an appropriate tool is available. If a tool fails, report the tool error and continue with any partial evidence.`
+}
+
+func deepAgentStepRequiresArtifact(step DeepAgentStep) bool {
+	text := strings.Join([]string{step.Title, step.Intent, step.DoneCondition}, "\n")
+	return deepAgentContainsAny(text,
+		"artifact", "download", "file", ".md", "markdown", "report", "文档", "报告", "文件", "可下载", "产物", "导出",
+	)
 }
 
 func (p *RuntimeDeepAgentPlanner) skillArgsForStep(agentState *DeepAgentState, step DeepAgentStep) string {
@@ -420,7 +444,9 @@ func (e *RuntimeDeepAgentExecutor) ExecuteDeepAgentAction(ctx context.Context, a
 	tool := strings.ToLower(strings.TrimSpace(action.Tool))
 	switch tool {
 	case "", "model", "answer", "llm":
-		return e.executeModelAction(ctx, action, agentState)
+		return e.executeModelAction(ctx, action, agentState, false)
+	case "model_artifact":
+		return e.executeModelAction(ctx, action, agentState, true)
 	case "skill":
 		return e.executeSkillAction(ctx, action, agentState)
 	case "rag_search", "search", "message_search":
@@ -433,7 +459,7 @@ func (e *RuntimeDeepAgentExecutor) ExecuteDeepAgentAction(ctx context.Context, a
 	}
 }
 
-func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, action DeepAgentAction, agentState *DeepAgentState) (DeepAgentActionResult, error) {
+func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, action DeepAgentAction, agentState *DeepAgentState, forceArtifact bool) (DeepAgentActionResult, error) {
 	userID := deepAgentActionString(action, "user_id")
 	sessionID := deepAgentActionString(action, "session_id")
 	if agentState != nil && agentState.WorkingMemory != nil {
@@ -474,12 +500,17 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	}
 	diagnostics := collectSkillExecutionDiagnostics(resultSession, startMessageCount)
 	metadata := map[string]any{
-		"tool":              "model",
+		"tool":              firstNonEmptyString(strings.TrimSpace(action.Tool), "model"),
 		"session_id":        resultSession.ID,
 		"artifact_count":    diagnostics.ArtifactCount,
 		"tool_result_valid": diagnostics.ErrorKind == "" && diagnostics.SkillError == "",
 	}
-	if diagnostics.ArtifactCount == 0 && deepAgentActionRequiresArtifact(action) && strings.TrimSpace(result.Output) != "" {
+	if diagnostics.ArtifactCount == 0 && (forceArtifact || deepAgentActionRequiresArtifact(action)) && strings.TrimSpace(result.Output) != "" {
+		if resultSession != nil && userID != "" && strings.TrimSpace(resultSession.ID) != "" {
+			if saveErr := e.runtime.sessions.Save(ctx, userID, resultSession); saveErr != nil {
+				return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true, Metadata: metadata}, saveErr
+			}
+		}
 		artifact, artifactErr := e.createDeepAgentModelArtifact(ctx, userID, resultSession.ID, action, result.Output)
 		if artifactErr != nil {
 			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: artifactErr.Error(), Retryable: true, Metadata: metadata}, artifactErr
@@ -491,7 +522,7 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 		metadata["artifact_fallback"] = true
 		recordDeepAgentArtifactToolResult(resultSession, action, artifact)
 	}
-	if resultSession != nil && userID != "" && sessionID != "" {
+	if resultSession != nil && userID != "" && strings.TrimSpace(resultSession.ID) != "" {
 		if saveErr := e.runtime.sessions.Save(ctx, userID, resultSession); saveErr != nil {
 			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true}, saveErr
 		}
@@ -598,8 +629,12 @@ func (e *RuntimeDeepAgentExecutor) executeSkillAction(ctx context.Context, actio
 	if err != nil {
 		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true, Metadata: deepAgentSkillActionMetadata(skillName, session.ID, diagnostics, result.Job)}, err
 	}
-	if result.Session != nil && userID != "" && sessionID != "" {
-		if saveErr := e.runtime.sessions.Save(ctx, userID, result.Session); saveErr != nil {
+	resultSession := result.Session
+	if resultSession == nil {
+		resultSession = session
+	}
+	if resultSession != nil && userID != "" && strings.TrimSpace(resultSession.ID) != "" {
+		if saveErr := e.runtime.sessions.Save(ctx, userID, resultSession); saveErr != nil {
 			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true, Metadata: deepAgentSkillActionMetadata(skillName, session.ID, diagnostics, result.Job)}, saveErr
 		}
 	}
@@ -672,7 +707,7 @@ func (e *RuntimeDeepAgentExecutor) deepAgentChildJobArtifactCount(ctx context.Co
 		if artifact == nil {
 			continue
 		}
-		if strings.TrimSpace(artifact.JobID) == "" || artifact.JobID == job.ID {
+		if strings.TrimSpace(artifact.JobID) != "" && artifact.JobID == job.ID {
 			count++
 		}
 	}
