@@ -463,12 +463,36 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 		WorkingDir: session.WorkingDir,
 		Prompt:     prompt,
 	})
+	startMessageCount := len(session.Messages)
 	result, err := runner.RunGeneratedPrompt(ctx, session, prompt)
 	if err != nil {
 		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true}, err
 	}
-	if result.Session != nil && userID != "" && sessionID != "" {
-		if saveErr := e.runtime.sessions.Save(ctx, userID, result.Session); saveErr != nil {
+	resultSession := result.Session
+	if resultSession == nil {
+		resultSession = session
+	}
+	diagnostics := collectSkillExecutionDiagnostics(resultSession, startMessageCount)
+	metadata := map[string]any{
+		"tool":              "model",
+		"session_id":        resultSession.ID,
+		"artifact_count":    diagnostics.ArtifactCount,
+		"tool_result_valid": diagnostics.ErrorKind == "" && diagnostics.SkillError == "",
+	}
+	if diagnostics.ArtifactCount == 0 && deepAgentActionRequiresArtifact(action) && strings.TrimSpace(result.Output) != "" {
+		artifact, artifactErr := e.createDeepAgentModelArtifact(ctx, userID, resultSession.ID, action, result.Output)
+		if artifactErr != nil {
+			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: artifactErr.Error(), Retryable: true, Metadata: metadata}, artifactErr
+		}
+		diagnostics.ArtifactCount = 1
+		metadata["artifact_count"] = 1
+		metadata["artifact_id"] = artifact.ID
+		metadata["artifact_filename"] = artifact.Filename
+		metadata["artifact_fallback"] = true
+		recordDeepAgentArtifactToolResult(resultSession, action, artifact)
+	}
+	if resultSession != nil && userID != "" && sessionID != "" {
+		if saveErr := e.runtime.sessions.Save(ctx, userID, resultSession); saveErr != nil {
 			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true}, saveErr
 		}
 	}
@@ -476,11 +500,72 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 		Status:    DeepAgentActionStatusSucceeded,
 		Output:    result.Output,
 		Completed: true,
-		Metadata: map[string]any{
-			"tool":       "model",
-			"session_id": session.ID,
-		},
+		Metadata:  metadata,
 	}, nil
+}
+
+func (e *RuntimeDeepAgentExecutor) createDeepAgentModelArtifact(ctx context.Context, userID, sessionID string, action DeepAgentAction, output string) (*Artifact, error) {
+	if e == nil || e.runtime == nil || e.runtime.artifacts == nil {
+		return nil, fmt.Errorf("artifact service is not configured")
+	}
+	if strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("artifact fallback requires user_id and session_id")
+	}
+	filename := deepAgentModelArtifactFilename(action)
+	return e.runtime.CreateArtifact(ctx, userID, sessionID, filename, "text/markdown", []byte(output))
+}
+
+func deepAgentActionRequiresArtifact(action DeepAgentAction) bool {
+	text := strings.Join([]string{
+		deepAgentActionString(action, "goal"),
+		deepAgentActionString(action, "step_title"),
+		deepAgentActionString(action, "step_intent"),
+		deepAgentActionString(action, "done_condition"),
+		deepAgentActionString(action, "success_criteria"),
+		deepAgentActionString(action, "prompt"),
+	}, "\n")
+	return deepAgentContainsAny(text,
+		"artifact", "download", "file", ".md", "markdown", "report", "文档", "报告", "文件", "可下载", "产物", "导出",
+	)
+}
+
+func deepAgentModelArtifactFilename(action DeepAgentAction) string {
+	stepID := strings.TrimSpace(action.StepID)
+	if stepID == "" {
+		stepID = strings.TrimSpace(deepAgentActionString(action, "step_id"))
+	}
+	stepID = strings.ToLower(stepID)
+	stepID = strings.NewReplacer("/", "-", "\\", "-", " ", "-", "_", "-", ".", "-").Replace(stepID)
+	stepID = strings.Trim(stepID, "-")
+	if stepID == "" {
+		stepID = "result"
+	}
+	if !strings.HasSuffix(stepID, ".md") {
+		stepID += ".md"
+	}
+	return stepID
+}
+
+func recordDeepAgentArtifactToolResult(session *state.Session, action DeepAgentAction, artifact *Artifact) {
+	if session == nil || artifact == nil {
+		return
+	}
+	input, _ := json.Marshal(map[string]any{
+		"filename":     artifact.Filename,
+		"content_type": artifact.ContentType,
+		"source":       "deep_agent_model_fallback",
+	})
+	output, _ := json.Marshal(artifactToolOutput{
+		ID:                   artifact.ID,
+		Kind:                 artifact.Kind,
+		Filename:             artifact.Filename,
+		ContentType:          artifact.ContentType,
+		SizeBytes:            artifact.SizeBytes,
+		DownloadPath:         "/v1/artifacts/" + artifact.ID,
+		AssistantInstruction: "Use this metadata as internal context only. Tell the user the generated artifact is ready in the Artifacts panel. Do not expose raw JSON, artifact IDs, object paths, or download paths unless the user explicitly asks for technical details.",
+	})
+	callID := "deep-agent-artifact-" + firstNonEmptyString(strings.TrimSpace(action.StepID), "result")
+	session.AddToolResult(callID, ArtifactToolName, json.RawMessage(input), string(output))
 }
 
 func (e *RuntimeDeepAgentExecutor) executeSkillAction(ctx context.Context, action DeepAgentAction, agentState *DeepAgentState) (DeepAgentActionResult, error) {

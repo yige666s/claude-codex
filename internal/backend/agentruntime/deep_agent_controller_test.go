@@ -290,6 +290,68 @@ func TestRuntimeDeepAgentSkillActionReportsArtifactCount(t *testing.T) {
 	}
 }
 
+func TestRuntimeDeepAgentModelActionCreatesArtifactFallback(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return markdownReportRunner{} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	result, err := NewRuntimeDeepAgentExecutor(runtime).ExecuteDeepAgentAction(context.Background(), DeepAgentAction{
+		StepID: "step-3",
+		Tool:   "model",
+		Args: map[string]any{
+			"user_id":          "alice",
+			"session_id":       session.ID,
+			"prompt":           "撰写并生成 Markdown 格式的调查报告",
+			"step_title":       "撰写并生成Markdown格式的调查报告",
+			"step_intent":      "生成一份 md 格式调查报告",
+			"done_condition":   "Markdown report artifact is available",
+			"success_criteria": "artifact count is at least 1",
+		},
+	}, &DeepAgentState{WorkingMemory: map[string]any{"user_id": "alice", "session_id": session.ID}})
+	if err != nil {
+		t.Fatalf("ExecuteDeepAgentAction() error = %v", err)
+	}
+	if result.Status != DeepAgentActionStatusSucceeded || !result.Completed {
+		t.Fatalf("unexpected model action result: %#v", result)
+	}
+	if got := deepAgentAnyInt(result.Metadata["artifact_count"], -1); got != 1 {
+		t.Fatalf("artifact_count = %d, want 1 in %#v", got, result.Metadata)
+	}
+	if fallback, _ := deepAgentMetadataBool(result.Metadata, "artifact_fallback"); !fallback {
+		t.Fatalf("expected artifact fallback metadata, got %#v", result.Metadata)
+	}
+	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Filename != "step-3.md" {
+		t.Fatalf("unexpected artifacts: %#v", artifacts)
+	}
+	saved, err := runtime.sessions.Get(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	foundToolResult := false
+	for _, message := range saved.Messages {
+		if strings.EqualFold(message.ToolName, ArtifactToolName) {
+			foundToolResult = true
+			break
+		}
+	}
+	if !foundToolResult {
+		t.Fatalf("expected saved session to include Artifact tool result, got %#v", saved.Messages)
+	}
+}
+
 func TestRuntimeDeepAgentPlannerPromptIncludesSkillCatalog(t *testing.T) {
 	runtime := NewRuntime(
 		RuntimeConfig{},
@@ -918,6 +980,18 @@ func (artifactReportingRunner) RunGeneratedPrompt(_ context.Context, session *st
 	session.AddToolResult("artifact-call-1", ArtifactToolName, json.RawMessage(`{"filename":"report.md"}`), "created report artifact")
 	session.AddAssistantMessage("report generated: " + prompt)
 	return engine.Result{Output: "report generated", Session: session}, nil
+}
+
+type markdownReportRunner struct{}
+
+func (markdownReportRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return markdownReportRunner{}.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (markdownReportRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, _ string) (engine.Result, error) {
+	output := "# Tolan AI 调查报告\n\n## 摘要\n\nTolan AI 是一个 AI 产品。"
+	session.AddAssistantMessage(output)
+	return engine.Result{Output: output, Session: session}, nil
 }
 
 type repairingDeepAgentPlanRunner struct {
