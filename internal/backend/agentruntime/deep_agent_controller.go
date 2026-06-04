@@ -470,6 +470,7 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 		state.TriedActions[action.Hash]++
 		state.ActionHistory = append(state.ActionHistory, action)
 		state.ActionCount++
+		c.emitActionEvent(ctx, run, state, step, action, DeepAgentActionResult{}, "deep_agent_action_started", "")
 		result, execErr := c.executor.ExecuteDeepAgentAction(ctx, action, state)
 		if result.Status == "" {
 			result.Status = DeepAgentActionStatusSucceeded
@@ -477,6 +478,7 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 		if execErr != nil {
 			result.Status = DeepAgentActionStatusFailed
 			result.Error = execErr.Error()
+			c.emitActionEvent(ctx, run, state, step, action, result, "deep_agent_action_failed", result.Error)
 			if !result.Retryable {
 				state.Plan.Steps[stepIndex].Status = DeepAgentStepStatusFailed
 				state.FailedSteps = appendUniqueString(state.FailedSteps, step.ID)
@@ -486,6 +488,10 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 				c.persistState(ctx, run, state)
 				return fmt.Errorf("%w: %s", ErrDeepAgentBlocked, state.Blocker)
 			}
+		} else if result.Status == DeepAgentActionStatusFailed {
+			c.emitActionEvent(ctx, run, state, step, action, result, "deep_agent_action_failed", result.Error)
+		} else {
+			c.emitActionEvent(ctx, run, state, step, action, result, "deep_agent_action_succeeded", "")
 		}
 		progress, err := c.verifier.CheckProgress(ctx, state, step, action, result)
 		if err != nil {
@@ -518,6 +524,74 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 		state.UpdatedAt = c.now()
 		c.persistState(ctx, run, state)
 	}
+}
+
+func (c *DeepAgentController) emitActionEvent(ctx context.Context, run *WorkflowRun, state *DeepAgentState, step DeepAgentStep, action DeepAgentAction, result DeepAgentActionResult, eventType, errorText string) {
+	if c == nil || run == nil {
+		return
+	}
+	tool := strings.TrimSpace(action.Tool)
+	if tool == "" {
+		tool = "model"
+	}
+	payload := map[string]any{
+		"type":          eventType,
+		"workflow_name": run.Name,
+		"version":       run.Version,
+		"run_id":        run.ID,
+		"job_id":        run.JobID,
+		"session_id":    run.SessionID,
+		"user_id":       run.UserID,
+		"step_id":       step.ID,
+		"step_title":    step.Title,
+		"step_status":   step.Status,
+		"tool":          tool,
+		"action_hash":   action.Hash,
+		"action_count":  0,
+	}
+	if state != nil {
+		payload["action_count"] = state.ActionCount
+		payload["deep_agent_status"] = state.Status
+	}
+	if tool == "skill" {
+		payload["skill_name"] = firstNonEmptyString(deepAgentActionString(action, "skill"), deepAgentActionString(action, "skill_name"))
+	}
+	if query := deepAgentActionString(action, "query"); query != "" {
+		payload["query"] = query
+	}
+	if result.Status != "" {
+		payload["result_status"] = result.Status
+	}
+	if result.Completed {
+		payload["completed"] = result.Completed
+	}
+	if len(result.Metadata) > 0 {
+		payload["result_metadata"] = result.Metadata
+	}
+	if errorText != "" {
+		payload["error"] = errorText
+	}
+	content := strings.TrimSpace(fmt.Sprintf("%s %s", firstNonEmptyString(step.ID, step.Title), tool))
+	if eventType != "deep_agent_action_started" && result.Status != "" {
+		content = strings.TrimSpace(content + " " + result.Status)
+	}
+	emitJobEventFromContext(ctx, Event{
+		Type:      eventType,
+		SessionID: run.SessionID,
+		JobID:     run.JobID,
+		Role:      "workflow",
+		Content:   content,
+		Error:     errorText,
+		Data:      deepAgentEventData(payload),
+	})
+}
+
+func deepAgentEventData(value any) json.RawMessage {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 func (c *DeepAgentController) reviewActionRisk(ctx context.Context, run *WorkflowRun, state *DeepAgentState, step DeepAgentStep, action DeepAgentAction) error {

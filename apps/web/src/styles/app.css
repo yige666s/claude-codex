@@ -2268,6 +2268,44 @@ label.composer-upload {
   background: var(--panel);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
 }
+.timeline-row summary {
+  min-height: 32px;
+  cursor: pointer;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  padding-right: 18px;
+  position: relative;
+}
+.timeline-row summary::-webkit-details-marker {
+  display: none;
+}
+.timeline-row summary::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg);
+  position: absolute;
+  right: 2px;
+  top: 9px;
+  transition: transform 120ms ease;
+}
+.timeline-row[open] summary::after {
+  transform: rotate(225deg);
+  top: 13px;
+}
+.timeline-row.event-succeeded {
+  border-color: #cce6df;
+}
+.timeline-row.event-failed {
+  border-color: #efb8b1;
+  background: #fff8f7;
+}
+.timeline-row.event-running {
+  border-color: #c8d6ff;
+}
 .timeline-row span {
   display: block;
   color: var(--muted);
@@ -2276,6 +2314,64 @@ label.composer-upload {
 .timeline-row p {
   margin: 3px 0 0;
   overflow-wrap: anywhere;
+}
+.timeline-detail {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid #edf1f3;
+  display: grid;
+  gap: 8px;
+}
+.timeline-detail-group {
+  display: grid;
+  gap: 5px;
+}
+.timeline-detail-group h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+}
+.timeline-detail-group dl {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+}
+.timeline-detail-group dl div {
+  display: grid;
+  grid-template-columns: minmax(76px, 0.34fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+.timeline-detail-group dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.timeline-detail-group dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.timeline-raw {
+  border-top: 1px dashed #dce4e8;
+  padding-top: 7px;
+}
+.timeline-raw summary {
+  min-height: 24px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.timeline-raw pre {
+  max-height: 240px;
+  overflow: auto;
+  margin: 7px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: #f6f8f9;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 .upload {
   margin: 12px 14px;

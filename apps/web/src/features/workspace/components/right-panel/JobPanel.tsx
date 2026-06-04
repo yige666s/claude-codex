@@ -56,10 +56,7 @@ export function JobPanel({
                 </div>
                 <div className="timeline">
                   {visibleJobEvents(jobEvents).map((event) => (
-                    <div key={event.id} className="timeline-row">
-                      <span>{event.type}</span>
-                      <p>{event.event?.error || event.event?.content || event.event?.job_reason || event.id}</p>
-                    </div>
+                    <JobEventDetail key={event.id} event={event} />
                   ))}
                 </div>
               </MotionPanel>
@@ -73,4 +70,131 @@ export function JobPanel({
 
 function visibleJobEvents(events: JobEvent[]): JobEvent[] {
   return events.filter((event) => !(event.type === "delta" && event.event?.role === "assistant"));
+}
+
+function JobEventDetail({ event }: { event: JobEvent }) {
+  const data = eventData(event);
+  const title = eventTitle(event, data);
+  const subtitle = eventSubtitle(event, data);
+  const workflowRows = compactRows([
+    ["Workflow", stringValue(data?.workflow_name)],
+    ["Run", stringValue(data?.run_id)],
+    ["Step", stringValue(data?.step_name)],
+    ["Status", stringValue(data?.status)]
+  ]);
+  const actionRows = compactRows([
+    ["Plan step", stringValue(data?.step_id || data?.step_title)],
+    ["Tool", stringValue(data?.tool)],
+    ["Skill", stringValue(data?.skill_name)],
+    ["Query", stringValue(data?.query)],
+    ["Action", stringValue(data?.action_hash)]
+  ]);
+  const resultMetadata = recordValue(data?.result_metadata);
+  const resultRows = compactRows([
+    ["Result", stringValue(data?.result_status)],
+    ["Completed", boolString(data?.completed)],
+    ["Artifacts", stringValue(resultMetadata?.artifact_count)],
+    ["Child job", stringValue(resultMetadata?.job_id)],
+    ["Tool valid", boolString(resultMetadata?.tool_result_valid)],
+    ["Error", event.event?.error || stringValue(data?.error)]
+  ]);
+  const metricRows = rowsFromRecord(recordValue(data?.metrics));
+  return (
+    <details className={`timeline-row event-${eventStatus(event, data)}`}>
+      <summary>
+        <span>{title}</span>
+        <p>{subtitle}</p>
+      </summary>
+      <div className="timeline-detail">
+        {workflowRows.length > 0 && <DetailGroup title="Workflow" rows={workflowRows} />}
+        {actionRows.length > 0 && <DetailGroup title="Action" rows={actionRows} />}
+        {resultRows.length > 0 && <DetailGroup title="Result" rows={resultRows} />}
+        {metricRows.length > 0 && <DetailGroup title="Metrics" rows={metricRows} />}
+        {data && (
+          <details className="timeline-raw">
+            <summary>Raw data</summary>
+            <pre>{JSON.stringify(data, null, 2)}</pre>
+          </details>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function DetailGroup({ title, rows }: { title: string; rows: Array<[string, string]> }) {
+  return (
+    <section className="timeline-detail-group">
+      <h4>{title}</h4>
+      <dl>
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+function eventData(event: JobEvent): Record<string, unknown> | null {
+  return recordValue(event.event?.data) || null;
+}
+
+function eventTitle(event: JobEvent, data: Record<string, unknown> | null): string {
+  if (event.type.startsWith("deep_agent_action_")) {
+    const step = stringValue(data?.step_id || data?.step_title);
+    const tool = stringValue(data?.tool);
+    const skill = stringValue(data?.skill_name);
+    return [step || "deep_agent_action", tool, skill].filter(Boolean).join(" · ");
+  }
+  const workflow = stringValue(data?.workflow_name);
+  const step = stringValue(data?.step_name);
+  if (workflow && step) return `${workflow}.${step}`;
+  return event.type;
+}
+
+function eventSubtitle(event: JobEvent, data: Record<string, unknown> | null): string {
+  return event.event?.error || event.event?.content || event.event?.job_reason || stringValue(data?.status) || event.id;
+}
+
+function eventStatus(event: JobEvent, data: Record<string, unknown> | null): string {
+  const status = stringValue(data?.result_status || data?.status).toLowerCase();
+  if (status) return status;
+  if (event.type.endsWith("_failed")) return "failed";
+  if (event.type.endsWith("_succeeded")) return "succeeded";
+  if (event.type.endsWith("_started")) return "running";
+  return "default";
+}
+
+function rowsFromRecord(record?: Record<string, unknown>): Array<[string, string]> {
+  if (!record) return [];
+  return Object.entries(record)
+    .map(([key, value]) => [key, displayValue(value)] as [string, string])
+    .filter(([, value]) => value !== "");
+}
+
+function compactRows(rows: Array<[string, string | undefined]>): Array<[string, string]> {
+  return rows.filter((row): row is [string, string] => Boolean(row[1]));
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+function stringValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function boolString(value: unknown): string {
+  return typeof value === "boolean" ? String(value) : "";
+}
+
+function displayValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
 }

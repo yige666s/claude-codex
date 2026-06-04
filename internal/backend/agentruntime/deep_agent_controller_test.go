@@ -60,6 +60,62 @@ func TestDeepAgentControllerCompletesAndPersistsCheckpoints(t *testing.T) {
 	}
 }
 
+func TestDeepAgentControllerEmitsActionDetailEvents(t *testing.T) {
+	store := NewMemoryWorkflowStore()
+	controller := NewDeepAgentController(
+		store,
+		NoopWorkflowEventSink{},
+		staticDeepAgentPlanner{plan: DeepAgentPlan{Steps: []DeepAgentStep{{
+			ID:            "write",
+			Title:         "Write report",
+			DoneCondition: "skill reports completed",
+			Metadata: map[string]any{
+				"tool": "skill",
+				"args": map[string]any{"skill_name": "docx", "args": "write report"},
+			},
+		}}}},
+		completingDeepAgentExecutor{},
+		nil,
+	)
+	var events []Event
+	ctx := withJobEventEmitter(context.Background(), func(_ context.Context, event Event) error {
+		events = append(events, event)
+		return nil
+	})
+	_, err := controller.Execute(ctx, DeepAgentTaskRequest{
+		UserID:    "alice",
+		SessionID: "session-1",
+		JobID:     "job-1",
+		Goal:      "prepare report",
+		Policy:    DeepAgentPolicy{MaxSteps: 2, MaxActions: 2, NoProgressLimit: 2, MaxDuration: time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	var started, succeeded map[string]any
+	for _, event := range events {
+		switch event.Type {
+		case "deep_agent_action_started":
+			if err := json.Unmarshal(event.Data, &started); err != nil {
+				t.Fatalf("unmarshal started event: %v", err)
+			}
+		case "deep_agent_action_succeeded":
+			if err := json.Unmarshal(event.Data, &succeeded); err != nil {
+				t.Fatalf("unmarshal succeeded event: %v", err)
+			}
+		}
+	}
+	if started == nil || succeeded == nil {
+		t.Fatalf("expected action detail events, got %#v", events)
+	}
+	if started["step_id"] != "write" || started["tool"] != "skill" || started["skill_name"] != "docx" {
+		t.Fatalf("unexpected started detail: %#v", started)
+	}
+	if succeeded["result_status"] != DeepAgentActionStatusSucceeded {
+		t.Fatalf("unexpected succeeded detail: %#v", succeeded)
+	}
+}
+
 func TestDeepAgentControllerBlocksRepeatedAction(t *testing.T) {
 	store := NewMemoryWorkflowStore()
 	controller := NewDeepAgentController(
