@@ -68,8 +68,8 @@ func TestDeepAgentControllerEmitsActionDetailEvents(t *testing.T) {
 		NoopWorkflowEventSink{},
 		staticDeepAgentPlanner{plan: DeepAgentPlan{Steps: []DeepAgentStep{{
 			ID:            "write",
-			Title:         "Write report",
-			DoneCondition: "skill reports completed",
+			Title:         "Run skill action",
+			DoneCondition: "skill action completed",
 			Metadata: map[string]any{
 				"tool": "skill",
 				"args": map[string]any{"skill_name": "docx", "args": "write report"},
@@ -87,7 +87,7 @@ func TestDeepAgentControllerEmitsActionDetailEvents(t *testing.T) {
 		UserID:    "alice",
 		SessionID: "session-1",
 		JobID:     "job-1",
-		Goal:      "prepare report",
+		Goal:      "exercise action detail events",
 		Policy:    DeepAgentPolicy{MaxSteps: 2, MaxActions: 2, NoProgressLimit: 2, MaxDuration: time.Minute},
 	})
 	if err != nil {
@@ -353,6 +353,51 @@ func TestRuntimeDeepAgentModelActionCreatesArtifactFallback(t *testing.T) {
 	}
 }
 
+func TestRuntimeDeepAgentModelActionDoesNotRequireArtifactFromGoalOrPrompt(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return noOutputRunner{} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	result, err := NewRuntimeDeepAgentExecutor(runtime).ExecuteDeepAgentAction(context.Background(), DeepAgentAction{
+		StepID: "step-1",
+		Tool:   "model",
+		Args: map[string]any{
+			"user_id":        "alice",
+			"session_id":     session.ID,
+			"goal":           "帮我调研一下tolan这个产品，然后生成一个调研报告",
+			"prompt":         deepAgentToolUsageReminder() + "\n\nCurrent step intent:\n收集并整理tolan产品信息",
+			"step_title":     "收集并整理tolan产品信息",
+			"step_intent":    "收集并整理tolan产品信息",
+			"done_condition": "相关 Tolan 产品事实已收集整理",
+		},
+	}, &DeepAgentState{WorkingMemory: map[string]any{"user_id": "alice", "session_id": session.ID}})
+	if err != nil {
+		t.Fatalf("ExecuteDeepAgentAction() should not require artifact for research model step, got %v", err)
+	}
+	if result.Status != DeepAgentActionStatusSucceeded || result.Metadata == nil {
+		t.Fatalf("unexpected model action result: %#v", result)
+	}
+	if got := deepAgentAnyInt(result.Metadata["artifact_count"], -1); got != 0 {
+		t.Fatalf("artifact_count = %d, want 0 in %#v", got, result.Metadata)
+	}
+	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("research model step should not create artifacts, got %#v", artifacts)
+	}
+}
+
 func TestRuntimeDeepAgentModelArtifactSavesGeneratedSessionWithoutSessionID(t *testing.T) {
 	store := newTestSessionStore()
 	runtime := NewRuntime(
@@ -577,6 +622,52 @@ func TestRuntimeDeepAgentRouterLeavesResearchAndArtifactStepsForModelTools(t *te
 	args := action.Args
 	if got := deepAgentWorkflowString(args, "prompt"); !strings.Contains(got, "Artifact") || !strings.Contains(got, "Tolan AI") {
 		t.Fatalf("model prompt should include artifact guidance and context, got %#v", args)
+	}
+}
+
+func TestRuntimeDeepAgentRouterDoesNotTreatReportOutlineAsArtifact(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return echoRunner{} },
+	)
+	planner := NewRuntimeDeepAgentPlanner(runtime)
+	state := &DeepAgentState{
+		Goal:          "帮我调研一下tolan这个产品，然后生成一个调研报告",
+		WorkingMemory: map[string]any{"user_id": "alice", "session_id": "session-1"},
+	}
+	outlineAction, err := planner.NextAction(context.Background(), state, DeepAgentStep{
+		ID:            "outline",
+		Title:         "构建调研报告大纲结构",
+		Intent:        "分析已收集信息并形成报告大纲",
+		DoneCondition: "报告大纲结构清晰，覆盖产品定位、功能、竞品和技术特点",
+	})
+	if err != nil {
+		t.Fatalf("NextAction() error = %v", err)
+	}
+	if outlineAction.Tool != DeepAgentToolModeModel {
+		t.Fatalf("outline action tool = %q, want model: %#v", outlineAction.Tool, outlineAction)
+	}
+	if required, _ := outlineAction.Args["requires_artifact"].(bool); required {
+		t.Fatalf("outline step should not require artifact: %#v", outlineAction.Args)
+	}
+
+	finalAction, err := planner.NextAction(context.Background(), state, DeepAgentStep{
+		ID:            "write",
+		Title:         "生成专业的产品调研报告文档",
+		Intent:        "生成并交付 Tolan 产品调研报告文档",
+		DoneCondition: "调研报告文档已生成并可下载",
+	})
+	if err != nil {
+		t.Fatalf("NextAction() final error = %v", err)
+	}
+	if finalAction.Tool != DeepAgentToolModeModelArtifact {
+		t.Fatalf("final action tool = %q, want model_artifact: %#v", finalAction.Tool, finalAction)
+	}
+	if required, _ := finalAction.Args["requires_artifact"].(bool); !required {
+		t.Fatalf("final step should require artifact: %#v", finalAction.Args)
 	}
 }
 
@@ -1148,6 +1239,16 @@ func (markdownReportRunner) RunGeneratedPrompt(_ context.Context, session *state
 	output := "# Tolan AI 调查报告\n\n## 摘要\n\nTolan AI 是一个 AI 产品。"
 	session.AddAssistantMessage(output)
 	return engine.Result{Output: output, Session: session}, nil
+}
+
+type noOutputRunner struct{}
+
+func (noOutputRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return noOutputRunner{}.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (noOutputRunner) RunGeneratedPrompt(context.Context, *state.Session, string) (engine.Result, error) {
+	return engine.Result{}, nil
 }
 
 type emptyOutputAssistantReportRunner struct{}

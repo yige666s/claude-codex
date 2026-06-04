@@ -188,12 +188,13 @@ func (p *RuntimeDeepAgentPlanner) routeStepAction(ctx context.Context, state *De
 		StepID: step.ID,
 		Tool:   mode,
 		Args: mergeDeepAgentActionArgs(args, map[string]any{
-			"goal":             stateGoal(state),
-			"step_id":          step.ID,
-			"step_title":       step.Title,
-			"step_intent":      step.Intent,
-			"done_condition":   step.DoneCondition,
-			"success_criteria": step.DoneCondition,
+			"goal":              stateGoal(state),
+			"step_id":           step.ID,
+			"step_title":        step.Title,
+			"step_intent":       step.Intent,
+			"done_condition":    step.DoneCondition,
+			"success_criteria":  step.DoneCondition,
+			"requires_artifact": requiresArtifact,
 		}),
 	}, nil
 }
@@ -209,9 +210,7 @@ func (p *RuntimeDeepAgentPlanner) keywordRouteStep(step DeepAgentStep) string {
 	) {
 		return DeepAgentToolModeRAGSearch
 	}
-	if deepAgentContainsAny(text,
-		"artifact", "download", "file", ".md", "markdown", "report", "文档", "报告", "文件", "可下载", "产物", "导出",
-	) {
+	if deepAgentStepRequiresArtifact(step) {
 		return DeepAgentToolModeModelArtifact
 	}
 	if deepAgentContainsAny(text,
@@ -334,8 +333,27 @@ For artifact creation steps:
 
 func deepAgentStepRequiresArtifact(step DeepAgentStep) bool {
 	text := strings.Join([]string{step.Title, step.Intent, step.DoneCondition}, "\n")
+	return deepAgentTextRequiresArtifact(text)
+}
+
+func deepAgentTextRequiresArtifact(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return false
+	}
+	if deepAgentContainsAny(text,
+		"artifact", "download", "downloadable", "file", ".md", ".docx", ".xlsx", ".pptx", "markdown",
+		"可下载", "产物", "文件", "导出",
+	) {
+		return true
+	}
+	hasDeliverableNoun := deepAgentContainsAny(text, "report", "document", "文档", "报告")
+	if !hasDeliverableNoun {
+		return false
+	}
 	return deepAgentContainsAny(text,
-		"artifact", "download", "file", ".md", "markdown", "report", "文档", "报告", "文件", "可下载", "产物", "导出",
+		"generate", "generated", "create", "created", "write", "written", "produce", "produced", "deliver", "delivered", "save", "saved", "final",
+		"生成", "创建", "撰写", "编写", "写作", "输出", "交付", "保存", "制作", "最终",
 	)
 }
 
@@ -651,17 +669,20 @@ func (e *RuntimeDeepAgentExecutor) createDeepAgentModelArtifact(ctx context.Cont
 }
 
 func deepAgentActionRequiresArtifact(action DeepAgentAction) bool {
+	if action.Args != nil {
+		for _, key := range []string{"requires_artifact", "require_artifact"} {
+			if _, ok := action.Args[key]; ok {
+				return deepAgentBool(action.Args, key, false)
+			}
+		}
+	}
 	text := strings.Join([]string{
-		deepAgentActionString(action, "goal"),
 		deepAgentActionString(action, "step_title"),
 		deepAgentActionString(action, "step_intent"),
 		deepAgentActionString(action, "done_condition"),
 		deepAgentActionString(action, "success_criteria"),
-		deepAgentActionString(action, "prompt"),
 	}, "\n")
-	return deepAgentContainsAny(text,
-		"artifact", "download", "file", ".md", "markdown", "report", "文档", "报告", "文件", "可下载", "产物", "导出",
-	)
+	return deepAgentTextRequiresArtifact(text)
 }
 
 func deepAgentModelArtifactFilename(action DeepAgentAction) string {
