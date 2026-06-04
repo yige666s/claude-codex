@@ -53,9 +53,6 @@ func (p *RuntimeDeepAgentPlanner) CreatePlan(ctx context.Context, req DeepAgentT
 		}
 	}
 	plan = normalizeDeepAgentPlan(req.Goal, plan)
-	if err := p.validatePlanSkillReferences(plan); err != nil {
-		return DeepAgentPlan{}, err
-	}
 	for _, step := range plan.Steps {
 		if strings.TrimSpace(step.DoneCondition) == "" {
 			return DeepAgentPlan{}, fmt.Errorf("deep agent planner returned step %q without done_condition", firstNonEmptyString(step.ID, step.Title))
@@ -131,7 +128,269 @@ func (p *RuntimeDeepAgentPlanner) validatePlanSkillReferences(plan DeepAgentPlan
 }
 
 func (p *RuntimeDeepAgentPlanner) NextAction(ctx context.Context, state *DeepAgentState, step DeepAgentStep) (DeepAgentAction, error) {
-	return ruleDeepAgentPlanner{}.NextAction(ctx, state, step)
+	return p.routeStepAction(ctx, state, step)
+}
+
+func (p *RuntimeDeepAgentPlanner) routeStepAction(ctx context.Context, state *DeepAgentState, step DeepAgentStep) (DeepAgentAction, error) {
+	if deepAgentWorkflowString(step.Metadata, "tool") != "" {
+		return ruleDeepAgentPlanner{}.NextAction(ctx, state, step)
+	}
+	mode := p.keywordRouteStep(step)
+	if mode == "" {
+		mode = p.llmRouteStep(ctx, state, step)
+	}
+	if mode == "" {
+		mode = "model"
+	}
+	args := map[string]any{}
+	switch mode {
+	case "skill":
+		skill, ok := p.selectSkillForStep(step)
+		if !ok {
+			mode = "model"
+			args["prompt"] = p.modelPromptForStep(state, step)
+			break
+		}
+		args["skill_name"] = skill.Name
+		args["args"] = p.skillArgsForStep(state, step)
+	case "rag_search", "tool_use":
+		mode = "rag_search"
+		args["query"] = firstNonEmptyString(step.Intent, step.Title, stateGoal(state))
+		args["limit"] = 5
+	default:
+		mode = "model"
+		args["prompt"] = p.modelPromptForStep(state, step)
+	}
+	if state != nil && state.WorkingMemory != nil {
+		if userID := deepAgentWorkflowString(state.WorkingMemory, "user_id"); userID != "" {
+			args["user_id"] = firstNonEmptyString(deepAgentWorkflowString(args, "user_id"), userID)
+		}
+		if sessionID := deepAgentWorkflowString(state.WorkingMemory, "session_id"); sessionID != "" {
+			args["session_id"] = firstNonEmptyString(deepAgentWorkflowString(args, "session_id"), sessionID)
+		}
+	}
+	attempt := deepAgentStepAttemptCount(state, step.ID) + 1
+	if attempt > 1 {
+		args["attempt"] = attempt
+		args["retry_instruction"] = fmt.Sprintf("Previous attempt %d for step %q did not satisfy the success criteria. Use a different strategy and produce evidence for: %s", attempt-1, firstNonEmptyString(step.Title, step.ID), step.DoneCondition)
+		if mode == "model" {
+			args["prompt"] = strings.TrimSpace(deepAgentWorkflowString(args, "prompt") + "\n\nRetry instruction: " + deepAgentWorkflowString(args, "retry_instruction"))
+		}
+	}
+	return DeepAgentAction{
+		StepID: step.ID,
+		Tool:   mode,
+		Args: mergeDeepAgentActionArgs(args, map[string]any{
+			"goal":             stateGoal(state),
+			"step_id":          step.ID,
+			"step_title":       step.Title,
+			"step_intent":      step.Intent,
+			"done_condition":   step.DoneCondition,
+			"success_criteria": step.DoneCondition,
+		}),
+	}, nil
+}
+
+func (p *RuntimeDeepAgentPlanner) keywordRouteStep(step DeepAgentStep) string {
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{step.Intent, step.Title, step.DoneCondition}, "\n")))
+	if text == "" {
+		return ""
+	}
+	if deepAgentContainsAny(text,
+		"artifact", "download", "file", ".md", "markdown", "docx", "word", "pdf", "xlsx", "excel", "ppt",
+		"生成", "创建", "输出", "保存", "写", "撰写", "报告", "文档", "文件", "可下载", "产物", "导出", "制作文档",
+	) {
+		return "skill"
+	}
+	if deepAgentContainsAny(text,
+		"搜索", "查询", "检索", "查找", "获取历史", "历史消息", "上下文检索", "rag", "search history", "message search",
+	) {
+		return "rag_search"
+	}
+	return ""
+}
+
+func (p *RuntimeDeepAgentPlanner) llmRouteStep(ctx context.Context, agentState *DeepAgentState, step DeepAgentStep) string {
+	if p == nil || p.runtime == nil {
+		return ""
+	}
+	prompt := fmt.Sprintf(`Classify the next DeepAgent step execution mode.
+
+Return exactly one word: model, skill, rag_search, or multi.
+
+Definitions:
+- model: pure reasoning, analysis, summarization, or text answer.
+- skill: create a downloadable artifact/file/document using a published skill.
+- rag_search: search prior conversation/session context.
+- multi: broad step that should be decomposed; choose model if unsure.
+
+Step intent: %s
+Success criteria: %s
+Prior step context:
+%s`, strings.TrimSpace(firstNonEmptyString(step.Intent, step.Title)), strings.TrimSpace(step.DoneCondition), p.stepContextSummary(agentState, step))
+	runner := p.runtime.runnerForScope(Scope{UserID: deepAgentWorkflowString(stateWorkingMemory(agentState), "user_id"), SessionID: deepAgentWorkflowString(stateWorkingMemory(agentState), "session_id"), Prompt: prompt})
+	result, err := runner.RunGeneratedPrompt(ctx, state.NewSession(""), prompt)
+	if err != nil {
+		return ""
+	}
+	mode := strings.ToLower(strings.TrimSpace(result.Output))
+	switch {
+	case strings.Contains(mode, "skill"):
+		return "skill"
+	case strings.Contains(mode, "rag_search") || strings.Contains(mode, "search"):
+		return "rag_search"
+	case strings.Contains(mode, "multi"):
+		return "model"
+	case strings.Contains(mode, "model"):
+		return "model"
+	default:
+		return ""
+	}
+}
+
+func (p *RuntimeDeepAgentPlanner) selectSkillForStep(step DeepAgentStep) (*skills.SkillDefinition, bool) {
+	if p == nil || p.runtime == nil || p.runtime.skills == nil {
+		return nil, false
+	}
+	text := strings.TrimSpace(strings.Join([]string{step.Intent, step.Title, step.DoneCondition}, "\n"))
+	if skill, ok := p.runtime.skillForPrompt(text); ok && skill != nil && skill.UserInvocable && !skill.IsHidden {
+		return skill, true
+	}
+	var best *skills.SkillDefinition
+	bestScore := 0
+	for _, skill := range p.runtime.skills.ListUserInvocableSkills() {
+		if skill == nil || skill.IsHidden {
+			continue
+		}
+		score := deepAgentStepSkillScore(text, skill)
+		if score > bestScore {
+			best = skill
+			bestScore = score
+		}
+	}
+	if best == nil || bestScore <= 0 {
+		return nil, false
+	}
+	return best, true
+}
+
+func (p *RuntimeDeepAgentPlanner) modelPromptForStep(agentState *DeepAgentState, step DeepAgentStep) string {
+	var b strings.Builder
+	if goal := stateGoal(agentState); goal != "" {
+		b.WriteString("User goal:\n")
+		b.WriteString(goal)
+		b.WriteString("\n\n")
+	}
+	if contextSummary := p.stepContextSummary(agentState, step); strings.TrimSpace(contextSummary) != "" {
+		b.WriteString("Prior step context:\n")
+		b.WriteString(contextSummary)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Current step intent:\n")
+	b.WriteString(firstNonEmptyString(step.Intent, step.Title))
+	if strings.TrimSpace(step.DoneCondition) != "" {
+		b.WriteString("\n\nSuccess criteria:\n")
+		b.WriteString(step.DoneCondition)
+	}
+	return b.String()
+}
+
+func (p *RuntimeDeepAgentPlanner) skillArgsForStep(agentState *DeepAgentState, step DeepAgentStep) string {
+	var parts []string
+	if goal := stateGoal(agentState); goal != "" {
+		parts = append(parts, "用户目标：\n"+goal)
+	}
+	if contextSummary := p.stepContextSummary(agentState, step); strings.TrimSpace(contextSummary) != "" {
+		parts = append(parts, "前置步骤输出：\n"+contextSummary)
+	}
+	parts = append(parts, "当前步骤意图：\n"+firstNonEmptyString(step.Intent, step.Title))
+	if strings.TrimSpace(step.DoneCondition) != "" {
+		parts = append(parts, "成功标准：\n"+step.DoneCondition)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func (p *RuntimeDeepAgentPlanner) stepContextSummary(agentState *DeepAgentState, step DeepAgentStep) string {
+	if agentState == nil || agentState.WorkingMemory == nil {
+		return ""
+	}
+	store, _ := agentState.WorkingMemory["step_context"].(map[string]any)
+	if len(store) == 0 {
+		return ""
+	}
+	var ids []string
+	if len(step.DependsOn) > 0 {
+		ids = append(ids, step.DependsOn...)
+	} else {
+		for _, prior := range agentState.Plan.Steps {
+			if prior.ID == step.ID {
+				break
+			}
+			if _, ok := store[prior.ID]; ok {
+				ids = append(ids, prior.ID)
+			}
+		}
+	}
+	var parts []string
+	for _, id := range ids {
+		record, _ := store[id].(map[string]any)
+		if len(record) == 0 {
+			continue
+		}
+		summary := firstNonEmptyString(deepAgentWorkflowString(record, "summary"), deepAgentWorkflowString(record, "output"))
+		if summary == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s", id, summary))
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func deepAgentStepSkillScore(text string, skill *skills.SkillDefinition) int {
+	if skill == nil {
+		return 0
+	}
+	text = strings.ToLower(text)
+	haystack := strings.ToLower(strings.Join([]string{skill.Name, skill.DisplayName, skill.Description, skill.WhenToUse, skill.ArgumentHint}, "\n"))
+	score := 0
+	for _, token := range []string{"docx", "word", "document", "文档", "报告", "report", "markdown", ".md", "file", "artifact", "文件"} {
+		if strings.Contains(text, token) && strings.Contains(haystack, token) {
+			score += 4
+		}
+	}
+	for _, token := range strings.Fields(strings.NewReplacer("\n", " ", "，", " ", "。", " ", ",", " ", ".", " ").Replace(text)) {
+		if len([]rune(token)) >= 2 && strings.Contains(haystack, token) {
+			score++
+		}
+	}
+	if skillProducesArtifacts(skill) && deepAgentContainsAny(text, "artifact", "download", "file", "markdown", "docx", "文档", "报告", "文件", "可下载", "产物") {
+		score += 5
+	}
+	return score
+}
+
+func deepAgentContainsAny(text string, needles ...string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	for _, needle := range needles {
+		if strings.Contains(text, strings.ToLower(strings.TrimSpace(needle))) {
+			return true
+		}
+	}
+	return false
+}
+
+func stateWorkingMemory(agentState *DeepAgentState) map[string]any {
+	if agentState == nil {
+		return nil
+	}
+	return agentState.WorkingMemory
+}
+
+func stateGoal(agentState *DeepAgentState) string {
+	if agentState == nil {
+		return ""
+	}
+	return strings.TrimSpace(agentState.Goal)
 }
 
 type RuntimeDeepAgentExecutor struct {
@@ -404,23 +663,19 @@ func deepAgentPlannerPromptWithSkills(req DeepAgentTaskRequest, skillCatalog str
 	}
 	return fmt.Sprintf(`You are the planner for a production DeepAgent controller.
 
-Split the user goal into a small, executable plan. Return JSON only, with no markdown.
+Split the user goal into a small intent plan. Return JSON only, with no markdown.
 
 Rules:
 - Use 1 to %d steps.
-- Every step must have id, title, intent, done_condition, and metadata.
-- metadata.tool must be one of: "model", "skill", "rag_search".
-- For "model", metadata.args.prompt should contain the instruction.
-- For "skill", metadata.args.skill_name and metadata.args.args should be present.
-- For "rag_search", metadata.args.query should be present.
-- Use the Available published skills catalog when a step is better handled by a listed skill.
-- To call a skill, set metadata.tool="skill" and set metadata.args.skill_name to exactly one listed skill name.
-- Prefer skills marked produces_artifacts for deliverables that need files or artifacts when the skill matches the goal.
-- If a selected skill is expected to create artifacts, add metadata.verification.require_artifact=true and metadata.verification.min_artifact_count=1.
-- Each done_condition must be concrete and verifiable.
+- Every step must have id, title, intent, depends_on, and done_condition.
+- Plan steps describe what should be achieved, not how to execute it.
+- Do not choose execution mode, tool, skill, provider, API, or command in this plan.
+- Do not put metadata.tool, metadata.args, skill_name, or rag_search query in plan steps.
+- Use depends_on to express required prior step outputs by step id.
+- Each done_condition is the success_criteria and must be concrete and verifiable.
 - Do not include risky external side effects unless the goal explicitly requires them.
 
-Available published skills:
+Published skills are available later to the Step Router. Use this only to phrase deliverable intents clearly, not to select a skill in the plan:
 %s
 
 JSON shape:
@@ -431,12 +686,9 @@ JSON shape:
       "id": "step-1",
       "title": "string",
       "intent": "string",
+      "depends_on": [],
       "done_condition": "string",
-      "risk_level": "low|medium|high",
-      "metadata": {
-        "tool": "model|skill|rag_search",
-        "args": {}
-      }
+      "risk_level": "low|medium|high"
     }
   ]
 }
@@ -481,22 +733,16 @@ func deepAgentPlanStructuredSchema() StructuredSchema {
 					"type": "array",
 					"items": map[string]any{
 						"type":     "object",
-						"required": []string{"id", "title", "done_condition", "metadata"},
+						"required": []string{"id", "title", "intent", "done_condition"},
 						"properties": map[string]any{
 							"id":             map[string]any{"type": "string"},
 							"title":          map[string]any{"type": "string"},
 							"intent":         map[string]any{"type": "string"},
+							"depends_on":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 							"status":         map[string]any{"type": "string"},
 							"done_condition": map[string]any{"type": "string"},
 							"risk_level":     map[string]any{"type": "string", "enum": []any{"", "low", "medium", "high"}},
-							"metadata": map[string]any{
-								"type":     "object",
-								"required": []string{"tool", "args"},
-								"properties": map[string]any{
-									"tool": map[string]any{"type": "string", "enum": []any{"model", "skill", "rag_search"}},
-									"args": map[string]any{"type": "object"},
-								},
-							},
+							"metadata":       map[string]any{"type": "object"},
 						},
 					},
 				},
@@ -520,26 +766,14 @@ func validateDeepAgentPlanSemantics(plan DeepAgentPlan) error {
 		if strings.TrimSpace(step.Title) == "" {
 			return fmt.Errorf("%s title is required", prefix)
 		}
+		if strings.TrimSpace(step.Intent) == "" {
+			return fmt.Errorf("%s intent is required", prefix)
+		}
 		if strings.TrimSpace(step.DoneCondition) == "" {
 			return fmt.Errorf("%s done_condition is required", prefix)
 		}
-		tool := deepAgentWorkflowString(step.Metadata, "tool")
-		args, _ := step.Metadata["args"].(map[string]any)
-		switch tool {
-		case "model":
-			if deepAgentWorkflowString(args, "prompt") == "" {
-				return fmt.Errorf("%s model args.prompt is required", prefix)
-			}
-		case "skill":
-			if deepAgentWorkflowString(args, "skill_name") == "" {
-				return fmt.Errorf("%s skill args.skill_name is required", prefix)
-			}
-		case "rag_search":
-			if deepAgentWorkflowString(args, "query") == "" {
-				return fmt.Errorf("%s rag_search args.query is required", prefix)
-			}
-		default:
-			return fmt.Errorf("%s metadata.tool is unsupported: %s", prefix, tool)
+		if tool := deepAgentWorkflowString(step.Metadata, "tool"); tool != "" {
+			return fmt.Errorf("%s must not select metadata.tool during planning: %s", prefix, tool)
 		}
 	}
 	return nil

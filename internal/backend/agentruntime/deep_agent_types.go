@@ -79,6 +79,7 @@ type DeepAgentStep struct {
 	ID            string         `json:"id"`
 	Title         string         `json:"title"`
 	Intent        string         `json:"intent,omitempty"`
+	DependsOn     []string       `json:"depends_on,omitempty"`
 	Status        string         `json:"status"`
 	DoneCondition string         `json:"done_condition,omitempty"`
 	RiskLevel     string         `json:"risk_level,omitempty"`

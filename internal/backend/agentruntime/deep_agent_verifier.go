@@ -79,6 +79,18 @@ func deepAgentVerificationConfig(step DeepAgentStep) map[string]any {
 			out[key] = value
 		}
 	}
+	criteria := strings.ToLower(strings.TrimSpace(strings.Join([]string{step.Intent, step.DoneCondition}, "\n")))
+	if deepAgentContainsAny(criteria, "artifact", "download", "可下载", "产物", "文件", "file", ".md", "markdown", "docx", "word 文档", "文档") {
+		if _, ok := out["require_artifact"]; !ok {
+			out["require_artifact"] = true
+		}
+		if _, ok := out["min_artifact_count"]; !ok {
+			out["min_artifact_count"] = 1
+		}
+		if _, ok := out["require_tool_result_valid"]; !ok {
+			out["require_tool_result_valid"] = true
+		}
+	}
 	return out
 }
 

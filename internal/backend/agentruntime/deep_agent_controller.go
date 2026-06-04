@@ -423,8 +423,15 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 			c.persistState(ctx, run, state)
 			return fmt.Errorf("%w: %s", ErrDeepAgentBudgetExceeded, state.Blocker)
 		}
-		stepIndex := nextDeepAgentStepIndex(state.Plan.Steps)
+		stepIndex := nextExecutableDeepAgentStepIndex(state)
 		if stepIndex < 0 {
+			if hasPendingDeepAgentSteps(state.Plan.Steps) {
+				state.Status = DeepAgentRunStatusBlocked
+				state.Blocker = "pending steps have unmet dependencies"
+				state.UpdatedAt = c.now()
+				c.persistState(ctx, run, state)
+				return fmt.Errorf("%w: %s", ErrDeepAgentBlocked, state.Blocker)
+			}
 			state.Status = DeepAgentRunStatusSucceeded
 			state.UpdatedAt = c.now()
 			c.persistState(ctx, run, state)
@@ -510,6 +517,7 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 		if progress.StepDone {
 			state.Plan.Steps[stepIndex].Status = DeepAgentStepStatusSucceeded
 			state.CompletedSteps = appendUniqueString(state.CompletedSteps, step.ID)
+			c.storeStepContext(state, step, action, result, progress)
 			state.NoProgressCount = 0
 			state.Blocker = ""
 		}
@@ -524,6 +532,51 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 		state.UpdatedAt = c.now()
 		c.persistState(ctx, run, state)
 	}
+}
+
+func (c *DeepAgentController) storeStepContext(state *DeepAgentState, step DeepAgentStep, action DeepAgentAction, result DeepAgentActionResult, progress DeepAgentProgress) {
+	if state == nil {
+		return
+	}
+	if state.WorkingMemory == nil {
+		state.WorkingMemory = map[string]any{}
+	}
+	store, _ := state.WorkingMemory["step_context"].(map[string]any)
+	if store == nil {
+		store = map[string]any{}
+		state.WorkingMemory["step_context"] = store
+	}
+	output := strings.TrimSpace(result.Output)
+	summary := output
+	if len([]rune(summary)) > 800 {
+		runes := []rune(summary)
+		summary = string(runes[:800])
+	}
+	record := map[string]any{
+		"step_id":          step.ID,
+		"step_title":       step.Title,
+		"intent":           step.Intent,
+		"success_criteria": step.DoneCondition,
+		"tool":             action.Tool,
+		"status":           result.Status,
+		"completed":        result.Completed,
+		"made_progress":    progress.MadeProgress,
+		"progress_reason":  progress.Reason,
+		"summary":          summary,
+	}
+	if output != "" {
+		record["output"] = output
+	}
+	if len(result.Metadata) > 0 {
+		record["metadata"] = cloneWorkflowMap(result.Metadata)
+		if count := deepAgentAnyInt(result.Metadata["artifact_count"], 0); count > 0 {
+			record["artifact_count"] = count
+		}
+		if jobID := deepAgentWorkflowString(result.Metadata, "job_id"); jobID != "" {
+			record["job_id"] = jobID
+		}
+	}
+	store[step.ID] = record
 }
 
 func (c *DeepAgentController) emitActionEvent(ctx context.Context, run *WorkflowRun, state *DeepAgentState, step DeepAgentStep, action DeepAgentAction, result DeepAgentActionResult, eventType, errorText string) {
@@ -783,6 +836,58 @@ func nextDeepAgentStepIndex(steps []DeepAgentStep) int {
 		}
 	}
 	return -1
+}
+
+func nextExecutableDeepAgentStepIndex(state *DeepAgentState) int {
+	if state == nil {
+		return -1
+	}
+	blockedByDependencies := false
+	for idx, step := range state.Plan.Steps {
+		if step.Status != "" && step.Status != DeepAgentStepStatusPending && step.Status != DeepAgentStepStatusRunning {
+			continue
+		}
+		if deepAgentStepDependenciesMet(state, step) {
+			return idx
+		}
+		blockedByDependencies = true
+	}
+	if blockedByDependencies {
+		return -1
+	}
+	return -1
+}
+
+func deepAgentStepDependenciesMet(state *DeepAgentState, step DeepAgentStep) bool {
+	if len(step.DependsOn) == 0 {
+		return true
+	}
+	for _, dep := range step.DependsOn {
+		dep = strings.TrimSpace(dep)
+		if dep == "" {
+			continue
+		}
+		found := false
+		for _, completed := range state.CompletedSteps {
+			if completed == dep {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func hasPendingDeepAgentSteps(steps []DeepAgentStep) bool {
+	for _, step := range steps {
+		if step.Status == "" || step.Status == DeepAgentStepStatusPending || step.Status == DeepAgentStepStatusRunning {
+			return true
+		}
+	}
+	return false
 }
 
 func deepAgentActionHash(action DeepAgentAction) string {

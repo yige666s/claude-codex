@@ -216,7 +216,7 @@ func TestRuntimeDeepAgentPlannerCreatesStructuredPlan(t *testing.T) {
 	if len(plan.Steps) != 2 {
 		t.Fatalf("expected 2 planned steps, got %#v", plan)
 	}
-	if plan.Steps[0].DoneCondition == "" || deepAgentWorkflowString(plan.Steps[0].Metadata, "tool") != "rag_search" {
+	if plan.Steps[0].DoneCondition == "" || plan.Steps[0].Intent == "" || deepAgentWorkflowString(plan.Steps[0].Metadata, "tool") != "" {
 		t.Fatalf("unexpected first step: %#v", plan.Steps[0])
 	}
 }
@@ -312,11 +312,11 @@ func TestRuntimeDeepAgentPlannerPromptIncludesSkillCatalog(t *testing.T) {
 		Policy: DeepAgentPolicy{MaxSteps: 4},
 	})
 	for _, want := range []string{
-		"Available published skills:",
+		"Published skills are available later to the Step Router",
 		"name: docx",
 		"produces_artifacts: true",
-		`metadata.tool="skill"`,
-		"metadata.args.skill_name",
+		"Do not put metadata.tool",
+		"depends_on",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("planner prompt missing %q:\n%s", want, prompt)
@@ -324,7 +324,7 @@ func TestRuntimeDeepAgentPlannerPromptIncludesSkillCatalog(t *testing.T) {
 	}
 }
 
-func TestRuntimeDeepAgentPlannerKeepsLLMSelectedSkillStep(t *testing.T) {
+func TestRuntimeDeepAgentRouterSelectsSkillForArtifactStep(t *testing.T) {
 	runtime := NewRuntime(
 		RuntimeConfig{},
 		NewFileSessionStore(t.TempDir()),
@@ -351,19 +351,28 @@ func TestRuntimeDeepAgentPlannerKeepsLLMSelectedSkillStep(t *testing.T) {
 		t.Fatalf("empty plan: %#v", plan)
 	}
 	final := plan.Steps[len(plan.Steps)-1]
-	if got := deepAgentWorkflowString(final.Metadata, "tool"); got != "skill" {
-		t.Fatalf("final step tool = %q, want skill in %#v", got, final)
+	state := &DeepAgentState{
+		Goal: "帮我深入调查一下 Tolan AI，并生成一个完整调研报告文档",
+		Plan: plan,
+		WorkingMemory: map[string]any{
+			"step_context": map[string]any{
+				"search": map[string]any{"summary": "Tolan AI is a consumer AI companion product."},
+			},
+		},
 	}
-	args, _ := final.Metadata["args"].(map[string]any)
+	action, err := NewRuntimeDeepAgentPlanner(runtime).NextAction(context.Background(), state, final)
+	if err != nil {
+		t.Fatalf("NextAction() error = %v", err)
+	}
+	if action.Tool != "skill" {
+		t.Fatalf("action tool = %q, want skill: %#v", action.Tool, action)
+	}
+	args := action.Args
 	if got := deepAgentWorkflowString(args, "skill_name"); got != "docx" {
-		t.Fatalf("final skill = %q, want docx in %#v", got, final.Metadata)
+		t.Fatalf("skill = %q, want docx in %#v", got, action.Args)
 	}
 	if got := deepAgentWorkflowString(args, "args"); !strings.Contains(got, "Tolan AI") {
-		t.Fatalf("final skill args should come from planner, got %#v", args)
-	}
-	verification, _ := final.Metadata["verification"].(map[string]any)
-	if !deepAgentBool(verification, "require_artifact", false) || deepAgentIntFromMap(verification, "min_artifact_count", 0) != 1 {
-		t.Fatalf("expected planner artifact verification to be preserved, got %#v", final.Metadata)
+		t.Fatalf("skill args should include context and intent, got %#v", args)
 	}
 }
 
@@ -390,17 +399,18 @@ func TestParseDeepAgentPlanValidatesStructuredSchema(t *testing.T) {
     {
       "id": "search",
       "title": "Search",
+      "intent": "Search relevant prior messages",
       "done_condition": "results are available",
       "risk_level": "low",
-      "metadata": {"tool": "rag_search", "args": {}}
+      "metadata": {"tool": "rag_search", "args": {"query": "postgres"}}
     }
   ]
 }`)
-	if err == nil || !strings.Contains(err.Error(), "rag_search args.query") {
-		t.Fatalf("expected missing rag_search query validation error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "must not select metadata.tool") {
+		t.Fatalf("expected plan-time tool selection validation error, got %v", err)
 	}
 
-	_, err = parseDeepAgentPlan(`{"goal":"x","steps":[{"id":"s","title":"S","done_condition":"done","risk_level":"critical","metadata":{"tool":"model","args":{"prompt":"answer"}}}]}`)
+	_, err = parseDeepAgentPlan(`{"goal":"x","steps":[{"id":"s","title":"S","intent":"Do S","done_condition":"done","risk_level":"critical"}]}`)
 	if err == nil || !strings.Contains(err.Error(), "risk_level") {
 		t.Fatalf("expected risk_level enum validation error, got %v", err)
 	}
@@ -426,8 +436,8 @@ func TestRuntimeDeepAgentPlannerRepairsInvalidStructuredPlan(t *testing.T) {
 	if runner.calls != 2 {
 		t.Fatalf("expected initial planner call plus repair call, got %d", runner.calls)
 	}
-	if len(plan.Steps) != 1 || deepAgentWorkflowString(plan.Steps[0].Metadata, "tool") != "rag_search" {
-		t.Fatalf("expected repaired rag_search plan, got %#v", plan)
+	if len(plan.Steps) != 1 || plan.Steps[0].Intent == "" || deepAgentWorkflowString(plan.Steps[0].Metadata, "tool") != "" {
+		t.Fatalf("expected repaired intent-only plan, got %#v", plan)
 	}
 }
 
@@ -838,18 +848,18 @@ func (deepAgentPlanJSONRunner) RunGeneratedPrompt(_ context.Context, session *st
     {
       "id": "search",
       "title": "Search relevant history",
-      "intent": "retrieve_context",
+      "intent": "Search relevant history for the previous postgres issue",
+      "depends_on": [],
       "done_condition": "related messages are retrieved",
-      "risk_level": "low",
-      "metadata": {"tool": "rag_search", "args": {"query": "postgres timeout", "limit": 3}}
+      "risk_level": "low"
     },
     {
       "id": "summarize",
       "title": "Summarize findings",
-      "intent": "answer",
+      "intent": "Summarize the retrieved postgres issue",
+      "depends_on": ["search"],
       "done_condition": "summary includes the likely cause and next step",
-      "risk_level": "low",
-      "metadata": {"tool": "model", "args": {"prompt": "Summarize the retrieved issue."}}
+      "risk_level": "low"
     }
   ]
 }`
@@ -870,22 +880,18 @@ func (skillSelectingDeepAgentPlanRunner) RunGeneratedPrompt(_ context.Context, s
     {
       "id": "search",
       "title": "Search Tolan AI",
-      "intent": "retrieve_context",
+      "intent": "调查 Tolan AI 产品的相关信息",
+      "depends_on": [],
       "done_condition": "relevant Tolan AI facts are collected",
-      "risk_level": "low",
-      "metadata": {"tool": "rag_search", "args": {"query": "Tolan AI product research", "limit": 5}}
+      "risk_level": "low"
     },
     {
       "id": "write",
       "title": "Write research document",
-      "intent": "create_deliverable",
+      "intent": "生成一份可下载的 Tolan AI 调研报告文档",
+      "depends_on": ["search"],
       "done_condition": "downloadable research report artifact is available",
-      "risk_level": "low",
-      "metadata": {
-        "tool": "skill",
-        "args": {"skill_name": "docx", "args": "Create a complete Tolan AI research report document."},
-        "verification": {"require_artifact": true, "min_artifact_count": 1}
-      }
+      "risk_level": "low"
     }
   ]
 }`
@@ -915,9 +921,9 @@ func (r *repairingDeepAgentPlanRunner) Run(ctx context.Context, session *state.S
 
 func (r *repairingDeepAgentPlanRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
 	r.calls++
-	output := `{"goal":"search postgres issue","steps":[{"id":"search","title":"Search","done_condition":"results retrieved","risk_level":"low","metadata":{"tool":"rag_search","args":{}}}]}`
+	output := `{"goal":"search postgres issue","steps":[{"id":"search","title":"Search","done_condition":"results retrieved","risk_level":"low"}]}`
 	if strings.Contains(prompt, "repairing a failed structured JSON") {
-		output = `{"goal":"search postgres issue","steps":[{"id":"search","title":"Search","done_condition":"results retrieved","risk_level":"low","metadata":{"tool":"rag_search","args":{"query":"postgres issue"}}}]}`
+		output = `{"goal":"search postgres issue","steps":[{"id":"search","title":"Search","intent":"Search prior context for the postgres issue","depends_on":[],"done_condition":"results retrieved","risk_level":"low"}]}`
 	}
 	session.AddAssistantMessage(output)
 	return engine.Result{Output: output, Session: session}, nil
