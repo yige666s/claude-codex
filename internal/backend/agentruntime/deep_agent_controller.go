@@ -593,6 +593,15 @@ func (ruleDeepAgentPlanner) NextAction(_ context.Context, state *DeepAgentState,
 			args["session_id"] = firstNonEmptyString(deepAgentWorkflowString(args, "session_id"), sessionID)
 		}
 	}
+	attempt := deepAgentStepAttemptCount(state, step.ID) + 1
+	if attempt > 1 {
+		args["attempt"] = attempt
+		args["retry_instruction"] = fmt.Sprintf("Previous attempt %d for step %q did not satisfy the done condition. Use a different strategy and produce evidence that directly satisfies: %s", attempt-1, firstNonEmptyString(step.Title, step.ID), step.DoneCondition)
+		if tool == "model" {
+			currentPrompt := firstNonEmptyString(deepAgentWorkflowString(args, "prompt"), deepAgentWorkflowString(args, "instruction"), firstNonEmptyString(step.Title, state.Goal))
+			args["prompt"] = strings.TrimSpace(currentPrompt + "\n\nRetry instruction: " + deepAgentWorkflowString(args, "retry_instruction"))
+		}
+	}
 	return DeepAgentAction{
 		StepID: step.ID,
 		Tool:   tool,
@@ -603,6 +612,19 @@ func (ruleDeepAgentPlanner) NextAction(_ context.Context, state *DeepAgentState,
 			"done_condition": step.DoneCondition,
 		}),
 	}, nil
+}
+
+func deepAgentStepAttemptCount(state *DeepAgentState, stepID string) int {
+	if state == nil || strings.TrimSpace(stepID) == "" {
+		return 0
+	}
+	count := 0
+	for _, action := range state.ActionHistory {
+		if action.StepID == stepID {
+			count++
+		}
+	}
+	return count
 }
 
 type noopDeepAgentExecutor struct{}

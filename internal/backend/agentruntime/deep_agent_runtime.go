@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"claude-codex/internal/harness/state"
 )
@@ -161,30 +162,101 @@ func (e *RuntimeDeepAgentExecutor) executeSkillAction(ctx context.Context, actio
 	if strings.TrimSpace(args) != "" {
 		content += " " + args
 	}
+	startMessageCount := len(session.Messages)
 	result, err := e.runtime.runSkillCommand(withHiddenUserMessage(ctx), ChatRequest{
 		UserID:    userID,
 		SessionID: session.ID,
 		Content:   content,
 	}, userID, session, content, nil)
+	diagnostics := collectSkillExecutionDiagnostics(result.Session, startMessageCount)
 	if err != nil {
-		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true}, err
+		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true, Metadata: deepAgentSkillActionMetadata(skillName, session.ID, diagnostics, result.Job)}, err
 	}
 	if result.Session != nil && userID != "" && sessionID != "" {
 		if saveErr := e.runtime.sessions.Save(ctx, userID, result.Session); saveErr != nil {
-			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true}, saveErr
+			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true, Metadata: deepAgentSkillActionMetadata(skillName, session.ID, diagnostics, result.Job)}, saveErr
 		}
+	}
+	metadata := deepAgentSkillActionMetadata(skillName, session.ID, diagnostics, result.Job)
+	if result.Job != nil {
+		childResult, childErr := e.runDeepAgentChildJob(ctx, result.Job, metadata)
+		if childErr != nil {
+			return childResult, childErr
+		}
+		return childResult, nil
 	}
 	return DeepAgentActionResult{
 		Status:    DeepAgentActionStatusSucceeded,
 		Output:    result.Output,
-		Completed: result.Job == nil,
-		Metadata: map[string]any{
-			"tool":        "skill",
-			"skill_name":  skillName,
-			"session_id":  session.ID,
-			"job_started": result.Job != nil,
-		},
+		Completed: true,
+		Metadata:  metadata,
 	}, nil
+}
+
+func (e *RuntimeDeepAgentExecutor) runDeepAgentChildJob(ctx context.Context, job *Job, metadata map[string]any) (DeepAgentActionResult, error) {
+	if e == nil || e.runtime == nil || job == nil {
+		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: "child job is not configured", Metadata: metadata}, fmt.Errorf("child job is not configured")
+	}
+	if err := e.runtime.StartJob(ctx, job); err != nil {
+		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true, Metadata: metadata}, err
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		current, err := e.runtime.GetJob(ctx, job.UserID, job.ID)
+		if err != nil {
+			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true, Metadata: metadata}, err
+		}
+		metadata["child_job_status"] = current.Status
+		if isTerminalJobStatus(current.Status) {
+			if current.Status == JobStatusSucceeded {
+				return DeepAgentActionResult{
+					Status:    DeepAgentActionStatusSucceeded,
+					Output:    fmt.Sprintf("skill job %s succeeded", current.ID),
+					Completed: true,
+					Metadata:  metadata,
+				}, nil
+			}
+			err := fmt.Errorf("skill job %s ended with status %s: %s", current.ID, current.Status, current.Error)
+			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: current.Status != JobStatusCancelled, Metadata: metadata}, err
+		}
+		select {
+		case <-ctx.Done():
+			err := fmt.Errorf("waiting for skill job %s: %w", job.ID, ctx.Err())
+			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true, Metadata: metadata}, err
+		case <-ticker.C:
+		}
+	}
+}
+
+func deepAgentSkillActionMetadata(skillName, sessionID string, diagnostics skillExecutionDiagnostics, job *Job) map[string]any {
+	metadata := map[string]any{
+		"tool":              "skill",
+		"skill_name":        skillName,
+		"session_id":        sessionID,
+		"artifact_count":    diagnostics.ArtifactCount,
+		"tool_result_valid": diagnostics.SkillError == "" && diagnostics.ErrorKind == "",
+	}
+	if diagnostics.ErrorKind != "" {
+		metadata["error_kind"] = diagnostics.ErrorKind
+	}
+	if diagnostics.Provider != "" {
+		metadata["provider"] = diagnostics.Provider
+	}
+	if diagnostics.Model != "" {
+		metadata["model"] = diagnostics.Model
+	}
+	if diagnostics.JSON != nil {
+		metadata["diagnostics"] = diagnostics.JSON
+	}
+	if job != nil {
+		metadata["job_started"] = true
+		metadata["child_job_id"] = job.ID
+		metadata["child_job_type"] = job.Type
+	} else {
+		metadata["job_started"] = false
+	}
+	return metadata
 }
 
 func (e *RuntimeDeepAgentExecutor) executeRAGSearchAction(ctx context.Context, action DeepAgentAction, agentState *DeepAgentState) (DeepAgentActionResult, error) {

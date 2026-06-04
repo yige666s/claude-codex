@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -161,6 +162,75 @@ func TestRuntimeDeepAgentPlannerCreatesStructuredPlan(t *testing.T) {
 	}
 	if plan.Steps[0].DoneCondition == "" || deepAgentWorkflowString(plan.Steps[0].Metadata, "tool") != "rag_search" {
 		t.Fatalf("unexpected first step: %#v", plan.Steps[0])
+	}
+}
+
+func TestRuleDeepAgentPlannerVariesRetryAction(t *testing.T) {
+	state := &DeepAgentState{
+		Goal: "write report",
+		ActionHistory: []DeepAgentAction{{
+			StepID: "write",
+			Tool:   "model",
+			Args:   map[string]any{"prompt": "Write the report"},
+		}},
+	}
+	step := DeepAgentStep{
+		ID:            "write",
+		Title:         "Write report",
+		DoneCondition: "report is complete",
+		Metadata:      map[string]any{"tool": "model", "args": map[string]any{"prompt": "Write the report"}},
+	}
+	action, err := ruleDeepAgentPlanner{}.NextAction(context.Background(), state, step)
+	if err != nil {
+		t.Fatalf("NextAction() error = %v", err)
+	}
+	if got := deepAgentAnyInt(action.Args["attempt"], -1); got != 2 {
+		t.Fatalf("expected retry attempt 2, got %#v", action.Args)
+	}
+	if !strings.Contains(deepAgentWorkflowString(action.Args, "prompt"), "Retry instruction") {
+		t.Fatalf("expected retry prompt, got %#v", action.Args)
+	}
+	if deepAgentActionHash(action) == deepAgentActionHash(state.ActionHistory[0]) {
+		t.Fatalf("retry action hash should differ from previous action")
+	}
+}
+
+func TestRuntimeDeepAgentSkillActionReportsArtifactCount(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return artifactReportingRunner{} },
+	)
+	runtime.skills = fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "report",
+		UserInvocable: true,
+		Metadata:      map[string]any{"produces_artifacts": true},
+		GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+			return []skills.ContentBlock{{Type: "text", Text: "write report " + args}}, nil
+		},
+	}}}
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	result, err := NewRuntimeDeepAgentExecutor(runtime).ExecuteDeepAgentAction(context.Background(), DeepAgentAction{
+		StepID: "write",
+		Tool:   "skill",
+		Args:   map[string]any{"skill_name": "report", "args": "Tolan AI"},
+	}, &DeepAgentState{WorkingMemory: map[string]any{"user_id": "alice", "session_id": session.ID}})
+	if err != nil {
+		t.Fatalf("ExecuteDeepAgentAction() error = %v", err)
+	}
+	if result.Status != DeepAgentActionStatusSucceeded || !result.Completed {
+		t.Fatalf("unexpected skill action result: %#v", result)
+	}
+	if got := deepAgentAnyInt(result.Metadata["artifact_count"], -1); got != 1 {
+		t.Fatalf("artifact_count = %d, want 1 in %#v", got, result.Metadata)
+	}
+	if ok, _ := deepAgentMetadataBool(result.Metadata, "tool_result_valid"); !ok {
+		t.Fatalf("expected valid tool result metadata, got %#v", result.Metadata)
 	}
 }
 
@@ -636,6 +706,18 @@ func (deepAgentPlanJSONRunner) RunGeneratedPrompt(_ context.Context, session *st
 }`
 	session.AddAssistantMessage(output)
 	return engine.Result{Output: output, Session: session}, nil
+}
+
+type artifactReportingRunner struct{}
+
+func (artifactReportingRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return artifactReportingRunner{}.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (artifactReportingRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	session.AddToolResult("artifact-call-1", ArtifactToolName, json.RawMessage(`{"filename":"report.md"}`), "created report artifact")
+	session.AddAssistantMessage("report generated: " + prompt)
+	return engine.Result{Output: "report generated", Session: session}, nil
 }
 
 type repairingDeepAgentPlanRunner struct {
