@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -4228,6 +4229,12 @@ func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *st
 		if registerErr != nil {
 			status = SkillExecutionStatusFailed
 			errText = registerErr.Error()
+			if execDiagnostics.JSON == nil {
+				execDiagnostics.JSON = map[string]any{}
+			}
+			for key, value := range generatedSkillArtifactDiagnostics(workspace, generatedArtifactsBefore) {
+				execDiagnostics.JSON[key] = value
+			}
 			return runnerResult{Output: result.Output, Session: result.Session}, registerErr
 		}
 		if registered > 0 {
@@ -4245,6 +4252,9 @@ func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *st
 		}
 		execDiagnostics.JSON["error_kind"] = execDiagnostics.ErrorKind
 		execDiagnostics.JSON["expected_artifact"] = true
+		for key, value := range generatedSkillArtifactDiagnostics(workspace, generatedArtifactsBefore) {
+			execDiagnostics.JSON[key] = value
+		}
 		errText = "skill completed without creating the expected artifact"
 		return runnerResult{Output: result.Output, Session: result.Session}, errors.New(errText)
 	}
@@ -4313,6 +4323,69 @@ func (r *Runtime) registerGeneratedSkillArtifacts(ctx context.Context, userID, s
 		return 0, nil
 	}
 	return count, err
+}
+
+func generatedSkillArtifactDiagnostics(workspace string, before map[string]struct{}) map[string]any {
+	workspace = strings.TrimSpace(workspace)
+	out := map[string]any{
+		"generated_artifacts_before":    len(before),
+		"generated_artifacts_total":     0,
+		"generated_artifacts_new":       0,
+		"generated_artifacts_new_files": []string{},
+	}
+	if workspace == "" {
+		out["generated_artifacts_dir_exists"] = false
+		return out
+	}
+	dir := filepath.Join(workspace, generatedArtifactStagingDir)
+	out["generated_artifacts_dir"] = dir
+	info, err := os.Stat(dir)
+	if err != nil {
+		out["generated_artifacts_dir_exists"] = false
+		if !os.IsNotExist(err) {
+			out["generated_artifacts_scan_error"] = err.Error()
+		}
+		return out
+	}
+	if !info.IsDir() {
+		out["generated_artifacts_dir_exists"] = false
+		out["generated_artifacts_scan_error"] = "path is not a directory"
+		return out
+	}
+	out["generated_artifacts_dir_exists"] = true
+	var total int
+	var newFiles []string
+	err = filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry == nil || entry.IsDir() {
+			return nil
+		}
+		total++
+		rel, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			return nil
+		}
+		rel = filepath.Clean(rel)
+		if _, seen := before[rel]; !seen {
+			newFiles = append(newFiles, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		out["generated_artifacts_scan_error"] = err.Error()
+	}
+	sort.Strings(newFiles)
+	out["generated_artifacts_total"] = total
+	out["generated_artifacts_new"] = len(newFiles)
+	if len(newFiles) > 10 {
+		out["generated_artifacts_new_files"] = newFiles[:10]
+		out["generated_artifacts_new_files_truncated"] = true
+	} else {
+		out["generated_artifacts_new_files"] = newFiles
+	}
+	return out
 }
 
 func generatedSkillArtifactContentType(filename string) string {

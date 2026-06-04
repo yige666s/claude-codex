@@ -4443,6 +4443,9 @@ func TestArtifactProducingSkillFailsWhenNoArtifactCreated(t *testing.T) {
 	if record.DiagnosticJSON["expected_artifact"] != true {
 		t.Fatalf("missing expected artifact diagnostic: %#v", record.DiagnosticJSON)
 	}
+	if record.DiagnosticJSON["generated_artifacts_dir_exists"] != false || record.DiagnosticJSON["generated_artifacts_new"] != 0 {
+		t.Fatalf("unexpected generated artifact diagnostics: %#v", record.DiagnosticJSON)
+	}
 }
 
 func TestArtifactProducingSkillRegistersGeneratedArtifactFile(t *testing.T) {
@@ -4505,6 +4508,99 @@ func TestArtifactProducingSkillRegistersGeneratedArtifactFile(t *testing.T) {
 	}
 	if !foundArtifactToolResult {
 		t.Fatalf("expected saved session to include Artifact tool result, got %#v", saved.Messages)
+	}
+}
+
+func TestArtifactProducingSkillRegistersPromptGeneratedArtifactFile(t *testing.T) {
+	root := t.TempDir()
+	storeRoot := t.TempDir()
+	skillParent := t.TempDir()
+	skillRoot := filepath.Join(skillParent, "docx")
+	scriptsDir := filepath.Join(skillRoot, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	script := strings.Join([]string{
+		"import os",
+		"from pathlib import Path",
+		"workspace = Path(os.environ['AGENT_WORKSPACE_DIR'])",
+		"out = workspace / 'generated-artifacts'",
+		"out.mkdir(parents=True, exist_ok=True)",
+		"(out / 'prompt-report.docx').write_bytes(b'docx bytes')",
+		"print('artifact_file_path: generated-artifacts/prompt-report.docx')",
+		"print('filename: prompt-report.docx')",
+		"print('content_type: application/vnd.openxmlformats-officedocument.wordprocessingml.document')",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(scriptsDir, "create.py"), []byte(script), 0o644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	skillContent := strings.Join([]string{
+		"---",
+		"name: docx",
+		"user-invocable: true",
+		"shell: bash",
+		"allowed-tools: Bash(python3 *)",
+		"metadata:",
+		"  agentapi:",
+		"    produces_artifacts: true",
+		"    policy:",
+		"      artifact_content_types:",
+		"        - application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"---",
+		"",
+		"```!",
+		"python3 scripts/create.py <<'DOCX_INPUT'",
+		"$ARGUMENTS",
+		"DOCX_INPUT",
+		"```",
+		"",
+		"Use the printed artifact_file_path to register the artifact.",
+	}, "\n")
+	skillPath := filepath.Join(skillRoot, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte(skillContent), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	loader := skills.NewSkillLoader()
+	loadedSkills, err := loader.LoadSkillsFromDirectory(skillParent, skills.SourceFile)
+	if err != nil {
+		t.Fatalf("load skills: %v", err)
+	}
+	if len(loadedSkills) != 1 || loadedSkills[0].Name != "docx" {
+		t.Fatalf("loaded skills = %#v", loadedSkills)
+	}
+	executions := NewMemorySkillExecutionStore()
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(storeRoot),
+		NewFileMemoryService(storeRoot),
+		fakeSkillCatalog{skills: loadedSkills},
+		func(Scope) Runner { return echoRunner{} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	runtime.SetSkillExecutionStore(executions)
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "/docx make a report"}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Filename != "prompt-report.docx" {
+		t.Fatalf("unexpected artifacts: %#v", artifacts)
+	}
+	records, err := executions.ListSkillExecutions(context.Background(), SkillExecutionFilter{SkillName: "docx"})
+	if err != nil {
+		t.Fatalf("list executions: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v", records)
+	}
+	if records[0].Status != SkillExecutionStatusSucceeded || records[0].ArtifactCount != 1 {
+		t.Fatalf("unexpected execution record: %#v", records[0])
 	}
 }
 
