@@ -483,12 +483,18 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	if err := e.runtime.injectSessionRuntimeContexts(ctx, userID, session); err != nil {
 		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error()}, err
 	}
+	if strings.TrimSpace(sessionID) == "" && userID != "" && strings.TrimSpace(session.ID) != "" {
+		if saveErr := e.runtime.sessions.Save(ctx, userID, session); saveErr != nil {
+			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true}, saveErr
+		}
+	}
 	runner := e.runtime.runnerForScope(Scope{
 		UserID:     userID,
 		SessionID:  session.ID,
 		WorkingDir: session.WorkingDir,
 		Prompt:     prompt,
 	})
+	beforeArtifacts := e.deepAgentArtifactIDSet(ctx, userID, session.ID)
 	startMessageCount := len(session.Messages)
 	result, err := runner.RunGeneratedPrompt(ctx, session, prompt)
 	if err != nil {
@@ -499,28 +505,42 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 		resultSession = session
 	}
 	diagnostics := collectSkillExecutionDiagnostics(resultSession, startMessageCount)
+	storeArtifactCount := e.deepAgentNewArtifactCount(ctx, userID, resultSession.ID, beforeArtifacts)
+	artifactCount := diagnostics.ArtifactCount
+	if storeArtifactCount > artifactCount {
+		artifactCount = storeArtifactCount
+	}
 	metadata := map[string]any{
 		"tool":              firstNonEmptyString(strings.TrimSpace(action.Tool), "model"),
 		"session_id":        resultSession.ID,
-		"artifact_count":    diagnostics.ArtifactCount,
+		"artifact_count":    artifactCount,
 		"tool_result_valid": diagnostics.ErrorKind == "" && diagnostics.SkillError == "",
 	}
-	if diagnostics.ArtifactCount == 0 && (forceArtifact || deepAgentActionRequiresArtifact(action)) && strings.TrimSpace(result.Output) != "" {
+	if storeArtifactCount > 0 && diagnostics.ArtifactCount == 0 {
+		metadata["artifact_detected_from_store"] = true
+	}
+	requiresArtifact := forceArtifact || deepAgentActionRequiresArtifact(action)
+	fallbackOutput := deepAgentModelArtifactFallbackOutput(result.Output, resultSession, startMessageCount)
+	if artifactCount == 0 && requiresArtifact && fallbackOutput != "" {
 		if resultSession != nil && userID != "" && strings.TrimSpace(resultSession.ID) != "" {
 			if saveErr := e.runtime.sessions.Save(ctx, userID, resultSession); saveErr != nil {
 				return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true, Metadata: metadata}, saveErr
 			}
 		}
-		artifact, artifactErr := e.createDeepAgentModelArtifact(ctx, userID, resultSession.ID, action, result.Output)
+		artifact, artifactErr := e.createDeepAgentModelArtifact(ctx, userID, resultSession.ID, action, fallbackOutput)
 		if artifactErr != nil {
 			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: artifactErr.Error(), Retryable: true, Metadata: metadata}, artifactErr
 		}
-		diagnostics.ArtifactCount = 1
+		artifactCount = 1
 		metadata["artifact_count"] = 1
 		metadata["artifact_id"] = artifact.ID
 		metadata["artifact_filename"] = artifact.Filename
 		metadata["artifact_fallback"] = true
 		recordDeepAgentArtifactToolResult(resultSession, action, artifact)
+	}
+	if artifactCount == 0 && requiresArtifact {
+		err := fmt.Errorf("model_artifact action produced no artifact or report content")
+		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true, Metadata: metadata}, err
 	}
 	if resultSession != nil && userID != "" && strings.TrimSpace(resultSession.ID) != "" {
 		if saveErr := e.runtime.sessions.Save(ctx, userID, resultSession); saveErr != nil {
@@ -529,10 +549,70 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	}
 	return DeepAgentActionResult{
 		Status:    DeepAgentActionStatusSucceeded,
-		Output:    result.Output,
+		Output:    firstNonEmptyString(result.Output, fallbackOutput),
 		Completed: true,
 		Metadata:  metadata,
 	}, nil
+}
+
+func (e *RuntimeDeepAgentExecutor) deepAgentArtifactIDSet(ctx context.Context, userID, sessionID string) map[string]struct{} {
+	if e == nil || e.runtime == nil || strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	artifacts, err := e.runtime.ListArtifacts(ctx, userID, sessionID)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]struct{}, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact == nil || strings.TrimSpace(artifact.ID) == "" {
+			continue
+		}
+		out[artifact.ID] = struct{}{}
+	}
+	return out
+}
+
+func (e *RuntimeDeepAgentExecutor) deepAgentNewArtifactCount(ctx context.Context, userID, sessionID string, before map[string]struct{}) int64 {
+	if e == nil || e.runtime == nil || strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" {
+		return 0
+	}
+	artifacts, err := e.runtime.ListArtifacts(ctx, userID, sessionID)
+	if err != nil {
+		return 0
+	}
+	var count int64
+	for _, artifact := range artifacts {
+		if artifact == nil || strings.TrimSpace(artifact.ID) == "" {
+			continue
+		}
+		if _, seen := before[artifact.ID]; !seen {
+			count++
+		}
+	}
+	return count
+}
+
+func deepAgentModelArtifactFallbackOutput(output string, session *state.Session, startIndex int) string {
+	if text := strings.TrimSpace(output); text != "" {
+		return text
+	}
+	if session == nil || len(session.Messages) == 0 {
+		return ""
+	}
+	if startIndex < 0 || startIndex > len(session.Messages) {
+		startIndex = 0
+	}
+	for i := len(session.Messages) - 1; i >= startIndex; i-- {
+		message := session.Messages[i]
+		if message.Hidden || message.Role != state.MessageRoleAssistant {
+			continue
+		}
+		if text := strings.TrimSpace(message.Content); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func (e *RuntimeDeepAgentExecutor) createDeepAgentModelArtifact(ctx context.Context, userID, sessionID string, action DeepAgentAction, output string) (*Artifact, error) {
