@@ -197,15 +197,17 @@ func (p *RuntimeDeepAgentPlanner) keywordRouteStep(step DeepAgentStep) string {
 		return ""
 	}
 	if deepAgentContainsAny(text,
-		"artifact", "download", "file", ".md", "markdown", "docx", "word", "pdf", "xlsx", "excel", "ppt",
-		"生成", "创建", "输出", "保存", "写", "撰写", "报告", "文档", "文件", "可下载", "产物", "导出", "制作文档",
-	) {
-		return "skill"
-	}
-	if deepAgentContainsAny(text,
-		"搜索", "查询", "检索", "查找", "获取历史", "历史消息", "上下文检索", "rag", "search history", "message search",
+		"获取历史", "历史消息", "上下文检索", "会话检索", "记忆检索", "previous conversation", "prior conversation",
+		"rag", "search history", "message search", "conversation search", "session context",
 	) {
 		return "rag_search"
+	}
+	if deepAgentContainsAny(text,
+		"artifact", "download", "file", ".md", "markdown", "report", "文档", "报告", "文件", "可下载", "产物", "导出",
+		"搜索", "查询", "检索", "查找", "调研", "研究", "外部", "联网", "互联网", "官网", "产品", "竞品", "新闻",
+		"web", "internet", "external", "current", "latest", "research",
+	) {
+		return "model"
 	}
 	return ""
 }
@@ -219,9 +221,9 @@ func (p *RuntimeDeepAgentPlanner) llmRouteStep(ctx context.Context, agentState *
 Return exactly one word: model, skill, rag_search, or multi.
 
 Definitions:
-- model: pure reasoning, analysis, summarization, or text answer.
-- skill: create a downloadable artifact/file/document using a published skill.
-- rag_search: search prior conversation/session context.
+- model: general step execution. The model may use provider tools such as WebSearch, WebFetch, Artifact, and Skill when needed.
+- skill: force a published skill only when the step explicitly requires a specific specialized skill.
+- rag_search: search prior conversation/session context only. Do not use this for external web/product research.
 - multi: broad step that should be decomposed; choose model if unsure.
 
 Step intent: %s
@@ -276,6 +278,8 @@ func (p *RuntimeDeepAgentPlanner) selectSkillForStep(step DeepAgentStep) (*skill
 
 func (p *RuntimeDeepAgentPlanner) modelPromptForStep(agentState *DeepAgentState, step DeepAgentStep) string {
 	var b strings.Builder
+	b.WriteString(deepAgentToolUsageReminder())
+	b.WriteString("\n\n")
 	if goal := stateGoal(agentState); goal != "" {
 		b.WriteString("User goal:\n")
 		b.WriteString(goal)
@@ -293,6 +297,14 @@ func (p *RuntimeDeepAgentPlanner) modelPromptForStep(agentState *DeepAgentState,
 		b.WriteString(step.DoneCondition)
 	}
 	return b.String()
+}
+
+func deepAgentToolUsageReminder() string {
+	return `DeepAgent tool policy:
+- Use WebSearch and WebFetch for current, external, internet, product, company, market, or competitor research.
+- Use Artifact directly when the step must create a Markdown/text/CSV/JSON/HTML file or another downloadable artifact.
+- Use Skill when a published skill is clearly the best specialized executor.
+- Do not claim you cannot browse the web, perform real-time research, or create files when an appropriate tool is available. If a tool fails, report the tool error and continue with any partial evidence.`
 }
 
 func (p *RuntimeDeepAgentPlanner) skillArgsForStep(agentState *DeepAgentState, step DeepAgentStep) string {

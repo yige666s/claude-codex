@@ -72,7 +72,7 @@ func allowedToolNames(allowDangerous bool) []string {
 }
 
 func consumerChatToolNames() []string {
-	return []string{"WebSearch", "WebFetch", "Skill"}
+	return []string{"WebSearch", "WebFetch", "Skill", agentruntime.ArtifactToolName}
 }
 
 func effectiveAllowedToolNames(global []string, scope agentruntime.Scope) []string {

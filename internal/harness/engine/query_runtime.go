@@ -190,6 +190,22 @@ func (r *queryRuntime) initialQueryMessages(session *state.Session) []queryengin
 		})
 	}
 
+	if session.Metadata == nil {
+		session.Metadata = map[string]string{}
+	}
+	if session.Metadata[toolCapabilityInjectedKey] != "true" && !sessionHasHiddenContent(session, "<tool-capabilities>") {
+		if content := formatToolCapabilityContext(r.engine.registry.Descriptors()); strings.TrimSpace(content) != "" {
+			initial = append(initial, queryengine.Message{
+				Type:      "user",
+				Timestamp: time.Now().UTC(),
+				UUID:      fmt.Sprintf("%s-tools", session.ID),
+				IsMeta:    true,
+				Content:   content,
+			})
+			session.Metadata[toolCapabilityInjectedKey] = "true"
+		}
+	}
+
 	if r.engine.skillManager != nil {
 		allSkills := r.engine.skillManager.ListUserInvocableSkills()
 		content := messages.FormatAllSkillDescriptions(allSkills)

@@ -26,6 +26,7 @@ type legacyRuntime struct {
 
 const (
 	workspaceContextInjectedKey    = "engine.workspace_context_injected"
+	toolCapabilityInjectedKey      = "engine.tool_capability_context_injected"
 	skillCatalogInjectedKey        = "engine.skill_catalog_injected"
 	skillCatalogInjectedVersionKey = "engine.skill_catalog_injected_version"
 )
@@ -46,6 +47,12 @@ func (e *Engine) ensureInitialModelContext(session *state.Session) {
 		session.AddSystemContext(wsCtx.SystemPrompt())
 		session.AddHiddenAssistantMessage("Understood. I have the workspace context.")
 		session.Metadata[workspaceContextInjectedKey] = "true"
+	}
+	if session.Metadata[toolCapabilityInjectedKey] != "true" && !sessionHasHiddenContent(session, "<tool-capabilities>") {
+		if content := formatToolCapabilityContext(e.registry.Descriptors()); content != "" {
+			session.AddSystemContext(content)
+			session.Metadata[toolCapabilityInjectedKey] = "true"
+		}
 	}
 	if e.skillManager == nil || session.Metadata[skillCatalogInjectedVersionKey] == messages.SkillSelectionPolicyVersion || sessionHasHiddenContent(session, messages.SkillSelectionPolicyMarker()) {
 		if e.skillManager != nil {
@@ -69,6 +76,37 @@ func (e *Engine) ensureInitialModelContext(session *state.Session) {
 	session.AddSystemContext(attachment.ToSystemReminder())
 	session.Metadata[skillCatalogInjectedKey] = "true"
 	session.Metadata[skillCatalogInjectedVersionKey] = messages.SkillSelectionPolicyVersion
+}
+
+func formatToolCapabilityContext(descriptors []toolkit.Descriptor) string {
+	if len(descriptors) == 0 {
+		return ""
+	}
+	names := make(map[string]bool, len(descriptors))
+	for _, descriptor := range descriptors {
+		name := strings.TrimSpace(descriptor.Name)
+		if name != "" {
+			names[name] = true
+		}
+	}
+	lines := []string{
+		"<tool-capabilities>",
+		"You can use the provided tools when they help answer the user.",
+	}
+	if names["WebSearch"] || names["WebFetch"] {
+		lines = append(lines, "For current or external information, use WebSearch and WebFetch before saying the information is unavailable.")
+	}
+	if names["Artifact"] {
+		lines = append(lines, "For generated files, use Artifact directly. It can create Markdown, text, CSV, JSON, HTML, and other downloadable artifacts when the user asks for a file.")
+	}
+	if names["Skill"] {
+		lines = append(lines, "Use Skill when a published skill is the best fit, such as specialized document generation or media workflows.")
+	}
+	lines = append(lines,
+		"If a tool call fails, report the tool error and any partial result instead of claiming you lack the capability.",
+		"</tool-capabilities>",
+	)
+	return strings.Join(lines, "\n")
 }
 
 func sessionHasHiddenContent(session *state.Session, needle string) bool {

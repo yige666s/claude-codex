@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -91,6 +92,50 @@ func TestStreamingRunInjectsFullSkillDescriptionsAfterHiddenContext(t *testing.T
 		}
 	}
 }
+
+func TestStreamingRunInjectsToolCapabilityContext(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	planner := &capturingStreamingPlanner{}
+	registry := toolkit.NewRegistry(
+		staticDescriptorTool{name: "WebSearch"},
+		staticDescriptorTool{name: "WebFetch"},
+		staticDescriptorTool{name: "Artifact"},
+		staticDescriptorTool{name: "Skill"},
+	)
+	engine := NewWithDir(planner, registry, permissions.NewChecker(permissions.ModeBypass, nil, nil), 2, t.TempDir())
+
+	if _, err := engine.RunStream(context.Background(), session, "帮我联网查一下并生成 Markdown 报告", nil); err != nil {
+		t.Fatalf("RunStream() error = %v", err)
+	}
+	for _, needle := range []string{"<tool-capabilities>", "WebSearch", "WebFetch", "Artifact", "Markdown", "Skill"} {
+		if !messagesContain(planner.messages, needle) {
+			t.Fatalf("expected tool capability context to contain %q, got %#v", needle, planner.messages)
+		}
+	}
+	if session.Metadata[toolCapabilityInjectedKey] != "true" {
+		t.Fatalf("tool capability metadata not marked: %#v", session.Metadata)
+	}
+}
+
+type staticDescriptorTool struct {
+	name string
+}
+
+func (t staticDescriptorTool) Name() string { return t.name }
+
+func (t staticDescriptorTool) Description() string { return t.name + " test tool" }
+
+func (t staticDescriptorTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{}}`)
+}
+
+func (t staticDescriptorTool) Permission() permissions.Level { return permissions.LevelRead }
+
+func (t staticDescriptorTool) Execute(context.Context, json.RawMessage) (toolkit.Result, error) {
+	return toolkit.Result{Output: "ok"}, nil
+}
+
+func (t staticDescriptorTool) IsConcurrencySafe() bool { return true }
 
 type capturingStreamingPlanner struct {
 	messages []state.Message

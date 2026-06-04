@@ -77,6 +77,35 @@ func TestQueryRuntimeInitialMessagesIncludeFullSkillDescriptionsAfterSessionStar
 	}
 }
 
+func TestQueryRuntimeInitialMessagesIncludeToolCapabilityContext(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	registry := toolkit.NewRegistry(
+		staticDescriptorTool{name: "WebSearch"},
+		staticDescriptorTool{name: "WebFetch"},
+		staticDescriptorTool{name: "Artifact"},
+		staticDescriptorTool{name: "Skill"},
+	)
+	engine := NewWithDir(NewSimplePlanner(), registry, permissions.NewChecker(permissions.ModeBypass, nil, nil), 2, t.TempDir())
+	runtime := newQueryRuntime(engine).(*queryRuntime)
+
+	messages := runtime.initialQueryMessages(session)
+	for _, needle := range []string{"<tool-capabilities>", "WebSearch", "WebFetch", "Artifact", "Markdown", "Skill"} {
+		found := false
+		for _, message := range messages {
+			if message.IsMeta && strings.Contains(fmt.Sprint(message.Content), needle) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected tool capability context to contain %q, got %#v", needle, messages)
+		}
+	}
+	if session.Metadata[toolCapabilityInjectedKey] != "true" {
+		t.Fatalf("tool capability metadata not marked: %#v", session.Metadata)
+	}
+}
+
 func TestQueryRuntimeMessageRoundTripPreservesToolHistory(t *testing.T) {
 	session := state.NewSession(t.TempDir())
 	session.Messages = []state.Message{

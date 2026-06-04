@@ -324,7 +324,7 @@ func TestRuntimeDeepAgentPlannerPromptIncludesSkillCatalog(t *testing.T) {
 	}
 }
 
-func TestRuntimeDeepAgentRouterSelectsSkillForArtifactStep(t *testing.T) {
+func TestRuntimeDeepAgentRouterLeavesResearchAndArtifactStepsForModelTools(t *testing.T) {
 	runtime := NewRuntime(
 		RuntimeConfig{},
 		NewFileSessionStore(t.TempDir()),
@@ -360,19 +360,28 @@ func TestRuntimeDeepAgentRouterSelectsSkillForArtifactStep(t *testing.T) {
 			},
 		},
 	}
-	action, err := NewRuntimeDeepAgentPlanner(runtime).NextAction(context.Background(), state, final)
+	planner := NewRuntimeDeepAgentPlanner(runtime)
+	searchAction, err := planner.NextAction(context.Background(), state, plan.Steps[0])
 	if err != nil {
 		t.Fatalf("NextAction() error = %v", err)
 	}
-	if action.Tool != "skill" {
-		t.Fatalf("action tool = %q, want skill: %#v", action.Tool, action)
+	if searchAction.Tool != "model" {
+		t.Fatalf("search action tool = %q, want model with web tools: %#v", searchAction.Tool, searchAction)
+	}
+	if got := deepAgentWorkflowString(searchAction.Args, "prompt"); !strings.Contains(got, "WebSearch") || !strings.Contains(got, "WebFetch") {
+		t.Fatalf("search model prompt should mention web tools, got %#v", searchAction.Args)
+	}
+
+	action, err := planner.NextAction(context.Background(), state, final)
+	if err != nil {
+		t.Fatalf("NextAction() error = %v", err)
+	}
+	if action.Tool != "model" {
+		t.Fatalf("artifact action tool = %q, want model with Artifact tool: %#v", action.Tool, action)
 	}
 	args := action.Args
-	if got := deepAgentWorkflowString(args, "skill_name"); got != "docx" {
-		t.Fatalf("skill = %q, want docx in %#v", got, action.Args)
-	}
-	if got := deepAgentWorkflowString(args, "args"); !strings.Contains(got, "Tolan AI") {
-		t.Fatalf("skill args should include context and intent, got %#v", args)
+	if got := deepAgentWorkflowString(args, "prompt"); !strings.Contains(got, "Artifact") || !strings.Contains(got, "Tolan AI") {
+		t.Fatalf("model prompt should include artifact guidance and context, got %#v", args)
 	}
 }
 

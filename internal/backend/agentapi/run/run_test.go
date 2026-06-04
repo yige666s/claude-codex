@@ -189,7 +189,7 @@ func TestLoadSkillsUsesExplicitSkillDirs(t *testing.T) {
 }
 
 func TestConsumerChatRegistryHidesFilesystemTools(t *testing.T) {
-	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, consumerChatToolNames(), nil)
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, fakeArtifactWriter{}, 0, nil, consumerChatToolNames(), nil)
 	names := descriptorNameSet(registry)
 
 	for _, hidden := range []string{"Read", "Glob", "Grep", "Write", "Edit", "Bash"} {
@@ -197,11 +197,17 @@ func TestConsumerChatRegistryHidesFilesystemTools(t *testing.T) {
 			t.Fatalf("consumer chat registry exposed internal tool %s: %#v", hidden, names)
 		}
 	}
-	for _, visible := range []string{"WebSearch", "WebFetch", "Skill"} {
+	for _, visible := range []string{"WebSearch", "WebFetch", "Skill", agentruntime.ArtifactToolName} {
 		if !names[visible] {
 			t.Fatalf("consumer chat registry should expose %s: %#v", visible, names)
 		}
 	}
+}
+
+type fakeArtifactWriter struct{}
+
+func (fakeArtifactWriter) Write(context.Context, string, string, []byte) (*agentruntime.Artifact, error) {
+	return &agentruntime.Artifact{ID: "artifact-test"}, nil
 }
 
 func TestSkillScopedRegistryUsesSkillPolicy(t *testing.T) {
