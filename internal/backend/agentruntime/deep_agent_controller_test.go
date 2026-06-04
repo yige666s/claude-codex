@@ -234,6 +234,99 @@ func TestRuntimeDeepAgentSkillActionReportsArtifactCount(t *testing.T) {
 	}
 }
 
+func TestRuntimeDeepAgentPlannerPromptIncludesSkillCatalog(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return deepAgentPlanJSONRunner{} },
+	)
+	runtime.skills = fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "docx",
+		Description:   "Create documents and research reports. Triggers include: 生成文档, 调研报告, write report",
+		WhenToUse:     "Use when the user needs a downloadable research report document.",
+		UserInvocable: true,
+		RunAsJob:      true,
+		Metadata:      map[string]any{"produces_artifacts": true},
+	}}}
+	prompt := NewRuntimeDeepAgentPlanner(runtime).deepAgentPlannerPrompt(DeepAgentTaskRequest{
+		UserID: "alice",
+		Goal:   "帮我深入调查一下 Tolan AI，并生成一个完整调研报告文档",
+		Policy: DeepAgentPolicy{MaxSteps: 4},
+	})
+	for _, want := range []string{
+		"Available published skills:",
+		"name: docx",
+		"produces_artifacts: true",
+		`metadata.tool="skill"`,
+		"metadata.args.skill_name",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("planner prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestRuntimeDeepAgentPlannerKeepsLLMSelectedSkillStep(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return skillSelectingDeepAgentPlanRunner{} },
+	)
+	runtime.skills = fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "docx",
+		Description:   "Create documents and research reports.",
+		UserInvocable: true,
+		RunAsJob:      true,
+		Metadata:      map[string]any{"produces_artifacts": true},
+	}}}
+	plan, err := NewRuntimeDeepAgentPlanner(runtime).CreatePlan(context.Background(), DeepAgentTaskRequest{
+		UserID: "alice",
+		Goal:   "帮我深入调查一下 Tolan AI，并生成一个完整调研报告文档",
+		Policy: DeepAgentPolicy{MaxSteps: 4},
+	})
+	if err != nil {
+		t.Fatalf("CreatePlan() error = %v", err)
+	}
+	if len(plan.Steps) == 0 {
+		t.Fatalf("empty plan: %#v", plan)
+	}
+	final := plan.Steps[len(plan.Steps)-1]
+	if got := deepAgentWorkflowString(final.Metadata, "tool"); got != "skill" {
+		t.Fatalf("final step tool = %q, want skill in %#v", got, final)
+	}
+	args, _ := final.Metadata["args"].(map[string]any)
+	if got := deepAgentWorkflowString(args, "skill_name"); got != "docx" {
+		t.Fatalf("final skill = %q, want docx in %#v", got, final.Metadata)
+	}
+	if got := deepAgentWorkflowString(args, "args"); !strings.Contains(got, "Tolan AI") {
+		t.Fatalf("final skill args should come from planner, got %#v", args)
+	}
+	verification, _ := final.Metadata["verification"].(map[string]any)
+	if !deepAgentBool(verification, "require_artifact", false) || deepAgentIntFromMap(verification, "min_artifact_count", 0) != 1 {
+		t.Fatalf("expected planner artifact verification to be preserved, got %#v", final.Metadata)
+	}
+}
+
+func TestRuntimeDeepAgentChildJobArtifactCount(t *testing.T) {
+	runtime := NewRuntime(RuntimeConfig{}, NewFileSessionStore(t.TempDir()), nil, nil, func(Scope) Runner { return echoRunner{} })
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	job := &Job{ID: "job-doc", UserID: "alice", SessionID: session.ID}
+	if _, err := runtime.artifacts.CreateWithJob(context.Background(), AssetKindArtifact, "alice", session.ID, job.ID, "report.md", "text/markdown", []byte("# report")); err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+	if got := NewRuntimeDeepAgentExecutor(runtime).deepAgentChildJobArtifactCount(context.Background(), job); got != 1 {
+		t.Fatalf("artifact count = %d, want 1", got)
+	}
+}
+
 func TestParseDeepAgentPlanValidatesStructuredSchema(t *testing.T) {
 	_, err := parseDeepAgentPlan(`{
   "goal": "search",
@@ -701,6 +794,42 @@ func (deepAgentPlanJSONRunner) RunGeneratedPrompt(_ context.Context, session *st
       "done_condition": "summary includes the likely cause and next step",
       "risk_level": "low",
       "metadata": {"tool": "model", "args": {"prompt": "Summarize the retrieved issue."}}
+    }
+  ]
+}`
+	session.AddAssistantMessage(output)
+	return engine.Result{Output: output, Session: session}, nil
+}
+
+type skillSelectingDeepAgentPlanRunner struct{}
+
+func (skillSelectingDeepAgentPlanRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return skillSelectingDeepAgentPlanRunner{}.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (skillSelectingDeepAgentPlanRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, _ string) (engine.Result, error) {
+	output := `{
+  "goal": "research Tolan AI",
+  "steps": [
+    {
+      "id": "search",
+      "title": "Search Tolan AI",
+      "intent": "retrieve_context",
+      "done_condition": "relevant Tolan AI facts are collected",
+      "risk_level": "low",
+      "metadata": {"tool": "rag_search", "args": {"query": "Tolan AI product research", "limit": 5}}
+    },
+    {
+      "id": "write",
+      "title": "Write research document",
+      "intent": "create_deliverable",
+      "done_condition": "downloadable research report artifact is available",
+      "risk_level": "low",
+      "metadata": {
+        "tool": "skill",
+        "args": {"skill_name": "docx", "args": "Create a complete Tolan AI research report document."},
+        "verification": {"require_artifact": true, "min_artifact_count": 1}
+      }
     }
   ]
 }`

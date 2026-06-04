@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 )
 
@@ -28,7 +29,7 @@ func (p *RuntimeDeepAgentPlanner) CreatePlan(ctx context.Context, req DeepAgentT
 		Prompt:    req.Goal,
 	})
 	plannerSession := state.NewSession("")
-	prompt := deepAgentPlannerPrompt(req)
+	prompt := p.deepAgentPlannerPrompt(req)
 	result, err := runner.RunGeneratedPrompt(ctx, plannerSession, prompt)
 	if err != nil {
 		return DeepAgentPlan{}, err
@@ -52,12 +53,81 @@ func (p *RuntimeDeepAgentPlanner) CreatePlan(ctx context.Context, req DeepAgentT
 		}
 	}
 	plan = normalizeDeepAgentPlan(req.Goal, plan)
+	if err := p.validatePlanSkillReferences(plan); err != nil {
+		return DeepAgentPlan{}, err
+	}
 	for _, step := range plan.Steps {
 		if strings.TrimSpace(step.DoneCondition) == "" {
 			return DeepAgentPlan{}, fmt.Errorf("deep agent planner returned step %q without done_condition", firstNonEmptyString(step.ID, step.Title))
 		}
 	}
 	return plan, nil
+}
+
+func (p *RuntimeDeepAgentPlanner) deepAgentPlannerPrompt(req DeepAgentTaskRequest) string {
+	return deepAgentPlannerPromptWithSkills(req, p.deepAgentSkillCatalogPrompt())
+}
+
+func (p *RuntimeDeepAgentPlanner) deepAgentSkillCatalogPrompt() string {
+	if p == nil || p.runtime == nil || p.runtime.skills == nil {
+		return "(none)"
+	}
+	items := p.runtime.skills.ListUserInvocableSkills()
+	if len(items) == 0 {
+		return "(none)"
+	}
+	var out strings.Builder
+	for _, skill := range items {
+		if skill == nil || !skill.UserInvocable || skill.IsHidden {
+			continue
+		}
+		out.WriteString("- name: ")
+		out.WriteString(skill.Name)
+		if strings.TrimSpace(skill.Description) != "" {
+			out.WriteString("\n  description: ")
+			out.WriteString(skill.Description)
+		}
+		if strings.TrimSpace(skill.WhenToUse) != "" {
+			out.WriteString("\n  when_to_use: ")
+			out.WriteString(skill.WhenToUse)
+		}
+		if strings.TrimSpace(skill.ArgumentHint) != "" {
+			out.WriteString("\n  args_hint: ")
+			out.WriteString(skill.ArgumentHint)
+		}
+		if skill.RunAsJob || skill.ExecutionContext == skills.ContextFork {
+			out.WriteString("\n  run_mode: job")
+		}
+		if skillProducesArtifacts(skill) {
+			out.WriteString("\n  produces_artifacts: true")
+		}
+		out.WriteString("\n")
+	}
+	if strings.TrimSpace(out.String()) == "" {
+		return "(none)"
+	}
+	return strings.TrimSpace(out.String())
+}
+
+func (p *RuntimeDeepAgentPlanner) validatePlanSkillReferences(plan DeepAgentPlan) error {
+	if p == nil || p.runtime == nil || p.runtime.skills == nil {
+		return nil
+	}
+	for idx, step := range plan.Steps {
+		if deepAgentWorkflowString(step.Metadata, "tool") != "skill" {
+			continue
+		}
+		args, _ := step.Metadata["args"].(map[string]any)
+		skillName := strings.TrimPrefix(strings.TrimSpace(deepAgentWorkflowString(args, "skill_name")), "/")
+		if skillName == "" {
+			return fmt.Errorf("deep agent plan step %d skill args.skill_name is required", idx)
+		}
+		skill, ok := p.runtime.skills.GetSkill(skillName)
+		if !ok || skill == nil || !skill.UserInvocable || skill.IsHidden {
+			return fmt.Errorf("deep agent plan step %d references unavailable skill: %s", idx, skillName)
+		}
+	}
+	return nil
 }
 
 func (p *RuntimeDeepAgentPlanner) NextAction(ctx context.Context, state *DeepAgentState, step DeepAgentStep) (DeepAgentAction, error) {
@@ -210,6 +280,10 @@ func (e *RuntimeDeepAgentExecutor) runDeepAgentChildJob(ctx context.Context, job
 		metadata["child_job_status"] = current.Status
 		if isTerminalJobStatus(current.Status) {
 			if current.Status == JobStatusSucceeded {
+				if artifactCount := e.deepAgentChildJobArtifactCount(ctx, current); artifactCount > 0 {
+					metadata["artifact_count"] = artifactCount
+					metadata["tool_result_valid"] = true
+				}
 				return DeepAgentActionResult{
 					Status:    DeepAgentActionStatusSucceeded,
 					Output:    fmt.Sprintf("skill job %s succeeded", current.ID),
@@ -227,6 +301,26 @@ func (e *RuntimeDeepAgentExecutor) runDeepAgentChildJob(ctx context.Context, job
 		case <-ticker.C:
 		}
 	}
+}
+
+func (e *RuntimeDeepAgentExecutor) deepAgentChildJobArtifactCount(ctx context.Context, job *Job) int {
+	if e == nil || e.runtime == nil || job == nil {
+		return 0
+	}
+	artifacts, err := e.runtime.ListArtifacts(ctx, job.UserID, job.SessionID)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, artifact := range artifacts {
+		if artifact == nil {
+			continue
+		}
+		if strings.TrimSpace(artifact.JobID) == "" || artifact.JobID == job.ID {
+			count++
+		}
+	}
+	return count
 }
 
 func deepAgentSkillActionMetadata(skillName, sessionID string, diagnostics skillExecutionDiagnostics, job *Job) map[string]any {
@@ -301,6 +395,13 @@ func (e *RuntimeDeepAgentExecutor) deepAgentSession(ctx context.Context, userID,
 }
 
 func deepAgentPlannerPrompt(req DeepAgentTaskRequest) string {
+	return deepAgentPlannerPromptWithSkills(req, "(none)")
+}
+
+func deepAgentPlannerPromptWithSkills(req DeepAgentTaskRequest, skillCatalog string) string {
+	if strings.TrimSpace(skillCatalog) == "" {
+		skillCatalog = "(none)"
+	}
 	return fmt.Sprintf(`You are the planner for a production DeepAgent controller.
 
 Split the user goal into a small, executable plan. Return JSON only, with no markdown.
@@ -312,8 +413,15 @@ Rules:
 - For "model", metadata.args.prompt should contain the instruction.
 - For "skill", metadata.args.skill_name and metadata.args.args should be present.
 - For "rag_search", metadata.args.query should be present.
+- Use the Available published skills catalog when a step is better handled by a listed skill.
+- To call a skill, set metadata.tool="skill" and set metadata.args.skill_name to exactly one listed skill name.
+- Prefer skills marked produces_artifacts for deliverables that need files or artifacts when the skill matches the goal.
+- If a selected skill is expected to create artifacts, add metadata.verification.require_artifact=true and metadata.verification.min_artifact_count=1.
 - Each done_condition must be concrete and verifiable.
 - Do not include risky external side effects unless the goal explicitly requires them.
+
+Available published skills:
+%s
 
 JSON shape:
 {
@@ -334,7 +442,7 @@ JSON shape:
 }
 
 User goal:
-%s`, normalizeDeepAgentPolicy(req.Policy).MaxSteps, strings.TrimSpace(req.Goal))
+%s`, normalizeDeepAgentPolicy(req.Policy).MaxSteps, skillCatalog, strings.TrimSpace(req.Goal))
 }
 
 func deepAgentPlanRepairContext(req DeepAgentTaskRequest) string {
