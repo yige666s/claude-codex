@@ -22,7 +22,23 @@ const (
 	DeepAgentRunStatusSucceeded      = "succeeded"
 	DeepAgentRunStatusBlocked        = "blocked"
 	DeepAgentRunStatusBudgetExceeded = "budget_exceeded"
-	DeepAgentRunStatusReviewPending  = "review_pending"
+
+	// Tool modes
+	DeepAgentToolModeModel         = "model"
+	DeepAgentToolModeModelArtifact = "model_artifact"
+	DeepAgentToolModeSkill         = "skill"
+	DeepAgentToolModeRAGSearch     = "rag_search"
+	DeepAgentToolModeMulti         = "multi"
+
+	// Defaults
+	DeepAgentDefaultRAGSearchLimit  = 5
+	DeepAgentDefaultChildJobPollMS  = 100
+	DeepAgentDefaultMaxPlanSteps    = 8
+	DeepAgentDefaultMaxActions      = 16
+	DeepAgentDefaultMaxDurationMin  = 2
+	DeepAgentDefaultNoProgressLimit = 3
+
+	DeepAgentRunStatusReviewPending = "review_pending"
 )
 
 type DeepAgentPolicy struct {

@@ -448,7 +448,7 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 			return fmt.Errorf("%w: %s", ErrDeepAgentBlocked, state.Blocker)
 		}
 		action.StepID = firstNonEmptyString(action.StepID, step.ID)
-		action.Tool = firstNonEmptyString(strings.TrimSpace(action.Tool), "model")
+		action.Tool = firstNonEmptyString(strings.TrimSpace(action.Tool), DeepAgentToolModeModel)
 		action.Hash = firstNonEmptyString(action.Hash, deepAgentActionHash(action))
 		if state.TriedActions == nil {
 			state.TriedActions = map[string]int{}
@@ -585,7 +585,7 @@ func (c *DeepAgentController) emitActionEvent(ctx context.Context, run *Workflow
 	}
 	tool := strings.TrimSpace(action.Tool)
 	if tool == "" {
-		tool = "model"
+		tool = DeepAgentToolModeModel
 	}
 	payload := map[string]any{
 		"type":          eventType,
@@ -606,7 +606,7 @@ func (c *DeepAgentController) emitActionEvent(ctx context.Context, run *Workflow
 		payload["action_count"] = state.ActionCount
 		payload["deep_agent_status"] = state.Status
 	}
-	if tool == "skill" {
+	if tool == DeepAgentToolModeSkill {
 		payload["skill_name"] = firstNonEmptyString(deepAgentActionString(action, "skill"), deepAgentActionString(action, "skill_name"))
 	}
 	if query := deepAgentActionString(action, "query"); query != "" {
@@ -704,12 +704,12 @@ func (ruleDeepAgentPlanner) NextAction(_ context.Context, state *DeepAgentState,
 		args = cloneWorkflowMap(rawArgs)
 	}
 	if tool == "" {
-		tool = "model"
+		tool = DeepAgentToolModeModel
 	}
-	if _, ok := args["prompt"]; !ok && tool == "model" {
+	if _, ok := args["prompt"]; !ok && tool == DeepAgentToolModeModel {
 		args["prompt"] = firstNonEmptyString(step.Title, state.Goal)
 	}
-	if _, ok := args["query"]; !ok && (tool == "rag_search" || tool == "search" || tool == "message_search") {
+	if _, ok := args["query"]; !ok && (tool == DeepAgentToolModeRAGSearch || tool == "search" || tool == "message_search") {
 		args["query"] = firstNonEmptyString(step.Title, state.Goal)
 	}
 	if state.WorkingMemory != nil {
@@ -724,7 +724,7 @@ func (ruleDeepAgentPlanner) NextAction(_ context.Context, state *DeepAgentState,
 	if attempt > 1 {
 		args["attempt"] = attempt
 		args["retry_instruction"] = fmt.Sprintf("Previous attempt %d for step %q did not satisfy the done condition. Use a different strategy and produce evidence that directly satisfies: %s", attempt-1, firstNonEmptyString(step.Title, step.ID), step.DoneCondition)
-		if tool == "model" {
+		if tool == DeepAgentToolModeModel {
 			currentPrompt := firstNonEmptyString(deepAgentWorkflowString(args, "prompt"), deepAgentWorkflowString(args, "instruction"), firstNonEmptyString(step.Title, state.Goal))
 			args["prompt"] = strings.TrimSpace(currentPrompt + "\n\nRetry instruction: " + deepAgentWorkflowString(args, "retry_instruction"))
 		}
@@ -795,19 +795,19 @@ func (ruleDeepAgentVerifier) CheckFinal(_ context.Context, state *DeepAgentState
 
 func normalizeDeepAgentPolicy(policy DeepAgentPolicy) DeepAgentPolicy {
 	if policy.MaxSteps <= 0 {
-		policy.MaxSteps = 8
+		policy.MaxSteps = DeepAgentDefaultMaxPlanSteps
 	}
 	if policy.MaxActions <= 0 {
-		policy.MaxActions = 16
+		policy.MaxActions = DeepAgentDefaultMaxActions
 	}
 	if policy.MaxDuration <= 0 {
-		policy.MaxDuration = 2 * time.Minute
+		policy.MaxDuration = DeepAgentDefaultMaxDurationMin * time.Minute
 	}
 	if policy.StepTimeout <= 0 {
 		policy.StepTimeout = policy.MaxDuration
 	}
 	if policy.NoProgressLimit <= 0 {
-		policy.NoProgressLimit = 3
+		policy.NoProgressLimit = DeepAgentDefaultNoProgressLimit
 	}
 	return policy
 }
