@@ -555,7 +555,7 @@ func isRetryableLLMError(err error) bool {
 	text := strings.ToLower(err.Error())
 	for _, marker := range []string{
 		"timeout", "deadline exceeded", "temporary", "connection reset", "connection refused",
-		"eof", "too many requests", "rate limit", "429", "500", "502", "503", "504",
+		"eof", "empty response", "too many requests", "rate limit", "429", "500", "502", "503", "504",
 	} {
 		if strings.Contains(text, marker) {
 			return true

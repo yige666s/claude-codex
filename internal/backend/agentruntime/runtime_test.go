@@ -3242,6 +3242,20 @@ func TestArtifactToolWritesThroughScopedWriter(t *testing.T) {
 		t.Fatalf("svg content type = %q", svgOutput.ContentType)
 	}
 
+	markdownResult, err := fileTool.Execute(ctx, json.RawMessage(`{"filename":"report.md","content_type":"text/plain","content":"# Report"}`))
+	if err != nil {
+		t.Fatalf("execute markdown artifact tool: %v", err)
+	}
+	var markdownOutput struct {
+		ContentType string `json:"content_type"`
+	}
+	if err := json.Unmarshal([]byte(markdownResult.Output), &markdownOutput); err != nil {
+		t.Fatalf("decode markdown artifact output: %v", err)
+	}
+	if markdownOutput.ContentType != "text/markdown" {
+		t.Fatalf("markdown content type = %q, want text/markdown", markdownOutput.ContentType)
+	}
+
 	_, err = fileTool.Execute(ctx, json.RawMessage(`{"filename":"bad.sh","content_type":"text/plain","content":"echo bad"}`))
 	if err == nil || !strings.Contains(err.Error(), "extension") {
 		t.Fatalf("expected disallowed extension error, got %v", err)

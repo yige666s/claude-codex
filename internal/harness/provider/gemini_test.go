@@ -1,6 +1,9 @@
 package provider
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestGeminiThinkingConfigForRequest(t *testing.T) {
 	flash := geminiThinkingConfigForRequest(MessageRequest{
@@ -33,5 +36,27 @@ func TestGeminiThinkingConfigForRequest(t *testing.T) {
 	})
 	if unsupported != nil {
 		t.Fatalf("unsupported model should not receive thinking config: %#v", unsupported)
+	}
+}
+
+func TestGeminiUnifiedResponseRejectsEmptyCandidate(t *testing.T) {
+	_, err := geminiUnifiedResponse("gemini-test", "vertex", geminiResponse{
+		Candidates: []geminiCandidate{{
+			FinishReason:  "MAX_TOKENS",
+			SafetyRatings: []interface{}{map[string]interface{}{"category": "HARM_CATEGORY_DANGEROUS_CONTENT"}},
+		}},
+		UsageMetadata: geminiUsageMetadata{
+			PromptTokenCount:     11,
+			CandidatesTokenCount: 0,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected empty candidate to fail")
+	}
+	text := err.Error()
+	for _, want := range []string{"empty response", "finish_reason=MAX_TOKENS", "prompt_tokens=11", "output_tokens=0", "safety_ratings=1"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("error %q does not contain %q", text, want)
+		}
 	}
 }

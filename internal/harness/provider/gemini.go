@@ -284,51 +284,7 @@ func (p *GeminiProvider) CreateMessage(ctx context.Context, request MessageReque
 		return nil, err
 	}
 
-	if len(geminiResp.Candidates) == 0 {
-		return nil, fmt.Errorf("no candidates in response")
-	}
-
-	// Convert to unified format
-	candidate := geminiResp.Candidates[0]
-	var contentBlocks []ContentBlock
-	var toolCalls []ToolCall
-	for _, part := range candidate.Content.Parts {
-		if part.Text != "" {
-			contentBlocks = append(contentBlocks, ContentBlock{
-				Type: "text",
-				Text: part.Text,
-			})
-		}
-		if part.FunctionCall != nil {
-			input, _ := json.Marshal(part.FunctionCall.Args)
-			if len(input) == 0 {
-				input = []byte(`{}`)
-			}
-			toolCalls = append(toolCalls, ToolCall{
-				ID:               fmt.Sprintf("gemini-call-%d", len(toolCalls)+1),
-				Name:             part.FunctionCall.Name,
-				Input:            json.RawMessage(input),
-				ThoughtSignature: part.ThoughtSignature,
-			})
-		}
-	}
-	stopReason := candidate.FinishReason
-	if len(toolCalls) > 0 && stopReason == "" {
-		stopReason = "tool_use"
-	}
-
-	return &MessageResponse{
-		ID:         fmt.Sprintf("gemini-%d", time.Now().Unix()),
-		Model:      request.Model,
-		Role:       "assistant",
-		Content:    contentBlocks,
-		ToolCalls:  toolCalls,
-		StopReason: stopReason,
-		Usage: Usage{
-			InputTokens:  geminiResp.UsageMetadata.PromptTokenCount,
-			OutputTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
-		},
-	}, nil
+	return geminiUnifiedResponse(request.Model, "gemini", geminiResp)
 }
 
 func geminiContentsFromMessages(messages []Message) []geminiContent {

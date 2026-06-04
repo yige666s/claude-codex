@@ -204,6 +204,25 @@ func TestConsumerChatRegistryHidesFilesystemTools(t *testing.T) {
 	}
 }
 
+func TestConsumerScopeHonorsScopedAllowedTools(t *testing.T) {
+	global := allowedToolNames(true)
+	scope := agentruntime.Scope{AllowedTools: []string{"WebSearch", "WebFetch", agentruntime.ArtifactToolName}}
+	allowed := effectiveAllowedToolNames(global, scope)
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, fakeArtifactWriter{}, 0, nil, allowed, nil)
+	names := descriptorNameSet(registry)
+
+	for _, visible := range []string{"WebSearch", "WebFetch", agentruntime.ArtifactToolName} {
+		if !names[visible] {
+			t.Fatalf("consumer scoped registry should expose %s: %#v", visible, names)
+		}
+	}
+	for _, hidden := range []string{"Skill", "Read", "Glob", "Grep", "Write", "Edit", "Bash"} {
+		if names[hidden] {
+			t.Fatalf("consumer scoped registry exposed unrequested tool %s: %#v", hidden, names)
+		}
+	}
+}
+
 type fakeArtifactWriter struct{}
 
 func (fakeArtifactWriter) Write(context.Context, string, string, []byte) (*agentruntime.Artifact, error) {

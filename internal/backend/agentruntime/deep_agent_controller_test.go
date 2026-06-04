@@ -13,6 +13,7 @@ import (
 	"claude-codex/internal/harness/engine"
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
+	skilltool "claude-codex/internal/harness/tools/skill"
 )
 
 func TestDeepAgentControllerCompletesAndPersistsCheckpoints(t *testing.T) {
@@ -353,6 +354,119 @@ func TestRuntimeDeepAgentModelActionCreatesArtifactFallback(t *testing.T) {
 	}
 }
 
+func TestRuntimeDeepAgentModelActionRunsSelectedRunAsJobSkill(t *testing.T) {
+	workspace := t.TempDir()
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: workspace, TurnTimeout: time.Minute},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+			Name:          "docx",
+			UserInvocable: true,
+			RunAsJob:      true,
+			Metadata:      map[string]any{"agentapi": map[string]any{"produces_artifacts": true}},
+			GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+				return []skills.ContentBlock{{Type: "text", Text: "generate docx: " + args}}, nil
+			},
+		}}},
+		func(scope Scope) Runner {
+			if scope.SkillScoped {
+				return generatedArtifactFileRunner{workspace: workspace}
+			}
+			return runAsJobDocxMarkerRunner{}
+		},
+	)
+	runtime.SetJobStore(NewMemoryJobStore())
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	result, err := NewRuntimeDeepAgentExecutor(runtime).ExecuteDeepAgentAction(context.Background(), DeepAgentAction{
+		StepID: "write",
+		Tool:   "model_artifact",
+		Args: map[string]any{
+			"user_id":        "alice",
+			"session_id":     session.ID,
+			"prompt":         "生成 Tolan 调研文档",
+			"done_condition": "downloadable report artifact is available",
+		},
+	}, &DeepAgentState{WorkingMemory: map[string]any{"user_id": "alice", "session_id": session.ID}})
+	if err != nil {
+		t.Fatalf("ExecuteDeepAgentAction() error = %v", err)
+	}
+	if result.Status != DeepAgentActionStatusSucceeded || !result.Completed {
+		t.Fatalf("unexpected model_artifact action result: %#v", result)
+	}
+	if got := deepAgentAnyInt(result.Metadata["artifact_count"], -1); got != 1 {
+		t.Fatalf("artifact_count = %d, want 1 in %#v", got, result.Metadata)
+	}
+	if got := deepAgentWorkflowString(result.Metadata, "skill_name"); got != "docx" {
+		t.Fatalf("skill_name = %q, want docx in %#v", got, result.Metadata)
+	}
+	if got := deepAgentWorkflowString(result.Metadata, "child_job_id"); got == "" {
+		t.Fatalf("expected child job id in metadata: %#v", result.Metadata)
+	}
+	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Filename != "runner-report.docx" || strings.TrimSpace(artifacts[0].JobID) == "" {
+		t.Fatalf("unexpected artifacts: %#v", artifacts)
+	}
+}
+
+func TestRuntimeDeepAgentModelArtifactRestrictsGenericDocumentGoalToArtifactTools(t *testing.T) {
+	var captured Scope
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(scope Scope) Runner {
+			captured = scope
+			return markdownReportRunner{}
+		},
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	result, err := NewRuntimeDeepAgentExecutor(runtime).ExecuteDeepAgentAction(context.Background(), DeepAgentAction{
+		StepID: "write",
+		Tool:   "model_artifact",
+		Args: map[string]any{
+			"user_id":        "alice",
+			"session_id":     session.ID,
+			"prompt":         "生成 Tolan 调研文档",
+			"done_condition": "downloadable report artifact is available",
+		},
+	}, &DeepAgentState{
+		Goal:          "帮我调研一下tolan这个产品，然后生成一个调研文档",
+		WorkingMemory: map[string]any{"user_id": "alice", "session_id": session.ID},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDeepAgentAction() error = %v", err)
+	}
+	if result.Status != DeepAgentActionStatusSucceeded {
+		t.Fatalf("unexpected action result: %#v", result)
+	}
+	want := []string{"WebSearch", "WebFetch", ArtifactToolName}
+	if strings.Join(captured.AllowedTools, ",") != strings.Join(want, ",") {
+		t.Fatalf("AllowedTools = %#v, want %#v", captured.AllowedTools, want)
+	}
+	wantResearch := []string{"WebSearch", "WebFetch"}
+	if got := deepAgentModelActionAllowedTools(DeepAgentAction{}, &DeepAgentState{Goal: "帮我调研一下tolan这个产品，然后生成一个调研文档"}, false); strings.Join(got, ",") != strings.Join(wantResearch, ",") {
+		t.Fatalf("research AllowedTools = %#v, want %#v", got, wantResearch)
+	}
+	if got := deepAgentModelActionAllowedTools(DeepAgentAction{}, &DeepAgentState{Goal: "请生成 Word 文档"}, true); got != nil {
+		t.Fatalf("explicit Word request should keep full tool access, got %#v", got)
+	}
+}
+
 func TestRuntimeDeepAgentModelActionDoesNotRequireArtifactFromGoalOrPrompt(t *testing.T) {
 	runtime := NewRuntime(
 		RuntimeConfig{},
@@ -530,6 +644,73 @@ func TestRuntimeDeepAgentModelArtifactCountsStoreArtifactWithoutToolResult(t *te
 	}
 }
 
+func TestRuntimeDeepAgentModelArtifactUsesPriorArtifactInsteadOfSavingToolError(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return toolNotFoundArtifactRunner{} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runtime.CreateArtifact(context.Background(), "alice", session.ID, "Tolan产品调研报告.md", "text/markdown", []byte("# Tolan")); err != nil {
+		t.Fatalf("create prior artifact: %v", err)
+	}
+	agentState := &DeepAgentState{
+		Goal: "帮我调研一下tolan这个产品，然后生成一个调研文档",
+		WorkingMemory: map[string]any{
+			"user_id":    "alice",
+			"session_id": session.ID,
+			"step_context": map[string]any{
+				"step-1": map[string]any{
+					"artifact_count": 1,
+					"summary":        "已生成 Tolan 产品调研报告 artifact。",
+				},
+			},
+		},
+	}
+
+	result, err := NewRuntimeDeepAgentExecutor(runtime).ExecuteDeepAgentAction(context.Background(), DeepAgentAction{
+		StepID: "step-2",
+		Tool:   "model_artifact",
+		Args: map[string]any{
+			"user_id":        "alice",
+			"session_id":     session.ID,
+			"prompt":         "生成 Tolan 调研文档",
+			"done_condition": "调研文档已生成并可下载",
+		},
+	}, agentState)
+	if err != nil {
+		t.Fatalf("ExecuteDeepAgentAction() should accept prior artifact, got %v", err)
+	}
+	if result.Status != DeepAgentActionStatusSucceeded || !result.Completed {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if got := deepAgentAnyInt(result.Metadata["artifact_count"], -1); got != 1 {
+		t.Fatalf("artifact_count = %d, want prior count 1 in %#v", got, result.Metadata)
+	}
+	if satisfied, _ := deepAgentMetadataBool(result.Metadata, "artifact_satisfied_by_prior_step"); !satisfied {
+		t.Fatalf("expected prior artifact satisfaction metadata, got %#v", result.Metadata)
+	}
+	if fallback, _ := deepAgentMetadataBool(result.Metadata, "artifact_fallback"); fallback {
+		t.Fatalf("tool error output must not be saved as fallback artifact: %#v", result.Metadata)
+	}
+	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Filename != "Tolan产品调研报告.md" {
+		t.Fatalf("unexpected artifacts after tool error: %#v", artifacts)
+	}
+	if strings.Contains(result.Output, "工具未找到") {
+		t.Fatalf("tool error should not become final action output: %q", result.Output)
+	}
+}
+
 func TestRuntimeDeepAgentPlannerPromptIncludesSkillCatalog(t *testing.T) {
 	runtime := NewRuntime(
 		RuntimeConfig{},
@@ -611,6 +792,9 @@ func TestRuntimeDeepAgentRouterLeavesResearchAndArtifactStepsForModelTools(t *te
 	if got := deepAgentWorkflowString(searchAction.Args, "prompt"); !strings.Contains(got, "WebSearch") || !strings.Contains(got, "WebFetch") {
 		t.Fatalf("search model prompt should mention web tools, got %#v", searchAction.Args)
 	}
+	if got := deepAgentWorkflowString(searchAction.Args, "prompt"); !strings.Contains(got, "This is not a deliverable-file step") {
+		t.Fatalf("search model prompt should include step boundary, got %#v", searchAction.Args)
+	}
 
 	action, err := planner.NextAction(context.Background(), state, final)
 	if err != nil {
@@ -622,6 +806,53 @@ func TestRuntimeDeepAgentRouterLeavesResearchAndArtifactStepsForModelTools(t *te
 	args := action.Args
 	if got := deepAgentWorkflowString(args, "prompt"); !strings.Contains(got, "Artifact") || !strings.Contains(got, "Tolan AI") {
 		t.Fatalf("model prompt should include artifact guidance and context, got %#v", args)
+	}
+}
+
+func TestRuleDeepAgentPlannerSplitsResearchReportFallback(t *testing.T) {
+	plan, err := ruleDeepAgentPlanner{}.CreatePlan(context.Background(), DeepAgentTaskRequest{
+		Goal: "帮我调研一下tolan这个产品，然后生成一个调研文档",
+	})
+	if err != nil {
+		t.Fatalf("CreatePlan() error = %v", err)
+	}
+	if len(plan.Steps) != 3 {
+		t.Fatalf("fallback steps = %#v, want 3 steps", plan.Steps)
+	}
+	if deepAgentStepRequiresArtifact(plan.Steps[0]) {
+		t.Fatalf("research step should not require artifact: %#v", plan.Steps[0])
+	}
+	if deepAgentStepRequiresArtifact(plan.Steps[1]) {
+		t.Fatalf("analysis step should not require artifact: %#v", plan.Steps[1])
+	}
+	if !deepAgentStepRequiresArtifact(plan.Steps[2]) {
+		t.Fatalf("final step should require artifact: %#v", plan.Steps[2])
+	}
+	if got := plan.Steps[2].DependsOn; len(got) != 2 || got[0] != "step-1" || got[1] != "step-2" {
+		t.Fatalf("final dependencies = %#v, want step-1 and step-2", got)
+	}
+}
+
+func TestRuntimeDeepAgentPlannerFallsBackOnEmptyModelResponse(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return emptyResponseDeepAgentPlanRunner{} },
+	)
+	plan, err := NewRuntimeDeepAgentPlanner(runtime).CreatePlan(context.Background(), DeepAgentTaskRequest{
+		UserID: "alice",
+		Goal:   "帮我调研一下tolan这个产品，然后生成一个调研文档",
+	})
+	if err != nil {
+		t.Fatalf("CreatePlan() error = %v", err)
+	}
+	if len(plan.Steps) != 3 {
+		t.Fatalf("fallback steps = %#v, want 3", plan.Steps)
+	}
+	if !deepAgentStepRequiresArtifact(plan.Steps[2]) {
+		t.Fatalf("final fallback step should require artifact: %#v", plan.Steps[2])
 	}
 }
 
@@ -668,6 +899,40 @@ func TestRuntimeDeepAgentRouterDoesNotTreatReportOutlineAsArtifact(t *testing.T)
 	}
 	if required, _ := finalAction.Args["requires_artifact"].(bool); !required {
 		t.Fatalf("final step should require artifact: %#v", finalAction.Args)
+	}
+}
+
+func TestDeepAgentStepRequiresArtifactIgnoresLaterDocumentSupport(t *testing.T) {
+	step := DeepAgentStep{
+		ID:            "research",
+		Title:         "调研tolan产品",
+		Intent:        "通过网络搜索，调研tolan产品的相关信息",
+		DoneCondition: "收集了足够信息，能够支撑后续文档的撰写。",
+	}
+	if deepAgentStepRequiresArtifact(step) {
+		t.Fatalf("research support step should not require artifact: %#v", step)
+	}
+
+	step.DoneCondition = "已获取 Tolan 产品事实，可以进行下一步的文档生成。"
+	if deepAgentStepRequiresArtifact(step) {
+		t.Fatalf("next-step support wording should not require artifact: %#v", step)
+	}
+}
+
+func TestNormalizeDeepAgentPlanRewritesUnrequestedWordDeliverable(t *testing.T) {
+	plan := normalizeDeepAgentPlan("帮我调研一下tolan这个产品，然后生成一个调研文档", DeepAgentPlan{Steps: []DeepAgentStep{{
+		ID:            "write",
+		Title:         "生成Word文档",
+		Intent:        "生成一份Word格式的调研文档",
+		DoneCondition: "成功生成一份Word格式的调研文档，并将其作为产出物提供给用户。",
+	}}})
+	step := plan.Steps[0]
+	joined := strings.Join([]string{step.Title, step.Intent, step.DoneCondition}, "\n")
+	if strings.Contains(strings.ToLower(joined), "word") || strings.Contains(strings.ToLower(joined), "docx") {
+		t.Fatalf("unrequested Word/docx should be normalized away: %#v", step)
+	}
+	if !strings.Contains(joined, "Markdown") {
+		t.Fatalf("expected Markdown replacement: %#v", step)
 	}
 }
 
@@ -1281,6 +1546,35 @@ func (r storeOnlyArtifactRunner) RunGeneratedPrompt(ctx context.Context, session
 	return engine.Result{Session: session}, nil
 }
 
+type toolNotFoundArtifactRunner struct{}
+
+func (toolNotFoundArtifactRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return toolNotFoundArtifactRunner{}.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (toolNotFoundArtifactRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, _ string) (engine.Result, error) {
+	output := `工具未找到：Skill。抱歉，无法生成 Word 格式文档。`
+	session.AddAssistantMessage(output)
+	return engine.Result{Output: output, Session: session}, nil
+}
+
+type runAsJobDocxMarkerRunner struct{}
+
+func (runAsJobDocxMarkerRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return runAsJobDocxMarkerRunner{}.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (runAsJobDocxMarkerRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, _ string) (engine.Result, error) {
+	input := json.RawMessage(`{"skill":"docx","args":"Tolan AI 调研报告"}`)
+	session.AddAssistantMessageWithTools("", []state.ToolCall{{
+		ID:    "skill-call-1",
+		Name:  skilltool.ToolName,
+		Input: input,
+	}})
+	session.AddToolResult("skill-call-1", skilltool.ToolName, input, skilltool.RunAsJobMarkerPrefix+`{"skill":"docx","args":"Tolan AI 调研报告","run_as_job":true}`)
+	return engine.Result{Session: session}, nil
+}
+
 type testSessionStore struct {
 	sessions map[string]*state.Session
 }
@@ -1387,4 +1681,14 @@ func (invalidDeepAgentPlanRunner) RunGeneratedPrompt(_ context.Context, session 
 	output := `not json`
 	session.AddAssistantMessage(output)
 	return engine.Result{Output: output, Session: session}, nil
+}
+
+type emptyResponseDeepAgentPlanRunner struct{}
+
+func (emptyResponseDeepAgentPlanRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return emptyResponseDeepAgentPlanRunner{}.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (emptyResponseDeepAgentPlanRunner) RunGeneratedPrompt(context.Context, *state.Session, string) (engine.Result, error) {
+	return engine.Result{}, fmt.Errorf("queryengine empty response: no assistant text or tool calls")
 }

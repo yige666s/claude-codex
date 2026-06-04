@@ -682,6 +682,9 @@ func (ruleDeepAgentPlanner) CreatePlan(_ context.Context, req DeepAgentTaskReque
 	if goal == "" {
 		return DeepAgentPlan{}, fmt.Errorf("deep agent goal is required")
 	}
+	if steps := ruleDeepAgentFallbackSteps(goal); len(steps) > 0 {
+		return DeepAgentPlan{Goal: goal, Steps: steps}, nil
+	}
 	return DeepAgentPlan{
 		Goal: goal,
 		Steps: []DeepAgentStep{{
@@ -692,6 +695,49 @@ func (ruleDeepAgentPlanner) CreatePlan(_ context.Context, req DeepAgentTaskReque
 			DoneCondition: "executor reports completed",
 		}},
 	}, nil
+}
+
+func ruleDeepAgentFallbackSteps(goal string) []DeepAgentStep {
+	text := strings.ToLower(strings.TrimSpace(goal))
+	if text == "" {
+		return nil
+	}
+	needsArtifact := deepAgentTextRequiresArtifact(text)
+	needsResearch := deepAgentContainsAny(text,
+		"调研", "调查", "研究", "搜索", "搜集", "收集", "查询", "检索", "产品", "竞品", "市场",
+		"research", "investigate", "search", "collect", "gather", "product", "competitor", "market",
+	)
+	if !needsResearch || !needsArtifact {
+		return nil
+	}
+	return []DeepAgentStep{
+		{
+			ID:            "step-1",
+			Title:         "收集并整理相关公开信息",
+			Intent:        "Use web/product research tools to collect factual notes, source URLs, and key evidence.",
+			Status:        DeepAgentStepStatusPending,
+			DoneCondition: "已收集与目标相关的公开资料、来源链接和关键事实",
+			RiskLevel:     "low",
+		},
+		{
+			ID:            "step-2",
+			Title:         "分析资料并形成调研报告结构",
+			Intent:        "Analyze the collected product information and organize findings into a report outline, positioning, features, competitors, strengths, weaknesses, and risks.",
+			DependsOn:     []string{"step-1"},
+			Status:        DeepAgentStepStatusPending,
+			DoneCondition: "已形成清晰的调研分析和大纲结构",
+			RiskLevel:     "low",
+		},
+		{
+			ID:            "step-3",
+			Title:         "生成并保存最终调研报告文档",
+			Intent:        "Create the final research report document for the user goal and save it as a downloadable artifact: " + goal,
+			DependsOn:     []string{"step-1", "step-2"},
+			Status:        DeepAgentStepStatusPending,
+			DoneCondition: "最终调研报告文档已通过 Artifact 工具生成并可下载",
+			RiskLevel:     "medium",
+		},
+	}
 }
 
 func (ruleDeepAgentPlanner) NextAction(_ context.Context, state *DeepAgentState, step DeepAgentStep) (DeepAgentAction, error) {
@@ -825,8 +871,30 @@ func normalizeDeepAgentPlan(goal string, plan DeepAgentPlan) DeepAgentPlan {
 		if strings.TrimSpace(step.Status) == "" {
 			step.Status = DeepAgentStepStatusPending
 		}
+		normalizeDeepAgentStepDeliverableFormat(goal, step)
 	}
 	return plan
+}
+
+func normalizeDeepAgentStepDeliverableFormat(goal string, step *DeepAgentStep) {
+	if step == nil || deepAgentExplicitDocxText(goal) {
+		return
+	}
+	replacer := strings.NewReplacer(
+		"Word格式", "Markdown格式",
+		"Word 格式", "Markdown 格式",
+		"Word文档", "Markdown文档",
+		"Word 文档", "Markdown 文档",
+		"word文档", "Markdown文档",
+		"word 文档", "Markdown 文档",
+		"Word document", "Markdown document",
+		"word document", "Markdown document",
+		".docx", ".md",
+		"docx", "Markdown",
+	)
+	step.Title = replacer.Replace(step.Title)
+	step.Intent = replacer.Replace(step.Intent)
+	step.DoneCondition = replacer.Replace(step.DoneCondition)
 }
 
 func nextDeepAgentStepIndex(steps []DeepAgentStep) int {

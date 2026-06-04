@@ -188,3 +188,23 @@ func TestQueryRuntimeLastAssistantMessageIgnoresHiddenContext(t *testing.T) {
 		t.Fatalf("lastAssistantMessage() = %q, want visible result", got)
 	}
 }
+
+func TestQueryRuntimeRejectsEmptyAssistantResponse(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	engine := NewWithDir(emptyPlanner{}, toolkit.NewRegistry(), permissions.NewChecker(permissions.ModeBypass, nil, nil), 2, t.TempDir())
+	engine.UseQueryRuntime()
+
+	_, err := engine.RunGeneratedPrompt(context.Background(), session, "internal generated prompt")
+	if err == nil {
+		t.Fatal("expected empty response error")
+	}
+	if !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("error = %v, want empty response marker", err)
+	}
+}
+
+type emptyPlanner struct{}
+
+func (emptyPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (Plan, error) {
+	return Plan{StopReason: "end_turn"}, nil
+}

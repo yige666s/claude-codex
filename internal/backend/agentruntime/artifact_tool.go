@@ -137,6 +137,7 @@ func (t *ArtifactTool) Execute(ctx context.Context, raw json.RawMessage) (toolki
 	if contentType == "" {
 		contentType = mime.TypeByExtension(filepath.Ext(filename))
 	}
+	contentType = normalizeArtifactToolContentType(filename, contentType)
 	started := time.Now()
 	artifact, err := t.writer.Write(ctx, filename, contentType, data)
 	duration := time.Since(started)
@@ -183,6 +184,17 @@ func emitArtifactMetric(ctx context.Context, filename, contentType string, sizeB
 		content = fmt.Sprintf("Artifact %s failed after %d ms", filename, duration.Milliseconds())
 	}
 	emitJobEventFromContext(ctx, Event{Type: "artifact_metric", Role: "tool", Content: content, Data: raw})
+}
+
+func normalizeArtifactToolContentType(filename, contentType string) string {
+	contentType = normalizedContentType(contentType)
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".md", ".markdown":
+		if contentType == "" || contentType == "text/plain" {
+			return "text/markdown"
+		}
+	}
+	return contentType
 }
 
 func (t *ArtifactTool) artifactBytes(input artifactToolInput) ([]byte, error) {

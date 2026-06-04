@@ -393,6 +393,10 @@ func toolResultContent(content interface{}) string {
 }
 
 func geminiResponseToUnified(model string, resp geminiResponse) (*MessageResponse, error) {
+	return geminiUnifiedResponse(model, "vertex", resp)
+}
+
+func geminiUnifiedResponse(model, idPrefix string, resp geminiResponse) (*MessageResponse, error) {
 	if len(resp.Candidates) == 0 {
 		return nil, fmt.Errorf("no candidates in response")
 	}
@@ -420,8 +424,11 @@ func geminiResponseToUnified(model string, resp geminiResponse) (*MessageRespons
 	if len(toolCalls) > 0 && stopReason == "" {
 		stopReason = "tool_use"
 	}
+	if len(contentBlocks) == 0 && len(toolCalls) == 0 {
+		return nil, geminiEmptyCandidateError(idPrefix, candidate, resp.UsageMetadata)
+	}
 	return &MessageResponse{
-		ID:         fmt.Sprintf("vertex-%d", time.Now().Unix()),
+		ID:         fmt.Sprintf("%s-%d", idPrefix, time.Now().Unix()),
 		Model:      model,
 		Role:       "assistant",
 		Content:    contentBlocks,
@@ -432,6 +439,23 @@ func geminiResponseToUnified(model string, resp geminiResponse) (*MessageRespons
 			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
 		},
 	}, nil
+}
+
+func geminiEmptyCandidateError(idPrefix string, candidate geminiCandidate, usage geminiUsageMetadata) error {
+	finishReason := strings.TrimSpace(candidate.FinishReason)
+	if finishReason == "" {
+		finishReason = "unspecified"
+	}
+	if strings.TrimSpace(idPrefix) == "" {
+		idPrefix = "gemini"
+	}
+	return fmt.Errorf("%s empty response candidate: finish_reason=%s prompt_tokens=%d output_tokens=%d safety_ratings=%d",
+		idPrefix,
+		finishReason,
+		usage.PromptTokenCount,
+		usage.CandidatesTokenCount,
+		len(candidate.SafetyRatings),
+	)
 }
 
 func firstNonEmptyString(values ...string) string {

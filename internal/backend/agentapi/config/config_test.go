@@ -11,6 +11,7 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	t.Setenv("AGENT_API_SQL_MAX_OPEN_CONNS", "37")
 	t.Setenv("AGENT_API_STORE_BACKEND", "sql")
 	t.Setenv("AGENT_API_LLM_PROVIDER", "openai")
+	t.Setenv("AGENT_API_MODEL", "gemini-2.5-pro")
 	t.Setenv("AGENT_API_OBJECT_TIMEOUT", "3s")
 	t.Setenv("AGENT_API_TIMEZONE", "Asia/Shanghai")
 	t.Setenv("AGENT_API_LOCALE", "zh-CN")
@@ -28,6 +29,9 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	if cfg.LLMProvider != "openai" {
 		t.Fatalf("LLMProvider = %q, want openai", cfg.LLMProvider)
 	}
+	if cfg.Model != "gemini-2.5-pro" {
+		t.Fatalf("Model = %q, want gemini-2.5-pro", cfg.Model)
+	}
 	if cfg.ObjectTimeout != 3*time.Second {
 		t.Fatalf("ObjectTimeout = %s, want 3s", cfg.ObjectTimeout)
 	}
@@ -42,6 +46,16 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	}
 	if cfg.LiveLanguageCode != "zh-CN" {
 		t.Fatalf("LiveLanguageCode = %q, want zh-CN", cfg.LiveLanguageCode)
+	}
+}
+
+func TestDefaultReadsLLMModelAlias(t *testing.T) {
+	t.Setenv("AGENT_API_LLM_MODEL", "gemini-2.5-flash")
+
+	cfg := Default()
+
+	if cfg.Model != "gemini-2.5-flash" {
+		t.Fatalf("Model = %q, want gemini-2.5-flash", cfg.Model)
 	}
 }
 

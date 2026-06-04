@@ -82,7 +82,11 @@ func effectiveAllowedToolNames(global []string, scope agentruntime.Scope) []stri
 		}
 		return scopedAllowedTools(global, scope.AllowedTools)
 	}
-	return scopedAllowedTools(global, consumerChatToolNames())
+	consumerAllowed := scopedAllowedTools(global, consumerChatToolNames())
+	if len(cleanCSVValues(scope.AllowedTools)) > 0 {
+		return scopedAllowedTools(consumerAllowed, scope.AllowedTools)
+	}
+	return consumerAllowed
 }
 
 func toolNameSet(names []string) map[string]bool {

@@ -59,10 +59,12 @@ func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt i
 		"runtime":       "queryengine",
 	})
 
+	initialMessages := r.initialQueryMessages(session)
+	initialMessageCount := len(initialMessages)
 	engine := queryengine.NewQueryEngine(queryengine.QueryEngineConfig{
 		Cwd:                    runtimeWorkingDir(r.engine.workingDir, session.WorkingDir),
 		SessionID:              session.ID,
-		InitialMessages:        r.initialQueryMessages(session),
+		InitialMessages:        initialMessages,
 		FallbackModel:          defaultQueryFallbackModel,
 		ReplayUserMessages:     false,
 		IncludePartialMessages: false,
@@ -135,6 +137,16 @@ func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt i
 	output := lastAssistantMessage(session.Messages)
 	if output == "" {
 		output = final.Result
+	}
+	if strings.TrimSpace(output) == "" && !hasMeaningfulAssistantAfter(session.Messages, initialMessageCount) {
+		err := fmt.Errorf("queryengine empty response: no assistant text or tool calls")
+		r.engine.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+			"span_id": interactionID,
+			"status":  "error",
+			"error":   err.Error(),
+			"runtime": "queryengine",
+		})
+		return Result{}, err
 	}
 
 	r.engine.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
@@ -529,4 +541,20 @@ func countAssistantToolCalls(messages []state.Message) int {
 		}
 	}
 	return total
+}
+
+func hasMeaningfulAssistantAfter(messages []state.Message, startIndex int) bool {
+	if startIndex < 0 || startIndex > len(messages) {
+		startIndex = 0
+	}
+	for i := startIndex; i < len(messages); i++ {
+		msg := messages[i]
+		if msg.Role != "assistant" || msg.Hidden {
+			continue
+		}
+		if strings.TrimSpace(msg.Content) != "" || len(msg.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
 }

@@ -3,12 +3,14 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
+	skilltool "claude-codex/internal/harness/tools/skill"
 )
 
 type RuntimeDeepAgentPlanner struct {
@@ -32,6 +34,21 @@ func (p *RuntimeDeepAgentPlanner) CreatePlan(ctx context.Context, req DeepAgentT
 	prompt := p.deepAgentPlannerPrompt(req)
 	result, err := runner.RunGeneratedPrompt(ctx, plannerSession, prompt)
 	if err != nil {
+		if isDeepAgentEmptyModelResponseError(err) {
+			schema := deepAgentPlanStructuredSchema()
+			fallbackPlan, fallbackErr := ruleDeepAgentPlanner{}.CreatePlan(ctx, req)
+			emitStructuredOutputFallbackEvent(ctx, schema, "deep_agent_planner", structuredFallbackRulePlanner, fallbackErr)
+			if fallbackErr != nil {
+				return DeepAgentPlan{}, fmt.Errorf("deep agent planner empty response and fallback failed: %w", fallbackErr)
+			}
+			plan := normalizeDeepAgentPlan(req.Goal, fallbackPlan)
+			for _, step := range plan.Steps {
+				if strings.TrimSpace(step.DoneCondition) == "" {
+					return DeepAgentPlan{}, fmt.Errorf("deep agent planner returned step %q without done_condition", firstNonEmptyString(step.ID, step.Title))
+				}
+			}
+			return plan, nil
+		}
 		return DeepAgentPlan{}, err
 	}
 	plan, err := parseDeepAgentPlan(result.Output)
@@ -59,6 +76,13 @@ func (p *RuntimeDeepAgentPlanner) CreatePlan(ctx context.Context, req DeepAgentT
 		}
 	}
 	return plan, nil
+}
+
+func isDeepAgentEmptyModelResponseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "empty response")
 }
 
 func (p *RuntimeDeepAgentPlanner) deepAgentPlannerPrompt(req DeepAgentTaskRequest) string {
@@ -315,6 +339,10 @@ func (p *RuntimeDeepAgentPlanner) modelPromptForStep(agentState *DeepAgentState,
 		b.WriteString("\n\nSuccess criteria:\n")
 		b.WriteString(step.DoneCondition)
 	}
+	if !deepAgentStepRequiresArtifact(step) {
+		b.WriteString("\n\nStep boundary:\n")
+		b.WriteString("This is not a deliverable-file step. Do not create, apologize for, or discuss report/document/Skill generation here; only complete the current step intent.")
+	}
 	return b.String()
 }
 
@@ -323,6 +351,8 @@ func deepAgentToolUsageReminder() string {
 - Use WebSearch and WebFetch for current, external, internet, product, company, market, or competitor research.
 - **CRITICAL**: When a step requires creating a deliverable file, report, or document, you MUST use the Artifact tool to save it. Call Artifact with filename and content before completing the step.
 - Use Skill when a published skill is clearly the best specialized executor.
+- For generic "report/document" requests, create a Markdown artifact by default. Use Word/.docx only when the user explicitly asks for Word or .docx.
+- Do not claim a Skill job, Word document, or file is created/in progress unless an actual tool result confirms it.
 - Do not claim you cannot browse the web, perform real-time research, or create files when an appropriate tool is available. If a tool fails, report the tool error and continue with any partial evidence.
 
 For artifact creation steps:
@@ -349,6 +379,13 @@ func deepAgentTextRequiresArtifact(text string) bool {
 	}
 	hasDeliverableNoun := deepAgentContainsAny(text, "report", "document", "文档", "报告")
 	if !hasDeliverableNoun {
+		return false
+	}
+	if deepAgentContainsAny(text,
+		"后续", "支撑", "下一步", "下一阶段", "后面",
+		"later", "subsequent", "next step", "next-step", "next phase", "support later", "support subsequent",
+	) &&
+		!deepAgentContainsAny(text, "artifact", "download", "downloadable", "可下载", "产物", "导出", "保存") {
 		return false
 	}
 	return deepAgentContainsAny(text,
@@ -514,21 +551,61 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true}, saveErr
 		}
 	}
-	runner := e.runtime.runnerForScope(Scope{
+	scope := Scope{
 		UserID:     userID,
 		SessionID:  session.ID,
 		WorkingDir: session.WorkingDir,
 		Prompt:     prompt,
-	})
+	}
+	if allowedTools := deepAgentModelActionAllowedTools(action, agentState, forceArtifact); len(allowedTools) > 0 {
+		scope.AllowedTools = allowedTools
+	}
+	runner := e.runtime.runnerForScope(scope)
 	beforeArtifacts := e.deepAgentArtifactIDSet(ctx, userID, session.ID)
 	startMessageCount := len(session.Messages)
 	result, err := runner.RunGeneratedPrompt(ctx, session, prompt)
-	if err != nil {
+	if err != nil && !errors.Is(err, skilltool.ErrRunAsJobRequired) {
 		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true}, err
 	}
 	resultSession := result.Session
 	if resultSession == nil {
 		resultSession = session
+	}
+	if selected, ok := selectedRunAsJobSkill(resultSession, startMessageCount); ok {
+		metadata := map[string]any{
+			"tool":              firstNonEmptyString(strings.TrimSpace(action.Tool), DeepAgentToolModeModel),
+			"session_id":        resultSession.ID,
+			"artifact_count":    0,
+			"tool_result_valid": true,
+			"skill_name":        selected.Name,
+			"run_as_job_marker": true,
+		}
+		if resultSession != nil && userID != "" && strings.TrimSpace(resultSession.ID) != "" {
+			if saveErr := e.runtime.sessions.Save(ctx, userID, resultSession); saveErr != nil {
+				return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true, Metadata: metadata}, saveErr
+			}
+		}
+		job, jobErr := e.runtime.createSelectedSkillJob(ctx, ChatRequest{
+			UserID:    userID,
+			SessionID: resultSession.ID,
+			Content:   prompt,
+		}, resultSession.ID, selected)
+		if jobErr != nil {
+			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: jobErr.Error(), Retryable: true, Metadata: metadata}, jobErr
+		}
+		metadata["job_started"] = true
+		metadata["child_job_id"] = job.ID
+		metadata["child_job_type"] = job.Type
+		e.runtime.markJobUserMessageHidden(job.ID)
+		childResult, childErr := e.runDeepAgentChildJob(ctx, job, metadata)
+		if childErr != nil {
+			return childResult, childErr
+		}
+		return childResult, nil
+	}
+	if errors.Is(err, skilltool.ErrRunAsJobRequired) {
+		err := fmt.Errorf("model selected run-as-job skill but no valid skill marker was found")
+		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true}, err
 	}
 	diagnostics := collectSkillExecutionDiagnostics(resultSession, startMessageCount)
 	storeArtifactCount := e.deepAgentNewArtifactCount(ctx, userID, resultSession.ID, beforeArtifacts)
@@ -547,7 +624,20 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	}
 	requiresArtifact := forceArtifact || deepAgentActionRequiresArtifact(action)
 	fallbackOutput := deepAgentModelArtifactFallbackOutput(result.Output, resultSession, startMessageCount)
-	if artifactCount == 0 && requiresArtifact && fallbackOutput != "" {
+	invalidFallbackOutput := requiresArtifact && deepAgentModelArtifactFallbackLooksInvalid(fallbackOutput)
+	if invalidFallbackOutput {
+		metadata["artifact_fallback_invalid"] = true
+	}
+	priorArtifactCount := deepAgentStatePriorArtifactCount(agentState)
+	artifactSatisfiedOutput := ""
+	if artifactCount == 0 && requiresArtifact && priorArtifactCount > 0 &&
+		deepAgentGenericDocumentArtifactGoal(stateGoal(agentState)) && !deepAgentExplicitDocxText(stateGoal(agentState)) {
+		artifactCount = int64(priorArtifactCount)
+		metadata["artifact_count"] = priorArtifactCount
+		metadata["artifact_satisfied_by_prior_step"] = true
+		artifactSatisfiedOutput = "A prior DeepAgent step already created an artifact that satisfies this deliverable."
+	}
+	if artifactCount == 0 && requiresArtifact && fallbackOutput != "" && !invalidFallbackOutput {
 		if resultSession != nil && userID != "" && strings.TrimSpace(resultSession.ID) != "" {
 			if saveErr := e.runtime.sessions.Save(ctx, userID, resultSession); saveErr != nil {
 				return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true, Metadata: metadata}, saveErr
@@ -565,11 +655,13 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 		recordDeepAgentArtifactToolResult(resultSession, action, artifact)
 	}
 	if artifactCount == 0 && requiresArtifact {
-		// Enhanced diagnostics for artifact generation failure
+		modelDetails := deepAgentModelActionDiagnostics(result.Output, resultSession, startMessageCount)
 		diagnosticDetails := map[string]any{
 			"diagnostics_artifact_count":  diagnostics.ArtifactCount,
 			"store_artifact_count":        storeArtifactCount,
 			"has_fallback_output":         fallbackOutput != "",
+			"fallback_output_invalid":     invalidFallbackOutput,
+			"prior_artifact_count":        priorArtifactCount,
 			"fallback_output_length":      len(fallbackOutput),
 			"artifact_service_configured": e.runtime.artifacts != nil,
 			"session_messages_count":      len(resultSession.Messages),
@@ -578,10 +670,22 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 			"requires_artifact":           requiresArtifact,
 			"force_artifact":              forceArtifact,
 		}
+		for key, value := range modelDetails {
+			diagnosticDetails[key] = value
+		}
 		metadata["diagnostic_details"] = diagnosticDetails
 
-		err := fmt.Errorf("model_artifact action produced no artifact or report content: diagnostics_count=%d, store_count=%d, has_fallback=%v, artifact_service=%v",
-			diagnostics.ArtifactCount, storeArtifactCount, fallbackOutput != "", e.runtime.artifacts != nil)
+		err := fmt.Errorf("model_artifact action produced no artifact or report content: diagnostics_count=%d, store_count=%d, has_fallback=%v, artifact_service=%v, output_len=%d, assistant_messages=%d, tool_calls=%d, tool_results=%d, artifact_tool_results=%d",
+			diagnostics.ArtifactCount,
+			storeArtifactCount,
+			fallbackOutput != "",
+			e.runtime.artifacts != nil,
+			modelDetails["output_length"],
+			modelDetails["assistant_messages"],
+			modelDetails["tool_calls"],
+			modelDetails["tool_results"],
+			modelDetails["artifact_tool_results"],
+		)
 		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true, Metadata: metadata}, err
 	}
 	if resultSession != nil && userID != "" && strings.TrimSpace(resultSession.ID) != "" {
@@ -591,7 +695,7 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	}
 	return DeepAgentActionResult{
 		Status:    DeepAgentActionStatusSucceeded,
-		Output:    firstNonEmptyString(result.Output, fallbackOutput),
+		Output:    firstNonEmptyString(artifactSatisfiedOutput, result.Output, fallbackOutput),
 		Completed: true,
 		Metadata:  metadata,
 	}, nil
@@ -613,6 +717,31 @@ func (e *RuntimeDeepAgentExecutor) deepAgentArtifactIDSet(ctx context.Context, u
 		out[artifact.ID] = struct{}{}
 	}
 	return out
+}
+
+func deepAgentModelActionAllowedTools(_ DeepAgentAction, agentState *DeepAgentState, forceArtifact bool) []string {
+	goal := stateGoal(agentState)
+	if !deepAgentGenericDocumentArtifactGoal(goal) || deepAgentExplicitDocxText(goal) {
+		return nil
+	}
+	if !forceArtifact {
+		return []string{"WebSearch", "WebFetch"}
+	}
+	return []string{"WebSearch", "WebFetch", ArtifactToolName}
+}
+
+func deepAgentGenericDocumentArtifactGoal(text string) bool {
+	return deepAgentContainsAny(text,
+		"report", "document", "markdown", ".md",
+		"报告", "文档", "调研", "调查", "研究报告", "调研报告", "调研文档",
+	)
+}
+
+func deepAgentExplicitDocxText(text string) bool {
+	return deepAgentContainsAny(text,
+		".docx", "docx", "word document", "word doc", "microsoft word",
+		"word文档", "word 文档", "生成word", "生成 word", "创建word", "创建 word",
+	)
 }
 
 func (e *RuntimeDeepAgentExecutor) deepAgentNewArtifactCount(ctx context.Context, userID, sessionID string, before map[string]struct{}) int64 {
@@ -655,6 +784,106 @@ func deepAgentModelArtifactFallbackOutput(output string, session *state.Session,
 		}
 	}
 	return ""
+}
+
+func deepAgentModelArtifactFallbackLooksInvalid(output string) bool {
+	text := strings.ToLower(strings.TrimSpace(output))
+	if text == "" {
+		return false
+	}
+	if deepAgentContainsAny(text,
+		"tool not found", "unknown tool", "工具未找到", "未找到工具", "技能未找到",
+		"technical issue", "technical error", "encountered technical",
+	) {
+		return true
+	}
+	if deepAgentContainsAny(text, "抱歉", "sorry", "apolog") &&
+		deepAgentContainsAny(text, "无法", "不能", "失败", "cannot", "can't", "failed", "unable") {
+		return true
+	}
+	return false
+}
+
+func deepAgentStatePriorArtifactCount(agentState *DeepAgentState) int {
+	if agentState == nil || agentState.WorkingMemory == nil {
+		return 0
+	}
+	store, _ := agentState.WorkingMemory["step_context"].(map[string]any)
+	var count int
+	for _, raw := range store {
+		record, _ := raw.(map[string]any)
+		if len(record) == 0 {
+			continue
+		}
+		recordCount := deepAgentAnyInt(record["artifact_count"], 0)
+		if recordCount == 0 {
+			metadata, _ := record["metadata"].(map[string]any)
+			recordCount = deepAgentAnyInt(metadata["artifact_count"], 0)
+		}
+		count += recordCount
+	}
+	return count
+}
+
+func deepAgentModelActionDiagnostics(output string, session *state.Session, startIndex int) map[string]any {
+	details := map[string]any{
+		"output_length":          len(strings.TrimSpace(output)),
+		"new_messages":           0,
+		"assistant_messages":     0,
+		"visible_assistant_text": 0,
+		"tool_calls":             0,
+		"tool_results":           0,
+		"artifact_tool_results":  0,
+		"assistant_tool_names":   []string{},
+		"tool_result_names":      []string{},
+		"last_assistant_preview": "",
+	}
+	if session == nil || len(session.Messages) == 0 {
+		return details
+	}
+	if startIndex < 0 || startIndex > len(session.Messages) {
+		startIndex = 0
+	}
+	messages := session.Messages[startIndex:]
+	details["new_messages"] = len(messages)
+	assistantToolNames := make([]string, 0)
+	toolResultNames := make([]string, 0)
+	for _, message := range messages {
+		switch message.Role {
+		case state.MessageRoleAssistant:
+			details["assistant_messages"] = details["assistant_messages"].(int) + 1
+			if text := strings.TrimSpace(message.Content); text != "" && !message.Hidden {
+				details["visible_assistant_text"] = details["visible_assistant_text"].(int) + len(text)
+				details["last_assistant_preview"] = truncateDeepAgentDiagnosticText(text, 240)
+			}
+			for _, call := range message.ToolCalls {
+				details["tool_calls"] = details["tool_calls"].(int) + 1
+				if name := strings.TrimSpace(call.Name); name != "" {
+					assistantToolNames = append(assistantToolNames, name)
+				}
+			}
+		case state.MessageRoleTool:
+			details["tool_results"] = details["tool_results"].(int) + 1
+			if name := strings.TrimSpace(message.ToolName); name != "" {
+				toolResultNames = append(toolResultNames, name)
+				if strings.EqualFold(name, ArtifactToolName) {
+					details["artifact_tool_results"] = details["artifact_tool_results"].(int) + 1
+				}
+			}
+		}
+	}
+	details["assistant_tool_names"] = assistantToolNames
+	details["tool_result_names"] = toolResultNames
+	return details
+}
+
+func truncateDeepAgentDiagnosticText(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 || len([]rune(text)) <= limit {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:limit]) + "..."
 }
 
 func (e *RuntimeDeepAgentExecutor) createDeepAgentModelArtifact(ctx context.Context, userID, sessionID string, action DeepAgentAction, output string) (*Artifact, error) {

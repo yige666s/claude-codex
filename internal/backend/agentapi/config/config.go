@@ -338,7 +338,7 @@ func Default() Config {
 		APIKey:                                  "",
 		APIToken:                                "",
 		APIBaseURL:                              "",
-		Model:                                   "",
+		Model:                                   FirstNonEmpty(os.Getenv("AGENT_API_MODEL"), os.Getenv("AGENT_API_LLM_MODEL")),
 		LLMFallbacks:                            os.Getenv("AGENT_API_LLM_FALLBACKS"),
 		LLMModelRoutes:                          os.Getenv("AGENT_API_LLM_MODEL_ROUTES"),
 		LLMMaxAttempts:                          EnvInt("AGENT_API_LLM_MAX_ATTEMPTS", 2),
