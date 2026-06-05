@@ -55,8 +55,13 @@ export function JobPanel({
                   <Button className="danger inline" disabled={terminalJobs.has(job.status)} onClick={onCancelJob}>Cancel job</Button>
                 </div>
                 <div className="timeline">
-                  {visibleJobEvents(jobEvents).map((event) => (
-                    <JobEventDetail key={event.id} event={event} />
+                  {groupJobEvents(visibleJobEvents(jobEvents)).map((group) => (
+                    <section key={group.id} className="timeline-event-group">
+                      <h4>{group.label}</h4>
+                      {group.events.map((event) => (
+                        <JobEventDetail key={event.id} event={event} />
+                      ))}
+                    </section>
                   ))}
                 </div>
               </MotionPanel>
@@ -72,10 +77,56 @@ function visibleJobEvents(events: JobEvent[]): JobEvent[] {
   return events.filter((event) => !(event.type === "delta" && event.event?.role === "assistant"));
 }
 
+function groupJobEvents(events: JobEvent[]): Array<{ id: string; label: string; events: JobEvent[] }> {
+  const order = ["workflow_run", "workflow_step", "deep_agent_action", "child_skill_job", "artifact_output", "event"];
+  const labels: Record<string, string> = {
+    workflow_run: "Workflow run",
+    workflow_step: "Workflow steps",
+    deep_agent_action: "DeepAgent actions",
+    child_skill_job: "Child skill jobs",
+    artifact_output: "Artifacts",
+    event: "Other events"
+  };
+  const grouped = new Map<string, JobEvent[]>();
+  for (const event of events) {
+    const data = eventData(event);
+    const group = stringValue(data?.event_group) || eventGroupForType(event.type);
+    grouped.set(group, [...(grouped.get(group) || []), event]);
+  }
+  return order
+    .filter((id) => (grouped.get(id) || []).length > 0)
+    .map((id) => ({ id, label: labels[id] || id, events: grouped.get(id) || [] }));
+}
+
+function eventGroupForType(type: string): string {
+  if (type.startsWith("workflow_run")) return "workflow_run";
+  if (type.startsWith("workflow_step")) return "workflow_step";
+  if (type === "deep_agent_child_job") return "child_skill_job";
+  if (type === "deep_agent_artifact_output") return "artifact_output";
+  if (type.startsWith("deep_agent_action")) return "deep_agent_action";
+  return "event";
+}
+
 function JobEventDetail({ event }: { event: JobEvent }) {
   const data = eventData(event);
   const title = eventTitle(event, data);
   const subtitle = eventSubtitle(event, data);
+  const route = recordValue(data?.route);
+  const resultMetadata = recordValue(data?.result_metadata);
+  const diagnostics = recordValue(data?.diagnostics) || recordValue(resultMetadata?.diagnostic_details);
+  const evidence = recordValue(data?.evidence);
+  const routeRows = compactRows([
+    ["Mode", stringValue(route?.mode)],
+    ["Executor", stringValue(route?.executor)],
+    ["Version", stringValue(route?.version || data?.route_version)],
+    ["Deliverable", stringValue(route?.deliverable_type || data?.deliverable_type)],
+    ["Requires artifact", boolString(route?.requires_artifact)],
+    ["Skill", stringValue(route?.skill_name)],
+    ["Search scope", stringValue(route?.search_scope || data?.search_scope)],
+    ["Allowed tools", displayValue(route?.allowed_tools || data?.allowed_tools)],
+    ["Filename", stringValue(route?.filename_hint)],
+    ["Shadow diff", displayValue(route?.shadow_diff || data?.route_shadow_diff)]
+  ]);
   const workflowRows = compactRows([
     ["Workflow", stringValue(data?.workflow_name)],
     ["Run", stringValue(data?.run_id)],
@@ -87,16 +138,25 @@ function JobEventDetail({ event }: { event: JobEvent }) {
     ["Tool", stringValue(data?.tool)],
     ["Skill", stringValue(data?.skill_name)],
     ["Query", stringValue(data?.query)],
-    ["Action", stringValue(data?.action_hash)]
+    ["Action", stringValue(data?.action_hash)],
+    ["Prompt", stringValue(data?.prompt_preview)],
+    ["Attempt", stringValue(data?.attempt_strategy)]
   ]);
-  const resultMetadata = recordValue(data?.result_metadata);
   const resultRows = compactRows([
     ["Result", stringValue(data?.result_status)],
     ["Completed", boolString(data?.completed)],
     ["Artifacts", stringValue(resultMetadata?.artifact_count)],
     ["Child job", stringValue(resultMetadata?.job_id)],
     ["Tool valid", boolString(resultMetadata?.tool_result_valid)],
+    ["Error class", stringValue(data?.error_class || resultMetadata?.error_class)],
     ["Error", event.event?.error || stringValue(data?.error)]
+  ]);
+  const evidenceRows = compactRows([
+    ["Sources", displayValue(data?.sources)],
+    ["Tool calls", displayValue(data?.tool_calls)],
+    ["Artifacts", displayValue(data?.artifact_refs)],
+    ["Child jobs", displayValue(data?.child_jobs)],
+    ["Evidence summary", stringValue(evidence?.summary)]
   ]);
   const metricRows = rowsFromRecord(recordValue(data?.metrics));
   return (
@@ -107,8 +167,11 @@ function JobEventDetail({ event }: { event: JobEvent }) {
       </summary>
       <div className="timeline-detail">
         {workflowRows.length > 0 && <DetailGroup title="Workflow" rows={workflowRows} />}
+        {routeRows.length > 0 && <DetailGroup title="Route" rows={routeRows} />}
         {actionRows.length > 0 && <DetailGroup title="Action" rows={actionRows} />}
         {resultRows.length > 0 && <DetailGroup title="Result" rows={resultRows} />}
+        {evidenceRows.length > 0 && <DetailGroup title="Evidence" rows={evidenceRows} />}
+        {diagnostics && <DetailJSON title="Diagnostics" value={diagnostics} />}
         {metricRows.length > 0 && <DetailGroup title="Metrics" rows={metricRows} />}
         {data && (
           <details className="timeline-raw">
@@ -117,6 +180,15 @@ function JobEventDetail({ event }: { event: JobEvent }) {
           </details>
         )}
       </div>
+    </details>
+  );
+}
+
+function DetailJSON({ title, value }: { title: string; value: Record<string, unknown> }) {
+  return (
+    <details className="timeline-raw">
+      <summary>{title}</summary>
+      <pre>{JSON.stringify(value, null, 2)}</pre>
     </details>
   );
 }
@@ -142,6 +214,14 @@ function eventData(event: JobEvent): Record<string, unknown> | null {
 }
 
 function eventTitle(event: JobEvent, data: Record<string, unknown> | null): string {
+  if (event.type === "deep_agent_artifact_output") {
+    const artifact = recordValue(data?.artifact);
+    return ["artifact", stringValue(artifact?.filename || artifact?.id)].filter(Boolean).join(" · ");
+  }
+  if (event.type === "deep_agent_child_job") {
+    const child = recordValue(data?.child_job);
+    return ["child job", stringValue(child?.id), stringValue(child?.status)].filter(Boolean).join(" · ");
+  }
   if (event.type.startsWith("deep_agent_action_")) {
     const step = stringValue(data?.step_id || data?.step_title);
     const tool = stringValue(data?.tool);

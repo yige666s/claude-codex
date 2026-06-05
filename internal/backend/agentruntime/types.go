@@ -428,6 +428,7 @@ type RuntimeConfig struct {
 	Locale                string
 	TurnTimeout           time.Duration
 	SkillShellTimeout     time.Duration
+	DeepAgent             DeepAgentRuntimeConfig
 	SkillShellSandbox     SkillShellSandboxConfig
 	MessageSearch         MessageSearchConfig
 	MemoryVector          MemoryVectorConfig
@@ -437,6 +438,11 @@ type RuntimeConfig struct {
 	CacheDefaultTTL       time.Duration
 	CacheFailOpen         bool
 	Logger                *slog.Logger `json:"-"`
+}
+
+type DeepAgentRuntimeConfig struct {
+	V2Enabled     bool
+	V2ShadowRoute bool
 }
 
 type LiveConfig struct {

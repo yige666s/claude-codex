@@ -17,6 +17,8 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	t.Setenv("AGENT_API_LOCALE", "zh-CN")
 	t.Setenv("AGENT_API_LIVE_VOICE_NAME", "Kore")
 	t.Setenv("AGENT_API_LIVE_LANGUAGE_CODE", "zh-CN")
+	t.Setenv("AGENT_API_DEEP_AGENT_V2_ENABLED", "true")
+	t.Setenv("AGENT_API_DEEP_AGENT_V2_SHADOW_ROUTE", "true")
 
 	cfg := Default()
 
@@ -46,6 +48,9 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	}
 	if cfg.LiveLanguageCode != "zh-CN" {
 		t.Fatalf("LiveLanguageCode = %q, want zh-CN", cfg.LiveLanguageCode)
+	}
+	if !cfg.DeepAgentV2Enabled || !cfg.DeepAgentV2ShadowRoute {
+		t.Fatalf("deep agent v2 flags not loaded: enabled=%v shadow=%v", cfg.DeepAgentV2Enabled, cfg.DeepAgentV2ShadowRoute)
 	}
 }
 

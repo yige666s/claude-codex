@@ -856,6 +856,11 @@ export type DeepAgentWorkflowSummary = {
       metadata?: Record<string, unknown>;
     }>;
   };
+  step_context?: Record<string, unknown>;
+  routes?: Array<Record<string, unknown>>;
+  evidence?: Array<Record<string, unknown>>;
+  artifact_refs?: Array<Record<string, unknown>>;
+  final_verifier?: Record<string, unknown>;
   action_history?: Array<{
     id?: string;
     step_id: string;

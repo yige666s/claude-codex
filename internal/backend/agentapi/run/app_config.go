@@ -94,10 +94,14 @@ func runtimeConfigFromStartup(cfg startupconfig.Config, skillShellSandboxConfig 
 		Locale:                cfg.Locale,
 		TurnTimeout:           cfg.TurnTimeout,
 		SkillShellTimeout:     cfg.SkillShellTimeout,
-		MessageSearch:         messageSearchConfigFromStartup(cfg),
-		MemoryVector:          memoryVectorConfigFromStartup(cfg),
-		Live:                  liveConfigFromStartup(cfg),
-		SkillShellSandbox:     skillShellSandboxConfig,
+		DeepAgent: agentruntime.DeepAgentRuntimeConfig{
+			V2Enabled:     cfg.DeepAgentV2Enabled,
+			V2ShadowRoute: cfg.DeepAgentV2ShadowRoute,
+		},
+		MessageSearch:     messageSearchConfigFromStartup(cfg),
+		MemoryVector:      memoryVectorConfigFromStartup(cfg),
+		Live:              liveConfigFromStartup(cfg),
+		SkillShellSandbox: skillShellSandboxConfig,
 	}
 }
 

@@ -88,7 +88,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
       setWorkflows(nextWorkflows);
       const nextSessionID = sessionID && nextSessions.some((session) => session.id === sessionID) ? sessionID : "";
       const nextJobID = jobID && nextJobs.some((job) => job.id === jobID) ? jobID : nextJobs[0]?.id || "";
-      const nextWorkflowID = selectedWorkflowID && nextWorkflows.some((workflow) => workflow.id === selectedWorkflowID) ? selectedWorkflowID : nextWorkflows[0]?.id || "";
+      const nextWorkflowID = selectPrimaryWorkflowID(nextWorkflows, selectedWorkflowID);
       setSelectedSessionID(nextSessionID);
       setSelectedJobID(nextJobID);
       setSelectedWorkflowID(nextWorkflowID);
@@ -135,7 +135,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
       ]);
       setEvents(nextEvents);
       setWorkflows(nextWorkflows);
-      const nextWorkflowID = nextWorkflows[0]?.id || "";
+      const nextWorkflowID = selectPrimaryWorkflowID(nextWorkflows);
       setSelectedWorkflowID(nextWorkflowID);
       if (nextWorkflowID) {
         const detail = await api.adminOpsWorkflow(token, cleanUserID, nextWorkflowID);
@@ -357,6 +357,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
                           <SkillFact label="Actions" value={String(deepAgentSummary.action_count || 0)} />
                           <SkillFact label="Completed / failed" value={`${deepAgentSummary.completed_count || 0} / ${deepAgentSummary.failed_count || 0}`} />
                           <SkillFact label="Blocker" value={deepAgentSummary.blocker || "None"} />
+                          <SkillFact label="Final verifier" value={formatRecordSummary(deepAgentSummary.final_verifier)} />
                         </div>
                         <div className="admin-table">
                           {(deepAgentSummary.plan?.steps || []).slice(0, 8).map((step) => (
@@ -375,6 +376,45 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
                                 <StatusBadge value={action.tool || "action"} />
                                 <span>{action.step_id}</span>
                                 <small>{action.hash || "no hash"}</small>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {!!deepAgentSummary.routes?.length && (
+                          <div className="admin-table compact">
+                            {deepAgentSummary.routes.slice(-6).map((route, index) => (
+                              <details key={`${String(route.action_hash || route.step_id || index)}`} className="admin-table-row">
+                                <summary>
+                                  <StatusBadge value={String(route.mode || "route")} />
+                                  <span>{String(route.step_id || "route")}<small>{String(route.executor || "")} · {String(route.deliverable_type || "none")}</small></span>
+                                  <small>{String(route.version || "v1")}</small>
+                                </summary>
+                                <pre>{JSON.stringify(route, null, 2)}</pre>
+                              </details>
+                            ))}
+                          </div>
+                        )}
+                        {!!deepAgentSummary.evidence?.length && (
+                          <div className="admin-table compact">
+                            {deepAgentSummary.evidence.slice(-6).map((evidence, index) => (
+                              <details key={`${String(evidence.step_id || index)}-evidence`} className="admin-table-row">
+                                <summary>
+                                  <StatusBadge value="evidence" />
+                                  <span>{String(evidence.step_id || "step")}<small>{String(evidence.summary || "")}</small></span>
+                                  <small>{Array.isArray(evidence.artifacts) ? `${evidence.artifacts.length} artifacts` : ""}</small>
+                                </summary>
+                                <pre>{JSON.stringify(evidence, null, 2)}</pre>
+                              </details>
+                            ))}
+                          </div>
+                        )}
+                        {!!deepAgentSummary.artifact_refs?.length && (
+                          <div className="admin-table compact">
+                            {deepAgentSummary.artifact_refs.slice(0, 8).map((artifact, index) => (
+                              <div key={`${String(artifact.id || artifact.filename || index)}-artifact`} className="admin-table-row">
+                                <StatusBadge value="artifact" />
+                                <span>{String(artifact.filename || artifact.id || "artifact")}<small>{String(artifact.content_type || "")}</small></span>
+                                <small>{String(artifact.id || "")}</small>
                               </div>
                             ))}
                           </div>
@@ -456,4 +496,20 @@ function formatWorkflowStepSummary(step: WorkflowStepRun): string {
   if (outputKeys.length > 0) return `output: ${outputKeys.slice(0, 4).join(", ")}`;
   if (inputKeys.length > 0) return `input: ${inputKeys.slice(0, 4).join(", ")}`;
   return formatTime(step.started_at);
+}
+
+function selectPrimaryWorkflowID(workflows: WorkflowRun[], selectedID = ""): string {
+  if (selectedID && workflows.some((workflow) => workflow.id === selectedID)) return selectedID;
+  return workflows.find((workflow) => workflow.name === "deep_agent_task")?.id || workflows[0]?.id || "";
+}
+
+function formatRecordSummary(record?: Record<string, unknown>): string {
+  if (!record) return "None";
+  const done = record.done;
+  const reason = record.reason;
+  const parts = [
+    typeof done === "boolean" ? `done=${done}` : "",
+    typeof reason === "string" && reason ? reason : ""
+  ].filter(Boolean);
+  return parts.join(" · ") || JSON.stringify(record);
 }

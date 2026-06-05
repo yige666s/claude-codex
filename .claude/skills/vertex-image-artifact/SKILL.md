@@ -64,7 +64,7 @@ Generate a simple test image with Vertex AI Imagen, then save the generated PNG 
 
 The shell step below calls the Vertex Imagen REST `predict` API and writes the PNG into the current user's workspace. It expects `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, and either service account credentials from `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_APPLICATION_CREDENTIALS_JSON`, a Vertex OAuth access token from `VERTEX_ACCESS_TOKEN`, `GOOGLE_OAUTH_ACCESS_TOKEN`, `GOOGLE_ACCESS_TOKEN`, or local `gcloud auth print-access-token`.
 
-Vertex Imagen generation requires the request to include `instances[0].prompt`. This skill supplies the required `parameters.sampleCount` as `1`, sends `parameters.outputOptions.mimeType` as `image/png`, and defaults `parameters.aspectRatio` to `1:1` when the user does not specify one.
+Vertex Imagen generation requires the request to include `instances[0].prompt`. This skill supplies the required `parameters.sampleCount` as `1`, sends `parameters.outputOptions.mimeType` as `image/png`, defaults `VERTEX_IMAGE_MODEL` to `imagen-3.0-generate-002`, and defaults `parameters.aspectRatio` to `1:1` when the user does not specify one.
 
 The script parses image options from the user prompt before calling Vertex Imagen:
 

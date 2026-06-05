@@ -18,14 +18,15 @@ var (
 )
 
 type DeepAgentController struct {
-	store        WorkflowStore
-	events       WorkflowEventSink
-	planner      DeepAgentPlanner
-	executor     DeepAgentExecutor
-	verifier     DeepAgentVerifier
-	riskGate     DeepAgentRiskGate
-	learningSink DeepAgentLearningSink
-	clock        Clock
+	store         WorkflowStore
+	events        WorkflowEventSink
+	planner       DeepAgentPlanner
+	executor      DeepAgentExecutor
+	verifier      DeepAgentVerifier
+	contextLoader DeepAgentContextLoader
+	riskGate      DeepAgentRiskGate
+	learningSink  DeepAgentLearningSink
+	clock         Clock
 }
 
 func NewDeepAgentController(store WorkflowStore, events WorkflowEventSink, planner DeepAgentPlanner, executor DeepAgentExecutor, verifier DeepAgentVerifier) *DeepAgentController {
@@ -45,12 +46,19 @@ func NewDeepAgentController(store WorkflowStore, events WorkflowEventSink, plann
 		verifier = ruleDeepAgentVerifier{}
 	}
 	return &DeepAgentController{
-		store:    store,
-		events:   events,
-		planner:  planner,
-		executor: executor,
-		verifier: verifier,
-		clock:    systemClock{},
+		store:         store,
+		events:        events,
+		planner:       planner,
+		executor:      executor,
+		verifier:      verifier,
+		contextLoader: noopDeepAgentContextLoader{},
+		clock:         systemClock{},
+	}
+}
+
+func (c *DeepAgentController) SetContextLoader(loader DeepAgentContextLoader) {
+	if c != nil && loader != nil {
+		c.contextLoader = loader
 	}
 }
 
@@ -102,9 +110,33 @@ func (c *DeepAgentController) Execute(ctx context.Context, req DeepAgentTaskRequ
 		}, nil
 	})
 	engine.RegisterStepHandler("load_context", func(ctx context.Context, run *WorkflowRun, input map[string]any) (map[string]any, error) {
+		loader := c.contextLoader
+		if loader == nil {
+			loader = noopDeepAgentContextLoader{}
+		}
+		loaded, err := loader.LoadDeepAgentContext(ctx, req, state)
+		if err != nil {
+			return nil, err
+		}
+		if state.WorkingMemory == nil {
+			state.WorkingMemory = map[string]any{}
+		}
+		state.WorkingMemory[deepAgentLoadedContextKey] = loaded
+		req.State = cloneWorkflowMap(state.WorkingMemory)
+		state.UpdatedAt = c.now()
+		c.persistState(ctx, run, state)
 		return map[string]any{
 			"working_memory_keys": len(state.WorkingMemory),
 			"has_job_context":     firstNonEmptyString(req.JobID, jobIDFromContext(ctx)) != "",
+			"message_count":       len(loaded.RecentMessages),
+			"attachment_count":    len(loaded.Attachments),
+			"artifact_count":      len(loaded.ExistingArtifacts),
+			"skill_count":         len(loaded.SkillCatalog),
+			"tool_count":          len(loaded.ToolCatalog),
+			"memory_loaded":       strings.TrimSpace(loaded.MemorySummary) != "",
+			"issue_count":         len(loaded.Issues),
+			"deep_agent_context":  loaded,
+			"deep_agent_state":    state,
 		}, nil
 	})
 	engine.RegisterStepHandler("plan_task", func(ctx context.Context, run *WorkflowRun, input map[string]any) (map[string]any, error) {
@@ -155,20 +187,23 @@ func (c *DeepAgentController) Execute(ctx context.Context, req DeepAgentTaskRequ
 		if err != nil {
 			return nil, err
 		}
+		recordDeepAgentFinalVerification(state, verification)
 		if !verification.Done {
 			state.Status = DeepAgentRunStatusBlocked
 			state.Blocker = firstNonEmptyString(verification.Reason, "final verification did not pass")
 			state.UpdatedAt = c.now()
 			c.persistState(ctx, run, state)
-			return map[string]any{"deep_agent_state": state}, fmt.Errorf("%w: %s", ErrDeepAgentBlocked, state.Blocker)
+			return map[string]any{"deep_agent_state": state, "final_verification": verification}, fmt.Errorf("%w: %s", ErrDeepAgentBlocked, state.Blocker)
 		}
 		state.Status = DeepAgentRunStatusSucceeded
 		state.UpdatedAt = c.now()
 		c.persistState(ctx, run, state)
 		return map[string]any{
-			"final_status":     state.Status,
-			"verification":     verification.Reason,
-			"deep_agent_state": state,
+			"final_status":        state.Status,
+			"verification":        verification.Reason,
+			"final_verification":  verification,
+			"final_artifact_refs": state.WorkingMemory["final_artifact_refs"],
+			"deep_agent_state":    state,
 		}, nil
 	})
 	engine.RegisterStepHandler("persist_learnings", func(ctx context.Context, run *WorkflowRun, input map[string]any) (map[string]any, error) {
@@ -260,21 +295,24 @@ func (c *DeepAgentController) Resume(ctx context.Context, req DeepAgentResumeReq
 		if err != nil {
 			return nil, err
 		}
+		recordDeepAgentFinalVerification(state, verification)
 		if !verification.Done {
 			state.Status = DeepAgentRunStatusBlocked
 			state.Blocker = firstNonEmptyString(verification.Reason, "final verification did not pass")
 			state.UpdatedAt = c.now()
 			c.persistState(ctx, run, state)
-			return map[string]any{"deep_agent_state": state}, fmt.Errorf("%w: %s", ErrDeepAgentBlocked, state.Blocker)
+			return map[string]any{"deep_agent_state": state, "final_verification": verification}, fmt.Errorf("%w: %s", ErrDeepAgentBlocked, state.Blocker)
 		}
 		state.Status = DeepAgentRunStatusSucceeded
 		state.Blocker = ""
 		state.UpdatedAt = c.now()
 		c.persistState(ctx, run, state)
 		return map[string]any{
-			"final_status":     state.Status,
-			"verification":     verification.Reason,
-			"deep_agent_state": state,
+			"final_status":        state.Status,
+			"verification":        verification.Reason,
+			"final_verification":  verification,
+			"final_artifact_refs": state.WorkingMemory["final_artifact_refs"],
+			"deep_agent_state":    state,
 		}, nil
 	})
 	if verifyErr != nil {
@@ -333,6 +371,100 @@ func (c *DeepAgentController) prepareStateForResume(req DeepAgentResumeRequest, 
 		case DeepAgentStepStatusFailed, DeepAgentStepStatusRunning, "":
 			state.Plan.Steps[idx].Status = DeepAgentStepStatusPending
 		}
+	}
+	state.TriedActions = deepAgentTriedActionsForCompletedSteps(state)
+}
+
+func deepAgentTriedActionsForCompletedSteps(state *DeepAgentState) map[string]int {
+	out := map[string]int{}
+	if state == nil {
+		return out
+	}
+	completed := map[string]struct{}{}
+	for _, stepID := range state.CompletedSteps {
+		if strings.TrimSpace(stepID) != "" {
+			completed[stepID] = struct{}{}
+		}
+	}
+	for _, step := range state.Plan.Steps {
+		if step.Status == DeepAgentStepStatusSucceeded || step.Status == DeepAgentStepStatusSkipped {
+			if strings.TrimSpace(step.ID) != "" {
+				completed[step.ID] = struct{}{}
+			}
+		}
+	}
+	for _, action := range state.ActionHistory {
+		if _, ok := completed[action.StepID]; !ok {
+			continue
+		}
+		hash := firstNonEmptyString(action.Hash, deepAgentActionHash(action))
+		if strings.TrimSpace(hash) == "" {
+			continue
+		}
+		count := 1
+		if state.TriedActions != nil && state.TriedActions[hash] > 0 {
+			count = state.TriedActions[hash]
+		}
+		out[hash] = count
+	}
+	return out
+}
+
+func withDeepAgentAttemptStrategy(action DeepAgentAction, state *DeepAgentState) DeepAgentAction {
+	if state == nil || state.NoProgressCount <= 0 || strings.TrimSpace(state.Blocker) == "" {
+		return action
+	}
+	errorClass := deepAgentWorkflowString(state.WorkingMemory, "last_retryable_error_class")
+	if !deepAgentErrorRetryable(errorClass) {
+		return action
+	}
+	if action.Args == nil {
+		action.Args = map[string]any{}
+	}
+	strategy := fmt.Sprintf(
+		"retry-%d: previous attempt was blocked by %s; use a different safe strategy, refresh tool calls when applicable, and do not repeat the exact same action.",
+		state.NoProgressCount+1,
+		truncateDeepAgentDiagnosticText(state.Blocker, 240),
+	)
+	action.Args["attempt_strategy"] = strategy
+	if prompt := strings.TrimSpace(deepAgentWorkflowString(action.Args, "prompt")); prompt != "" && !strings.Contains(prompt, "Retry instruction:") {
+		action.Args["prompt"] = prompt + "\n\nRetry instruction: " + strategy
+	}
+	return action
+}
+
+func recordDeepAgentLastRetryableError(state *DeepAgentState, result DeepAgentActionResult) {
+	if state == nil {
+		return
+	}
+	if state.WorkingMemory == nil {
+		state.WorkingMemory = map[string]any{}
+	}
+	errorClass := deepAgentWorkflowString(result.Metadata, "error_class")
+	if result.Retryable && deepAgentErrorRetryable(errorClass) {
+		state.WorkingMemory["last_retryable_error_class"] = errorClass
+		return
+	}
+	delete(state.WorkingMemory, "last_retryable_error_class")
+}
+
+func clearDeepAgentLastRetryableError(state *DeepAgentState) {
+	if state == nil || state.WorkingMemory == nil {
+		return
+	}
+	delete(state.WorkingMemory, "last_retryable_error_class")
+}
+
+func recordDeepAgentFinalVerification(state *DeepAgentState, verification DeepAgentFinalVerification) {
+	if state == nil {
+		return
+	}
+	if state.WorkingMemory == nil {
+		state.WorkingMemory = map[string]any{}
+	}
+	state.WorkingMemory["final_verification"] = map[string]any{
+		"done":   verification.Done,
+		"reason": verification.Reason,
 	}
 }
 
@@ -449,6 +581,7 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 		}
 		action.StepID = firstNonEmptyString(action.StepID, step.ID)
 		action.Tool = firstNonEmptyString(strings.TrimSpace(action.Tool), DeepAgentToolModeModel)
+		action = withDeepAgentAttemptStrategy(action, state)
 		action.Hash = firstNonEmptyString(action.Hash, deepAgentActionHash(action))
 		if state.TriedActions == nil {
 			state.TriedActions = map[string]int{}
@@ -482,9 +615,11 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 		if result.Status == "" {
 			result.Status = DeepAgentActionStatusSucceeded
 		}
+		c.enrichActionResultMetadata(run, step, action, &result)
 		if execErr != nil {
 			result.Status = DeepAgentActionStatusFailed
 			result.Error = execErr.Error()
+			c.enrichActionResultMetadata(run, step, action, &result)
 			c.emitActionEvent(ctx, run, state, step, action, result, "deep_agent_action_failed", result.Error)
 			if !result.Retryable {
 				state.Plan.Steps[stepIndex].Status = DeepAgentStepStatusFailed
@@ -510,9 +645,11 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 		if progress.MadeProgress {
 			state.NoProgressCount = 0
 			state.Blocker = ""
+			clearDeepAgentLastRetryableError(state)
 		} else {
 			state.NoProgressCount++
 			state.Blocker = firstNonEmptyString(progress.Reason, result.Error, "no progress")
+			recordDeepAgentLastRetryableError(state, result)
 		}
 		if progress.StepDone {
 			state.Plan.Steps[stepIndex].Status = DeepAgentStepStatusSucceeded
@@ -572,6 +709,9 @@ func (c *DeepAgentController) storeStepContext(state *DeepAgentState, step DeepA
 		if count := deepAgentAnyInt(result.Metadata["artifact_count"], 0); count > 0 {
 			record["artifact_count"] = count
 		}
+		if refs := deepAgentArtifactRefsFromMetadata(result.Metadata); len(refs) > 0 {
+			record["artifact_refs"] = refs
+		}
 		if jobID := deepAgentWorkflowString(result.Metadata, "job_id"); jobID != "" {
 			record["job_id"] = jobID
 		}
@@ -589,6 +729,7 @@ func (c *DeepAgentController) emitActionEvent(ctx context.Context, run *Workflow
 	}
 	payload := map[string]any{
 		"type":          eventType,
+		"event_group":   deepAgentEventGroup(eventType),
 		"workflow_name": run.Name,
 		"version":       run.Version,
 		"run_id":        run.ID,
@@ -599,8 +740,31 @@ func (c *DeepAgentController) emitActionEvent(ctx context.Context, run *Workflow
 		"step_title":    step.Title,
 		"step_status":   step.Status,
 		"tool":          tool,
+		"route":         deepAgentActionRoutePayload(tool, action),
+		"route_version": deepAgentActionString(action, "route_version"),
 		"action_hash":   action.Hash,
 		"action_count":  0,
+	}
+	if promptPreview := truncateDeepAgentDiagnosticText(deepAgentActionString(action, "prompt"), 700); promptPreview != "" {
+		payload["prompt_preview"] = promptPreview
+	}
+	if attemptStrategy := deepAgentActionString(action, "attempt_strategy"); attemptStrategy != "" {
+		payload["attempt_strategy"] = attemptStrategy
+	}
+	if route, ok := deepAgentStepRouteFromMap(action.Args); ok {
+		if len(route.AllowedTools) > 0 {
+			payload["allowed_tools"] = append([]string(nil), route.AllowedTools...)
+		}
+		if route.DeliverableType != "" {
+			payload["deliverable_type"] = route.DeliverableType
+		}
+		if route.SearchScope != "" {
+			payload["search_scope"] = route.SearchScope
+		}
+		if len(route.ShadowDiff) > 0 {
+			payload["route_shadow_diff"] = append([]string(nil), route.ShadowDiff...)
+			payload["route_shadow"] = route.ShadowRoute
+		}
 	}
 	if state != nil {
 		payload["action_count"] = state.ActionCount
@@ -620,6 +784,39 @@ func (c *DeepAgentController) emitActionEvent(ctx context.Context, run *Workflow
 	}
 	if len(result.Metadata) > 0 {
 		payload["result_metadata"] = result.Metadata
+		if refs := deepAgentArtifactRefsFromMetadata(result.Metadata); len(refs) > 0 {
+			payload["artifact_refs"] = refs
+		}
+		if sources := deepAgentSourceRefsFromAny(result.Metadata["sources"]); len(sources) > 0 {
+			payload["sources"] = sources
+		}
+		if toolCalls := deepAgentToolCallRefsFromMetadata(result.Metadata); len(toolCalls) > 0 {
+			payload["tool_calls"] = toolCalls
+		}
+		if childJobs := deepAgentChildJobRefsFromMetadata(result.Metadata); len(childJobs) > 0 {
+			payload["child_jobs"] = childJobs
+		}
+		if errorClass := deepAgentWorkflowString(result.Metadata, "error_class"); errorClass != "" {
+			payload["error_class"] = errorClass
+		}
+		if evidence, ok := deepAgentStepEvidenceFromAny(result.Metadata["step_evidence"]); ok {
+			payload["evidence"] = evidence
+			if len(evidence.Diagnostics) > 0 {
+				payload["diagnostics"] = evidence.Diagnostics
+			}
+			if len(evidence.Sources) > 0 {
+				payload["sources"] = evidence.Sources
+			}
+			if len(evidence.ToolCalls) > 0 {
+				payload["tool_calls"] = evidence.ToolCalls
+			}
+			if len(evidence.ChildJobs) > 0 {
+				payload["child_jobs"] = evidence.ChildJobs
+			}
+			if evidence.ErrorClass != "" {
+				payload["error_class"] = evidence.ErrorClass
+			}
+		}
 	}
 	if errorText != "" {
 		payload["error"] = errorText
@@ -637,6 +834,168 @@ func (c *DeepAgentController) emitActionEvent(ctx context.Context, run *Workflow
 		Error:     errorText,
 		Data:      deepAgentEventData(payload),
 	})
+	if eventType != "deep_agent_action_started" {
+		c.emitDeepAgentChildJobEvents(ctx, run, step, action, payload)
+		c.emitDeepAgentArtifactEvents(ctx, run, step, action, payload)
+	}
+}
+
+func deepAgentEventGroup(eventType string) string {
+	switch {
+	case strings.HasPrefix(eventType, "workflow_run"):
+		return "workflow_run"
+	case strings.HasPrefix(eventType, "workflow_step"):
+		return "workflow_step"
+	case eventType == "deep_agent_child_job":
+		return "child_skill_job"
+	case eventType == "deep_agent_artifact_output":
+		return "artifact_output"
+	case strings.HasPrefix(eventType, "deep_agent_action"):
+		return "deep_agent_action"
+	default:
+		return "event"
+	}
+}
+
+func (c *DeepAgentController) emitDeepAgentChildJobEvents(ctx context.Context, run *WorkflowRun, step DeepAgentStep, action DeepAgentAction, parent map[string]any) {
+	childJobs := deepAgentChildJobRefsFromAny(parent["child_jobs"])
+	for _, child := range childJobs {
+		if strings.TrimSpace(child.ID) == "" {
+			continue
+		}
+		payload := cloneWorkflowMap(parent)
+		payload["type"] = "deep_agent_child_job"
+		payload["event_group"] = "child_skill_job"
+		payload["child_job"] = child
+		content := strings.TrimSpace(fmt.Sprintf("%s child job %s %s", firstNonEmptyString(step.ID, step.Title), child.ID, child.Status))
+		emitJobEventFromContext(ctx, Event{
+			Type:      "deep_agent_child_job",
+			SessionID: run.SessionID,
+			JobID:     run.JobID,
+			Role:      "workflow",
+			Content:   content,
+			Data:      deepAgentEventData(payload),
+		})
+	}
+	_ = action
+}
+
+func (c *DeepAgentController) emitDeepAgentArtifactEvents(ctx context.Context, run *WorkflowRun, step DeepAgentStep, action DeepAgentAction, parent map[string]any) {
+	refs := deepAgentArtifactRefsFromAny(parent["artifact_refs"])
+	for _, ref := range refs {
+		if strings.TrimSpace(firstNonEmptyString(ref.ID, ref.Filename)) == "" {
+			continue
+		}
+		payload := cloneWorkflowMap(parent)
+		payload["type"] = "deep_agent_artifact_output"
+		payload["event_group"] = "artifact_output"
+		payload["artifact"] = ref
+		content := strings.TrimSpace(fmt.Sprintf("%s artifact %s", firstNonEmptyString(step.ID, step.Title), firstNonEmptyString(ref.Filename, ref.ID)))
+		emitJobEventFromContext(ctx, Event{
+			Type:      "deep_agent_artifact_output",
+			SessionID: run.SessionID,
+			JobID:     run.JobID,
+			Role:      "workflow",
+			Content:   content,
+			Data:      deepAgentEventData(payload),
+		})
+	}
+	_ = action
+}
+
+func (c *DeepAgentController) enrichActionResultMetadata(run *WorkflowRun, step DeepAgentStep, action DeepAgentAction, result *DeepAgentActionResult) {
+	if run == nil || result == nil {
+		return
+	}
+	if result.Metadata == nil {
+		result.Metadata = map[string]any{}
+	}
+	result.Metadata["run_id"] = firstNonEmptyString(deepAgentWorkflowString(result.Metadata, "run_id"), run.ID)
+	result.Metadata["job_id"] = firstNonEmptyString(deepAgentWorkflowString(result.Metadata, "job_id"), run.JobID, deepAgentActionString(action, "job_id"))
+	result.Metadata["step_id"] = firstNonEmptyString(deepAgentWorkflowString(result.Metadata, "step_id"), step.ID, action.StepID)
+	refs := deepAgentArtifactRefsFromMetadata(result.Metadata)
+	if len(refs) == 0 {
+		return
+	}
+	for idx := range refs {
+		refs[idx].RunID = firstNonEmptyString(refs[idx].RunID, run.ID)
+		refs[idx].JobID = firstNonEmptyString(refs[idx].JobID, run.JobID, deepAgentWorkflowString(result.Metadata, "job_id"))
+		refs[idx].StepID = firstNonEmptyString(refs[idx].StepID, step.ID, action.StepID)
+	}
+	result.Metadata["artifact_refs"] = refs
+	if len(refs) > 0 {
+		result.Metadata["artifact_count"] = len(refs)
+	}
+	if rawEvidence, ok := result.Metadata["step_evidence"]; ok && rawEvidence != nil {
+		evidence, ok := deepAgentStepEvidenceFromAny(rawEvidence)
+		if ok {
+			evidence.Route.StepID = firstNonEmptyString(evidence.Route.StepID, step.ID, action.StepID)
+			evidence.Artifacts = refs
+			result.Metadata["step_evidence"] = deepAgentStepEvidenceMap(evidence)
+		}
+	}
+}
+
+func deepAgentActionRoutePayload(tool string, action DeepAgentAction) map[string]any {
+	if route, ok := deepAgentStepRouteFromMap(action.Args); ok {
+		return deepAgentStepRouteMap(route)
+	}
+	route := map[string]any{
+		"mode": tool,
+		"tool": tool,
+	}
+	if action.StepID != "" {
+		route["step_id"] = action.StepID
+	}
+	if skill := firstNonEmptyString(deepAgentActionString(action, "skill"), deepAgentActionString(action, "skill_name")); skill != "" {
+		route["skill_name"] = skill
+	}
+	if query := deepAgentActionString(action, "query"); query != "" {
+		route["query"] = query
+	}
+	if allowedTools, ok := action.Args["allowed_tools"]; ok {
+		route["allowed_tools"] = allowedTools
+	}
+	return route
+}
+
+func deepAgentArtifactRefsFromMetadata(metadata map[string]any) []DeepAgentArtifactRef {
+	if len(metadata) == 0 {
+		return nil
+	}
+	if raw, ok := metadata["artifact_refs"]; ok {
+		switch refs := raw.(type) {
+		case []DeepAgentArtifactRef:
+			return append([]DeepAgentArtifactRef(nil), refs...)
+		case []any:
+			out := make([]DeepAgentArtifactRef, 0, len(refs))
+			for _, item := range refs {
+				data, err := json.Marshal(item)
+				if err != nil {
+					continue
+				}
+				var ref DeepAgentArtifactRef
+				if err := json.Unmarshal(data, &ref); err == nil && (ref.ID != "" || ref.Filename != "") {
+					out = append(out, ref)
+				}
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+	artifactID := deepAgentWorkflowString(metadata, "artifact_id")
+	if artifactID == "" {
+		return nil
+	}
+	return []DeepAgentArtifactRef{{
+		ID:          artifactID,
+		Filename:    deepAgentWorkflowString(metadata, "artifact_filename"),
+		ContentType: deepAgentWorkflowString(metadata, "artifact_content_type"),
+		JobID:       firstNonEmptyString(deepAgentWorkflowString(metadata, "job_id"), deepAgentWorkflowString(metadata, "child_job_id")),
+		RunID:       deepAgentWorkflowString(metadata, "run_id"),
+		StepID:      deepAgentWorkflowString(metadata, "step_id"),
+	}}
 }
 
 func deepAgentEventData(value any) json.RawMessage {
@@ -835,6 +1194,22 @@ func (ruleDeepAgentVerifier) CheckFinal(_ context.Context, state *DeepAgentState
 		if step.Status != DeepAgentStepStatusSucceeded && step.Status != DeepAgentStepStatusSkipped {
 			return DeepAgentFinalVerification{Done: false, Reason: "not all steps completed"}, nil
 		}
+	}
+	if deepAgentTextRequiresArtifact(firstNonEmptyString(state.Goal, state.Plan.Goal)) {
+		refs := deepAgentStateCurrentArtifactRefs(state)
+		if len(refs) == 0 {
+			return DeepAgentFinalVerification{Done: false, Reason: "required final artifact is missing"}, nil
+		}
+		deliverable := deepAgentGoalDeliverableType(firstNonEmptyString(state.Goal, state.Plan.Goal))
+		matching := deepAgentArtifactRefsMatchFinalDeliverable(refs, deliverable)
+		if len(matching) == 0 {
+			return DeepAgentFinalVerification{Done: false, Reason: fmt.Sprintf("final artifact does not match deliverable type %s", deliverable)}, nil
+		}
+		if state.WorkingMemory == nil {
+			state.WorkingMemory = map[string]any{}
+		}
+		state.WorkingMemory["final_artifact_refs"] = matching
+		return DeepAgentFinalVerification{Done: true, Reason: "all steps completed and final artifact verified"}, nil
 	}
 	return DeepAgentFinalVerification{Done: true, Reason: "all steps completed"}, nil
 }

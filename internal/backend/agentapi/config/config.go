@@ -236,6 +236,8 @@ type Config struct {
 	ShutdownTimeout                         time.Duration
 	RequestTimeout                          time.Duration
 	TurnTimeout                             time.Duration
+	DeepAgentV2Enabled                      bool
+	DeepAgentV2ShadowRoute                  bool
 	SkillShellTimeout                       time.Duration
 	SkillShellRunner                        string
 	SkillSandboxImage                       string
@@ -475,6 +477,8 @@ func Default() Config {
 		ShutdownTimeout:                         EnvDuration("AGENT_API_SHUTDOWN_TIMEOUT", 30*time.Second),
 		RequestTimeout:                          EnvDuration("AGENT_API_REQUEST_TIMEOUT", 0),
 		TurnTimeout:                             2 * time.Minute,
+		DeepAgentV2Enabled:                      EnvBool("AGENT_API_DEEP_AGENT_V2_ENABLED", false),
+		DeepAgentV2ShadowRoute:                  EnvBool("AGENT_API_DEEP_AGENT_V2_SHADOW_ROUTE", false),
 		SkillShellTimeout:                       EnvDuration("AGENT_API_SKILL_SHELL_TIMEOUT", 90*time.Second),
 		SkillShellRunner:                        FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SHELL_RUNNER"), agentruntime.DefaultSkillShellRunner),
 		SkillSandboxImage:                       FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_IMAGE"), agentruntime.DefaultSkillSandboxImage),
@@ -715,6 +719,8 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.DurationVar(&cfg.ShutdownTimeout, "shutdown-timeout", cfg.ShutdownTimeout, "max time to drain HTTP requests and active agent work after SIGINT/SIGTERM")
 	flags.DurationVar(&cfg.RequestTimeout, "request-timeout", cfg.RequestTimeout, "max duration for non-upgrade HTTP requests; 0 disables")
 	flags.DurationVar(&cfg.TurnTimeout, "turn-timeout", cfg.TurnTimeout, "max duration for one agent turn")
+	flags.BoolVar(&cfg.DeepAgentV2Enabled, "deep-agent-v2-enabled", cfg.DeepAgentV2Enabled, "enable DeepAgent v2 route metadata and executor adapter behavior")
+	flags.BoolVar(&cfg.DeepAgentV2ShadowRoute, "deep-agent-v2-shadow-route", cfg.DeepAgentV2ShadowRoute, "record DeepAgent legacy/new route diffs without changing execution")
 	flags.DurationVar(&cfg.SkillShellTimeout, "skill-shell-timeout", cfg.SkillShellTimeout, "max duration for skill frontmatter shell commands")
 	flags.StringVar(&cfg.SkillShellRunner, "skill-shell-runner", cfg.SkillShellRunner, "skill shell runner: local or docker")
 	flags.StringVar(&cfg.SkillSandboxImage, "skill-sandbox-image", cfg.SkillSandboxImage, "Docker image for skill shell runner=docker")

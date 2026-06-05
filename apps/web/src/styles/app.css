@@ -2261,6 +2261,18 @@ label.composer-upload {
   display: grid;
   gap: 8px;
 }
+.timeline-event-group {
+  display: grid;
+  gap: 7px;
+}
+.timeline-event-group h4 {
+  margin: 7px 2px 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
 .timeline-row {
   border: 1px solid #e3e8ec;
   border-radius: 8px;

@@ -3149,7 +3149,7 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 			MaxSteps:        6,
 			MaxActions:      12,
 			MaxDuration:     10 * time.Minute,
-			StepTimeout:     60 * time.Second,
+			StepTimeout:     5 * time.Minute,
 			NoProgressLimit: 2,
 		},
 		State: map[string]any{
@@ -3245,6 +3245,22 @@ func formatDeepAgentResultMessage(result *DeepAgentTaskResult, runErr error) str
 		if strings.TrimSpace(state.Blocker) != "" && runErr == nil {
 			b.WriteString("\n\n阻塞原因：")
 			b.WriteString(strings.TrimSpace(state.Blocker))
+		}
+		if refs := deepAgentStateCurrentArtifactRefs(state); len(refs) > 0 {
+			b.WriteString("\n\nArtifacts：")
+			for _, ref := range refs {
+				label := firstNonEmptyString(ref.Filename, ref.ID)
+				if strings.TrimSpace(label) == "" {
+					continue
+				}
+				b.WriteString("\n- ")
+				b.WriteString(strings.TrimSpace(label))
+				if strings.TrimSpace(ref.ID) != "" && ref.ID != label {
+					b.WriteString("（")
+					b.WriteString(strings.TrimSpace(ref.ID))
+					b.WriteString("）")
+				}
+			}
 		}
 		b.WriteString(fmt.Sprintf("\n\n动作次数：%d", state.ActionCount))
 	}
@@ -3428,6 +3444,7 @@ func (r *Runtime) ExecuteDeepAgentTask(ctx context.Context, req DeepAgentTaskReq
 		executor = NewRuntimeDeepAgentExecutor(r)
 	}
 	controller := NewDeepAgentController(store, ContextWorkflowEventSink{}, planner, executor, verifier)
+	controller.SetContextLoader(r)
 	controller.SetRiskGate(NewRuntimeDeepAgentRiskGate(r))
 	controller.SetLearningSink(NewRuntimeDeepAgentLearningSink(r))
 	return controller.Execute(ctx, req)
@@ -3448,6 +3465,7 @@ func (r *Runtime) ResumeDeepAgentTask(ctx context.Context, req DeepAgentResumeRe
 		executor = NewRuntimeDeepAgentExecutor(r)
 	}
 	controller := NewDeepAgentController(store, ContextWorkflowEventSink{}, planner, executor, verifier)
+	controller.SetContextLoader(r)
 	controller.SetRiskGate(NewRuntimeDeepAgentRiskGate(r))
 	controller.SetLearningSink(NewRuntimeDeepAgentLearningSink(r))
 	return controller.Resume(ctx, req)
@@ -4649,37 +4667,11 @@ func collectSkillExecutionDiagnostics(session *state.Session, startIndex int) sk
 		if strings.EqualFold(message.ToolName, ArtifactToolName) {
 			out.ArtifactCount++
 		}
-		if !strings.EqualFold(message.ToolName, "Skill") || message.ToolOutput == "" {
-			continue
+		if strings.TrimSpace(message.ToolOutput) != "" {
+			collectSkillDiagnosticLines(&out, message.ToolOutput, &logs)
 		}
-		for _, line := range strings.Split(message.ToolOutput, "\n") {
-			line = strings.TrimSpace(line)
-			switch {
-			case strings.HasPrefix(line, "skill_error:"):
-				out.SkillError = strings.TrimSpace(strings.TrimPrefix(line, "skill_error:"))
-			case strings.HasPrefix(line, "error_kind:"):
-				out.ErrorKind = strings.TrimSpace(strings.TrimPrefix(line, "error_kind:"))
-			case strings.HasPrefix(line, "model:"):
-				out.Model = strings.TrimSpace(strings.TrimPrefix(line, "model:"))
-			case strings.HasPrefix(line, "skill_log:"):
-				var entry map[string]any
-				if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "skill_log:"))), &entry); err != nil {
-					continue
-				}
-				logs = append(logs, entry)
-				if value := stringFromMap(entry, "provider"); value != "" {
-					out.Provider = value
-				}
-				if value := stringFromMap(entry, "model"); value != "" {
-					out.Model = value
-				}
-				if value := stringFromMap(entry, "kind"); value != "" {
-					out.ErrorKind = value
-				}
-				if value := stringFromMap(entry, "error_kind"); value != "" {
-					out.ErrorKind = value
-				}
-			}
+		if message.Role == state.MessageRoleAssistant && strings.TrimSpace(message.Content) != "" {
+			collectSkillDiagnosticLines(&out, message.Content, &logs)
 		}
 	}
 	if out.Provider == "" && out.Model != "" {
@@ -4695,6 +4687,43 @@ func collectSkillExecutionDiagnostics(session *state.Session, startIndex int) sk
 		out.JSON["error_kind"] = out.ErrorKind
 	}
 	return out
+}
+
+func collectSkillDiagnosticLines(out *skillExecutionDiagnostics, text string, logs *[]map[string]any) {
+	if out == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "skill_error:"):
+			out.SkillError = strings.TrimSpace(strings.TrimPrefix(line, "skill_error:"))
+		case strings.HasPrefix(line, "error_kind:"):
+			out.ErrorKind = strings.TrimSpace(strings.TrimPrefix(line, "error_kind:"))
+		case strings.HasPrefix(line, "model:"):
+			out.Model = strings.TrimSpace(strings.TrimPrefix(line, "model:"))
+		case strings.HasPrefix(line, "skill_log:"):
+			var entry map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "skill_log:"))), &entry); err != nil {
+				continue
+			}
+			if logs != nil {
+				*logs = append(*logs, entry)
+			}
+			if value := stringFromMap(entry, "provider"); value != "" {
+				out.Provider = value
+			}
+			if value := stringFromMap(entry, "model"); value != "" {
+				out.Model = value
+			}
+			if value := stringFromMap(entry, "kind"); value != "" {
+				out.ErrorKind = value
+			}
+			if value := stringFromMap(entry, "error_kind"); value != "" {
+				out.ErrorKind = value
+			}
+		}
+	}
 }
 
 func stringFromMap(values map[string]any, key string) string {

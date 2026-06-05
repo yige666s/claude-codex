@@ -30,6 +30,13 @@ const (
 	DeepAgentToolModeRAGSearch     = "rag_search"
 	DeepAgentToolModeMulti         = "multi"
 
+	DeepAgentErrorTransient     = "transient"
+	DeepAgentErrorDeterministic = "deterministic"
+	DeepAgentErrorConfig        = "config"
+	DeepAgentErrorPermission    = "permission"
+	DeepAgentErrorProvider      = "provider"
+	DeepAgentErrorValidation    = "validation"
+
 	// Defaults
 	DeepAgentDefaultRAGSearchLimit  = 5
 	DeepAgentDefaultChildJobPollMS  = 100
@@ -84,6 +91,115 @@ type DeepAgentLearningCandidate struct {
 	StepID    string         `json:"step_id,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
+}
+
+type DeepAgentLoadedContext struct {
+	UserID            string                   `json:"user_id,omitempty"`
+	SessionID         string                   `json:"session_id,omitempty"`
+	JobID             string                   `json:"job_id,omitempty"`
+	RecentMessages    []DeepAgentMessageRef    `json:"recent_messages,omitempty"`
+	Attachments       []DeepAgentAttachmentRef `json:"attachments,omitempty"`
+	ExistingArtifacts []DeepAgentArtifactRef   `json:"existing_artifacts,omitempty"`
+	SkillCatalog      []DeepAgentSkillRef      `json:"skill_catalog,omitempty"`
+	ToolCatalog       []DeepAgentToolRef       `json:"tool_catalog,omitempty"`
+	MemorySummary     string                   `json:"memory_summary,omitempty"`
+	Issues            []string                 `json:"issues,omitempty"`
+}
+
+type DeepAgentStepRoute struct {
+	StepID           string         `json:"step_id,omitempty"`
+	Version          string         `json:"version,omitempty"`
+	Mode             string         `json:"mode,omitempty"`
+	Executor         string         `json:"executor,omitempty"`
+	SkillName        string         `json:"skill_name,omitempty"`
+	RequiresArtifact bool           `json:"requires_artifact,omitempty"`
+	DeliverableType  string         `json:"deliverable_type,omitempty"`
+	FilenameHint     string         `json:"filename_hint,omitempty"`
+	AllowedTools     []string       `json:"allowed_tools,omitempty"`
+	SearchScope      string         `json:"search_scope,omitempty"`
+	SuccessCriteria  []string       `json:"success_criteria,omitempty"`
+	Reason           string         `json:"reason,omitempty"`
+	Confidence       string         `json:"confidence,omitempty"`
+	ShadowRoute      map[string]any `json:"shadow_route,omitempty"`
+	ShadowDiff       []string       `json:"shadow_diff,omitempty"`
+}
+
+type DeepAgentStepEvidence struct {
+	StepID      string                 `json:"step_id,omitempty"`
+	ActionID    string                 `json:"action_id,omitempty"`
+	Route       DeepAgentStepRoute     `json:"route,omitempty"`
+	Output      string                 `json:"output,omitempty"`
+	Summary     string                 `json:"summary,omitempty"`
+	Sources     []DeepAgentSourceRef   `json:"sources,omitempty"`
+	Artifacts   []DeepAgentArtifactRef `json:"artifacts,omitempty"`
+	ToolCalls   []DeepAgentToolCallRef `json:"tool_calls,omitempty"`
+	ChildJobs   []DeepAgentChildJobRef `json:"child_jobs,omitempty"`
+	Diagnostics map[string]any         `json:"diagnostics,omitempty"`
+	ErrorClass  string                 `json:"error_class,omitempty"`
+}
+
+type DeepAgentMessageRef struct {
+	ID        string    `json:"id,omitempty"`
+	Role      string    `json:"role,omitempty"`
+	Content   string    `json:"content,omitempty"`
+	Snippet   string    `json:"snippet,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+}
+
+type DeepAgentAttachmentRef struct {
+	ID          string `json:"id,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Filename    string `json:"filename,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	SizeBytes   int64  `json:"size_bytes,omitempty"`
+	Source      string `json:"source,omitempty"`
+}
+
+type DeepAgentArtifactRef struct {
+	ID          string    `json:"id,omitempty"`
+	JobID       string    `json:"job_id,omitempty"`
+	RunID       string    `json:"run_id,omitempty"`
+	StepID      string    `json:"step_id,omitempty"`
+	Filename    string    `json:"filename,omitempty"`
+	ContentType string    `json:"content_type,omitempty"`
+	SizeBytes   int64     `json:"size_bytes,omitempty"`
+	Source      string    `json:"source,omitempty"`
+	CreatedAt   time.Time `json:"created_at,omitempty"`
+}
+
+type DeepAgentSkillRef struct {
+	Name              string `json:"name,omitempty"`
+	Description       string `json:"description,omitempty"`
+	WhenToUse         string `json:"when_to_use,omitempty"`
+	ArgumentHint      string `json:"argument_hint,omitempty"`
+	RunAsJob          bool   `json:"run_as_job,omitempty"`
+	ProducesArtifacts bool   `json:"produces_artifacts,omitempty"`
+}
+
+type DeepAgentToolRef struct {
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Permission  string `json:"permission,omitempty"`
+}
+
+type DeepAgentSourceRef struct {
+	ID       string `json:"id,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Snippet  string `json:"snippet,omitempty"`
+	Provider string `json:"provider,omitempty"`
+}
+
+type DeepAgentToolCallRef struct {
+	ID     string `json:"id,omitempty"`
+	Name   string `json:"name,omitempty"`
+	Status string `json:"status,omitempty"`
+}
+
+type DeepAgentChildJobRef struct {
+	ID     string `json:"id,omitempty"`
+	Type   string `json:"type,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 type DeepAgentPlan struct {
@@ -153,13 +269,25 @@ type DeepAgentPlanner interface {
 	NextAction(ctx context.Context, state *DeepAgentState, step DeepAgentStep) (DeepAgentAction, error)
 }
 
+type DeepAgentStepRouter interface {
+	RouteStep(ctx context.Context, state *DeepAgentState, step DeepAgentStep) (DeepAgentStepRoute, error)
+}
+
 type DeepAgentExecutor interface {
 	ExecuteDeepAgentAction(ctx context.Context, action DeepAgentAction, state *DeepAgentState) (DeepAgentActionResult, error)
+}
+
+type DeepAgentStepExecutor interface {
+	ExecuteStep(ctx context.Context, route DeepAgentStepRoute, action DeepAgentAction, state *DeepAgentState) (DeepAgentStepEvidence, error)
 }
 
 type DeepAgentVerifier interface {
 	CheckProgress(ctx context.Context, state *DeepAgentState, step DeepAgentStep, action DeepAgentAction, result DeepAgentActionResult) (DeepAgentProgress, error)
 	CheckFinal(ctx context.Context, state *DeepAgentState) (DeepAgentFinalVerification, error)
+}
+
+type DeepAgentContextLoader interface {
+	LoadDeepAgentContext(ctx context.Context, req DeepAgentTaskRequest, state *DeepAgentState) (DeepAgentLoadedContext, error)
 }
 
 type DeepAgentRiskGate interface {

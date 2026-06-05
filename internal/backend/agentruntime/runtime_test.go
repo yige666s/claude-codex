@@ -4368,6 +4368,24 @@ func TestSkillExecutionHistoryRecordsDiagnostics(t *testing.T) {
 	}
 }
 
+func TestSkillExecutionDiagnosticsParsesBashOutput(t *testing.T) {
+	session := state.NewSession("alice")
+	session.AddToolResult(
+		"bash-1",
+		"Bash",
+		json.RawMessage(`{"command":"python3 generate_vertex_image.py"}`),
+		"skill_log: {\"provider\":\"vertex\",\"model\":\"imagen-test\",\"kind\":\"internal\"}\nskill_error: 图片生成在准备阶段失败\nerror_kind: internal",
+	)
+
+	diagnostics := collectSkillExecutionDiagnostics(session, 0)
+	if diagnostics.SkillError != "图片生成在准备阶段失败" {
+		t.Fatalf("skill error = %q", diagnostics.SkillError)
+	}
+	if diagnostics.ErrorKind != "internal" || diagnostics.Provider != "vertex" || diagnostics.Model != "imagen-test" {
+		t.Fatalf("unexpected diagnostics: %#v", diagnostics)
+	}
+}
+
 func TestRuntimeRecordsLLMSelectedSkillExecution(t *testing.T) {
 	root := t.TempDir()
 	storeRoot := t.TempDir()

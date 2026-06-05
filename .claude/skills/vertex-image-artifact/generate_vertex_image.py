@@ -18,6 +18,7 @@ from pathlib import Path
 
 DEFAULT_PROMPT = "a small friendly robot painting a tiny test image, clean product illustration"
 DEFAULT_ASPECT_RATIO = "1:1"
+DEFAULT_VERTEX_IMAGE_MODEL = "imagen-3.0-generate-002"
 SUPPORTED_ASPECT_RATIOS = ("1:1", "3:4", "4:3", "16:9", "9:16")
 ASPECT_RATIO_FLAGS = ("--ar", "--aspect-ratio", "--aspect_ratio")
 
@@ -382,7 +383,7 @@ def main() -> int:
 
     project_id = env_first("VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GCP_PROJECT")
     location = env_first("VERTEX_LOCATION", "GOOGLE_CLOUD_LOCATION") or "us-central1"
-    model = env_first("VERTEX_IMAGE_MODEL") or "imagen-4.0-generate-001"
+    model = env_first("VERTEX_IMAGE_MODEL") or DEFAULT_VERTEX_IMAGE_MODEL
     prompt_hash = prompt_fingerprint(prompt)
     log_event(
         "start",
