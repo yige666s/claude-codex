@@ -107,6 +107,19 @@ func TestPlannerFallsBackToNonStreamingWhenStreamHasNoCandidates(t *testing.T) {
 	}
 }
 
+func TestPlannerRejectsEmptyProviderResponse(t *testing.T) {
+	planner := NewPlanner(&fakeProvider{
+		response: &MessageResponse{Model: "fake", Role: "assistant"},
+	}, "fake")
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("hello")
+
+	_, err := planner.Next(context.Background(), session, nil)
+	if err == nil || !strings.Contains(err.Error(), "empty response") {
+		t.Fatalf("Next() error = %v, want empty response", err)
+	}
+}
+
 func TestNoStreamCandidatesErrorIsComparable(t *testing.T) {
 	if !errors.Is(ErrNoStreamCandidates, ErrNoStreamCandidates) {
 		t.Fatalf("ErrNoStreamCandidates should be comparable")

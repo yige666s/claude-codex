@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"claude-codex/internal/harness/plannerapi"
 	"claude-codex/internal/harness/state"
@@ -33,7 +35,7 @@ func (p *Planner) Next(ctx context.Context, session *state.Session, tools []tool
 		return plannerapi.Plan{}, err
 	}
 
-	return planFromResponse(response), nil
+	return validateProviderPlan(p.provider, p.model, planFromResponse(response))
 }
 
 func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools []toolkit.Descriptor, onChunk func(string)) (plannerapi.Plan, error) {
@@ -53,7 +55,7 @@ func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools 
 			}
 			return plannerapi.Plan{}, err
 		}
-		return planFromResponse(response), nil
+		return validateProviderPlan(p.provider, p.model, planFromResponse(response))
 	}
 	plan, err := p.Next(ctx, session, tools)
 	if err != nil {
@@ -63,6 +65,17 @@ func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools 
 		onChunk(plan.AssistantText)
 	}
 	return plan, nil
+}
+
+func validateProviderPlan(provider Provider, model string, plan plannerapi.Plan) (plannerapi.Plan, error) {
+	if strings.TrimSpace(plan.AssistantText) != "" || len(plan.ToolCalls) > 0 {
+		return plan, nil
+	}
+	providerName := "unknown"
+	if provider != nil {
+		providerName = provider.Name()
+	}
+	return plannerapi.Plan{}, fmt.Errorf("%s/%s empty response: no assistant text or tool calls", providerName, model)
 }
 
 func toProviderMessages(messages []state.Message) []Message {

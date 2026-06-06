@@ -1943,6 +1943,45 @@ func TestGovernedPlannerRetryableFailureStaysReadyBeforeCircuitOpens(t *testing.
 	}
 }
 
+func TestGovernedPlannerTreatsEmptyPlanAsRetryableBackendFailure(t *testing.T) {
+	store := NewMemoryLLMUsageStore()
+	planner, err := NewGovernedPlanner([]LLMBackend{
+		{Name: "primary", Provider: "vertex", Model: "empty", Planner: emptyPlanPlanner{}},
+		{Name: "fallback", Provider: "openai", Model: "ok", Planner: planTextPlanner{text: "fallback ok"}},
+	}, store, LLMGovernanceConfig{MaxAttempts: 1, ChatTimeout: time.Second, FailureThreshold: 5})
+	if err != nil {
+		t.Fatalf("NewGovernedPlanner() error = %v", err)
+	}
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("hello")
+	ctx := WithLLMScope(context.Background(), LLMScope{UserID: "alice", SessionID: session.ID, RequestID: "req-empty"})
+	plan, err := planner.Next(ctx, session, nil)
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if plan.AssistantText != "fallback ok" {
+		t.Fatalf("expected fallback response, got %#v", plan)
+	}
+	status := planner.Status()
+	if len(status.Backends) != 2 {
+		t.Fatalf("unexpected backend status count: %#v", status.Backends)
+	}
+	if status.Backends[0].ConsecutiveFailures != 1 || !strings.Contains(status.Backends[0].LastError, "empty response") {
+		t.Fatalf("expected empty primary response to be recorded as retryable failure, got %#v", status.Backends[0])
+	}
+	if status.Backends[1].LastSuccessAt == nil {
+		t.Fatalf("expected fallback backend success, got %#v", status.Backends[1])
+	}
+	summary, err := store.SummarizeLLMUsage(context.Background(), LLMUsageAdminFilter{UserID: "alice", Limit: 10})
+	if err != nil {
+		t.Fatalf("SummarizeLLMUsage() error = %v", err)
+	}
+	records := summary.Recent
+	if len(records) != 2 || records[0].Status != "error" || !strings.Contains(records[0].Error, "empty response") || records[1].Status != "success" {
+		t.Fatalf("unexpected usage records: %#v", records)
+	}
+}
+
 func TestGovernedPlannerNonRetryableErrorDoesNotTripCircuit(t *testing.T) {
 	planner, err := NewGovernedPlanner([]LLMBackend{
 		{Name: "primary", Provider: "vertex", Model: "broken", Planner: failingPlanner{err: errors.New("invalid request payload")}},
@@ -5636,6 +5675,12 @@ type planTextPlanner struct {
 
 func (p planTextPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (engine.Plan, error) {
 	return engine.Plan{AssistantText: p.text, StopReason: "end_turn"}, nil
+}
+
+type emptyPlanPlanner struct{}
+
+func (emptyPlanPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (engine.Plan, error) {
+	return engine.Plan{}, nil
 }
 
 type streamingTextPlanner struct{}

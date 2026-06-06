@@ -197,8 +197,8 @@ func TestDeepAgentControllerEmitsFailedActionDetailEvent(t *testing.T) {
 	if failed["result_status"] != DeepAgentActionStatusFailed || !strings.Contains(fmt.Sprint(failed["error"]), "empty response") {
 		t.Fatalf("unexpected failed detail: %#v", failed)
 	}
-	if failed["error_class"] != DeepAgentErrorValidation {
-		t.Fatalf("expected validation error class, got %#v", failed)
+	if failed["error_class"] != DeepAgentErrorTransient {
+		t.Fatalf("expected transient error class, got %#v", failed)
 	}
 	route, _ := failed["route"].(map[string]any)
 	if route["mode"] != DeepAgentToolModeModel || route["step_id"] != "research" {
@@ -2033,7 +2033,7 @@ func TestDeepAgentSummaryIncludesRoutesEvidenceAndFinalVerifier(t *testing.T) {
 	}
 }
 
-func TestDeepAgentClassifiesEmptyResponseAsValidationNonRetryable(t *testing.T) {
+func TestDeepAgentClassifiesEmptyResponseAsTransientRetryable(t *testing.T) {
 	runner := &countingErrorRunner{err: fmt.Errorf("queryengine empty response: no assistant text or tool calls")}
 	runtime := NewRuntime(
 		RuntimeConfig{},
@@ -2058,11 +2058,11 @@ func TestDeepAgentClassifiesEmptyResponseAsValidationNonRetryable(t *testing.T) 
 	if err == nil {
 		t.Fatalf("ExecuteDeepAgentAction() expected error")
 	}
-	if result.Retryable {
-		t.Fatalf("validation empty response must be non-retryable: %#v", result)
+	if !result.Retryable {
+		t.Fatalf("empty response should stay retryable: %#v", result)
 	}
-	if got := deepAgentWorkflowString(result.Metadata, "error_class"); got != DeepAgentErrorValidation {
-		t.Fatalf("error_class = %q, want validation in %#v", got, result.Metadata)
+	if got := deepAgentWorkflowString(result.Metadata, "error_class"); got != DeepAgentErrorTransient {
+		t.Fatalf("error_class = %q, want transient in %#v", got, result.Metadata)
 	}
 	if runner.calls != 1 {
 		t.Fatalf("runner calls = %d, want 1", runner.calls)
@@ -2092,6 +2092,17 @@ func TestClassifyDeepAgentErrorCategories(t *testing.T) {
 			err:       fmt.Errorf("rate limit 429: try again"),
 			wantClass: DeepAgentErrorTransient,
 			retryable: true,
+		},
+		{
+			name:      "empty response",
+			err:       fmt.Errorf("queryengine empty response: no assistant text or tool calls"),
+			wantClass: DeepAgentErrorTransient,
+			retryable: true,
+		},
+		{
+			name:      "validation",
+			err:       fmt.Errorf("artifact count 0 below required 1"),
+			wantClass: DeepAgentErrorValidation,
 		},
 		{
 			name:      "provider",

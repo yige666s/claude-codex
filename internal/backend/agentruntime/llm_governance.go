@@ -326,6 +326,9 @@ func (p *GovernedPlanner) execute(ctx context.Context, session *state.Session, t
 			}
 			backend := p.backends[idx]
 			plan, latency, ttft, err := p.callBackend(ctx, backend, session, tools, onChunk)
+			if err == nil && governedPlanIsEmpty(plan) {
+				err = fmt.Errorf("empty response from LLM backend %s/%s: no assistant text or tool calls", backend.Provider, backend.Model)
+			}
 			if err == nil {
 				outputTokens := estimatePlanTokens(plan)
 				_ = p.record(ctx, scope, backend.LLMBackend, attempt, "success", "", inputTokens, outputTokens, latency, ttft)
@@ -395,6 +398,10 @@ func (p *GovernedPlanner) callBackend(ctx context.Context, backend governedBacke
 		err = fmt.Errorf("llm call timed out after %s: %w", timeout, err)
 	}
 	return plan, latency, ttft, err
+}
+
+func governedPlanIsEmpty(plan plannerapi.Plan) bool {
+	return strings.TrimSpace(plan.AssistantText) == "" && len(plan.ToolCalls) == 0
 }
 
 func (p *GovernedPlanner) backendAvailable(index int) bool {

@@ -28,8 +28,11 @@ func classifyDeepAgentError(err error, result DeepAgentActionResult) string {
 	):
 		return DeepAgentErrorConfig
 	case deepAgentContainsAny(text,
-		"empty response", "no assistant text or tool calls", "produced no artifact", "produced no artifact or report content",
-		"validation", "invalid", "missing artifact", "artifact count 0 below required",
+		"empty response", "no assistant text or tool calls",
+	):
+		return DeepAgentErrorTransient
+	case deepAgentContainsAny(text,
+		"produced no artifact", "produced no artifact or report content", "validation", "invalid", "missing artifact", "artifact count 0 below required",
 	):
 		return DeepAgentErrorValidation
 	case deepAgentContainsAny(text,
