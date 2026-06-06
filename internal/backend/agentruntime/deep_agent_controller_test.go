@@ -1310,6 +1310,64 @@ func TestDeepAgentSourceRefsFromTextAcceptsSourceTitles(t *testing.T) {
 	}
 }
 
+func TestDeepAgentModelActionEvidenceMetadataIncludesResearchTools(t *testing.T) {
+	session := state.NewSession("")
+	session.Messages = []state.Message{
+		{Role: state.MessageRoleUser, Content: "调研 Tolan"},
+		{
+			Role: state.MessageRoleAssistant,
+			ToolCalls: []state.ToolCall{{
+				ID:   "call-1",
+				Name: "WebSearch",
+			}},
+		},
+		{
+			Role:       state.MessageRoleTool,
+			ToolCallID: "call-1",
+			ToolName:   "WebSearch",
+			ToolOutput: "Tolan: Your alien best friend - https://www.producthunt.com/products/tolan\nAbout Tolan - https://www.tolan.com/about",
+		},
+		{
+			Role:    state.MessageRoleAssistant,
+			Content: "Tolan 是一个 AI 陪伴产品，已完成原始资料汇总。",
+		},
+	}
+
+	metadata := deepAgentModelActionEvidenceMetadata("Tolan 是一个 AI 陪伴产品，已完成原始资料汇总。", session, 0)
+	evidence := deepAgentEvidenceFromActionResult(DeepAgentStepRoute{
+		Mode:         DeepAgentToolModeModel,
+		Executor:     deepAgentRouteExecutorModel,
+		SearchScope:  "web",
+		AllowedTools: []string{"WebSearch", "WebFetch"},
+	}, DeepAgentAction{StepID: "research"}, DeepAgentActionResult{
+		Status:    DeepAgentActionStatusSucceeded,
+		Completed: true,
+		Output:    "Tolan 是一个 AI 陪伴产品，已完成原始资料汇总。",
+		Metadata:  metadata,
+	}, nil)
+
+	if len(evidence.ToolCalls) == 0 {
+		t.Fatalf("expected research tool call evidence, got %#v", evidence)
+	}
+	if len(evidence.Sources) < 2 {
+		t.Fatalf("expected sources from WebSearch output, got %#v", evidence.Sources)
+	}
+	ok, reason := verifyDeepAgentStepEvidence(DeepAgentStep{
+		ID:     "research",
+		Intent: "联网调研 Tolan AI 产品",
+	}, DeepAgentActionResult{
+		Status:    DeepAgentActionStatusSucceeded,
+		Completed: true,
+		Output:    evidence.Output,
+		Metadata: map[string]any{
+			"step_evidence": evidence,
+		},
+	}, evidence)
+	if !ok {
+		t.Fatalf("expected research evidence to pass verification, got %q with %#v", reason, evidence)
+	}
+}
+
 func TestDeepAgentModelArtifactFallbackExtractsMarkdownReport(t *testing.T) {
 	output := "在尝试生成 Markdown 调研报告时，系统工具 Artifact 未找到，因此无法生成文件。\n\n## Tolan AI 调研报告\n\n正文内容足够保存为 artifact。"
 

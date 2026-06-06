@@ -696,6 +696,9 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 		"prompt_mode":         "hidden_user_turn",
 		"hidden_user_prompts": hiddenPromptCount,
 	}
+	for key, value := range deepAgentModelActionEvidenceMetadata(result.Output, resultSession, startMessageCount) {
+		metadata[key] = value
+	}
 	if len(newArtifactRefs) > 0 {
 		metadata["artifact_refs"] = newArtifactRefs
 	}
@@ -804,6 +807,57 @@ func runDeepAgentExecutionPrompt(ctx context.Context, runner Runner, session *st
 	}
 	hiddenCount := hideDeepAgentExecutionUserPrompts(resultSession, startMessageCount, prompt)
 	return result, hiddenCount, err
+}
+
+func deepAgentModelActionEvidenceMetadata(output string, session *state.Session, startIndex int) map[string]any {
+	metadata := map[string]any{}
+	details := deepAgentModelActionDiagnostics(output, session, startIndex)
+	metadata["diagnostic_details"] = details
+	if names := deepAgentStringSlice(details["assistant_tool_names"]); len(names) > 0 {
+		metadata["assistant_tool_names"] = names
+	}
+	if names := deepAgentStringSlice(details["tool_result_names"]); len(names) > 0 {
+		metadata["tool_result_names"] = names
+	}
+	if sources := deepAgentModelActionSourceRefs(output, session, startIndex); len(sources) > 0 {
+		metadata["sources"] = sources
+	}
+	return metadata
+}
+
+func deepAgentModelActionSourceRefs(output string, session *state.Session, startIndex int) []DeepAgentSourceRef {
+	seen := map[string]struct{}{}
+	out := make([]DeepAgentSourceRef, 0)
+	appendRefs := func(refs []DeepAgentSourceRef) {
+		for _, ref := range refs {
+			key := strings.ToLower(strings.TrimSpace(firstNonEmptyString(ref.URL, ref.Title+"|"+ref.Provider)))
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, ref)
+		}
+	}
+	appendRefs(deepAgentSourceRefsFromText(output))
+	if session == nil {
+		return out
+	}
+	if startIndex < 0 || startIndex > len(session.Messages) {
+		startIndex = 0
+	}
+	for _, message := range session.Messages[startIndex:] {
+		if message.Role != state.MessageRoleTool {
+			continue
+		}
+		if !strings.EqualFold(message.ToolName, "WebSearch") && !strings.EqualFold(message.ToolName, "WebFetch") {
+			continue
+		}
+		appendRefs(deepAgentSourceRefsFromText(message.ToolOutput))
+	}
+	return out
 }
 
 func hideDeepAgentExecutionUserPrompts(session *state.Session, startMessageCount int, prompt string) int {
