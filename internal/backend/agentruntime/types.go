@@ -346,6 +346,7 @@ type JobRoutingDecision struct {
 const (
 	AgentModeChat        = "chat"
 	AgentModePlanExecute = "plan_execute"
+	AgentModeWebSearch   = "web_search"
 )
 
 const (

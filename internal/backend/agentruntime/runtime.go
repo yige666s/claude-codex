@@ -2937,6 +2937,67 @@ func ensureVisibleUserMessage(session *state.Session, content string) {
 	session.AddUserMessage(content)
 }
 
+func webSearchPrompt(content string) string {
+	return "请使用网页搜索查找最新资料，并基于可靠来源回答：" + strings.TrimSpace(content)
+}
+
+func normalizeWebSearchTurnMessages(session *state.Session, startIndex int, visibleContent, internalContent string, visibleBlocks []publictypes.ContentBlock) {
+	if session == nil {
+		return
+	}
+	visibleContent = strings.TrimSpace(visibleContent)
+	internalContent = strings.TrimSpace(internalContent)
+	if visibleContent == "" || internalContent == "" || visibleContent == internalContent {
+		return
+	}
+	if startIndex < 0 {
+		startIndex = 0
+	}
+	if startIndex > len(session.Messages) {
+		startIndex = len(session.Messages)
+	}
+	visibleFound := false
+	for i := startIndex; i < len(session.Messages); i++ {
+		message := &session.Messages[i]
+		if message.Role != state.MessageRoleUser {
+			continue
+		}
+		if strings.TrimSpace(message.Content) == internalContent || strings.TrimSpace(promptContentText(message.ContentBlocks)) == internalContent {
+			message.Hidden = true
+			continue
+		}
+		if !message.Hidden && strings.TrimSpace(message.Content) == visibleContent {
+			visibleFound = true
+		}
+	}
+	if visibleFound {
+		return
+	}
+	message := visibleUserTranscriptMessage(visibleContent, visibleBlocks)
+	session.Messages = append(session.Messages, state.Message{})
+	copy(session.Messages[startIndex+1:], session.Messages[startIndex:])
+	session.Messages[startIndex] = message
+}
+
+func visibleUserTranscriptMessage(content string, blocks []publictypes.ContentBlock) state.Message {
+	now := time.Now().UTC()
+	message := state.Message{
+		Role:          state.MessageRoleUser,
+		ContentType:   state.MessageContentTypeText,
+		Content:       content,
+		Status:        state.MessageStatusNormal,
+		IsContextUsed: true,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if len(blocks) > 0 {
+		message.ContentType = state.MessageContentTypeMultipart
+		message.ContentParts = append([]publictypes.ContentBlock(nil), blocks...)
+		message.ContentBlocks = append([]publictypes.ContentBlock(nil), blocks...)
+	}
+	return message
+}
+
 func (r *Runtime) CreateJob(ctx context.Context, req ChatRequest, jobType string) (*Job, error) {
 	if r.jobs == nil {
 		return nil, fmt.Errorf("job store is not configured")
@@ -3682,9 +3743,21 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 			Level:        "HIGH",
 		})
 	}
-	prompt, err := r.chatPrompt(ctx, req, content)
+	llmContent := content
+	webSearchMode := strings.EqualFold(strings.TrimSpace(req.AgentMode), AgentModeWebSearch)
+	if webSearchMode {
+		llmContent = webSearchPrompt(content)
+	}
+	prompt, err := r.chatPrompt(ctx, req, llmContent)
 	if err != nil {
 		return runnerResult{}, err
+	}
+	visiblePrompt := prompt
+	if webSearchMode {
+		visiblePrompt, err = r.chatPrompt(ctx, req, content)
+		if err != nil {
+			return runnerResult{}, err
+		}
 	}
 	llmSession, err := r.materializedSessionForLLM(ctx, userID, session)
 	if err != nil {
@@ -3704,6 +3777,9 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	startedAt := time.Now().UTC()
 	startMessageCount := len(llmSession.Messages)
 	result, err := runWithTokenStreamContent(ctx, runner, llmSession, llmPrompt, false, onToken)
+	if webSearchMode && result.Session != nil {
+		normalizeWebSearchTurnMessages(result.Session, startMessageCount, content, llmContent, visiblePrompt)
+	}
 	if errors.Is(err, skilltool.ErrRunAsJobRequired) {
 		selection, ok := selectedRunAsJobSkill(result.Session, startMessageCount)
 		if !ok {

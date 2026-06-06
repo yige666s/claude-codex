@@ -1013,7 +1013,7 @@ export class ApiClient {
     content: string,
     attachmentIds: string[] = [],
     signal?: AbortSignal,
-    options: { thinkingMode?: boolean; agentMode?: "chat" | "plan_execute" } = {},
+    options: { thinkingMode?: boolean; agentMode?: "chat" | "plan_execute" | "web_search" } = {},
     retry = true
   ): Promise<Response> {
     await this.ensureFreshAccess();

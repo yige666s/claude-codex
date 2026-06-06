@@ -1076,7 +1076,7 @@ export function AgentWorkspace() {
     setResponseTiming(null);
     setRuntimeError("");
     const displayContent = content || "Please analyze the attached file(s).";
-    const agentMode = selectedComposerTool === "plan-execute" ? "plan_execute" : undefined;
+    const agentMode = composerAgentMode(selectedComposerTool, displayContent);
     const requestContent = composerToolContent(selectedComposerTool, displayContent);
     setSelectedComposerTool("");
     const sentMessage: Message = {
@@ -2030,8 +2030,14 @@ function composerToolContent(toolId: ComposerToolID | "", content: string): stri
   const trimmed = content.trim();
   if (!toolId || isSlashSkillCommand(trimmed)) return trimmed;
   if (toolId === "image") return ["/vertex-image-artifact", trimmed].filter(Boolean).join(" ");
-  if (toolId === "web-search") return `请使用网页搜索查找最新资料，并基于可靠来源回答：${trimmed}`;
   return trimmed;
+}
+
+function composerAgentMode(toolId: ComposerToolID | "", content: string): "plan_execute" | "web_search" | undefined {
+  const trimmed = content.trim();
+  if (toolId === "plan-execute") return "plan_execute";
+  if (toolId === "web-search" && !isSlashSkillCommand(trimmed)) return "web_search";
+  return undefined;
 }
 
 function composerToolStatus(toolId: ComposerToolID): string {

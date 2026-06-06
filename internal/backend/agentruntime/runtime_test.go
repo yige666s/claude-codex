@@ -3377,6 +3377,74 @@ func TestRuntimeChatPassesAttachmentAsContentBlock(t *testing.T) {
 	}
 }
 
+func TestRuntimeChatWebSearchModePreservesVisibleUserPrompt(t *testing.T) {
+	root := t.TempDir()
+	capture := &captureContentRunner{}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(root),
+		NewFileMemoryService(root),
+		nil,
+		func(Scope) Runner { return capture },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+
+	ctx := context.Background()
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	userPrompt := "帮我搜索一下关于迪迦奥特曼的相关信息"
+	sink := &collectSink{}
+	if err := runtime.Chat(ctx, ChatRequest{
+		UserID:    "alice",
+		SessionID: session.ID,
+		Content:   userPrompt,
+		AgentMode: AgentModeWebSearch,
+	}, sink); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	internalPrompt := webSearchPrompt(userPrompt)
+	if capture.prompt != internalPrompt {
+		t.Fatalf("LLM prompt = %q, want %q", capture.prompt, internalPrompt)
+	}
+	sink.mu.Lock()
+	events := append([]Event(nil), sink.events...)
+	sink.mu.Unlock()
+	var userEvents []string
+	for _, event := range events {
+		if event.Type == "message" && event.Role == "user" {
+			userEvents = append(userEvents, event.Content)
+		}
+	}
+	if len(userEvents) != 1 || userEvents[0] != userPrompt {
+		t.Fatalf("unexpected visible user events: %#v", userEvents)
+	}
+	saved, err := runtime.GetSession(ctx, "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	var visibleUsers []string
+	var hiddenSearchPrompt bool
+	for _, message := range saved.Messages {
+		if message.Role != state.MessageRoleUser {
+			continue
+		}
+		if message.Hidden && message.Content == internalPrompt {
+			hiddenSearchPrompt = true
+		}
+		if !message.Hidden {
+			visibleUsers = append(visibleUsers, message.Content)
+		}
+	}
+	if len(visibleUsers) != 1 || visibleUsers[0] != userPrompt {
+		t.Fatalf("unexpected visible user messages: %#v", visibleUsers)
+	}
+	if !hiddenSearchPrompt {
+		t.Fatalf("expected hidden web-search prompt in session: %#v", saved.Messages)
+	}
+}
+
 func TestRuntimeChatKeepsImageAttachmentInline(t *testing.T) {
 	root := t.TempDir()
 	capture := &captureContentRunner{}
@@ -5488,20 +5556,24 @@ func (echoRunner) RunGeneratedPromptStream(ctx context.Context, session *state.S
 
 type captureContentRunner struct {
 	blocks          []publictypes.ContentBlock
+	prompt          string
 	sessionMessages []state.Message
 }
 
 func (r *captureContentRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	r.prompt = prompt
 	r.sessionMessages = append([]state.Message(nil), session.Messages...)
 	return echoRunner{}.Run(ctx, session, prompt)
 }
 
 func (r *captureContentRunner) RunGeneratedPrompt(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	r.prompt = prompt
 	return echoRunner{}.RunGeneratedPrompt(ctx, session, prompt)
 }
 
 func (r *captureContentRunner) RunContent(_ context.Context, session *state.Session, prompt []publictypes.ContentBlock) (engine.Result, error) {
 	r.blocks = append([]publictypes.ContentBlock(nil), prompt...)
+	r.prompt = promptContentText(prompt)
 	r.sessionMessages = append([]state.Message(nil), session.Messages...)
 	session.Messages = append(session.Messages, state.Message{
 		Role:          "user",
