@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"claude-codex/internal/harness/engine"
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 	skilltool "claude-codex/internal/harness/tools/skill"
@@ -631,7 +632,7 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	runner := e.runtime.runnerForScope(scope)
 	beforeArtifacts := e.deepAgentArtifactIDSet(ctx, userID, session.ID)
 	startMessageCount := len(session.Messages)
-	result, err := runner.RunGeneratedPrompt(ctx, session, prompt)
+	result, hiddenPromptCount, err := runDeepAgentExecutionPrompt(ctx, runner, session, prompt, startMessageCount)
 	if err != nil && !errors.Is(err, skilltool.ErrRunAsJobRequired) {
 		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true}, err
 	}
@@ -641,12 +642,14 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	}
 	if selected, ok := selectedRunAsJobSkill(resultSession, startMessageCount); ok {
 		metadata := map[string]any{
-			"tool":              firstNonEmptyString(strings.TrimSpace(action.Tool), DeepAgentToolModeModel),
-			"session_id":        resultSession.ID,
-			"artifact_count":    0,
-			"tool_result_valid": true,
-			"skill_name":        selected.Name,
-			"run_as_job_marker": true,
+			"tool":                firstNonEmptyString(strings.TrimSpace(action.Tool), DeepAgentToolModeModel),
+			"session_id":          resultSession.ID,
+			"artifact_count":      0,
+			"tool_result_valid":   true,
+			"skill_name":          selected.Name,
+			"run_as_job_marker":   true,
+			"prompt_mode":         "hidden_user_turn",
+			"hidden_user_prompts": hiddenPromptCount,
 		}
 		if resultSession != nil && userID != "" && strings.TrimSpace(resultSession.ID) != "" {
 			if saveErr := e.runtime.sessions.Save(ctx, userID, resultSession); saveErr != nil {
@@ -686,10 +689,12 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 		artifactCount = int64(len(newArtifactRefs))
 	}
 	metadata := map[string]any{
-		"tool":              firstNonEmptyString(strings.TrimSpace(action.Tool), DeepAgentToolModeModel),
-		"session_id":        resultSession.ID,
-		"artifact_count":    artifactCount,
-		"tool_result_valid": diagnostics.ErrorKind == "" && diagnostics.SkillError == "",
+		"tool":                firstNonEmptyString(strings.TrimSpace(action.Tool), DeepAgentToolModeModel),
+		"session_id":          resultSession.ID,
+		"artifact_count":      artifactCount,
+		"tool_result_valid":   diagnostics.ErrorKind == "" && diagnostics.SkillError == "",
+		"prompt_mode":         "hidden_user_turn",
+		"hidden_user_prompts": hiddenPromptCount,
 	}
 	if len(newArtifactRefs) > 0 {
 		metadata["artifact_refs"] = newArtifactRefs
@@ -788,6 +793,42 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 		Completed: true,
 		Metadata:  metadata,
 	}, nil
+}
+
+func runDeepAgentExecutionPrompt(ctx context.Context, runner Runner, session *state.Session, prompt string, startMessageCount int) (engine.Result, int, error) {
+	result, err := runner.Run(ctx, session, prompt)
+	resultSession := result.Session
+	if resultSession == nil {
+		resultSession = session
+		result.Session = session
+	}
+	hiddenCount := hideDeepAgentExecutionUserPrompts(resultSession, startMessageCount, prompt)
+	return result, hiddenCount, err
+}
+
+func hideDeepAgentExecutionUserPrompts(session *state.Session, startMessageCount int, prompt string) int {
+	if session == nil {
+		return 0
+	}
+	if startMessageCount < 0 || startMessageCount > len(session.Messages) {
+		startMessageCount = 0
+	}
+	prompt = strings.TrimSpace(prompt)
+	hiddenCount := 0
+	for i := startMessageCount; i < len(session.Messages); i++ {
+		message := &session.Messages[i]
+		if message.Role != state.MessageRoleUser {
+			continue
+		}
+		if prompt != "" && strings.TrimSpace(message.Content) != prompt {
+			continue
+		}
+		if !message.Hidden {
+			message.Hidden = true
+		}
+		hiddenCount++
+	}
+	return hiddenCount
 }
 
 func (e *RuntimeDeepAgentExecutor) deepAgentArtifactIDSet(ctx context.Context, userID, sessionID string) map[string]struct{} {

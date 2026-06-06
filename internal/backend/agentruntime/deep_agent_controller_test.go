@@ -803,6 +803,68 @@ func TestRuntimeDeepAgentModelActionDoesNotRequireArtifactFromGoalOrPrompt(t *te
 	}
 }
 
+func TestRuntimeDeepAgentModelActionUsesHiddenUserTurn(t *testing.T) {
+	runner := &deepAgentExecutionPromptRunner{}
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return runner },
+	)
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	result, err := NewRuntimeDeepAgentExecutor(runtime).ExecuteDeepAgentAction(context.Background(), DeepAgentAction{
+		StepID: "gather-tolan-info",
+		Tool:   DeepAgentToolModeModel,
+		Args: map[string]any{
+			"user_id":    "alice",
+			"session_id": session.ID,
+			"prompt":     "Gather Tolan Product Information",
+		},
+	}, &DeepAgentState{WorkingMemory: map[string]any{"user_id": "alice", "session_id": session.ID}})
+	if err != nil {
+		t.Fatalf("ExecuteDeepAgentAction() error = %v", err)
+	}
+	if result.Status != DeepAgentActionStatusSucceeded || !result.Completed {
+		t.Fatalf("unexpected model action result: %#v", result)
+	}
+	if runner.generatedCalls != 0 {
+		t.Fatalf("DeepAgent execution step must not use generated/meta prompt path, generatedCalls=%d", runner.generatedCalls)
+	}
+	if runner.runCalls != 1 {
+		t.Fatalf("Run calls = %d, want 1", runner.runCalls)
+	}
+	if got := deepAgentWorkflowString(result.Metadata, "prompt_mode"); got != "hidden_user_turn" {
+		t.Fatalf("prompt_mode = %q, want hidden_user_turn in %#v", got, result.Metadata)
+	}
+	if got := deepAgentAnyInt(result.Metadata["hidden_user_prompts"], -1); got != 1 {
+		t.Fatalf("hidden_user_prompts = %d, want 1 in %#v", got, result.Metadata)
+	}
+	saved, err := runtime.sessions.Get(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	hiddenPrompt := false
+	visibleInternalPrompt := false
+	for _, message := range saved.Messages {
+		if message.Role != state.MessageRoleUser || strings.TrimSpace(message.Content) != "Gather Tolan Product Information" {
+			continue
+		}
+		if message.Hidden {
+			hiddenPrompt = true
+		} else {
+			visibleInternalPrompt = true
+		}
+	}
+	if !hiddenPrompt || visibleInternalPrompt {
+		t.Fatalf("DeepAgent internal prompt should be hidden, hidden=%v visible=%v messages=%#v", hiddenPrompt, visibleInternalPrompt, saved.Messages)
+	}
+}
+
 func TestRuntimeDeepAgentModelArtifactSavesGeneratedSessionWithoutSessionID(t *testing.T) {
 	store := newTestSessionStore()
 	runtime := NewRuntime(
@@ -2527,6 +2589,24 @@ func (noOutputRunner) Run(ctx context.Context, session *state.Session, prompt st
 
 func (noOutputRunner) RunGeneratedPrompt(context.Context, *state.Session, string) (engine.Result, error) {
 	return engine.Result{}, nil
+}
+
+type deepAgentExecutionPromptRunner struct {
+	runCalls       int
+	generatedCalls int
+}
+
+func (r *deepAgentExecutionPromptRunner) Run(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	r.runCalls++
+	session.AddUserMessage(prompt)
+	output := "Collected Tolan product information with cited sources."
+	session.AddAssistantMessage(output)
+	return engine.Result{Output: output, Session: session}, nil
+}
+
+func (r *deepAgentExecutionPromptRunner) RunGeneratedPrompt(context.Context, *state.Session, string) (engine.Result, error) {
+	r.generatedCalls++
+	return engine.Result{}, fmt.Errorf("queryengine empty response: no assistant text or tool calls")
 }
 
 type emptyOutputAssistantReportRunner struct{}
