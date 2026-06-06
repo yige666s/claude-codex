@@ -569,6 +569,25 @@ func TestRuntimeDeepAgentSkillActionReportsArtifactCount(t *testing.T) {
 	if ok, _ := deepAgentMetadataBool(result.Metadata, "tool_result_valid"); !ok {
 		t.Fatalf("expected valid tool result metadata, got %#v", result.Metadata)
 	}
+	saved, err := runtime.sessions.Get(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	visibleAssistant := false
+	hiddenAssistant := false
+	for _, message := range saved.Messages {
+		if message.Role != state.MessageRoleAssistant || !strings.HasPrefix(strings.TrimSpace(message.Content), "report generated:") {
+			continue
+		}
+		if message.Hidden {
+			hiddenAssistant = true
+		} else {
+			visibleAssistant = true
+		}
+	}
+	if !hiddenAssistant || visibleAssistant {
+		t.Fatalf("DeepAgent skill assistant reply should be hidden, hidden=%v visible=%v messages=%#v", hiddenAssistant, visibleAssistant, saved.Messages)
+	}
 }
 
 func TestRuntimeDeepAgentModelActionCreatesArtifactFallback(t *testing.T) {
@@ -850,18 +869,29 @@ func TestRuntimeDeepAgentModelActionUsesHiddenUserTurn(t *testing.T) {
 	}
 	hiddenPrompt := false
 	visibleInternalPrompt := false
+	hiddenAssistant := false
+	visibleAssistant := false
 	for _, message := range saved.Messages {
-		if message.Role != state.MessageRoleUser || strings.TrimSpace(message.Content) != "Gather Tolan Product Information" {
-			continue
-		}
-		if message.Hidden {
-			hiddenPrompt = true
-		} else {
-			visibleInternalPrompt = true
+		switch {
+		case message.Role == state.MessageRoleUser && strings.TrimSpace(message.Content) == "Gather Tolan Product Information":
+			if message.Hidden {
+				hiddenPrompt = true
+			} else {
+				visibleInternalPrompt = true
+			}
+		case message.Role == state.MessageRoleAssistant && strings.TrimSpace(message.Content) == "Collected Tolan product information with cited sources.":
+			if message.Hidden {
+				hiddenAssistant = true
+			} else {
+				visibleAssistant = true
+			}
 		}
 	}
 	if !hiddenPrompt || visibleInternalPrompt {
 		t.Fatalf("DeepAgent internal prompt should be hidden, hidden=%v visible=%v messages=%#v", hiddenPrompt, visibleInternalPrompt, saved.Messages)
+	}
+	if !hiddenAssistant || visibleAssistant {
+		t.Fatalf("DeepAgent internal assistant reply should be hidden, hidden=%v visible=%v messages=%#v", hiddenAssistant, visibleAssistant, saved.Messages)
 	}
 }
 
@@ -2278,6 +2308,51 @@ func TestDeepAgentAttemptStrategyChangesRetryHash(t *testing.T) {
 	}
 }
 
+func TestDeepAgentAttemptStrategyRequiresResearchToolsAfterMissingSources(t *testing.T) {
+	action := DeepAgentAction{
+		StepID: "research",
+		Tool:   DeepAgentToolModeModel,
+		Args:   map[string]any{"prompt": "调研 Chance AI 产品"},
+	}
+	retry := withDeepAgentAttemptStrategy(action, &DeepAgentState{
+		NoProgressCount: 1,
+		Blocker:         "research step source evidence is missing",
+		WorkingMemory:   map[string]any{"last_retryable_error_class": DeepAgentErrorTransient},
+	})
+	prompt := deepAgentWorkflowString(retry.Args, "prompt")
+	if !strings.Contains(prompt, "WebSearch") || !strings.Contains(prompt, "WebFetch") || !strings.Contains(prompt, "do not answer from memory") {
+		t.Fatalf("missing-source retry should force research tools, got %q", prompt)
+	}
+}
+
+func TestDeepAgentControllerRetriesResearchWithoutSourceEvidence(t *testing.T) {
+	executor := &sourceEvidenceRetryExecutor{}
+	controller := NewDeepAgentController(
+		NewMemoryWorkflowStore(),
+		NoopWorkflowEventSink{},
+		sourceEvidenceRetryPlanner{},
+		executor,
+		nil,
+	)
+	result, err := controller.Execute(context.Background(), DeepAgentTaskRequest{
+		UserID: "alice",
+		Goal:   "调研 Chance AI 产品",
+		Policy: DeepAgentPolicy{MaxSteps: 1, MaxActions: 3, NoProgressLimit: 2, MaxDuration: time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result == nil || result.State == nil || result.State.Status != DeepAgentRunStatusSucceeded {
+		t.Fatalf("expected successful retry, got %#v", result)
+	}
+	if executor.calls != 2 {
+		t.Fatalf("executor calls = %d, want 2", executor.calls)
+	}
+	if !strings.Contains(executor.retryPrompt, "WebSearch") || !strings.Contains(executor.retryPrompt, "WebFetch") {
+		t.Fatalf("retry prompt should force web research tools, got %q", executor.retryPrompt)
+	}
+}
+
 func TestFormatDeepAgentResultMessageIncludesArtifactRefs(t *testing.T) {
 	state := &DeepAgentState{
 		Goal: "生成调研报告",
@@ -2533,6 +2608,67 @@ func (completingDeepAgentExecutor) ExecuteDeepAgentAction(_ context.Context, act
 		Status:    DeepAgentActionStatusSucceeded,
 		Output:    fmt.Sprintf("completed %s", action.StepID),
 		Completed: true,
+	}, nil
+}
+
+type sourceEvidenceRetryPlanner struct{}
+
+func (sourceEvidenceRetryPlanner) CreatePlan(_ context.Context, req DeepAgentTaskRequest) (DeepAgentPlan, error) {
+	return DeepAgentPlan{
+		Goal: req.Goal,
+		Steps: []DeepAgentStep{{
+			ID:            "research",
+			Title:         "调研 Chance AI 产品",
+			Intent:        "通过网络搜索调研 Chance AI 产品",
+			DoneCondition: "收集到带来源的研究信息",
+		}},
+	}, nil
+}
+
+func (sourceEvidenceRetryPlanner) NextAction(_ context.Context, _ *DeepAgentState, step DeepAgentStep) (DeepAgentAction, error) {
+	route := DeepAgentStepRoute{
+		StepID:       step.ID,
+		Mode:         DeepAgentToolModeModel,
+		Executor:     deepAgentRouteExecutorModel,
+		SearchScope:  "web",
+		AllowedTools: []string{"WebSearch", "WebFetch"},
+	}
+	return DeepAgentAction{
+		StepID: step.ID,
+		Tool:   DeepAgentToolModeModel,
+		Args: map[string]any{
+			"prompt":     "调研 Chance AI 产品",
+			"step_route": deepAgentStepRouteMap(route),
+		},
+	}, nil
+}
+
+type sourceEvidenceRetryExecutor struct {
+	calls       int
+	retryPrompt string
+}
+
+func (e *sourceEvidenceRetryExecutor) ExecuteDeepAgentAction(_ context.Context, action DeepAgentAction, _ *DeepAgentState) (DeepAgentActionResult, error) {
+	e.calls++
+	route, _ := deepAgentStepRouteFromMap(action.Args)
+	evidence := DeepAgentStepEvidence{
+		StepID:  action.StepID,
+		Route:   route,
+		Output:  "Chance AI research summary",
+		Summary: "Chance AI research summary",
+	}
+	if e.calls > 1 {
+		e.retryPrompt = deepAgentWorkflowString(action.Args, "prompt")
+		evidence.Sources = []DeepAgentSourceRef{{URL: "https://example.com/chance-ai", Title: "Chance AI source", Provider: "WebSearch"}}
+		evidence.ToolCalls = []DeepAgentToolCallRef{{Name: "WebSearch", Status: "succeeded"}}
+	}
+	return DeepAgentActionResult{
+		Status:    DeepAgentActionStatusSucceeded,
+		Output:    evidence.Output,
+		Completed: true,
+		Metadata: map[string]any{
+			"step_evidence": deepAgentStepEvidenceMap(evidence),
+		},
 	}, nil
 }
 

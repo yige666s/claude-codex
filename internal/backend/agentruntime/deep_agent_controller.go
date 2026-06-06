@@ -426,11 +426,18 @@ func withDeepAgentAttemptStrategy(action DeepAgentAction, state *DeepAgentState)
 		state.NoProgressCount+1,
 		truncateDeepAgentDiagnosticText(state.Blocker, 240),
 	)
+	if deepAgentMissingSourceEvidenceReason(state.Blocker) {
+		strategy += " This research step must call WebSearch and/or WebFetch and return source evidence before summarizing; do not answer from memory or write the final report in this step."
+	}
 	action.Args["attempt_strategy"] = strategy
 	if prompt := strings.TrimSpace(deepAgentWorkflowString(action.Args, "prompt")); prompt != "" && !strings.Contains(prompt, "Retry instruction:") {
 		action.Args["prompt"] = prompt + "\n\nRetry instruction: " + strategy
 	}
 	return action
+}
+
+func deepAgentMissingSourceEvidenceReason(reason string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(reason)), "source evidence is missing")
 }
 
 func recordDeepAgentLastRetryableError(state *DeepAgentState, result DeepAgentActionResult) {
@@ -650,6 +657,12 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 			state.NoProgressCount++
 			state.Blocker = firstNonEmptyString(progress.Reason, result.Error, "no progress")
 			recordDeepAgentLastRetryableError(state, result)
+			if deepAgentMissingSourceEvidenceReason(state.Blocker) {
+				if state.WorkingMemory == nil {
+					state.WorkingMemory = map[string]any{}
+				}
+				state.WorkingMemory["last_retryable_error_class"] = DeepAgentErrorTransient
+			}
 		}
 		if progress.StepDone {
 			state.Plan.Steps[stepIndex].Status = DeepAgentStepStatusSucceeded

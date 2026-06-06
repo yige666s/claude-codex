@@ -713,6 +713,10 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	if invalidFallbackOutput {
 		metadata["artifact_fallback_invalid"] = true
 	}
+	hiddenAssistantMessages := hideDeepAgentExecutionAssistantMessages(resultSession, startMessageCount)
+	if hiddenAssistantMessages > 0 {
+		metadata["hidden_assistant_messages"] = hiddenAssistantMessages
+	}
 	artifactSatisfiedOutput := ""
 	priorArtifactSatisfies := false
 	if artifactCount == 0 {
@@ -913,6 +917,27 @@ func hideDeepAgentExecutionUserPrompts(session *state.Session, startMessageCount
 			continue
 		}
 		if prompt != "" && strings.TrimSpace(message.Content) != prompt {
+			continue
+		}
+		if !message.Hidden {
+			message.Hidden = true
+		}
+		hiddenCount++
+	}
+	return hiddenCount
+}
+
+func hideDeepAgentExecutionAssistantMessages(session *state.Session, startMessageCount int) int {
+	if session == nil {
+		return 0
+	}
+	if startMessageCount < 0 || startMessageCount > len(session.Messages) {
+		startMessageCount = 0
+	}
+	hiddenCount := 0
+	for i := startMessageCount; i < len(session.Messages); i++ {
+		message := &session.Messages[i]
+		if message.Role != state.MessageRoleAssistant {
 			continue
 		}
 		if !message.Hidden {
@@ -1256,12 +1281,15 @@ func (e *RuntimeDeepAgentExecutor) executeSkillAction(ctx context.Context, actio
 	if resultSession == nil {
 		resultSession = session
 	}
+	metadata := deepAgentSkillActionMetadata(skillName, session.ID, diagnostics, result.Job)
+	if hiddenAssistantMessages := hideDeepAgentExecutionAssistantMessages(resultSession, startMessageCount); hiddenAssistantMessages > 0 {
+		metadata["hidden_assistant_messages"] = hiddenAssistantMessages
+	}
 	if resultSession != nil && userID != "" && strings.TrimSpace(resultSession.ID) != "" {
 		if saveErr := e.runtime.sessions.Save(ctx, userID, resultSession); saveErr != nil {
-			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true, Metadata: deepAgentSkillActionMetadata(skillName, session.ID, diagnostics, result.Job)}, saveErr
+			return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true, Metadata: metadata}, saveErr
 		}
 	}
-	metadata := deepAgentSkillActionMetadata(skillName, session.ID, diagnostics, result.Job)
 	newArtifactRefs := e.deepAgentNewArtifactRefs(ctx, userID, resultSession.ID, beforeArtifacts, action, "skill")
 	if len(newArtifactRefs) > 0 {
 		metadata["artifact_refs"] = newArtifactRefs
@@ -1275,9 +1303,13 @@ func (e *RuntimeDeepAgentExecutor) executeSkillAction(ctx context.Context, actio
 		}
 		return childResult, nil
 	}
+	output := result.Output
+	if ready := deepAgentArtifactReadyOutput(metadata, int64(deepAgentAnyInt(metadata["artifact_count"], 0))); ready != "" {
+		output = ready
+	}
 	return DeepAgentActionResult{
 		Status:    DeepAgentActionStatusSucceeded,
-		Output:    result.Output,
+		Output:    output,
 		Completed: true,
 		Metadata:  metadata,
 	}, nil
