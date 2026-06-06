@@ -59,6 +59,14 @@ func (m *mockModelCaller) call(ctx context.Context, params *ModelCallParams) (<-
 	return m.messages, nil
 }
 
+type emptyChannelModelCaller struct{}
+
+func (emptyChannelModelCaller) call(ctx context.Context, params *ModelCallParams) (<-chan types.Message, error) {
+	ch := make(chan types.Message)
+	close(ch)
+	return ch, nil
+}
+
 type mockCompactService struct {
 	result *CompactionResult
 	err    error
@@ -240,6 +248,30 @@ func TestQuery_BasicExecution(t *testing.T) {
 
 	assert.Equal(t, TerminalReasonCompleted, terminal.Reason)
 	assert.Greater(t, len(events), 0)
+}
+
+func TestQuery_EmptyModelChannelIsModelError(t *testing.T) {
+	toolCtx := tool.NewToolUseContext(context.Background())
+	toolCtx.AbortController = tool.NewAbortController()
+	toolCtx.Options.MainLoopModel = "test-model"
+
+	eventChan, terminalChan, err := Query(context.Background(), &QueryParams{
+		Messages:       []types.Message{{Type: types.MessageTypeUser, Content: []types.ContentBlock{{Type: "text", Text: "hello"}}}},
+		ToolUseContext: toolCtx,
+		QuerySource:    "test",
+		Deps: &QueryDeps{
+			CallModel: emptyChannelModelCaller{}.call,
+			UUID:      func() string { return "test-uuid" },
+		},
+	})
+	require.NoError(t, err)
+	for range eventChan {
+	}
+	terminal := <-terminalChan
+	require.Equal(t, TerminalReasonModelError, terminal.Reason)
+	require.Error(t, terminal.Error)
+	assert.Contains(t, terminal.Error.Error(), "no assistant text or tool calls")
+	assert.Contains(t, terminal.Error.Error(), "model=test-model")
 }
 
 func TestQuery_ToolUseFeedsToolResultBackToModel(t *testing.T) {

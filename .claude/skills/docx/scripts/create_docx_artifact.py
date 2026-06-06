@@ -31,6 +31,9 @@ def main() -> int:
     if looks_like_unresolved_reference(text):
         print("skill_error: 当前输入只包含对上下文的引用，没有包含实际文档正文。请先根据对话上下文整理出完整正文，再调用此脚本生成 docx。")
         return 1
+    if looks_like_generation_brief(text):
+        print("skill_error: requires_final_body: 当前输入看起来是文档生成需求或格式要求，不是最终文档正文。请先撰写完整正文，只把最终正文传给 docx 生成脚本。")
+        return 1
 
     workspace = Path(os.environ.get("AGENT_WORKSPACE_DIR") or os.getcwd())
     output_dir = workspace / "generated-artifacts"
@@ -63,6 +66,49 @@ def looks_like_unresolved_reference(text: str) -> bool:
     return any(word in compact.lower() for word in reference_words) and any(
         word in compact.lower() for word in document_words
     )
+
+
+def looks_like_generation_brief(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text).lower()
+    if len(compact) < 40:
+        return False
+    strong_markers = (
+        "请直接使用docx",
+        "请使用docx",
+        "使用docx技能",
+        "调用docx技能",
+        "报告生成要求",
+        "文档生成要求",
+        "生成要求",
+        "报告生成要求：",
+        "生成该文档",
+        "生成此文档",
+    )
+    if any(marker in compact for marker in strong_markers):
+        return True
+    request_markers = (
+        "请为我生成",
+        "请帮我生成",
+        "帮我生成",
+        "生成一份",
+        "撰写一份",
+        "输出一份",
+        "请基于以下",
+    )
+    requirement_markers = (
+        "结构规范",
+        "格式排版",
+        "语言：",
+        "语言:",
+        "包含封面",
+        "包含目录",
+        "章节分明",
+        "报告要求",
+        "文档要求",
+    )
+    request_hits = sum(1 for marker in request_markers if marker in compact)
+    requirement_hits = sum(1 for marker in requirement_markers if marker in compact)
+    return request_hits > 0 and requirement_hits > 0
 
 
 def extract_title(text: str) -> tuple[str, str]:

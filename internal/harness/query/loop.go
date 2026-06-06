@@ -222,6 +222,8 @@ func queryLoop(
 
 		// API call with streaming
 		attemptWithFallback := true
+		lastModelCallInputCount := 0
+		lastModelCallModel := currentModel
 		for attemptWithFallback {
 			attemptWithFallback = false
 
@@ -234,6 +236,8 @@ func queryLoop(
 				SkipCacheWrite: skipCacheWrite,
 				TaskBudget:     buildTaskBudgetParam(params.TaskBudget, taskBudgetRemaining),
 			}
+			lastModelCallInputCount = len(modelParams.Messages)
+			lastModelCallModel = modelParams.Model
 
 			messageChan, err := deps.CallModel(ctx, modelParams)
 			if err != nil {
@@ -331,6 +335,10 @@ func queryLoop(
 				eventChan <- createUserInterruptionMessage(false)
 			}
 			return Terminal{Reason: TerminalReasonAbortedStreaming}, nil
+		}
+		if !hasMeaningfulAssistantMessages(assistantMessages) {
+			err := fmt.Errorf("model call returned no assistant messages: no assistant text or tool calls (model=%s input_messages=%d assistant_messages=%d)", lastModelCallModel, lastModelCallInputCount, len(assistantMessages))
+			return Terminal{Reason: TerminalReasonModelError, Error: err}, err
 		}
 
 		// Yield pending tool use summary from previous turn
@@ -568,6 +576,20 @@ func getLastMessage(messages []types.AssistantMessage) *types.AssistantMessage {
 		return nil
 	}
 	return &messages[len(messages)-1]
+}
+
+func hasMeaningfulAssistantMessages(messages []types.AssistantMessage) bool {
+	for _, msg := range messages {
+		for _, block := range msg.Message.Content {
+			if block.Type == "tool_use" && (strings.TrimSpace(block.ID) != "" || strings.TrimSpace(block.Name) != "") {
+				return true
+			}
+			if strings.TrimSpace(block.Text) != "" || strings.TrimSpace(block.Content) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func getQueuedCommands(messages []types.Message) []QueuedCommand {

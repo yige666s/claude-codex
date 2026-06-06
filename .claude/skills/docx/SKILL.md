@@ -32,9 +32,10 @@ Before creating the file, resolve what content should go into the document:
 - If the user refers to "the above", "previous summary", "上边的总结", "以上内容", or similar, use the relevant prior visible conversation content as the document body.
 - If the user uploaded a text attachment and asks to convert or summarize it, use the attachment content already provided in the prompt.
 - Do not pass only the user's instruction sentence into the file generator when the instruction refers to previous context.
+- Do not pass a writing brief, requirements list, or "please generate a document" instruction into the file generator as the document body.
 - Compose a complete document body first, including a suitable title and sections when appropriate.
 
-The helper script below is executed during skill prompt preparation with the current `/docx` arguments as the document body. The helper only packages the text into a valid `.docx`; it must not decide what user-specific content belongs in the document.
+The helper script below is executed during skill prompt preparation with the current `/docx` arguments as the document body. The helper only packages finalized text into a valid `.docx`; it must not decide what user-specific content belongs in the document.
 
 ```!
 python3 "${CLAUDE_SKILL_DIR}/scripts/create_docx_artifact.py" <<'AGENTAPI_DOCX_INPUT_EOF' || true
@@ -42,7 +43,9 @@ $ARGUMENTS
 AGENTAPI_DOCX_INPUT_EOF
 ```
 
-If the shell output contains `skill_error:`, do not call the `Artifact` tool. Reply in the user's language with the friendly error from `skill_error:` and, when useful, a concise next step. Do not expose stack traces, shell commands, artifact IDs, object paths, or download paths to the user.
+If the shell output contains `skill_error: requires_final_body:`, the provided arguments are a generation brief rather than final document text. Compose the complete document body yourself first, then run `python3 "${CLAUDE_SKILL_DIR}/scripts/create_docx_artifact.py"` with that final body through the Bash tool. After the Bash output prints `artifact_file_path:`, call the `Artifact` tool exactly once as described below.
+
+If the shell output contains any other `skill_error:`, do not call the `Artifact` tool. Reply in the user's language with the friendly error from `skill_error:` and, when useful, a concise next step. Do not expose stack traces, shell commands, artifact IDs, object paths, or download paths to the user.
 
 If the shell output contains `artifact_file_path:`, use the `Artifact` tool exactly once with the relative path printed as `artifact_file_path`. The value is intentionally relative to the current workspace; do not rewrite it as an absolute path. The Artifact tool argument name is `file_path`, not `artifact_file_path`.
 
