@@ -97,6 +97,12 @@ func (terminalPlanner) Next(context.Context, *state.Session, []toolkit.Descripto
 	return plannerapi.Plan{AssistantText: "done", StopReason: "end_turn"}, nil
 }
 
+type emptyAdapterPlanner struct{}
+
+func (emptyAdapterPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (plannerapi.Plan, error) {
+	return plannerapi.Plan{StopReason: "end_turn"}, nil
+}
+
 func TestNewQueryEngine_InitializesAdapter(t *testing.T) {
 	cache := query.NewFileStateCache(16, 16*1024)
 	engine := NewQueryEngine(QueryEngineConfig{
@@ -117,6 +123,29 @@ func TestNewQueryEngine_InitializesAdapter(t *testing.T) {
 	assert.Equal(t, "test_tool", engine.innerConfig.Tools[0].Name())
 	assert.NotEmpty(t, engine.GetSessionID())
 	assert.Equal(t, engine.GetSessionID(), engine.GetSessionID())
+}
+
+func TestSubmitMessage_PropagatesQueryModelErrors(t *testing.T) {
+	engine := NewQueryEngine(QueryEngineConfig{
+		Cwd:           t.TempDir(),
+		SessionID:     "empty-response-session",
+		Planner:       emptyAdapterPlanner{},
+		FallbackModel: "test-model",
+	})
+
+	stream, err := engine.SubmitMessage(context.Background(), "hello", nil)
+	require.NoError(t, err)
+
+	var final SDKMessage
+	for msg := range stream {
+		final = msg
+	}
+
+	require.Equal(t, "result", final.Type)
+	require.True(t, final.IsError)
+	require.Equal(t, "error_during_execution", final.Subtype)
+	require.NotEmpty(t, final.Errors)
+	assert.Contains(t, final.Errors[0], "no assistant text or tool calls")
 }
 
 func TestNewQueryEngine_WithInitialMessages(t *testing.T) {

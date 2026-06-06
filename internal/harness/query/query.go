@@ -280,10 +280,11 @@ func providerResponseToMessage(resp *provider.MessageResponse) types.Message {
 	}
 	for _, call := range resp.ToolCalls {
 		msg.Content = append(msg.Content, types.ContentBlock{
-			Type:  "tool_use",
-			ID:    call.ID,
-			Name:  call.Name,
-			Input: rawProviderInput(call.Input),
+			Type:             "tool_use",
+			ID:               call.ID,
+			Name:             call.Name,
+			Input:            rawProviderInput(call.Input),
+			ThoughtSignature: call.ThoughtSignature,
 		})
 	}
 	return msg

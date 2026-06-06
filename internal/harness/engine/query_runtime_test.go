@@ -119,9 +119,10 @@ func TestQueryRuntimeMessageRoundTripPreservesToolHistory(t *testing.T) {
 			Content:   "I'll inspect it.",
 			CreatedAt: session.StartedAt,
 			ToolCalls: []state.ToolCall{{
-				ID:    "tool-1",
-				Name:  "file_read",
-				Input: json.RawMessage(`{"path":"README.md"}`),
+				ID:               "tool-1",
+				Name:             "file_read",
+				Input:            json.RawMessage(`{"path":"README.md"}`),
+				ThoughtSignature: "signed-thought",
 			}},
 		},
 		{
@@ -161,6 +162,9 @@ func TestQueryRuntimeMessageRoundTripPreservesToolHistory(t *testing.T) {
 	if assistant.ToolCalls[0].Name != "file_read" {
 		t.Fatalf("unexpected tool call after round-trip: %#v", assistant.ToolCalls[0])
 	}
+	if assistant.ToolCalls[0].ThoughtSignature != "signed-thought" {
+		t.Fatalf("thought signature was not preserved: %#v", assistant.ToolCalls[0])
+	}
 
 	toolResult := roundTripped.Messages[2]
 	if toolResult.Role != "tool" || toolResult.ToolName != "file_read" || toolResult.ToolOutput != "README contents" {
@@ -198,10 +202,10 @@ func TestQueryRuntimeRejectsEmptyAssistantResponse(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected empty response error")
 	}
-	if !strings.Contains(err.Error(), "empty response") {
-		t.Fatalf("error = %v, want empty response marker", err)
+	if !strings.Contains(err.Error(), "no assistant text or tool calls") {
+		t.Fatalf("error = %v, want no assistant text marker", err)
 	}
-	for _, want := range []string{"final_type=", "assistant_messages=", "tool_calls=", "new_messages="} {
+	for _, want := range []string{"query loop failed", "model=", "assistant_messages="} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %v, want diagnostic %q", err, want)
 		}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"claude-codex/internal/harness/budget"
@@ -12,6 +13,7 @@ import (
 	"claude-codex/internal/harness/query"
 	"claude-codex/internal/harness/tool"
 	publictypes "claude-codex/internal/public/types"
+
 	"github.com/google/uuid"
 )
 
@@ -35,6 +37,7 @@ func NewQueryEngine(config QueryEngineConfig) *QueryEngine {
 	innerConfig := toQueryConfig(config, sessionID)
 
 	inner, err := query.NewQueryEngine(innerConfig)
+
 	return &QueryEngine{
 		config:        config,
 		innerConfig:   innerConfig,
@@ -86,7 +89,12 @@ func (qe *QueryEngine) SubmitMessage(
 		defer close(out)
 
 		turnCount := 0
+		var queryErrors []string
 		for msg := range queryChan {
+			if errText := querySystemErrorText(msg); errText != "" {
+				queryErrors = append(queryErrors, errText)
+				continue
+			}
 			normalized := qe.normalizeSDKMessage(msg)
 			if normalized.Type == "user" {
 				turnCount++
@@ -97,6 +105,26 @@ func (qe *QueryEngine) SubmitMessage(
 			case <-ctx.Done():
 				return
 			}
+		}
+
+		if len(queryErrors) > 0 {
+			result := SDKMessage{
+				Type:              "result",
+				Subtype:           "error_during_execution",
+				SessionID:         qe.sessionID,
+				UUID:              uuid.New().String(),
+				DurationMS:        time.Since(startedAt).Milliseconds(),
+				IsError:           true,
+				NumTurns:          turnCount,
+				Usage:             qe.GetTotalUsage(),
+				PermissionDenials: qe.GetPermissionDenials(),
+				Errors:            queryErrors,
+			}
+			select {
+			case out <- result:
+			case <-ctx.Done():
+			}
+			return
 		}
 
 		result := SDKMessage{
@@ -117,6 +145,30 @@ func (qe *QueryEngine) SubmitMessage(
 	}()
 
 	return out, nil
+}
+
+func querySystemErrorText(msg publictypes.Message) string {
+	if msg.Type != publictypes.MessageTypeSystem || !msg.IsApiErrorMessage {
+		return ""
+	}
+	text := strings.TrimSpace(publicSystemMessageText(msg))
+	if text == "" {
+		return "query execution failed"
+	}
+	return strings.TrimSpace(strings.TrimPrefix(text, "Error:"))
+}
+
+func publicSystemMessageText(msg publictypes.Message) string {
+	parts := make([]string, 0, len(msg.Content))
+	for _, block := range msg.Content {
+		switch {
+		case strings.TrimSpace(block.Text) != "":
+			parts = append(parts, strings.TrimSpace(block.Text))
+		case strings.TrimSpace(block.Content) != "":
+			parts = append(parts, strings.TrimSpace(block.Content))
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // Interrupt aborts the current query execution.

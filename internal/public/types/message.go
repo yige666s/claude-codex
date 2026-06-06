@@ -52,15 +52,16 @@ type PreservedSegment struct {
 
 // ContentBlock represents a piece of message content.
 type ContentBlock struct {
-	Type      string                 `json:"type"` // "text", "tool_use", "tool_result", "thinking"
-	Text      string                 `json:"text,omitempty"`
-	Source    map[string]interface{} `json:"source,omitempty"`
-	ID        string                 `json:"id,omitempty"`
-	Name      string                 `json:"name,omitempty"`
-	Input     map[string]interface{} `json:"input,omitempty"`
-	ToolUseID string                 `json:"tool_use_id,omitempty"`
-	Content   string                 `json:"content,omitempty"`
-	IsError   bool                   `json:"is_error,omitempty"`
+	Type             string                 `json:"type"` // "text", "tool_use", "tool_result", "thinking"
+	Text             string                 `json:"text,omitempty"`
+	Source           map[string]interface{} `json:"source,omitempty"`
+	ID               string                 `json:"id,omitempty"`
+	Name             string                 `json:"name,omitempty"`
+	Input            map[string]interface{} `json:"input,omitempty"`
+	ThoughtSignature string                 `json:"thought_signature,omitempty"`
+	ToolUseID        string                 `json:"tool_use_id,omitempty"`
+	Content          string                 `json:"content,omitempty"`
+	IsError          bool                   `json:"is_error,omitempty"`
 }
 
 // ToolUseBlock represents a tool use block in assistant messages.

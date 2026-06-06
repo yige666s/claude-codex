@@ -117,6 +117,23 @@ func TestNewQueryEngine_NilConfig(t *testing.T) {
 	}
 }
 
+func TestPlannerContentBlocksPreservesThoughtSignature(t *testing.T) {
+	blocks := plannerContentBlocks(plannerapi.Plan{
+		ToolCalls: []plannerapi.ToolCall{{
+			ID:               "call-1",
+			Name:             "WebSearch",
+			Input:            json.RawMessage(`{"query":"tolan ai product"}`),
+			ThoughtSignature: "signed-thought",
+		}},
+	})
+	if len(blocks) != 1 {
+		t.Fatalf("expected one tool_use block, got %#v", blocks)
+	}
+	if blocks[0].ThoughtSignature != "signed-thought" {
+		t.Fatalf("thought signature was not preserved: %#v", blocks[0])
+	}
+}
+
 func TestQueryEngine_GetMessages(t *testing.T) {
 	config := &QueryEngineConfig{
 		WorkingDir:     "/test",

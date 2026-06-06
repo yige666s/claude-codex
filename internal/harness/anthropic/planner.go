@@ -34,7 +34,7 @@ func (p *Planner) Next(ctx context.Context, session *state.Session, tools []tool
 		return plannerapi.Plan{}, err
 	}
 
-	return planFromBlocks(response.Content, response.StopReason), nil
+	return validatePlan(p.model, planFromBlocks(response.Content, response.StopReason))
 }
 
 // StreamNext streams the Anthropic response, calling onChunk for each text delta.
@@ -142,11 +142,18 @@ func (p *Planner) StreamNext(ctx context.Context, session *state.Session, tools 
 		})
 	}
 
-	return plannerapi.Plan{
+	return validatePlan(p.model, plannerapi.Plan{
 		AssistantText: textSB.String(),
 		ToolCalls:     engineToolCalls,
 		StopReason:    stopReason,
-	}, nil
+	})
+}
+
+func validatePlan(model string, plan plannerapi.Plan) (plannerapi.Plan, error) {
+	if strings.TrimSpace(plan.AssistantText) != "" || len(plan.ToolCalls) > 0 {
+		return plan, nil
+	}
+	return plannerapi.Plan{}, fmt.Errorf("anthropic/%s empty response: no assistant text or tool calls", model)
 }
 
 // planFromBlocks converts Anthropic response content blocks into an engine Plan.

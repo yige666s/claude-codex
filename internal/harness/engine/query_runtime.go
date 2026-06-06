@@ -308,10 +308,11 @@ func assistantContentBlocks(msg state.Message) interface{} {
 	}
 	for _, call := range msg.ToolCalls {
 		blocks = append(blocks, publictypes.ContentBlock{
-			Type:  "tool_use",
-			ID:    call.ID,
-			Name:  call.Name,
-			Input: rawMessageToMap(call.Input),
+			Type:             "tool_use",
+			ID:               call.ID,
+			Name:             call.Name,
+			Input:            rawMessageToMap(call.Input),
+			ThoughtSignature: call.ThoughtSignature,
 		})
 	}
 	return blocks
@@ -467,9 +468,10 @@ func queryAssistantContent(content interface{}) (string, []state.ToolCall) {
 			case "tool_use":
 				input, _ := json.Marshal(block.Input)
 				toolCalls = append(toolCalls, state.ToolCall{
-					ID:    block.ID,
-					Name:  block.Name,
-					Input: input,
+					ID:               block.ID,
+					Name:             block.Name,
+					Input:            input,
+					ThoughtSignature: block.ThoughtSignature,
 				})
 			}
 		}

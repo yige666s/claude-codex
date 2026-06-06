@@ -4849,8 +4849,13 @@ func promptContentText(prompt []publictypes.ContentBlock) string {
 
 func (r *Runtime) runnerForScope(scope Scope) Runner {
 	if r.engineFactory == nil {
+		fmt.Printf("ERROR: engineFactory is nil - cannot create runner\n")
 		return nilRunner{}
 	}
+
+	fmt.Printf("DEBUG: runnerForScope - creating runner for UserID=%s, SessionID=%s\n",
+		scope.UserID, scope.SessionID)
+
 	scope.WorkingDir = r.sandboxedWorkingDir(scope.UserID, scope.WorkingDir)
 	if scope.WorkingDir == "" {
 		scope.WorkingDir = filepath.Clean(r.config.DefaultWorkingDir)
@@ -4867,7 +4872,15 @@ func (r *Runtime) runnerForScope(scope Scope) Runner {
 		scope.ArtifactMaxBytes = r.artifacts.MaxBytes()
 	}
 	scope.Artifacts = NewArtifactContentTypeWriter(scope.Artifacts, scope.ArtifactTypes)
-	return r.engineFactory(scope)
+
+	runner := r.engineFactory(scope)
+	if runner == nil {
+		fmt.Printf("ERROR: engineFactory returned nil runner\n")
+	} else {
+		fmt.Printf("DEBUG: runnerForScope - runner created successfully\n")
+	}
+
+	return runner
 }
 
 type sessionArtifactWriter struct {

@@ -245,8 +245,9 @@ func (qe *QueryEngine) SubmitMessage(
 		if err := qe.submitMessageInternal(ctx, prompt, options, messageChan); err != nil {
 			// Send error message
 			errorMsg := types.Message{
-				Type:      types.MessageTypeSystem,
-				Timestamp: time.Now(),
+				Type:              types.MessageTypeSystem,
+				Timestamp:         time.Now(),
+				IsApiErrorMessage: true,
 				Content: []types.ContentBlock{
 					{Type: "text", Text: fmt.Sprintf("Error: %v", err)},
 				},
@@ -728,10 +729,11 @@ func plannerContentBlocks(plan plannerapi.Plan) []types.ContentBlock {
 	}
 	for _, call := range plan.ToolCalls {
 		blocks = append(blocks, types.ContentBlock{
-			Type:  "tool_use",
-			ID:    call.ID,
-			Name:  call.Name,
-			Input: rawJSONToMap(call.Input),
+			Type:             "tool_use",
+			ID:               call.ID,
+			Name:             call.Name,
+			Input:            rawJSONToMap(call.Input),
+			ThoughtSignature: call.ThoughtSignature,
 		})
 	}
 	return blocks
@@ -907,9 +909,10 @@ func publicAssistantContent(content []types.ContentBlock) (string, []state.ToolC
 		case "tool_use":
 			input, _ := json.Marshal(block.Input)
 			toolCalls = append(toolCalls, state.ToolCall{
-				ID:    block.ID,
-				Name:  block.Name,
-				Input: input,
+				ID:               block.ID,
+				Name:             block.Name,
+				Input:            input,
+				ThoughtSignature: block.ThoughtSignature,
 			})
 		}
 	}
@@ -926,10 +929,11 @@ func stateAssistantContentBlocks(msg *state.Message) []types.ContentBlock {
 	}
 	for _, call := range msg.ToolCalls {
 		blocks = append(blocks, types.ContentBlock{
-			Type:  "tool_use",
-			ID:    call.ID,
-			Name:  call.Name,
-			Input: rawJSONToMap(call.Input),
+			Type:             "tool_use",
+			ID:               call.ID,
+			Name:             call.Name,
+			Input:            rawJSONToMap(call.Input),
+			ThoughtSignature: call.ThoughtSignature,
 		})
 	}
 	return blocks
