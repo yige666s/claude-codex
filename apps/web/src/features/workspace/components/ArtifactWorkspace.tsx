@@ -3,6 +3,7 @@ import { Brain, Download, ExternalLink, FileText, FileUp, Image, Search, Trash2,
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import type { Asset } from "../../../types";
+import { MarkdownContent } from "./messages/MarkdownContent";
 
 type BlobPreviewState = {
   status: "idle" | "loading" | "loaded" | "error";
@@ -147,6 +148,7 @@ function ArtifactPreviewSurface({
   const isImage = isImageAsset(asset);
   const isPDF = isPDFAsset(asset);
   const isText = isTextAsset(asset);
+  const isMarkdown = isMarkdownAsset(asset);
   const isDocx = isDOCXAsset(asset);
   const isOffice = ["ppt", "pptx", "doc", "docx", "xls", "xlsx"].includes(ext);
   const [assetPreview, setAssetPreview] = useState<BlobPreviewState>({ status: "idle", url: "" });
@@ -206,7 +208,9 @@ function ArtifactPreviewSurface({
         <div className="artifact-text-preview" role="document" aria-label={asset.filename}>
           {assetPreview.status === "loading" && <PreviewFallback>Loading preview...</PreviewFallback>}
           {assetPreview.status === "error" && <PreviewFallback>{assetPreview.error || "Preview failed"}</PreviewFallback>}
-          {assetPreview.status === "loaded" && <pre>{assetPreview.text}</pre>}
+          {assetPreview.status === "loaded" && (
+            isMarkdown ? <MarkdownContent text={assetPreview.text || ""} /> : <pre>{assetPreview.text}</pre>
+          )}
         </div>
       )}
       {isOffice && !isDocx && (
@@ -257,6 +261,12 @@ function isTextAsset(asset: Asset): boolean {
     contentType.startsWith("text/") ||
     ["txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "log", "yaml", "yml", "xml", "html", "css", "js", "jsx", "ts", "tsx", "go", "py", "java", "c", "cpp", "h", "sh", "sql", "toml", "ini", "env"].includes(ext)
   );
+}
+
+function isMarkdownAsset(asset: Asset): boolean {
+  const contentType = (asset.content_type || "").toLowerCase().split(";")[0].trim();
+  const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
+  return contentType === "text/markdown" || ext === "md" || ext === "markdown";
 }
 
 function errorMessage(error: unknown): string {

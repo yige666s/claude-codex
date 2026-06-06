@@ -2647,6 +2647,9 @@ label.composer-upload {
   font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: pre-wrap;
 }
+.artifact-text-preview .markdown-content {
+  padding: 16px;
+}
 .artifact-preview-fallback,
 .artifact-workspace-empty {
   min-height: 180px;
@@ -3917,6 +3920,9 @@ label.composer-upload {
   font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.text-preview .markdown-content {
+  padding: 18px;
 }
 .preview-fallback {
   display: grid;

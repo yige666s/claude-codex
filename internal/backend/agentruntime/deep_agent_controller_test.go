@@ -941,8 +941,8 @@ func TestRuntimeDeepAgentModelArtifactUsesAssistantMessageWhenOutputEmpty(t *tes
 	if got := deepAgentAnyInt(result.Metadata["artifact_count"], -1); got != 1 {
 		t.Fatalf("artifact_count = %d, want 1 in %#v", got, result.Metadata)
 	}
-	if !strings.Contains(result.Output, "报告正文") {
-		t.Fatalf("expected assistant message to be used as output, got %q", result.Output)
+	if strings.Contains(result.Output, "报告正文") || !strings.Contains(result.Output, "Artifacts") {
+		t.Fatalf("expected concise artifact pointer output, got %q", result.Output)
 	}
 	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
 	if err != nil {
@@ -950,6 +950,13 @@ func TestRuntimeDeepAgentModelArtifactUsesAssistantMessageWhenOutputEmpty(t *tes
 	}
 	if len(artifacts) != 1 || artifacts[0].Filename != "assistant-output.md" {
 		t.Fatalf("unexpected artifacts: %#v", artifacts)
+	}
+	_, data, err := runtime.GetArtifact(context.Background(), "alice", artifacts[0].ID)
+	if err != nil {
+		t.Fatalf("get artifact: %v", err)
+	}
+	if !strings.Contains(string(data), "报告正文") {
+		t.Fatalf("expected assistant message to be saved as artifact content, got %q", string(data))
 	}
 }
 
@@ -1383,6 +1390,24 @@ func TestDeepAgentModelArtifactFallbackExtractsMarkdownReport(t *testing.T) {
 	}
 }
 
+func TestDeepAgentModelActionUserOutputUsesArtifactPointer(t *testing.T) {
+	metadata := map[string]any{
+		"artifact_refs": []DeepAgentArtifactRef{{
+			ID:       "artifact-1",
+			Filename: "tolan-report.md",
+		}},
+	}
+	longReport := "# Tolan AI 调研报告\n\n## 摘要\n\n这是一段很长的 artifact 正文。"
+
+	got := deepAgentModelActionUserOutput("", longReport, "", metadata, 1)
+	if strings.Contains(got, "## 摘要") || strings.Contains(got, "artifact 正文") {
+		t.Fatalf("artifact user output should not include artifact body: %q", got)
+	}
+	if !strings.Contains(got, "tolan-report.md") || !strings.Contains(got, "Artifacts") {
+		t.Fatalf("artifact user output should point to artifact preview, got %q", got)
+	}
+}
+
 func TestRuntimeDeepAgentRouterUsesDocxSkillWhenExplicitlyRequested(t *testing.T) {
 	runtime := NewRuntime(
 		RuntimeConfig{},
@@ -1604,6 +1629,12 @@ func TestRuntimeDeepAgentExecutorRegistryReturnsArtifactEvidence(t *testing.T) {
 	}
 	if evidence.Artifacts[0].StepID != "write-report" || !strings.HasSuffix(evidence.Artifacts[0].Filename, ".md") {
 		t.Fatalf("unexpected artifact evidence: %#v", evidence.Artifacts)
+	}
+	if strings.Contains(result.Output, "## 摘要") || strings.Contains(result.Output, "Tolan AI 是一个 AI 产品") {
+		t.Fatalf("artifact step should return a concise artifact pointer, got full report output: %q", result.Output)
+	}
+	if !strings.Contains(result.Output, "Artifacts") {
+		t.Fatalf("artifact step should point to the Artifacts panel, got %q", result.Output)
 	}
 }
 

@@ -4,6 +4,7 @@ import { Button } from "../../../components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../../components/ui/dialog";
 import { userFacingErrorMessage } from "../../../api/errorMessages";
 import type { Asset } from "../../../types";
+import { MarkdownContent } from "./messages/MarkdownContent";
 
 type BlobPreviewState = {
   status: "idle" | "loading" | "loaded" | "error";
@@ -24,6 +25,7 @@ export function PreviewModal({ asset, loadAsset, loadPreview, onClose }: Preview
   const isImage = isImageAsset(asset);
   const isPDF = isPDFAsset(asset);
   const isText = isTextAsset(asset);
+  const isMarkdown = isMarkdownAsset(asset);
   const isDocx = isDOCXAsset(asset);
   const isOffice = ["ppt", "pptx", "doc", "docx", "xls", "xlsx"].includes(ext);
   const [assetPreview, setAssetPreview] = useState<BlobPreviewState>({
@@ -113,7 +115,9 @@ export function PreviewModal({ asset, loadAsset, loadPreview, onClose }: Preview
             <div className="text-preview" role="document" aria-label={asset.filename}>
               {assetPreview.status === "loading" && <div className="preview-fallback">Loading preview...</div>}
               {assetPreview.status === "error" && <div className="preview-fallback">{assetPreview.error || "Preview failed"}</div>}
-              {assetPreview.status === "loaded" && <pre>{assetPreview.text}</pre>}
+              {assetPreview.status === "loaded" && (
+                isMarkdown ? <MarkdownContent text={assetPreview.text || ""} /> : <pre>{assetPreview.text}</pre>
+              )}
             </div>
           )}
           {isOffice && (!isDocx || !loadPreview) && (
@@ -187,6 +191,11 @@ function isTextAsset(asset: Asset): boolean {
   );
 }
 
+function isMarkdownAsset(asset: Asset): boolean {
+  const contentType = (asset.content_type || "").toLowerCase().split(";")[0].trim();
+  const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
+  return contentType === "text/markdown" || ext === "md" || ext === "markdown";
+}
 
 function formatBytes(bytes: number): string {
   if (!bytes) return "0 KB";

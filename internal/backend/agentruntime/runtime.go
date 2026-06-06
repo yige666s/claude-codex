@@ -4435,7 +4435,7 @@ func recordArtifactToolResult(session *state.Session, callID string, artifact *A
 		ContentType:          artifact.ContentType,
 		SizeBytes:            artifact.SizeBytes,
 		DownloadPath:         "/v1/artifacts/" + artifact.ID,
-		AssistantInstruction: "Use this metadata as internal context only. Tell the user the generated artifact is ready in the Artifacts panel. Do not expose raw JSON, artifact IDs, object paths, or download paths unless the user explicitly asks for technical details.",
+		AssistantInstruction: "Use this metadata as internal context only. Tell the user the generated artifact is ready in the Artifacts panel. Do not paste the artifact body/content into chat. Do not expose raw JSON, artifact IDs, object paths, or download paths unless the user explicitly asks for technical details.",
 	})
 	callID = strings.TrimSpace(callID)
 	if callID == "" {

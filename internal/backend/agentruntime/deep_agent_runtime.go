@@ -398,7 +398,7 @@ func deepAgentToolUsageReminder() string {
 For artifact creation steps:
 1. Generate the complete content (markdown, JSON, CSV, HTML, etc.)
 2. Call the Artifact tool with appropriate filename and the full content
-3. Confirm artifact creation in your response`
+3. Confirm artifact creation with a brief pointer only. Do not paste the artifact body/content into chat after it has been saved; tell the user to view it in the Artifacts panel.`
 }
 
 func deepAgentStepRequiresArtifact(step DeepAgentStep) bool {
@@ -792,10 +792,48 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	}
 	return DeepAgentActionResult{
 		Status:    DeepAgentActionStatusSucceeded,
-		Output:    firstNonEmptyString(artifactSatisfiedOutput, result.Output, fallbackOutput),
+		Output:    deepAgentModelActionUserOutput(artifactSatisfiedOutput, result.Output, fallbackOutput, metadata, artifactCount),
 		Completed: true,
 		Metadata:  metadata,
 	}, nil
+}
+
+func deepAgentModelActionUserOutput(artifactSatisfiedOutput, resultOutput, fallbackOutput string, metadata map[string]any, artifactCount int64) string {
+	if ready := deepAgentArtifactReadyOutput(metadata, artifactCount); ready != "" {
+		return ready
+	}
+	return firstNonEmptyString(artifactSatisfiedOutput, resultOutput, fallbackOutput)
+}
+
+func deepAgentArtifactReadyOutput(metadata map[string]any, artifactCount int64) string {
+	if artifactCount <= 0 {
+		return ""
+	}
+	refs := deepAgentArtifactRefsFromAny(metadata["artifact_refs"])
+	names := make([]string, 0, len(refs))
+	seen := map[string]struct{}{}
+	for _, ref := range refs {
+		name := strings.TrimSpace(ref.Filename)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, name)
+	}
+	switch {
+	case len(names) == 1:
+		return fmt.Sprintf("已生成 artifact %s，可在 Artifacts 面板查看。", names[0])
+	case len(names) > 1:
+		return fmt.Sprintf("已生成 %d 个 artifacts（%s），可在 Artifacts 面板查看。", len(names), strings.Join(names, ", "))
+	case artifactCount == 1:
+		return "已生成 artifact，可在 Artifacts 面板查看。"
+	default:
+		return fmt.Sprintf("已生成 %d 个 artifacts，可在 Artifacts 面板查看。", artifactCount)
+	}
 }
 
 func runDeepAgentExecutionPrompt(ctx context.Context, runner Runner, session *state.Session, prompt string, startMessageCount int) (engine.Result, int, error) {
