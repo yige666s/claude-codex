@@ -4,7 +4,7 @@ import { Button } from "../../../components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../../components/ui/dialog";
 import { userFacingErrorMessage } from "../../../api/errorMessages";
 import type { Asset } from "../../../types";
-import { MarkdownContent } from "./messages/MarkdownContent";
+import { DataPreview, isPreviewableTextAsset } from "./messages/DataPreview";
 
 type BlobPreviewState = {
   status: "idle" | "loading" | "loaded" | "error";
@@ -24,8 +24,7 @@ export function PreviewModal({ asset, loadAsset, loadPreview, onClose }: Preview
   const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
   const isImage = isImageAsset(asset);
   const isPDF = isPDFAsset(asset);
-  const isText = isTextAsset(asset);
-  const isMarkdown = isMarkdownAsset(asset);
+  const isText = isPreviewableTextAsset(asset);
   const isDocx = isDOCXAsset(asset);
   const isOffice = ["ppt", "pptx", "doc", "docx", "xls", "xlsx"].includes(ext);
   const [assetPreview, setAssetPreview] = useState<BlobPreviewState>({
@@ -115,9 +114,7 @@ export function PreviewModal({ asset, loadAsset, loadPreview, onClose }: Preview
             <div className="text-preview" role="document" aria-label={asset.filename}>
               {assetPreview.status === "loading" && <div className="preview-fallback">Loading preview...</div>}
               {assetPreview.status === "error" && <div className="preview-fallback">{assetPreview.error || "Preview failed"}</div>}
-              {assetPreview.status === "loaded" && (
-                isMarkdown ? <MarkdownContent text={assetPreview.text || ""} /> : <pre>{assetPreview.text}</pre>
-              )}
+              {assetPreview.status === "loaded" && <DataPreview text={assetPreview.text || ""} filename={asset.filename} contentType={asset.content_type} />}
             </div>
           )}
           {isOffice && (!isDocx || !loadPreview) && (
@@ -151,50 +148,6 @@ function isPDFAsset(asset: Asset): boolean {
 function isDOCXAsset(asset: Asset): boolean {
   const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
   return asset.content_type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || ext === "docx";
-}
-
-function isTextAsset(asset: Asset): boolean {
-  const contentType = asset.content_type || "";
-  const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
-  return (
-    contentType.startsWith("text/") ||
-    [
-      "txt",
-      "md",
-      "markdown",
-      "csv",
-      "tsv",
-      "json",
-      "jsonl",
-      "log",
-      "yaml",
-      "yml",
-      "xml",
-      "html",
-      "css",
-      "js",
-      "jsx",
-      "ts",
-      "tsx",
-      "go",
-      "py",
-      "java",
-      "c",
-      "cpp",
-      "h",
-      "sh",
-      "sql",
-      "toml",
-      "ini",
-      "env"
-    ].includes(ext)
-  );
-}
-
-function isMarkdownAsset(asset: Asset): boolean {
-  const contentType = (asset.content_type || "").toLowerCase().split(";")[0].trim();
-  const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
-  return contentType === "text/markdown" || ext === "md" || ext === "markdown";
 }
 
 function formatBytes(bytes: number): string {

@@ -3,7 +3,7 @@ import { Brain, Download, ExternalLink, FileText, FileUp, Image, Search, Trash2,
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import type { Asset } from "../../../types";
-import { MarkdownContent } from "./messages/MarkdownContent";
+import { DataPreview, isPreviewableTextAsset } from "./messages/DataPreview";
 
 type BlobPreviewState = {
   status: "idle" | "loading" | "loaded" | "error";
@@ -147,8 +147,7 @@ function ArtifactPreviewSurface({
   const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
   const isImage = isImageAsset(asset);
   const isPDF = isPDFAsset(asset);
-  const isText = isTextAsset(asset);
-  const isMarkdown = isMarkdownAsset(asset);
+  const isText = isPreviewableTextAsset(asset);
   const isDocx = isDOCXAsset(asset);
   const isOffice = ["ppt", "pptx", "doc", "docx", "xls", "xlsx"].includes(ext);
   const [assetPreview, setAssetPreview] = useState<BlobPreviewState>({ status: "idle", url: "" });
@@ -208,9 +207,7 @@ function ArtifactPreviewSurface({
         <div className="artifact-text-preview" role="document" aria-label={asset.filename}>
           {assetPreview.status === "loading" && <PreviewFallback>Loading preview...</PreviewFallback>}
           {assetPreview.status === "error" && <PreviewFallback>{assetPreview.error || "Preview failed"}</PreviewFallback>}
-          {assetPreview.status === "loaded" && (
-            isMarkdown ? <MarkdownContent text={assetPreview.text || ""} /> : <pre>{assetPreview.text}</pre>
-          )}
+          {assetPreview.status === "loaded" && <DataPreview text={assetPreview.text || ""} filename={asset.filename} contentType={asset.content_type} />}
         </div>
       )}
       {isOffice && !isDocx && (
@@ -236,7 +233,7 @@ function PreviewFallback({ children }: { children: ReactNode }) {
 
 function ArtifactIcon({ asset }: { asset: Asset }) {
   if (isImageAsset(asset)) return <Image size={17} />;
-  if (isTextAsset(asset) || isPDFAsset(asset)) return <FileText size={17} />;
+  if (isPreviewableTextAsset(asset) || isPDFAsset(asset)) return <FileText size={17} />;
   return <FileUp size={17} />;
 }
 
@@ -252,21 +249,6 @@ function isPDFAsset(asset: Asset): boolean {
 function isDOCXAsset(asset: Asset): boolean {
   const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
   return asset.content_type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || ext === "docx";
-}
-
-function isTextAsset(asset: Asset): boolean {
-  const contentType = asset.content_type || "";
-  const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
-  return (
-    contentType.startsWith("text/") ||
-    ["txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "log", "yaml", "yml", "xml", "html", "css", "js", "jsx", "ts", "tsx", "go", "py", "java", "c", "cpp", "h", "sh", "sql", "toml", "ini", "env"].includes(ext)
-  );
-}
-
-function isMarkdownAsset(asset: Asset): boolean {
-  const contentType = (asset.content_type || "").toLowerCase().split(";")[0].trim();
-  const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
-  return contentType === "text/markdown" || ext === "md" || ext === "markdown";
 }
 
 function errorMessage(error: unknown): string {

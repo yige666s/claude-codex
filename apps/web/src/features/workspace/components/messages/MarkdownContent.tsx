@@ -1,6 +1,9 @@
 import ReactMarkdown, { type Components } from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import "katex/dist/katex.min.css";
 
 const markdownComponents: Components = {
   h1: ({ children }) => <h2>{children}</h2>,
@@ -42,7 +45,8 @@ export function MarkdownContent({ text }: { text: string }) {
     <div className="markdown-content">
       <ReactMarkdown
         components={markdownComponents}
-        remarkPlugins={[remarkGfm, remarkBreaks]}
+        rehypePlugins={[rehypeKatex]}
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }], remarkBreaks]}
         skipHtml
       >
         {text}

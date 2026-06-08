@@ -72,4 +72,25 @@ describe("MarkdownContent", () => {
     expect(html).toContain("href=\"https://example.com\"");
     expect(html).not.toContain("<script>");
   });
+
+  it("renders inline and block math without exposing source delimiters", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownContent
+        text={[
+          "选项 B：$|z| = 5$",
+          "",
+          "$$",
+          "z^2 = (3 + 2i)^2 = 5 + 12i",
+          "$$",
+          "",
+          "结论：$\\frac{z + 3}{z - i} \\in \\mathbb{R}$"
+        ].join("\n")}
+      />
+    );
+
+    expect(html).toContain("katex");
+    expect(html).toContain("katex-display");
+    expect(html).not.toContain("$$");
+    expect(html).not.toContain("$|z| = 5$");
+  });
 });
