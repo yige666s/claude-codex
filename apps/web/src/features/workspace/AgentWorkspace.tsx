@@ -227,6 +227,7 @@ export function AgentWorkspace() {
   const lastJobEventRef = useRef("");
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const artifactsRef = useRef<Asset[]>([]);
+  const chatTurnRef = useRef(0);
   const authSession = auth || api.session();
   const activeSession = sessions.find((item) => item.id === sessionId);
   const latestJob = jobs[0];
@@ -545,9 +546,9 @@ export function AgentWorkspace() {
     await loadPersonalizationSettings();
   }
 
-  async function refreshSessionData(id: string, options: { revealNewArtifacts?: boolean } = {}) {
+  async function refreshSessionData(id: string, options: { revealNewArtifacts?: boolean; quiet?: boolean; shouldApply?: () => boolean } = {}) {
     if (!id || deletedSessionIdsRef.current.has(id)) return;
-    if (selectedSessionIdRef.current === id) {
+    if (!options.quiet && selectedSessionIdRef.current === id) {
       setStatus({ tone: "busy", text: "Refreshing" });
     }
     const previousArtifactIds = new Set(artifactsRef.current.map((asset) => asset.id));
@@ -566,6 +567,7 @@ export function AgentWorkspace() {
       if (deletedSessionIdsRef.current.has(id)) return;
       throw error;
     }
+    if (options.shouldApply && !options.shouldApply()) return;
     if (deletedSessionIdsRef.current.has(id) || deletedSessionIdsRef.current.has(session.id)) return;
     setSessions((current) => upsertSession(
       current.filter((item) => !deletedSessionIdsRef.current.has(item.id)),
@@ -1062,10 +1064,13 @@ export function AgentWorkspace() {
     const content = draft.trim();
     if ((!content && pendingAttachments.length === 0) || !sessionId || busyChat) return;
     const requestSessionId = sessionId;
+    const requestTurn = chatTurnRef.current + 1;
+    chatTurnRef.current = requestTurn;
     const attachmentIds = pendingAttachments.map((asset) => asset.id);
     const abort = new AbortController();
     let routedToJob = false;
     let sawRuntimeError = false;
+    let postChatRefreshStarted = false;
     let firstTokenSeen = false;
     const sentAt = performance.now();
     let streamStartedAt = sentAt;
@@ -1095,6 +1100,22 @@ export function AgentWorkspace() {
     try {
       const response = await api.chatResponse(requestSessionId, requestContent, attachmentIds, abort.signal, { agentMode });
       const timingElapsed = (now: number) => Math.max(0, Math.round(now - streamStartedAt));
+      const releaseChatControls = () => {
+        if (abortRef.current === abort) abortRef.current = null;
+        setBusyChat(false);
+        setAssistantDraft("");
+      };
+      const startPostChatRefresh = () => {
+        if (routedToJob || postChatRefreshStarted) return;
+        postChatRefreshStarted = true;
+        setPendingAttachments([]);
+        releaseChatControls();
+        refreshSessionData(requestSessionId, {
+          revealNewArtifacts: true,
+          quiet: true,
+          shouldApply: () => chatTurnRef.current === requestTurn && !abortRef.current
+        }).catch((error) => showError(error));
+      };
       const updateVisibleTiming = (now: number, firstVisible: boolean) => {
         lastVisibleAssistantAt = now;
         if (selectedSessionIdRef.current !== requestSessionId) return;
@@ -1111,6 +1132,7 @@ export function AgentWorkspace() {
         }
         if (data.type === "job") routedToJob = true;
         if (data.type === "error") sawRuntimeError = true;
+        if (data.type === "done") startPostChatRefresh();
         if (!firstTokenSeen && data.type === "delta" && data.content) {
           firstTokenSeen = true;
           const now = performance.now();
@@ -1134,8 +1156,7 @@ export function AgentWorkspace() {
       if (selectedSessionIdRef.current === requestSessionId && lastVisibleAssistantAt !== null) {
         setResponseTiming((current) => current?.sessionId === requestSessionId ? { ...current, totalMs: timingElapsed(lastVisibleAssistantAt as number) } : current);
       }
-      setPendingAttachments([]);
-      if (!routedToJob) await refreshSessionData(requestSessionId, { revealNewArtifacts: true });
+      startPostChatRefresh();
       if (sawRuntimeError) {
         setStatus((current) => current.tone === "error" ? current : { tone: "error", text: "Request failed" });
       }

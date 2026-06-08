@@ -1356,9 +1356,17 @@ func TestRuntimeUsesConfiguredMemoryExtractor(t *testing.T) {
 	if err := runtime.Chat(ctx, ChatRequest{UserID: "alice", SessionID: session.ID, Content: "please keep release notes concise"}, &collectSink{}); err != nil {
 		t.Fatalf("chat: %v", err)
 	}
-	items, err := memory.ListMemoryItems(ctx, "alice", MemoryItemFilter{SessionID: session.ID})
-	if err != nil {
-		t.Fatalf("list memory: %v", err)
+	var items []MemoryItem
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		items, err = memory.ListMemoryItems(ctx, "alice", MemoryItemFilter{SessionID: session.ID})
+		if err != nil {
+			t.Fatalf("list memory: %v", err)
+		}
+		if len(items) == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if len(items) != 1 {
 		t.Fatalf("expected one LLM memory item, got %#v", items)
@@ -1366,6 +1374,45 @@ func TestRuntimeUsesConfiguredMemoryExtractor(t *testing.T) {
 	if items[0].Category != MemoryCategoryPreference || items[0].Metadata["extractor"] != "llm" || !strings.Contains(items[0].Content, "Korean release notes") {
 		t.Fatalf("unexpected extracted memory: %#v", items[0])
 	}
+}
+
+func TestRuntimeChatSchedulesAfterTurnMemoryInBackground(t *testing.T) {
+	root := t.TempDir()
+	memory := newBlockingMemoryService()
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(root),
+		memory,
+		nil,
+		func(Scope) Runner { return echoRunner{} },
+	)
+	runtime.memoryExtract = nil
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	sink := &collectSink{}
+	done := make(chan error, 1)
+	go func() {
+		done <- runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "hello"}, sink)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("chat waited for after-turn memory")
+	}
+	if !sink.hasEvent("done") {
+		t.Fatal("expected done event before memory completes")
+	}
+	select {
+	case <-memory.started:
+	case <-time.After(time.Second):
+		t.Fatal("after-turn memory did not start")
+	}
+	close(memory.release)
 }
 
 func TestRuntimeInjectsTransientContextsForLLMOnly(t *testing.T) {
@@ -5772,6 +5819,55 @@ func (streamingTextPlanner) StreamNext(_ context.Context, _ *state.Session, _ []
 type collectSink struct {
 	mu     sync.Mutex
 	events []Event
+}
+
+type blockingMemoryService struct {
+	startOnce sync.Once
+	started   chan struct{}
+	release   chan struct{}
+}
+
+func newBlockingMemoryService() *blockingMemoryService {
+	return &blockingMemoryService{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (s *blockingMemoryService) LoadContext(context.Context, string, *state.Session) (string, error) {
+	return "", nil
+}
+
+func (s *blockingMemoryService) LoadUserMemory(context.Context, string) (string, error) {
+	return "", nil
+}
+
+func (s *blockingMemoryService) LoadSessionMemory(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (s *blockingMemoryService) AfterTurn(ctx context.Context, _ string, _ *state.Session) error {
+	s.startOnce.Do(func() {
+		close(s.started)
+	})
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *blockingMemoryService) DeleteSession(context.Context, string, string) error {
+	return nil
+}
+
+func (s *blockingMemoryService) DeleteUser(context.Context, string) error {
+	return nil
+}
+
+func (s *blockingMemoryService) PruneBefore(context.Context, time.Time) (int, error) {
+	return 0, nil
 }
 
 type fakeSkillCatalog struct {

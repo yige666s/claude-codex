@@ -34,6 +34,7 @@ const (
 	workspaceContextAckContent  = "Understood. I have the workspace context."
 	liveSkillSelectionTimeout   = 8 * time.Second
 	liveWebResearchTimeout      = 75 * time.Second
+	afterTurnMemoryTimeout      = 30 * time.Second
 )
 
 type hiddenUserMessageContextKey struct{}
@@ -1604,15 +1605,15 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 		}
 		return nil
 	}
-	if r.memory != nil {
-		if err := r.afterTurnMemory(ctx, req.UserID, session); err != nil {
-			return err
-		}
-	}
+	finishTurn()
 	if err := sink.Send(ctx, Event{Type: "message", SessionID: session.ID, Role: "assistant", Content: result.Output}); err != nil {
 		return err
 	}
-	return sink.Send(ctx, Event{Type: "done", SessionID: session.ID})
+	if err := sink.Send(ctx, Event{Type: "done", SessionID: session.ID}); err != nil {
+		return err
+	}
+	r.scheduleAfterTurnMemory(ctx, req.UserID, session)
+	return nil
 }
 
 func (r *Runtime) LiveSystemInstruction(ctx context.Context, userID, sessionID string) string {
@@ -2886,6 +2887,32 @@ func (r *Runtime) afterTurnMemory(ctx context.Context, userID string, session *s
 		return err
 	}
 	return nil
+}
+
+func (r *Runtime) scheduleAfterTurnMemory(ctx context.Context, userID string, session *state.Session) {
+	if r == nil || r.memory == nil || session == nil {
+		return
+	}
+	sessionCopy := cloneSessionForBackgroundMemory(session)
+	logCtx := context.WithoutCancel(ctx)
+	go func() {
+		runCtx, cancel := context.WithTimeout(logCtx, afterTurnMemoryTimeout)
+		defer cancel()
+		if err := r.afterTurnMemory(runCtx, userID, sessionCopy); err != nil {
+			logError(runCtx, r.logger, "after-turn memory failed", err, contextLogAttrs(logCtx, userID, sessionCopy.ID, "")...)
+		}
+	}()
+}
+
+func cloneSessionForBackgroundMemory(session *state.Session) *state.Session {
+	if session == nil {
+		return nil
+	}
+	clone := *session
+	clone.Tags = append([]string(nil), session.Tags...)
+	clone.Metadata = cloneStringMap(session.Metadata)
+	clone.Messages = cloneStateMessages(session.Messages)
+	return &clone
 }
 
 func (r *Runtime) markMemoryAbstractionsDirty(ctx context.Context, userID string, service MemoryItemService) error {
