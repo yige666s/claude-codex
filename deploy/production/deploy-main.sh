@@ -46,6 +46,7 @@ if [ ! -d "$app_dir/.git" ]; then
   git clone --branch "$branch" "$repo_url" "$app_dir"
 fi
 
+git config --global --add safe.directory "$app_dir" || true
 cd "$app_dir"
 git remote set-url origin "$repo_url"
 git fetch --prune origin "$branch"

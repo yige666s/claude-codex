@@ -133,6 +133,7 @@ jobs:
                rm -rf /opt/agentapi/repo
                git clone --branch main https://github.com/yige666s/claude-codex.git /opt/agentapi/repo
              fi
+             git config --global --add safe.directory /opt/agentapi/repo || true
              cd /opt/agentapi/repo
              git remote set-url origin https://github.com/yige666s/claude-codex.git
              git fetch --prune origin main
