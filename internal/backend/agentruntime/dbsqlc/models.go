@@ -242,6 +242,35 @@ type AgentMemory struct {
 	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
+type AgentMemoryEpisode struct {
+	ID             string       `json:"id"`
+	UserID         string       `json:"user_id"`
+	SessionID      string       `json:"session_id"`
+	Title          string       `json:"title"`
+	Summary        string       `json:"summary"`
+	L0Abstract     string       `json:"l0_abstract"`
+	KeyTopics      string       `json:"key_topics"`
+	SourceType     string       `json:"source_type"`
+	SourceID       string       `json:"source_id"`
+	SourceRefs     string       `json:"source_refs"`
+	Status         string       `json:"status"`
+	Visibility     string       `json:"visibility"`
+	TurnCount      int64        `json:"turn_count"`
+	TokenCount     int64        `json:"token_count"`
+	Confidence     float64      `json:"confidence"`
+	Weight         float64      `json:"weight"`
+	RecallCount    int64        `json:"recall_count"`
+	UseCount       int64        `json:"use_count"`
+	RecallScore    float64      `json:"recall_score"`
+	LastRecalledAt sql.NullTime `json:"last_recalled_at"`
+	LastUsedAt     sql.NullTime `json:"last_used_at"`
+	PromotedAt     sql.NullTime `json:"promoted_at"`
+	Metadata       string       `json:"metadata"`
+	ExpiresAt      sql.NullTime `json:"expires_at"`
+	CreatedAt      time.Time    `json:"created_at"`
+	UpdatedAt      time.Time    `json:"updated_at"`
+}
+
 type AgentMemorySetting struct {
 	UserID    string    `json:"user_id"`
 	Payload   string    `json:"payload"`
