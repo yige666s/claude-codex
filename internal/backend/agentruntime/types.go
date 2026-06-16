@@ -545,6 +545,8 @@ type MemoryRecallConfig struct {
 	IntentClassifierEnabled      bool
 	IntentClassifierThreshold    float64
 	IntentClassifierContextTurns int
+	LLMTriggerEnabled            bool
+	LLMTriggerTimeout            time.Duration
 }
 
 type DeepAgentRuntimeConfig struct {

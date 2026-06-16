@@ -160,7 +160,7 @@ func TestParseLLMFallbacksAndModelRoutes(t *testing.T) {
 		t.Fatalf("unexpected routes %#v", routes)
 	}
 
-	routeSpec := "default=gemini-2.5-pro,chat=gemini-2.5-flash,chat:complex=gemini-2.5-pro,chat:search=gemini-2.5-flash,skill=gemini-2.5-pro"
+	routeSpec := "default=gemini-2.5-pro,chat=gemini-2.5-flash,chat:complex=gemini-2.5-pro,chat:search=gemini-2.5-flash,skill=gemini-2.5-pro,skill:memory-recall-trigger=gemini-3.1-flash-lite"
 	if got := bootstrap.RoutedModel("gemini-2.5-pro", routeSpec, agentruntime.Scope{Prompt: "查询一下北京天气"}); got != "gemini-2.5-flash" {
 		t.Fatalf("search chat route = %q", got)
 	}
@@ -169,6 +169,9 @@ func TestParseLLMFallbacksAndModelRoutes(t *testing.T) {
 	}
 	if got := bootstrap.RoutedModel("gemini-2.5-pro", routeSpec, agentruntime.Scope{SkillScoped: true, SkillName: "docx"}); got != "gemini-2.5-pro" {
 		t.Fatalf("skill route = %q", got)
+	}
+	if got := bootstrap.RoutedModel("gemini-2.5-pro", routeSpec, agentruntime.Scope{SkillScoped: true, SkillName: "memory-recall-trigger"}); got != "gemini-3.1-flash-lite" {
+		t.Fatalf("memory recall trigger route = %q", got)
 	}
 }
 

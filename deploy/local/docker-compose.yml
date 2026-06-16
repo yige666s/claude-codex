@@ -487,7 +487,7 @@ services:
       - -model
       - "${AGENT_API_MODEL:-gemini-2.5-pro}"
       - -llm-model-routes
-      - "${AGENT_API_LLM_MODEL_ROUTES:-default=gemini-2.5-pro,chat=gemini-2.5-flash,chat:normal=gemini-2.5-flash,chat:search=gemini-2.5-flash,chat:complex=gemini-2.5-pro,skill=gemini-2.5-pro}"
+      - "${AGENT_API_LLM_MODEL_ROUTES:-default=gemini-2.5-pro,chat=gemini-2.5-flash,chat:normal=gemini-2.5-flash,chat:search=gemini-2.5-flash,chat:complex=gemini-2.5-pro,skill=gemini-2.5-pro,skill:memory-recall-trigger=gemini-3.1-flash-lite}"
       - -llm-max-attempts
       - "${AGENT_API_LLM_MAX_ATTEMPTS:-2}"
       - -llm-chat-timeout

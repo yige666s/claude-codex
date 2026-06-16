@@ -207,7 +207,7 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		memoryExtract:         NewRuleMemoryExtractor(),
 		memoryAbstract:        NewRuleMemoryAbstractor(),
 		memoryOrganizer:       NewRuleMemoryOrganizer(),
-		memoryRecall:          NewMemoryRecallDecider(config.MemoryRecall, memoryRecallEmbedderFromConfig(config), componentLogger(logger, "memory_recall")),
+		memoryRecall:          NewMemoryRecallDecider(config.MemoryRecall, memoryRecallEmbedderFromConfig(config), componentLogger(logger, "memory_recall"), engineFactory),
 		episodeSummarizer:     RuleMemoryEpisodeSummarizer{},
 		skills:                skills,
 		workflowStore:         NewMemoryWorkflowStore(),
@@ -4031,9 +4031,10 @@ func (r *Runtime) injectTurnMemoryContexts(ctx context.Context, userID string, s
 	}
 	recall := r.memoryRecall
 	if recall == nil {
-		recall = NewMemoryRecallDecider(r.config.MemoryRecall, nil, componentLogger(r.logger, "memory_recall"))
+		recall = NewMemoryRecallDecider(r.config.MemoryRecall, nil, componentLogger(r.logger, "memory_recall"), r.engineFactory)
 	}
 	decision := recall.Decide(ctx, MemoryRecallInput{
+		UserID:          userID,
 		Session:         session,
 		Message:         query,
 		Personalization: personalization,

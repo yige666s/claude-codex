@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"claude-codex/internal/harness/engine"
 	"claude-codex/internal/harness/state"
 )
 
@@ -139,6 +140,72 @@ func TestMemoryRecallDeciderFallsBackWhenEmbeddingFails(t *testing.T) {
 	}
 }
 
+func TestMemoryRecallDeciderUsesSidecarLLMForImplicitLocationNeed(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	session.ID = "session-1"
+	session.AddUserMessage("我们刚才在聊北京周末安排")
+	session.AddAssistantMessage("可以按通勤距离和家庭出行偏好来安排。")
+	session.AddUserMessage("周围有什么推荐的美食打卡好去处吗")
+	config := memoryRecallTestConfig(2)
+	config.LLMTriggerEnabled = true
+	config.LLMTriggerTimeout = time.Second
+	config.IntentClassifierEnabled = true
+	config.IntentClassifierThreshold = 0.6
+	runner := &memoryRecallFakeRunner{output: `{"recall":true,"reason":"needs saved user location","query":"用户居住地 附近 美食 打卡 推荐"}`}
+
+	decider := NewMemoryRecallDecider(config, staticEmbeddingRecallEmbedder{
+		"周围有什么推荐的美食打卡好去处吗":                                                {0, 1},
+		"assistant: 可以按通勤距离和家庭出行偏好来安排。":                                   {0, 1},
+		"user: 我们刚才在聊北京周末安排":                                              {0, 1},
+		buildMemoryRecallIntentInput(session, "周围有什么推荐的美食打卡好去处吗", config): {0, 1},
+		memoryRecallIntentText("new_topic"):                               {1, 0},
+		memoryRecallIntentText("continuation"):                            {0, 1},
+		memoryRecallIntentText("history_ref"):                             {1, 0},
+		memoryRecallIntentText("chit_chat"):                               {0, 1},
+	}, nil, func(scope Scope) Runner {
+		if scope.UserID != "alice" {
+			t.Fatalf("sidecar user = %q, want alice", scope.UserID)
+		}
+		if scope.SkillName != memoryRecallLLMTriggerSkillName {
+			t.Fatalf("sidecar skill name = %q, want %q", scope.SkillName, memoryRecallLLMTriggerSkillName)
+		}
+		if scope.SessionID != "session-1" {
+			t.Fatalf("sidecar session = %q, want session-1", scope.SessionID)
+		}
+		return runner
+	})
+
+	decision := decider.Decide(context.Background(), MemoryRecallInput{UserID: "alice", Session: session, Message: "周围有什么推荐的美食打卡好去处吗"})
+	if !decision.Should || decision.Reason != memoryRecallReasonLLMTrigger {
+		t.Fatalf("expected llm trigger recall, got %#v", decision)
+	}
+	if decision.Query != "用户居住地 附近 美食 打卡 推荐" {
+		t.Fatalf("query = %q", decision.Query)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("sidecar calls = %d, want 1", runner.calls)
+	}
+}
+
+func TestMemoryRecallDeciderSkipsSidecarLLMForTrivialMessage(t *testing.T) {
+	config := memoryRecallTestConfig(2)
+	config.LLMTriggerEnabled = true
+	runner := &memoryRecallFakeRunner{output: `{"recall":true,"query":"should not run"}`}
+	decider := NewMemoryRecallDecider(config, nil, nil, func(Scope) Runner { return runner })
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("帮我看看这个配置")
+	session.AddAssistantMessage("可以。")
+	session.AddUserMessage("好的")
+
+	decision := decider.Decide(context.Background(), MemoryRecallInput{Session: session, Message: "好的"})
+	if decision.Should {
+		t.Fatalf("expected trivial message to skip recall, got %#v", decision)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("sidecar calls = %d, want 0", runner.calls)
+	}
+}
+
 func memoryRecallTestConfig(contextTurns int) MemoryRecallConfig {
 	return MemoryRecallConfig{
 		Configured:                   true,
@@ -155,6 +222,8 @@ func memoryRecallTestConfig(contextTurns int) MemoryRecallConfig {
 		EmbeddingWindow:              contextTurns,
 		MinQueryRunes:                8,
 		IntentClassifierContextTurns: contextTurns,
+		LLMTriggerEnabled:            false,
+		LLMTriggerTimeout:            time.Second,
 	}
 }
 
@@ -180,4 +249,21 @@ type failingEmbeddingRecallEmbedder struct{}
 
 func (failingEmbeddingRecallEmbedder) EmbedQuery(context.Context, string) ([]float32, error) {
 	return nil, errors.New("embedding unavailable")
+}
+
+type memoryRecallFakeRunner struct {
+	output string
+	calls  int
+}
+
+func (r *memoryRecallFakeRunner) Run(context.Context, *state.Session, string) (engine.Result, error) {
+	return engine.Result{Output: r.output}, nil
+}
+
+func (r *memoryRecallFakeRunner) RunGeneratedPrompt(_ context.Context, _ *state.Session, prompt string) (engine.Result, error) {
+	r.calls++
+	if prompt == "" {
+		return engine.Result{}, errors.New("empty prompt")
+	}
+	return engine.Result{Output: r.output}, nil
 }

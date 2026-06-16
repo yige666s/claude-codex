@@ -114,6 +114,8 @@ type Config struct {
 	MemoryRecallIntentClassifierEnabled      bool
 	MemoryRecallIntentClassifierThreshold    float64
 	MemoryRecallIntentClassifierContextTurns int
+	MemoryRecallLLMTriggerEnabled            bool
+	MemoryRecallLLMTriggerTimeout            time.Duration
 	EpisodicMemoryEnabled                    bool
 	EpisodicMemoryCaptureEnabled             bool
 	EpisodicMemoryContextEnabled             bool
@@ -387,6 +389,8 @@ func Default() Config {
 		MemoryRecallIntentClassifierEnabled:      EnvBool("AGENT_API_MEMORY_RECALL_INTENT_CLASSIFIER_ENABLED", true),
 		MemoryRecallIntentClassifierThreshold:    EnvFloat64("AGENT_API_MEMORY_RECALL_INTENT_CLASSIFIER_THRESHOLD", 0.6),
 		MemoryRecallIntentClassifierContextTurns: EnvInt("AGENT_API_MEMORY_RECALL_INTENT_CLASSIFIER_CONTEXT_TURNS", 4),
+		MemoryRecallLLMTriggerEnabled:            EnvBool("AGENT_API_MEMORY_RECALL_LLM_TRIGGER_ENABLED", true),
+		MemoryRecallLLMTriggerTimeout:            EnvDuration("AGENT_API_MEMORY_RECALL_LLM_TRIGGER_TIMEOUT", 900*time.Millisecond),
 		EpisodicMemoryEnabled:                    EnvBool("AGENT_API_EPISODIC_MEMORY_ENABLED", true),
 		EpisodicMemoryCaptureEnabled:             EnvBool("AGENT_API_EPISODIC_MEMORY_CAPTURE_ENABLED", true),
 		EpisodicMemoryContextEnabled:             EnvBool("AGENT_API_EPISODIC_MEMORY_CONTEXT_ENABLED", true),
@@ -661,6 +665,8 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.BoolVar(&cfg.MemoryRecallIntentClassifierEnabled, "memory-recall-intent-classifier-enabled", cfg.MemoryRecallIntentClassifierEnabled, "enable L3 embedding-based zero-shot memory recall intent classifier")
 	flags.Float64Var(&cfg.MemoryRecallIntentClassifierThreshold, "memory-recall-intent-classifier-threshold", cfg.MemoryRecallIntentClassifierThreshold, "minimum classifier similarity score that can trigger L3 memory recall")
 	flags.IntVar(&cfg.MemoryRecallIntentClassifierContextTurns, "memory-recall-intent-classifier-context-turns", cfg.MemoryRecallIntentClassifierContextTurns, "number of recent messages included in the L3 intent classifier context")
+	flags.BoolVar(&cfg.MemoryRecallLLMTriggerEnabled, "memory-recall-llm-trigger-enabled", cfg.MemoryRecallLLMTriggerEnabled, "enable low-cost sidecar LLM memory recall trigger fallback")
+	flags.DurationVar(&cfg.MemoryRecallLLMTriggerTimeout, "memory-recall-llm-trigger-timeout", cfg.MemoryRecallLLMTriggerTimeout, "maximum time to wait for sidecar LLM memory recall trigger")
 	flags.BoolVar(&cfg.EpisodicMemoryEnabled, "episodic-memory-enabled", cfg.EpisodicMemoryEnabled, "enable L2 episodic memory capture and recall")
 	flags.BoolVar(&cfg.EpisodicMemoryCaptureEnabled, "episodic-memory-capture-enabled", cfg.EpisodicMemoryCaptureEnabled, "enable after-turn L2 episodic memory capture")
 	flags.BoolVar(&cfg.EpisodicMemoryContextEnabled, "episodic-memory-context-enabled", cfg.EpisodicMemoryContextEnabled, "enable query-aware L2 episodic memory context injection")

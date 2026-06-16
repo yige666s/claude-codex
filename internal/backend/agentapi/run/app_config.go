@@ -125,6 +125,8 @@ func memoryRecallConfigFromStartup(cfg startupconfig.Config) agentruntime.Memory
 		IntentClassifierEnabled:      cfg.MemoryRecallIntentClassifierEnabled,
 		IntentClassifierThreshold:    cfg.MemoryRecallIntentClassifierThreshold,
 		IntentClassifierContextTurns: cfg.MemoryRecallIntentClassifierContextTurns,
+		LLMTriggerEnabled:            cfg.MemoryRecallLLMTriggerEnabled,
+		LLMTriggerTimeout:            cfg.MemoryRecallLLMTriggerTimeout,
 	}
 }
 

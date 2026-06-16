@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -24,6 +25,8 @@ const (
 	defaultMemoryRecallEmbeddingWindow         = 3
 	defaultMemoryRecallIntentThreshold         = 0.6
 	defaultMemoryRecallIntentContextTurns      = 4
+	defaultMemoryRecallLLMTriggerTimeout       = 900 * time.Millisecond
+	memoryRecallLLMTriggerSkillName            = "memory-recall-trigger"
 	memoryRecallReasonDisabled                 = "disabled"
 	memoryRecallReasonNoMessage                = "no_message"
 	memoryRecallReasonForceRule                = "force_rule"
@@ -34,6 +37,8 @@ const (
 	memoryRecallReasonEmbeddingFallbackNoMatch = "embedding_fallback_no_match"
 	memoryRecallReasonIntentClassifier         = "intent_classifier"
 	memoryRecallReasonIntentUnavailable        = "intent_classifier_unavailable"
+	memoryRecallReasonLLMTrigger               = "llm_trigger"
+	memoryRecallReasonLLMUnavailable           = "llm_trigger_unavailable"
 	memoryRecallReasonNoRecall                 = "no_recall_needed"
 )
 
@@ -63,20 +68,26 @@ type MemoryRecallDecision struct {
 }
 
 type MemoryRecallInput struct {
+	UserID          string
 	Session         *state.Session
 	Message         string
 	Personalization PersonalizationSettings
 }
 
 type MemoryRecallDecider struct {
-	config   MemoryRecallConfig
-	embedder QueryEmbedder
-	logger   *slog.Logger
+	config        MemoryRecallConfig
+	embedder      QueryEmbedder
+	runnerFactory EngineFactory
+	logger        *slog.Logger
 }
 
-func NewMemoryRecallDecider(config MemoryRecallConfig, embedder QueryEmbedder, logger *slog.Logger) *MemoryRecallDecider {
+func NewMemoryRecallDecider(config MemoryRecallConfig, embedder QueryEmbedder, logger *slog.Logger, runnerFactories ...EngineFactory) *MemoryRecallDecider {
 	config = normalizeMemoryRecallConfig(config)
-	return &MemoryRecallDecider{config: config, embedder: embedder, logger: logger}
+	var runnerFactory EngineFactory
+	if len(runnerFactories) > 0 {
+		runnerFactory = runnerFactories[0]
+	}
+	return &MemoryRecallDecider{config: config, embedder: embedder, runnerFactory: runnerFactory, logger: logger}
 }
 
 func memoryRecallEmbedderFromConfig(config RuntimeConfig) QueryEmbedder {
@@ -113,6 +124,8 @@ func defaultMemoryRecallConfig() MemoryRecallConfig {
 		IntentClassifierEnabled:      true,
 		IntentClassifierThreshold:    defaultMemoryRecallIntentThreshold,
 		IntentClassifierContextTurns: defaultMemoryRecallIntentContextTurns,
+		LLMTriggerEnabled:            true,
+		LLMTriggerTimeout:            defaultMemoryRecallLLMTriggerTimeout,
 	}
 }
 
@@ -161,6 +174,9 @@ func normalizeMemoryRecallConfig(config MemoryRecallConfig) MemoryRecallConfig {
 	}
 	if config.IntentClassifierContextTurns > 8 {
 		config.IntentClassifierContextTurns = 8
+	}
+	if config.LLMTriggerTimeout <= 0 {
+		config.LLMTriggerTimeout = defaultMemoryRecallLLMTriggerTimeout
 	}
 	return config
 }
@@ -226,7 +242,121 @@ func (d *MemoryRecallDecider) Decide(ctx context.Context, input MemoryRecallInpu
 	if !config.EmbeddingEnabled && !config.IntentClassifierEnabled && memoryRecallFallbackTrigger(message, config) {
 		return MemoryRecallDecision{Should: true, Reason: memoryRecallReasonEmbeddingUnavailable, Query: query}
 	}
+	if config.LLMTriggerEnabled && memoryRecallLLMTriggerCandidate(input.Session, message, config) {
+		decision, err := d.llmTrigger(ctx, input.UserID, input.Session, message, query, config)
+		if err != nil {
+			if d.logger != nil {
+				d.logger.LogAttrs(ctx, slog.LevelWarn, "memory recall llm trigger failed", slog.String("error", err.Error()))
+			}
+			return MemoryRecallDecision{Should: true, Reason: memoryRecallReasonLLMUnavailable, Query: query}
+		}
+		if decision.Should {
+			return decision
+		}
+	}
 	return MemoryRecallDecision{Reason: memoryRecallReasonNoRecall, Query: query}
+}
+
+type memoryRecallLLMResponse struct {
+	Recall bool   `json:"recall"`
+	Reason string `json:"reason"`
+	Query  string `json:"query"`
+}
+
+func (d *MemoryRecallDecider) llmTrigger(ctx context.Context, userID string, session *state.Session, message, defaultQuery string, config MemoryRecallConfig) (MemoryRecallDecision, error) {
+	if d == nil || d.runnerFactory == nil {
+		return MemoryRecallDecision{Reason: memoryRecallReasonNoRecall, Query: defaultQuery}, nil
+	}
+	timeout := config.LLMTriggerTimeout
+	if timeout <= 0 {
+		timeout = defaultMemoryRecallLLMTriggerTimeout
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	runner := d.runnerFactory(Scope{
+		UserID:       strings.TrimSpace(userID),
+		SessionID:    sessionIDForMemoryRecall(session),
+		Prompt:       message,
+		SkillName:    memoryRecallLLMTriggerSkillName,
+		SkillScoped:  true,
+		AllowedTools: []string{},
+	})
+	if runner == nil {
+		return MemoryRecallDecision{Reason: memoryRecallReasonNoRecall, Query: defaultQuery}, nil
+	}
+	result, err := runner.RunGeneratedPrompt(callCtx, state.NewSession(""), memoryRecallLLMTriggerPrompt(session, message, config))
+	if err != nil {
+		return MemoryRecallDecision{}, err
+	}
+	payload, err := parseMemoryRecallLLMResponse(result.Output)
+	if err != nil {
+		return MemoryRecallDecision{}, err
+	}
+	if !payload.Recall {
+		return MemoryRecallDecision{Reason: memoryRecallReasonNoRecall, Query: defaultQuery}, nil
+	}
+	query := strings.TrimSpace(payload.Query)
+	if query == "" {
+		query = defaultQuery
+	}
+	return MemoryRecallDecision{Should: true, Reason: memoryRecallReasonLLMTrigger, Query: query}, nil
+}
+
+func memoryRecallLLMTriggerPrompt(session *state.Session, message string, config MemoryRecallConfig) string {
+	contextText := recentMemoryRecallContext(session, message, config)
+	var b strings.Builder
+	b.WriteString("You are a low-cost sidecar classifier for memory recall.\n")
+	b.WriteString("Decide whether answering the latest user message needs saved user memory beyond the visible conversation window.\n")
+	b.WriteString("Trigger recall for explicit or implicit needs for user profile, preferences, location, relationships, projects, long-term habits, prior decisions, or earlier episodic context.\n")
+	b.WriteString("Do not trigger recall for short acknowledgements, pure continuation that visible context already answers, or questions answerable without user-specific history.\n")
+	b.WriteString("Return only compact JSON: {\"recall\":true|false,\"reason\":\"short reason\",\"query\":\"semantic memory search query\"}.\n")
+	if strings.TrimSpace(contextText) != "" {
+		b.WriteString("\nVisible recent conversation:\n")
+		b.WriteString(tailClipRunes(contextText, config.RecentContextMaxRunes))
+		b.WriteString("\n")
+	}
+	b.WriteString("\nLatest user message:\n")
+	b.WriteString(strings.TrimSpace(message))
+	b.WriteString("\n")
+	return b.String()
+}
+
+func parseMemoryRecallLLMResponse(output string) (memoryRecallLLMResponse, error) {
+	var payload memoryRecallLLMResponse
+	text := strings.TrimSpace(output)
+	if extracted := extractFirstJSONValue(text); extracted != "" {
+		text = extracted
+	}
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		return payload, err
+	}
+	payload.Reason = strings.TrimSpace(payload.Reason)
+	payload.Query = strings.TrimSpace(payload.Query)
+	return payload, nil
+}
+
+func memoryRecallLLMTriggerCandidate(session *state.Session, message string, config MemoryRecallConfig) bool {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return false
+	}
+	if memoryRecallForceTrigger(session, message, config) {
+		return false
+	}
+	if memoryRecallKeywordTrigger(message) {
+		return false
+	}
+	if containsCJK(message) {
+		return len([]rune(message)) >= config.MinQueryRunes
+	}
+	return len(queryTokens(message)) >= 3
+}
+
+func sessionIDForMemoryRecall(session *state.Session) string {
+	if session == nil {
+		return ""
+	}
+	return session.ID
 }
 
 func (d *MemoryRecallDecider) embeddingTrigger(ctx context.Context, session *state.Session, message string, config MemoryRecallConfig) (bool, string, error) {
