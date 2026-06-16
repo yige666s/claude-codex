@@ -43,10 +43,10 @@ func (m *ElasticsearchMessageIndexManager) Bootstrap(ctx context.Context) error 
 	if m.config.Backend != messageSearchBackendElasticsearch && m.config.Backend != messageSearchBackendHybrid {
 		return nil
 	}
-	if err := m.putJSON(ctx, joinEndpointPath(m.endpoint(), "_ilm", "policy", m.config.IndexLifecyclePolicy), m.lifecyclePolicy()); err != nil {
+	if err := m.ensureJSONResource(ctx, joinEndpointPath(m.endpoint(), "_ilm", "policy", m.config.IndexLifecyclePolicy), m.lifecyclePolicy()); err != nil {
 		return err
 	}
-	if err := m.putJSON(ctx, joinEndpointPath(m.endpoint(), "_index_template", m.config.IndexTemplateName), m.indexTemplate()); err != nil {
+	if err := m.ensureJSONResource(ctx, joinEndpointPath(m.endpoint(), "_index_template", m.config.IndexTemplateName), m.indexTemplate()); err != nil {
 		return err
 	}
 	return m.ensureWriteAlias(ctx)
@@ -331,6 +331,20 @@ func (m *ElasticsearchMessageIndexManager) putJSON(ctx context.Context, url stri
 		return fmt.Errorf("elasticsearch message index request failed: status %d: %s", status, string(data))
 	}
 	return nil
+}
+
+func (m *ElasticsearchMessageIndexManager) ensureJSONResource(ctx context.Context, url string, payload any) error {
+	status, data, err := m.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	if status >= 200 && status < 300 {
+		return nil
+	}
+	if status != http.StatusNotFound {
+		return fmt.Errorf("check elasticsearch message index resource failed: status %d: %s", status, string(data))
+	}
+	return m.putJSON(ctx, url, payload)
 }
 
 func (m *ElasticsearchMessageIndexManager) getJSON(ctx context.Context, url string, out any) error {

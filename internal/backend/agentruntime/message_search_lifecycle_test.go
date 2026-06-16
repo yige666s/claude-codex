@@ -22,6 +22,10 @@ func TestElasticsearchMessageIndexManagerBootstrapCreatesILMTemplateAndAlias(t *
 	var requests []capturedRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
+		if r.Method == http.MethodGet && (r.URL.Path == "/_ilm/policy/agent_messages_ilm" || r.URL.Path == "/_index_template/agent_messages_template") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if r.Method == http.MethodHead && r.URL.Path == "/agent_messages" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -80,6 +84,42 @@ func TestElasticsearchMessageIndexManagerBootstrapCreatesILMTemplateAndAlias(t *
 	}
 	if got := settings["number_of_replicas"]; got != float64(0) {
 		t.Fatalf("number_of_replicas = %v, want 0", got)
+	}
+}
+
+func TestElasticsearchMessageIndexManagerBootstrapSkipsExistingMetadata(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/_ilm/policy/agent_messages_ilm":
+			_, _ = w.Write([]byte(`{"agent_messages_ilm":{}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/_index_template/agent_messages_template":
+			_, _ = w.Write([]byte(`{"index_templates":[{"name":"agent_messages_template"}]}`))
+		case r.Method == http.MethodHead && r.URL.Path == "/agent_messages":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	manager := NewElasticsearchMessageIndexManager(MessageSearchConfig{
+		Backend:  messageSearchBackendElasticsearch,
+		Endpoint: server.URL,
+		Index:    "agent_messages",
+		Timeout:  time.Second,
+	}, nil)
+
+	if err := manager.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("Bootstrap() error = %v", err)
+	}
+	for _, request := range requests {
+		if strings.HasPrefix(request, http.MethodPut+" ") {
+			t.Fatalf("Bootstrap() should not PUT existing metadata, requests=%v", requests)
+		}
 	}
 }
 
