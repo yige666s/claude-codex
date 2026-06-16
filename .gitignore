@@ -120,5 +120,5 @@ secrets.yaml
 secrets.json
 .omc/
 .omx/
-docs/*
+docs/
 
