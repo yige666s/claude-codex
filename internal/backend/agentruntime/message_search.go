@@ -32,8 +32,10 @@ const (
 	defaultMessageSearchMaxRecallWindow            = 120
 	defaultMessageSearchRerankCandidateLimit       = 50
 	defaultMessageSearchLowConfidenceScore         = 0.04
+	defaultNVIDIAEmbeddingModel                    = "nvidia/llama-nemotron-embed-1b-v2"
 
 	messageEmbeddingProviderOpenAI = "openai"
+	messageEmbeddingProviderNVIDIA = "nvidia"
 	messageEmbeddingProviderVertex = "vertex"
 )
 
@@ -344,14 +346,18 @@ func normalizeMessageSearchConfig(config MessageSearchConfig) MessageSearchConfi
 	if config.EmbeddingProvider == "" {
 		if strings.TrimSpace(config.EmbeddingProjectID) != "" || strings.HasPrefix(strings.ToLower(strings.TrimSpace(config.EmbeddingModel)), "gemini-embedding") {
 			config.EmbeddingProvider = messageEmbeddingProviderVertex
-		} else {
+		} else if strings.HasPrefix(strings.ToLower(strings.TrimSpace(config.EmbeddingModel)), "text-embedding") {
 			config.EmbeddingProvider = messageEmbeddingProviderOpenAI
+		} else {
+			config.EmbeddingProvider = messageEmbeddingProviderNVIDIA
 		}
 	}
 	switch config.EmbeddingProvider {
 	case "google", "gemini", "vertexai", "vertex-ai":
 		config.EmbeddingProvider = messageEmbeddingProviderVertex
-	case messageEmbeddingProviderOpenAI, messageEmbeddingProviderVertex:
+	case "nim", "nvidia-nim", "nvidia_nim":
+		config.EmbeddingProvider = messageEmbeddingProviderNVIDIA
+	case messageEmbeddingProviderOpenAI, messageEmbeddingProviderNVIDIA, messageEmbeddingProviderVertex:
 	default:
 		config.EmbeddingProvider = messageEmbeddingProviderOpenAI
 	}
@@ -367,6 +373,17 @@ func normalizeMessageSearchConfig(config MessageSearchConfig) MessageSearchConfi
 		}
 		if strings.TrimSpace(config.EmbeddingIndexTaskType) == "" {
 			config.EmbeddingIndexTaskType = "RETRIEVAL_DOCUMENT"
+		}
+	}
+	if config.EmbeddingProvider == messageEmbeddingProviderNVIDIA {
+		if strings.TrimSpace(config.EmbeddingModel) == "" {
+			config.EmbeddingModel = defaultNVIDIAEmbeddingModel
+		}
+		if strings.TrimSpace(config.EmbeddingTaskType) == "" || strings.EqualFold(config.EmbeddingTaskType, "RETRIEVAL_QUERY") {
+			config.EmbeddingTaskType = "query"
+		}
+		if strings.TrimSpace(config.EmbeddingIndexTaskType) == "" || strings.EqualFold(config.EmbeddingIndexTaskType, "RETRIEVAL_DOCUMENT") {
+			config.EmbeddingIndexTaskType = "passage"
 		}
 	}
 	if config.Timeout <= 0 {

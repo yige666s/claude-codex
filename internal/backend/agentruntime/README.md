@@ -367,16 +367,14 @@ contracts. Admin troubleshooting can inspect workflow runs with
 enabled, `SQLWorkflowStore` persists run and step checkpoints in
 `agent_workflow_runs` and `agent_workflow_steps` for long-lived Admin replay.
 
-Semantic search supports OpenAI-compatible embeddings and Vertex AI Gemini
-embeddings. For Vertex AI, set `AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER=vertex`,
-`AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID`, `AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION`,
-and `AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL`. The local compose defaults are
-wired for project `vigilant-router-378708`, location `global`, model
-`gemini-embedding-2`, query task `RETRIEVAL_QUERY`, index task
-`RETRIEVAL_DOCUMENT`, and 768 dimensions. Authentication uses
-`AGENT_API_MESSAGE_SEARCH_EMBEDDING_TOKEN`, `VERTEX_ACCESS_TOKEN`,
-`GOOGLE_OAUTH_ACCESS_TOKEN`, `GOOGLE_ACCESS_TOKEN`, service account env vars, or
-`gcloud auth print-access-token`.
+Semantic search defaults to NVIDIA embeddings with
+`nvidia/llama-nemotron-embed-1b-v2`, query task `query`, index task `passage`,
+and 768 dimensions. Set `AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER=nvidia`,
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT`, and
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY` for the hosted API. Vertex AI Gemini
+and OpenAI-compatible embeddings remain available by explicitly setting
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER=vertex` or `openai` plus the
+matching provider configuration.
 
 When the backend is `semantic` or `hybrid`, message writes also enqueue an
 asynchronous vector indexing job. The worker extracts searchable message text,

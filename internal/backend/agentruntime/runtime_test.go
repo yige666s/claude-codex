@@ -50,7 +50,7 @@ func TestFileSessionStoreScopesSessionsByUser(t *testing.T) {
 	}
 }
 
-func TestFileSessionStoreDeleteSoftDeletesMessages(t *testing.T) {
+func TestFileSessionStoreDeleteOnlySoftDeletesSession(t *testing.T) {
 	store := NewFileSessionStore(t.TempDir())
 	ctx := context.Background()
 	session, err := store.Create(ctx, "alice", t.TempDir())
@@ -75,12 +75,12 @@ func TestFileSessionStoreDeleteSoftDeletesMessages(t *testing.T) {
 	if deleted.Status != state.SessionStatusDeleted {
 		t.Fatalf("session was not soft deleted: %#v", deleted)
 	}
-	if len(deleted.Messages) != 2 || deleted.Messages[0].Status != state.MessageStatusDeleted || deleted.Messages[1].Status != state.MessageStatusDeleted {
-		t.Fatalf("messages were not soft deleted: %#v", deleted.Messages)
+	if len(deleted.Messages) != 2 || deleted.Messages[0].Status == state.MessageStatusDeleted || deleted.Messages[1].Status == state.MessageStatusDeleted {
+		t.Fatalf("session soft delete should leave messages intact: %#v", deleted.Messages)
 	}
 }
 
-func TestObjectSessionStoreDeleteSoftDeletesMessages(t *testing.T) {
+func TestObjectSessionStoreDeleteOnlySoftDeletesSession(t *testing.T) {
 	objects := NewFileObjectStore(t.TempDir())
 	store := NewObjectSessionStore(objects, "sessions")
 	ctx := context.Background()
@@ -110,8 +110,8 @@ func TestObjectSessionStoreDeleteSoftDeletesMessages(t *testing.T) {
 	if deleted.Status != state.SessionStatusDeleted {
 		t.Fatalf("session was not soft deleted: %#v", deleted)
 	}
-	if len(deleted.Messages) != 2 || deleted.Messages[0].Status != state.MessageStatusDeleted || deleted.Messages[1].Status != state.MessageStatusDeleted {
-		t.Fatalf("messages were not soft deleted: %#v", deleted.Messages)
+	if len(deleted.Messages) != 2 || deleted.Messages[0].Status == state.MessageStatusDeleted || deleted.Messages[1].Status == state.MessageStatusDeleted {
+		t.Fatalf("session soft delete should leave messages intact: %#v", deleted.Messages)
 	}
 	if err := store.Delete(ctx, "alice", "missing-session"); err != nil {
 		t.Fatalf("missing delete should remain idempotent: %v", err)
@@ -159,7 +159,7 @@ func TestRuntimeChatPublishesMessageEvents(t *testing.T) {
 	}
 }
 
-func TestRuntimeDeleteSessionPublishesDeletedMessageEvents(t *testing.T) {
+func TestRuntimeDeleteSessionOnlySoftDeletesSession(t *testing.T) {
 	store := newRuntimeMessageWriteStore(t.TempDir())
 	runtime := NewRuntime(RuntimeConfig{}, store, nil, nil, func(Scope) Runner { return echoRunner{} })
 	publisher := &captureMessagePublisher{}
@@ -178,12 +178,14 @@ func TestRuntimeDeleteSessionPublishesDeletedMessageEvents(t *testing.T) {
 	if err := runtime.DeleteSession(context.Background(), "alice", session.ID); err != nil {
 		t.Fatalf("delete session: %v", err)
 	}
-	if len(publisher.events) != 1 {
-		t.Fatalf("expected one deleted event, got %#v", publisher.events)
+	if len(publisher.events) != 0 {
+		t.Fatalf("delete session should not publish message delete events, got %#v", publisher.events)
 	}
-	event := publisher.events[0]
-	if event.Type != MessageEventDeleted || event.Message.Status != state.MessageStatusDeleted || event.Message.ID == "" {
-		t.Fatalf("unexpected deleted event: %#v", event)
+	if store.session == nil || store.session.Status != state.SessionStatusDeleted || !store.session.Archived {
+		t.Fatalf("expected session to be soft deleted, got %#v", store.session)
+	}
+	if len(store.messages) != 1 || store.messages[0].Status == state.MessageStatusDeleted || store.messages[0].Content != "delete me" {
+		t.Fatalf("delete session should leave messages intact, got %#v", store.messages)
 	}
 }
 
@@ -617,6 +619,51 @@ func TestRuntimePersonalizationSettingsAndInjection(t *testing.T) {
 	}
 }
 
+func TestRuntimeChatInjectsCurrentTurnMemoryTransiently(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	memory := NewFileMemoryService(root)
+	runner := &captureContentRunner{}
+	sessionStore := NewFileSessionStore(root)
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		sessionStore,
+		memory,
+		nil,
+		func(Scope) Runner { return runner },
+	)
+	runtime.memoryExtract = emptyMemoryExtractor{}
+
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	item := newConversationMemoryItem("alice", "", "User lives in Beijing")
+	item.Category = MemoryCategoryFact
+	if _, err := memory.UpdateMemoryItem(ctx, "alice", item); err != nil {
+		t.Fatalf("seed memory item: %v", err)
+	}
+
+	if err := runtime.Chat(ctx, ChatRequest{
+		UserID:    "alice",
+		SessionID: session.ID,
+		Content:   "帮我推荐些打卡的好去处",
+	}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if !messagesContainRuntimeContext(runner.sessionMessages, "User lives in Beijing") {
+		t.Fatalf("expected current turn memory in LLM context, got %#v", runner.sessionMessages)
+	}
+
+	saved, err := sessionStore.Get(ctx, "alice", session.ID)
+	if err != nil {
+		t.Fatalf("load saved session: %v", err)
+	}
+	if messagesContainRuntimeContext(saved.Messages, memoryContextMarker) {
+		t.Fatalf("memory context should be transient, saved messages=%#v", saved.Messages)
+	}
+}
+
 func TestFileMemoryServiceSkipsImplicitChatterAndRedactsPII(t *testing.T) {
 	memory := NewFileMemoryService(t.TempDir())
 	ctx := context.Background()
@@ -670,6 +717,392 @@ func TestFileMemoryServiceSkipsImplicitChatterAndRedactsPII(t *testing.T) {
 	}
 }
 
+func TestRuleMemoryEpisodeSummarizerBuildsUsefulEpisode(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	session.Title = "Navicat Redis SSH 连接排查"
+	session.AddUserMessage("我想要通过 ssh 访问服务器的数据库，给出连接参数")
+	session.AddAssistantMessage("需要配置 SSH host、端口和 Redis 目标地址。")
+	session.AddUserMessage("为什么连接不上，提示 connection reset by peer")
+	session.AddAssistantMessage("原因是 SSH 私钥和服务器用户不匹配，需要使用正确用户或密钥。")
+
+	draft, err := RuleMemoryEpisodeSummarizer{}.SummarizeEpisode(context.Background(), MemoryEpisodeSummarizeInput{
+		UserID:   "alice",
+		Session:  session,
+		Messages: visibleEpisodeMessages(session),
+		Now:      time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("SummarizeEpisode() error = %v", err)
+	}
+	if !strings.Contains(draft.Title, "Navicat") || !strings.Contains(draft.Summary, "connection reset") || !strings.Contains(draft.L0Abstract, "私钥") {
+		t.Fatalf("unexpected episode draft: %#v", draft)
+	}
+	if len(draft.KeyTopics) == 0 {
+		t.Fatalf("expected key topics, got %#v", draft)
+	}
+}
+
+func TestMemoryEpisodeCaptureIncludesAttachmentSourceRefs(t *testing.T) {
+	ctx := context.Background()
+	session := state.NewSession(t.TempDir())
+	session.Title = "图片打卡地点推荐"
+	session.AddUserMessage("看这张照片，帮我推荐类似适合打卡的地方")
+	session.Messages[0].ID = "msg-photo"
+	session.Messages[0].Attachments = []state.MessageAttachment{{
+		ID:         "att-photo",
+		MessageID:  "msg-photo",
+		SessionID:  session.ID,
+		UserID:     "alice",
+		FileType:   "image",
+		MimeType:   "image/png",
+		FileName:   "cold-lake.png",
+		StorageKey: "users/alice/attachments/att-photo/cold-lake.png",
+	}}
+	session.AddAssistantMessage("这张图适合归纳为冷湖火星营地、青海雅丹、硬核科幻风取景。")
+	session.AddUserMessage("记住这次图片风格，下次继续推荐")
+	session.AddAssistantMessage("已总结为星球感、冷色荒原、航拍视角的打卡路线偏好。")
+
+	episode, ok, err := buildMemoryEpisodeFromSessionWithConfig(ctx, "alice", session, RuleMemoryEpisodeSummarizer{}, time.Now().UTC(), EpisodicMemoryConfig{
+		Configured:     true,
+		Enabled:        true,
+		CaptureEnabled: true,
+		MinMessages:    2,
+		MaxMessages:    10,
+		TTL:            time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("build episode: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected attachment episode to be captured")
+	}
+	if !strings.Contains(episode.Summary, "cold-lake.png") {
+		t.Fatalf("expected attachment details in episode summary, got %q", episode.Summary)
+	}
+	var foundSession, foundMessage, foundAttachment bool
+	for _, ref := range episode.SourceRefs {
+		switch ref.Kind {
+		case MemoryEpisodeSourceSession:
+			foundSession = ref.ID == session.ID
+		case "message":
+			foundMessage = ref.ID == "msg-photo"
+		case AssetKindAttachment:
+			foundAttachment = ref.ID == "att-photo" && ref.Filename == "cold-lake.png" && ref.ContentType == "image/png"
+		}
+	}
+	if !foundSession || !foundMessage || !foundAttachment {
+		t.Fatalf("expected session/message/attachment source refs, got %#v", episode.SourceRefs)
+	}
+}
+
+func TestRuntimeAfterTurnCapturesMemoryEpisode(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	memory := NewFileMemoryService(root)
+	runtime := NewRuntime(RuntimeConfig{}, NewFileSessionStore(root), memory, nil, nil)
+	session := state.NewSession(root)
+	session.Title = "AgentAPI memory architecture"
+	session.AddUserMessage("给我讲一下当前整个 agentapi 的 memory 系统架构")
+	session.AddAssistantMessage("当前系统包括 L3 用户偏好、设置和保存记忆注入。")
+	session.AddUserMessage("按照实施文档，先完成 Phase 1 L2 Episodic Memory")
+	session.AddAssistantMessage("Phase 1 会实现 episode schema、捕获、检索和 API。")
+
+	if err := runtime.afterTurnMemory(ctx, "alice", session); err != nil {
+		t.Fatalf("afterTurnMemory() error = %v", err)
+	}
+	episodes, err := memory.ListMemoryEpisodes(ctx, "alice", MemoryEpisodeFilter{Status: MemoryEpisodeStatusActive})
+	if err != nil {
+		t.Fatalf("ListMemoryEpisodes() error = %v", err)
+	}
+	if len(episodes) != 1 {
+		t.Fatalf("expected one episode, got %#v", episodes)
+	}
+	if episodes[0].SessionID != session.ID || !strings.Contains(episodes[0].Summary, "Phase 1") {
+		t.Fatalf("unexpected captured episode: %#v", episodes[0])
+	}
+}
+
+func TestHybridMemoryEpisodeSummarizerFallsBackToRuleOnLLMFailure(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	session.Title = "L2 Episodic Memory Phase 2"
+	session.AddUserMessage("按照实施文档，先完成 Phase 2 L2 Episodic Memory")
+	session.AddAssistantMessage("会实现 expand、use tracking、soft delete 和 LLM summarizer fallback。")
+	session.AddUserMessage("LLM summarizer 失败时应该怎么办")
+	session.AddAssistantMessage("失败时回退到规则 summarizer，保证 episode 仍可捕获。")
+
+	llm := NewLLMMemoryEpisodeSummarizer(func(Scope) Runner {
+		return failingRunner{err: fmt.Errorf("llm unavailable")}
+	})
+	summarizer := NewHybridMemoryEpisodeSummarizer(llm, RuleMemoryEpisodeSummarizer{})
+	draft, err := summarizer.SummarizeEpisode(context.Background(), MemoryEpisodeSummarizeInput{
+		UserID:   "alice",
+		Session:  session,
+		Messages: visibleEpisodeMessages(session),
+		Now:      time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("SummarizeEpisode() error = %v", err)
+	}
+	if !strings.Contains(draft.Summary, "Phase 2") || draft.Metadata["summarizer"] != "rule" {
+		t.Fatalf("expected rule fallback draft, got %#v", draft)
+	}
+}
+
+func TestRuntimeInjectsRelevantMemoryEpisodeTransiently(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	memory := NewFileMemoryService(root)
+	runtime := NewRuntime(RuntimeConfig{}, NewFileSessionStore(root), memory, nil, nil)
+	now := time.Now().UTC()
+	_, err := memory.UpsertMemoryEpisode(ctx, "alice", MemoryEpisode{
+		ID:         "ep_navicat",
+		UserID:     "alice",
+		SessionID:  "s1",
+		Title:      "Navicat Redis SSH 连接排查",
+		Summary:    "用户此前排查 Navicat 通过 SSH 隧道连接 Redis 时 connection reset by peer 的问题。",
+		L0Abstract: "Navicat Redis SSH 连接失败: SSH 用户或私钥不匹配会导致 connection reset by peer。",
+		KeyTopics:  []string{"navicat", "redis", "ssh"},
+		SourceType: MemoryEpisodeSourceSession,
+		SourceID:   "session:s1",
+		Status:     MemoryEpisodeStatusActive,
+		Visibility: MemoryVisibilityUser,
+		Confidence: 0.9,
+		Weight:     0.9,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	})
+	if err != nil {
+		t.Fatalf("seed episode: %v", err)
+	}
+	session := state.NewSession(root)
+	session.AddUserMessage("为什么 Navicat Redis SSH 还是连接不上")
+	if err := runtime.injectTurnMemoryContexts(ctx, "alice", session, "Navicat Redis SSH connection reset"); err != nil {
+		t.Fatalf("injectTurnMemoryContexts() error = %v", err)
+	}
+	if !messagesContainRuntimeContext(session.Messages, episodicMemoryContextMarker) {
+		t.Fatalf("expected episodic memory context, got %#v", session.Messages)
+	}
+	if !stripTransientRuntimeContexts(session) {
+		t.Fatal("expected transient context to be stripped")
+	}
+	if messagesContainRuntimeContext(session.Messages, episodicMemoryContextMarker) {
+		t.Fatalf("episodic memory context should be transient, got %#v", session.Messages)
+	}
+	episode, err := memory.GetMemoryEpisode(ctx, "alice", "ep_navicat")
+	if err != nil {
+		t.Fatalf("GetMemoryEpisode() error = %v", err)
+	}
+	if episode.RecallCount == 0 {
+		t.Fatalf("expected recall count to be recorded, got %#v", episode)
+	}
+}
+
+func TestRuntimeSkipsTrivialTurnMemoryRecall(t *testing.T) {
+	ctx := context.Background()
+	memory := &countingMemoryService{content: "# Memory\n\n- should not appear"}
+	runtime := NewRuntime(RuntimeConfig{}, NewFileSessionStore(t.TempDir()), memory, nil, nil)
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("我们先讨论一下普通聊天")
+	session.AddAssistantMessage("好的，我们继续。")
+	session.AddUserMessage("ok")
+
+	if err := runtime.injectTurnMemoryContexts(ctx, "alice", session, "ok"); err != nil {
+		t.Fatalf("injectTurnMemoryContexts() error = %v", err)
+	}
+	if memory.LoadContextCalls() != 0 {
+		t.Fatalf("trivial message should not recall memory, calls=%d", memory.LoadContextCalls())
+	}
+	if messagesContainRuntimeContext(session.Messages, memoryContextMarker) {
+		t.Fatalf("trivial message should not inject memory context, got %#v", session.Messages)
+	}
+}
+
+func TestRuntimeRecallsMemoryForExplicitPastContextQuery(t *testing.T) {
+	ctx := context.Background()
+	memory := &countingMemoryService{content: "# Memory\n\n- Navicat Redis SSH connection reset was caused by the wrong key."}
+	runtime := NewRuntime(RuntimeConfig{}, NewFileSessionStore(t.TempDir()), memory, nil, nil)
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("我们先聊别的问题")
+	session.AddAssistantMessage("可以。")
+	session.AddUserMessage("上次 Navicat Redis SSH 是怎么处理的")
+
+	if err := runtime.injectTurnMemoryContexts(ctx, "alice", session, "上次 Navicat Redis SSH 是怎么处理的"); err != nil {
+		t.Fatalf("injectTurnMemoryContexts() error = %v", err)
+	}
+	if memory.LoadContextCalls() != 1 {
+		t.Fatalf("explicit past-context query should recall memory once, calls=%d", memory.LoadContextCalls())
+	}
+	if !messagesContainRuntimeContext(session.Messages, "wrong key") {
+		t.Fatalf("expected recalled memory context, got %#v", session.Messages)
+	}
+}
+
+func TestEpisodePromotionCreatesAtomicMemoryWithSourceRef(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	memory := NewFileMemoryService(root)
+	runtime := NewRuntime(RuntimeConfig{}, NewFileSessionStore(root), memory, nil, nil)
+	runtime.SetMemoryExtractor(staticMemoryExtractor{candidates: []MemoryCandidate{{
+		Content:    "User lives in Beijing",
+		Category:   MemoryCategoryFact,
+		Tags:       []string{"location"},
+		Confidence: 0.92,
+		Importance: 0.8,
+		Reason:     "episode_fact",
+	}}})
+	seedEpisodeForPromotion(t, ctx, memory, "alice", "ep_promote_beijing", "用户说我住在北京，随后询问周末拍照地点。")
+
+	items, err := runtime.PromoteMemoryEpisodes(ctx, "alice", []string{"ep_promote_beijing"}, 0)
+	if err != nil {
+		t.Fatalf("PromoteMemoryEpisodes() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one promoted item, got %#v", items)
+	}
+	item := items[0]
+	if item.Level != MemoryLevelAtomic || item.Source != MemorySourceSystem || !strings.Contains(item.Content, "Beijing") {
+		t.Fatalf("unexpected promoted item: %#v", item)
+	}
+	if item.Metadata["promoted_from_episode"] != true || item.Metadata["episode_id"] != "ep_promote_beijing" {
+		t.Fatalf("promoted metadata missing episode marker: %#v", item.Metadata)
+	}
+	if len(item.SourceRefs) != 1 || item.SourceRefs[0].Kind != "episode" || item.SourceRefs[0].ID != "ep_promote_beijing" {
+		t.Fatalf("promoted source refs missing episode: %#v", item.SourceRefs)
+	}
+	episode, err := memory.GetMemoryEpisode(ctx, "alice", "ep_promote_beijing")
+	if err != nil {
+		t.Fatalf("GetMemoryEpisode() error = %v", err)
+	}
+	if episode.PromotedAt == nil {
+		t.Fatalf("episode should be marked promoted: %#v", episode)
+	}
+}
+
+func TestEpisodePromotionDoesNotOverridePersonalization(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	memory := NewFileMemoryService(root)
+	runtime := NewRuntime(RuntimeConfig{}, NewFileSessionStore(root), memory, nil, nil)
+	_, err := runtime.UpdatePersonalizationSettings(ctx, "alice", PersonalizationSettings{
+		Profile: PersonalizationProfile{Nickname: "Alice"},
+	})
+	if err != nil {
+		t.Fatalf("UpdatePersonalizationSettings() error = %v", err)
+	}
+	runtime.SetMemoryExtractor(staticMemoryExtractor{candidates: []MemoryCandidate{{
+		Content:    "User preferred name: Bob",
+		Category:   MemoryCategoryFact,
+		Tags:       []string{"profile"},
+		Confidence: 0.95,
+		Importance: 0.85,
+		Reason:     "episode_profile_fact",
+	}}})
+	seedEpisodeForPromotion(t, ctx, memory, "alice", "ep_promote_name", "用户在一次对话中提到名字相关信息。")
+
+	items, err := runtime.PromoteMemoryEpisodes(ctx, "alice", []string{"ep_promote_name"}, 0)
+	if err != nil {
+		t.Fatalf("PromoteMemoryEpisodes() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one pending promoted item, got %#v", items)
+	}
+	if items[0].Status != MemoryStatusPendingConfirm || items[0].Metadata["conflict_strategy"] != "explicit_personalization" {
+		t.Fatalf("promotion should wait for confirmation on personalization conflict, got %#v", items[0])
+	}
+	settings, err := runtime.GetPersonalizationSettings(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetPersonalizationSettings() error = %v", err)
+	}
+	if settings.Profile.Nickname != "Alice" {
+		t.Fatalf("explicit personalization should not be overwritten, got %#v", settings)
+	}
+}
+
+func TestPromotedEpisodeMemoryIsRecallableAsL3(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	memory := NewFileMemoryService(root)
+	runtime := NewRuntime(RuntimeConfig{}, NewFileSessionStore(root), memory, nil, nil)
+	runtime.SetMemoryExtractor(staticMemoryExtractor{candidates: []MemoryCandidate{{
+		Content:    "User lives in Beijing",
+		Category:   MemoryCategoryFact,
+		Tags:       []string{"beijing"},
+		Confidence: 0.92,
+		Importance: 0.9,
+		Reason:     "episode_fact",
+	}}})
+	seedEpisodeForPromotion(t, ctx, memory, "alice", "ep_l3_recall", "用户说我住在北京。")
+	if _, err := runtime.PromoteMemoryEpisodes(ctx, "alice", []string{"ep_l3_recall"}, 0); err != nil {
+		t.Fatalf("PromoteMemoryEpisodes() error = %v", err)
+	}
+	session := state.NewSession(root)
+	session.AddUserMessage("北京")
+	contextText, err := memory.LoadContext(ctx, "alice", session)
+	if err != nil {
+		t.Fatalf("LoadContext() error = %v", err)
+	}
+	if !strings.Contains(contextText, "User lives in Beijing") {
+		t.Fatalf("promoted L3 memory should be independently recallable, got %q", contextText)
+	}
+}
+
+func TestMemoryMaintenancePlansEpisodePromotion(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	memory := NewFileMemoryService(root)
+	runtime := NewRuntime(RuntimeConfig{}, NewFileSessionStore(root), memory, nil, nil)
+	seedEpisodeForPromotion(t, ctx, memory, "alice", "ep_maintenance_promote", "用户说我住在北京。")
+
+	actions, err := runtime.PlanMemoryMaintenance(ctx, "alice")
+	if err != nil {
+		t.Fatalf("PlanMemoryMaintenance() error = %v", err)
+	}
+	var found bool
+	for _, action := range actions {
+		if action.Type == "promote_episodes" && testContainsString(action.MemoryIDs, "ep_maintenance_promote") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected promote_episodes action, got %#v", actions)
+	}
+}
+
+func seedEpisodeForPromotion(t *testing.T, ctx context.Context, memory MemoryEpisodeService, userID, episodeID, summary string) {
+	t.Helper()
+	now := time.Now().UTC()
+	_, err := memory.UpsertMemoryEpisode(ctx, userID, MemoryEpisode{
+		ID:         episodeID,
+		UserID:     userID,
+		SessionID:  "session-" + episodeID,
+		Title:      "Episode promotion seed",
+		Summary:    summary,
+		L0Abstract: summary,
+		KeyTopics:  []string{"promotion", "memory"},
+		SourceType: MemoryEpisodeSourceSession,
+		SourceID:   "session:" + episodeID,
+		Status:     MemoryEpisodeStatusActive,
+		Visibility: MemoryVisibilityUser,
+		Confidence: 0.92,
+		Weight:     0.9,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	})
+	if err != nil {
+		t.Fatalf("seed episode: %v", err)
+	}
+}
+
+func testContainsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestMemoryExtractorCapturesChineseOccupationFact(t *testing.T) {
 	session := state.NewSession(t.TempDir())
 	session.AddUserMessage("好，你记住了，我的职业是一名电气工程师")
@@ -696,6 +1129,35 @@ func TestMemoryExtractorCapturesChineseOccupationFact(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected occupation fact memory, got %#v", items)
+	}
+}
+
+func TestMemoryExtractorCapturesChineseResidenceFact(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("我居住在北京")
+	session.AddAssistantMessage("北京好！")
+
+	candidates, err := NewRuleMemoryExtractor().Extract(context.Background(), MemoryExtractionInput{
+		UserID:    "alice",
+		SessionID: session.ID,
+		Messages:  session.Messages,
+		Now:       time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("extract memory candidates: %v", err)
+	}
+	items := evaluateMemoryCandidates("alice", session.ID, candidates)
+	if len(items) == 0 {
+		t.Fatal("expected residence fact memory item")
+	}
+	found := false
+	for _, item := range items {
+		if item.Category == MemoryCategoryFact && strings.Contains(item.Content, "北京") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected residence fact memory, got %#v", items)
 	}
 }
 
@@ -790,6 +1252,15 @@ type emptyMemoryExtractor struct{}
 
 func (emptyMemoryExtractor) Extract(context.Context, MemoryExtractionInput) ([]MemoryCandidate, error) {
 	return nil, nil
+}
+
+type staticMemoryExtractor struct {
+	candidates []MemoryCandidate
+	err        error
+}
+
+func (e staticMemoryExtractor) Extract(context.Context, MemoryExtractionInput) ([]MemoryCandidate, error) {
+	return e.candidates, e.err
 }
 
 type sequenceMemoryRunner struct {
@@ -2836,26 +3307,31 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 
 	listMemoryReq := httptest.NewRequest(http.MethodGet, "/v1/memory?session_id="+url.QueryEscape(session.ID), nil)
 	listMemoryReq.Header.Set("Authorization", "Bearer "+token)
-	listMemoryRec := httptest.NewRecorder()
-	server.ServeHTTP(listMemoryRec, listMemoryReq)
-	if listMemoryRec.Code != http.StatusOK {
-		t.Fatalf("list memory status = %d body=%s", listMemoryRec.Code, listMemoryRec.Body.String())
-	}
 	var memoryList struct {
 		Items []MemoryItem `json:"items"`
 	}
-	if err := json.Unmarshal(listMemoryRec.Body.Bytes(), &memoryList); err != nil {
-		t.Fatalf("decode memory list: %v", err)
-	}
-	if len(memoryList.Items) < 1 {
-		t.Fatalf("unexpected memory list: %#v", memoryList)
-	}
 	var listedPreference MemoryItem
-	for _, item := range memoryList.Items {
-		if item.Category == MemoryCategoryPreference && item.SessionID == session.ID {
-			listedPreference = item
+	deadline := time.Now().Add(time.Second)
+	for {
+		listMemoryRec := httptest.NewRecorder()
+		server.ServeHTTP(listMemoryRec, listMemoryReq.Clone(context.Background()))
+		if listMemoryRec.Code != http.StatusOK {
+			t.Fatalf("list memory status = %d body=%s", listMemoryRec.Code, listMemoryRec.Body.String())
+		}
+		memoryList.Items = nil
+		if err := json.Unmarshal(listMemoryRec.Body.Bytes(), &memoryList); err != nil {
+			t.Fatalf("decode memory list: %v", err)
+		}
+		for _, item := range memoryList.Items {
+			if item.Category == MemoryCategoryPreference && item.SessionID == session.ID {
+				listedPreference = item
+				break
+			}
+		}
+		if listedPreference.ID != "" || time.Now().After(deadline) {
 			break
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if listedPreference.ID == "" || listedPreference.Confidence < 0.6 {
 		t.Fatalf("unexpected listed memory metadata: %#v", memoryList.Items)
@@ -2940,7 +3416,7 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 	if err := server.runtime.DeleteMemoryItem(context.Background(), authSession.User.ID, extra.ID); err != nil {
 		t.Fatalf("delete extra memory: %v", err)
 	}
-	listMemoryRec = httptest.NewRecorder()
+	listMemoryRec := httptest.NewRecorder()
 	server.ServeHTTP(listMemoryRec, listMemoryReq)
 	if listMemoryRec.Code != http.StatusOK {
 		t.Fatalf("list memory after delete status = %d body=%s", listMemoryRec.Code, listMemoryRec.Body.String())
@@ -3031,6 +3507,232 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 	}
 	if len(personalizationItemsAfterAccountDelete) != 0 {
 		t.Fatalf("account delete should purge personalization memory, got %#v", personalizationItemsAfterAccountDelete)
+	}
+}
+
+func TestServerMemoryEpisodeRoutes(t *testing.T) {
+	authService := &AuthService{
+		Store:      newMemoryUserStore(),
+		JWTSecret:  "secret",
+		AccessTTL:  time.Minute,
+		RefreshTTL: time.Hour,
+	}
+	runtime := testRuntime(t)
+	server := NewServer(runtime, JWTAuthenticator{Secret: "secret"}, NewRateLimiter(40, time.Minute), nil)
+	server.SetAuthService(authService)
+
+	authSession := registerTestUser(t, server, "episodes@example.com")
+	token := authSession.AccessToken
+	now := time.Now().UTC()
+	_, err := runtime.episodeMemory.UpsertMemoryEpisode(context.Background(), authSession.User.ID, MemoryEpisode{
+		ID:         "ep_api_navicat",
+		UserID:     authSession.User.ID,
+		SessionID:  "session-api",
+		Title:      "Navicat Redis SSH 连接排查",
+		Summary:    "用户此前排查 Navicat 经 SSH 隧道连接 Redis 的问题。",
+		L0Abstract: "Navicat Redis SSH connection reset 通常需要检查 SSH 用户和私钥。",
+		KeyTopics:  []string{"navicat", "redis", "ssh"},
+		SourceType: MemoryEpisodeSourceSession,
+		SourceID:   "session:session-api",
+		Status:     MemoryEpisodeStatusActive,
+		Visibility: MemoryVisibilityUser,
+		Confidence: 0.9,
+		Weight:     0.9,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	})
+	if err != nil {
+		t.Fatalf("seed episode: %v", err)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/memory/episodes?q=Navicat", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listRec := httptest.NewRecorder()
+	server.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list episodes status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listBody struct {
+		Episodes []MemoryEpisode `json:"episodes"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listBody); err != nil {
+		t.Fatalf("decode list episodes: %v", err)
+	}
+	if len(listBody.Episodes) != 1 || listBody.Episodes[0].ID != "ep_api_navicat" {
+		t.Fatalf("unexpected episode list: %#v", listBody)
+	}
+
+	searchReq := httptest.NewRequest(http.MethodPost, "/v1/memory/episodes/search", bytes.NewBufferString(`{"query":"Navicat Redis SSH","limit":5}`))
+	searchReq.Header.Set("Authorization", "Bearer "+token)
+	searchRec := httptest.NewRecorder()
+	server.ServeHTTP(searchRec, searchReq)
+	if searchRec.Code != http.StatusOK {
+		t.Fatalf("search episodes status = %d body=%s", searchRec.Code, searchRec.Body.String())
+	}
+	var searchBody struct {
+		Results []MemoryEpisodeSearchResult `json:"results"`
+	}
+	if err := json.Unmarshal(searchRec.Body.Bytes(), &searchBody); err != nil {
+		t.Fatalf("decode search episodes: %v", err)
+	}
+	if len(searchBody.Results) != 1 || searchBody.Results[0].Episode.ID != "ep_api_navicat" || searchBody.Results[0].Score <= 0 {
+		t.Fatalf("unexpected episode search: %#v", searchBody)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/memory/episodes/ep_api_navicat", nil)
+	getReq.Header.Set("Authorization", "Bearer "+token)
+	getRec := httptest.NewRecorder()
+	server.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get episode status = %d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var got MemoryEpisode
+	if err := json.Unmarshal(getRec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode get episode: %v", err)
+	}
+	if got.ID != "ep_api_navicat" || !strings.Contains(got.L0Abstract, "connection reset") {
+		t.Fatalf("unexpected get episode: %#v", got)
+	}
+
+	expandReq := httptest.NewRequest(http.MethodGet, "/v1/memory/episodes/ep_api_navicat/expand", nil)
+	expandReq.Header.Set("Authorization", "Bearer "+token)
+	expandRec := httptest.NewRecorder()
+	server.ServeHTTP(expandRec, expandReq)
+	if expandRec.Code != http.StatusOK {
+		t.Fatalf("expand episode status = %d body=%s", expandRec.Code, expandRec.Body.String())
+	}
+	var expandBody struct {
+		Episode MemoryEpisode `json:"episode"`
+	}
+	if err := json.Unmarshal(expandRec.Body.Bytes(), &expandBody); err != nil {
+		t.Fatalf("decode expand episode: %v", err)
+	}
+	if expandBody.Episode.UseCount != 1 || expandBody.Episode.LastUsedAt == nil || !strings.Contains(expandBody.Episode.Summary, "SSH") {
+		t.Fatalf("expand should return full summary and record use, got %#v", expandBody)
+	}
+
+	useReq := httptest.NewRequest(http.MethodPost, "/v1/memory/episodes/ep_api_navicat/use", nil)
+	useReq.Header.Set("Authorization", "Bearer "+token)
+	useRec := httptest.NewRecorder()
+	server.ServeHTTP(useRec, useReq)
+	if useRec.Code != http.StatusOK {
+		t.Fatalf("use episode status = %d body=%s", useRec.Code, useRec.Body.String())
+	}
+	var useBody struct {
+		Episode MemoryEpisode `json:"episode"`
+	}
+	if err := json.Unmarshal(useRec.Body.Bytes(), &useBody); err != nil {
+		t.Fatalf("decode use episode: %v", err)
+	}
+	if useBody.Episode.UseCount != 2 || useBody.Episode.LastUsedAt == nil {
+		t.Fatalf("use should increment use count, got %#v", useBody)
+	}
+
+	hideReq := httptest.NewRequest(http.MethodPost, "/v1/memory/episodes/ep_api_navicat/hide", nil)
+	hideReq.Header.Set("Authorization", "Bearer "+token)
+	hideRec := httptest.NewRecorder()
+	server.ServeHTTP(hideRec, hideReq)
+	if hideRec.Code != http.StatusOK {
+		t.Fatalf("hide episode status = %d body=%s", hideRec.Code, hideRec.Body.String())
+	}
+	var hideBody struct {
+		Episode MemoryEpisode `json:"episode"`
+	}
+	if err := json.Unmarshal(hideRec.Body.Bytes(), &hideBody); err != nil {
+		t.Fatalf("decode hide episode: %v", err)
+	}
+	if hideBody.Episode.Status != MemoryEpisodeStatusArchived {
+		t.Fatalf("hide should archive episode, got %#v", hideBody.Episode)
+	}
+
+	hiddenListReq := httptest.NewRequest(http.MethodGet, "/v1/memory/episodes?q=Navicat", nil)
+	hiddenListReq.Header.Set("Authorization", "Bearer "+token)
+	hiddenListRec := httptest.NewRecorder()
+	server.ServeHTTP(hiddenListRec, hiddenListReq)
+	if hiddenListRec.Code != http.StatusOK {
+		t.Fatalf("hidden list episodes status = %d body=%s", hiddenListRec.Code, hiddenListRec.Body.String())
+	}
+	var hiddenListBody struct {
+		Episodes []MemoryEpisode `json:"episodes"`
+	}
+	if err := json.Unmarshal(hiddenListRec.Body.Bytes(), &hiddenListBody); err != nil {
+		t.Fatalf("decode hidden list episodes: %v", err)
+	}
+	if len(hiddenListBody.Episodes) != 0 {
+		t.Fatalf("hidden episode should not appear in default active list, got %#v", hiddenListBody)
+	}
+
+	restoreReq := httptest.NewRequest(http.MethodPost, "/v1/memory/episodes/ep_api_navicat/restore", nil)
+	restoreReq.Header.Set("Authorization", "Bearer "+token)
+	restoreRec := httptest.NewRecorder()
+	server.ServeHTTP(restoreRec, restoreReq)
+	if restoreRec.Code != http.StatusOK {
+		t.Fatalf("restore episode status = %d body=%s", restoreRec.Code, restoreRec.Body.String())
+	}
+	var restoreBody struct {
+		Episode MemoryEpisode `json:"episode"`
+	}
+	if err := json.Unmarshal(restoreRec.Body.Bytes(), &restoreBody); err != nil {
+		t.Fatalf("decode restore episode: %v", err)
+	}
+	if restoreBody.Episode.Status != MemoryEpisodeStatusActive {
+		t.Fatalf("restore should reactivate episode, got %#v", restoreBody.Episode)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/v1/memory/episodes/ep_api_navicat", nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+token)
+	deleteRec := httptest.NewRecorder()
+	server.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete episode status = %d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	getDeletedReq := httptest.NewRequest(http.MethodGet, "/v1/memory/episodes/ep_api_navicat", nil)
+	getDeletedReq.Header.Set("Authorization", "Bearer "+token)
+	getDeletedRec := httptest.NewRecorder()
+	server.ServeHTTP(getDeletedRec, getDeletedReq)
+	if getDeletedRec.Code != http.StatusNotFound {
+		t.Fatalf("deleted episode get status = %d body=%s", getDeletedRec.Code, getDeletedRec.Body.String())
+	}
+}
+
+func TestServerMemoryEpisodePromoteRoute(t *testing.T) {
+	authService := &AuthService{
+		Store:      newMemoryUserStore(),
+		JWTSecret:  "secret",
+		AccessTTL:  time.Minute,
+		RefreshTTL: time.Hour,
+	}
+	runtime := testRuntime(t)
+	runtime.SetMemoryExtractor(staticMemoryExtractor{candidates: []MemoryCandidate{{
+		Content:    "User lives in Beijing",
+		Category:   MemoryCategoryFact,
+		Tags:       []string{"location"},
+		Confidence: 0.9,
+		Importance: 0.8,
+		Reason:     "episode_fact",
+	}}})
+	server := NewServer(runtime, JWTAuthenticator{Secret: "secret"}, NewRateLimiter(40, time.Minute), nil)
+	server.SetAuthService(authService)
+
+	authSession := registerTestUser(t, server, "episode-promote@example.com")
+	token := authSession.AccessToken
+	seedEpisodeForPromotion(t, context.Background(), runtime.episodeMemory, authSession.User.ID, "ep_api_promote", "用户说我住在北京。")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/memory/episodes/promote", bytes.NewBufferString(`{"episode_ids":["ep_api_promote"]}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("promote episode status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Items []MemoryItem `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode promote episode: %v", err)
+	}
+	if len(body.Items) != 1 || body.Items[0].Source != MemorySourceSystem || body.Items[0].SourceRefs[0].ID != "ep_api_promote" {
+		t.Fatalf("unexpected promote response: %#v", body)
 	}
 }
 
@@ -5827,6 +6529,49 @@ type blockingMemoryService struct {
 	release   chan struct{}
 }
 
+type countingMemoryService struct {
+	mu      sync.Mutex
+	calls   int
+	content string
+}
+
+func (s *countingMemoryService) LoadContext(context.Context, string, *state.Session) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	return s.content, nil
+}
+
+func (s *countingMemoryService) LoadUserMemory(context.Context, string) (string, error) {
+	return "", nil
+}
+
+func (s *countingMemoryService) LoadSessionMemory(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (s *countingMemoryService) AfterTurn(context.Context, string, *state.Session) error {
+	return nil
+}
+
+func (s *countingMemoryService) DeleteSession(context.Context, string, string) error {
+	return nil
+}
+
+func (s *countingMemoryService) DeleteUser(context.Context, string) error {
+	return nil
+}
+
+func (s *countingMemoryService) PruneBefore(context.Context, time.Time) (int, error) {
+	return 0, nil
+}
+
+func (s *countingMemoryService) LoadContextCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
 func newBlockingMemoryService() *blockingMemoryService {
 	return &blockingMemoryService{
 		started: make(chan struct{}),
@@ -6485,8 +7230,16 @@ func (s *runtimeMessageWriteStore) SaveSessionMetadata(_ context.Context, userID
 }
 
 func (s *runtimeMessageWriteStore) Delete(context.Context, string, string) error {
-	s.session = nil
-	s.messages = nil
+	if s.session != nil {
+		now := time.Now().UTC()
+		s.session.Status = state.SessionStatusDeleted
+		s.session.Archived = true
+		s.session.UpdatedAt = now
+		if s.session.Metadata == nil {
+			s.session.Metadata = map[string]string{}
+		}
+		s.session.Metadata["deleted_at"] = now.Format(time.RFC3339Nano)
+	}
 	return nil
 }
 

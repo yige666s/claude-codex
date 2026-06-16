@@ -742,10 +742,10 @@ export function AgentWorkspace() {
     const targetSession = sessions.find((item) => item.id === targetSessionId);
     const targetTitle = targetSession ? sessionTitle(targetSession) || targetSessionId : targetSessionId;
     const confirmed = await requestConfirmation({
-      title: "Delete session?",
-      message: `This will delete "${targetTitle}" and its related data.`,
-      detail: "Messages, session memory, jobs, attachments, and artifacts linked to this session may no longer be available.",
-      confirmLabel: "Delete",
+      title: "Remove session?",
+      message: `This will remove "${targetTitle}" from your session list.`,
+      detail: "Messages, session memory, jobs, attachments, and artifacts linked to this session will remain stored.",
+      confirmLabel: "Remove",
       danger: true
     });
     if (!confirmed) return;

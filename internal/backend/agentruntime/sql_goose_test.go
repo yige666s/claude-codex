@@ -43,6 +43,7 @@ func TestRunPostgresGooseMigrationsFreshSchema(t *testing.T) {
 		"agent_runtime_config",
 		"agent_memory",
 		"agent_memory_settings",
+		"agent_memory_episodes",
 		"agent_personalization_settings",
 		"agent_workflow_runs",
 		"agent_workflow_steps",

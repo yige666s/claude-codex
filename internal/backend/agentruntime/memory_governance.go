@@ -277,7 +277,7 @@ var (
 		regexp.MustCompile(`(?i)\bmy\s+(?:job|profession|occupation|role)\s+is\s+([^\n。.!?]+)`),
 		regexp.MustCompile(`(?i)\bI\s+(?:am|work as|live in)\s+([^\n。.!?]+)`),
 		regexp.MustCompile(`(?:我的职业是|我的工作是|我的岗位是)[:：]?\s*([^\n。！？!?]+)`),
-		regexp.MustCompile(`(?:我叫|我的名字是|我是|我住在|我在)[:：]?\s*([^\n。！？!?]+)`),
+		regexp.MustCompile(`(?:我叫|我的名字是|我是|我住在|我居住在|我居住于|我在)[:：]?\s*([^\n。！？!?]+)`),
 	}
 	piiPatterns = []struct {
 		name    string
@@ -443,10 +443,14 @@ func recentVisibleConversation(messages []state.Message, limit int) []map[string
 		if msg.Hidden || (msg.Role != "user" && msg.Role != "assistant") {
 			continue
 		}
-		out = append(out, map[string]string{
+		row := map[string]string{
 			"role":    msg.Role,
 			"content": truncateForMemory(msg.Content),
-		})
+		}
+		if attachments := episodeAttachmentSummary([]state.Message{msg}); attachments != "" {
+			row["attachments"] = truncateForMemory(attachments)
+		}
+		out = append(out, row)
 	}
 	return out
 }
@@ -648,7 +652,7 @@ func preferenceMemoryContent(original, extracted string) string {
 
 func factMemoryContent(original, extracted string) string {
 	original = strings.TrimSpace(original)
-	if strings.Contains(original, extracted) && len([]rune(original)) <= 160 {
+	if strings.Contains(original, extracted) && len([]rune(original)) <= 160 && !isWeakMemoryContent(original) {
 		return cleanExtractedMemory(original)
 	}
 	return "User fact: " + extracted
@@ -959,8 +963,16 @@ func normalizeMemorySourceRefs(refs []MemorySourceRef) []MemorySourceRef {
 
 func normalizeMemorySourceRefKind(kind string) string {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case MemoryEpisodeSourceSession:
+		return MemoryEpisodeSourceSession
+	case MemoryEpisodeSourceJob:
+		return MemoryEpisodeSourceJob
 	case MemorySourceBrowser:
 		return MemorySourceBrowser
+	case "message":
+		return "message"
+	case "episode":
+		return "episode"
 	default:
 		return normalizeAssetKind(kind)
 	}
@@ -1623,6 +1635,7 @@ func parseLLMMemoryMaintenanceActions(output, userID string, items []MemoryItem,
 		"confirm_conflict":    true,
 		"refresh_profile":     true,
 		"reduce_weight":       true,
+		"promote_episodes":    true,
 	}
 	var actions []MemoryMaintenanceAction
 	for _, action := range payload.Actions {

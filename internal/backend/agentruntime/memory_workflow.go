@@ -16,6 +16,7 @@ const (
 type MemoryWorkflowService struct {
 	base     MemoryService
 	items    MemoryItemService
+	episodes MemoryEpisodeService
 	workflow *WorkflowEngine
 }
 
@@ -26,6 +27,7 @@ func NewMemoryWorkflowService(base MemoryService, store WorkflowStore, events Wo
 	return &MemoryWorkflowService{
 		base:     base,
 		items:    memoryItemServiceFrom(base),
+		episodes: memoryEpisodeServiceFrom(base),
 		workflow: NewWorkflowEngine(store, events),
 	}
 }
@@ -178,6 +180,83 @@ func (s *MemoryWorkflowService) DeleteMemoryItem(ctx context.Context, userID, it
 	return s.items.DeleteMemoryItem(ctx, userID, itemID)
 }
 
+func (s *MemoryWorkflowService) UpsertMemoryEpisode(ctx context.Context, userID string, episode MemoryEpisode) (MemoryEpisode, error) {
+	if s.episodes == nil {
+		return MemoryEpisode{}, fmt.Errorf("memory episode service is not supported")
+	}
+	return s.episodes.UpsertMemoryEpisode(ctx, userID, episode)
+}
+
+func (s *MemoryWorkflowService) GetMemoryEpisode(ctx context.Context, userID, episodeID string) (MemoryEpisode, error) {
+	if s.episodes == nil {
+		return MemoryEpisode{}, fmt.Errorf("memory episode service is not supported")
+	}
+	return s.episodes.GetMemoryEpisode(ctx, userID, episodeID)
+}
+
+func (s *MemoryWorkflowService) ListMemoryEpisodes(ctx context.Context, userID string, filter MemoryEpisodeFilter) ([]MemoryEpisode, error) {
+	if s.episodes == nil {
+		return []MemoryEpisode{}, fmt.Errorf("memory episode service is not supported")
+	}
+	return s.episodes.ListMemoryEpisodes(ctx, userID, filter)
+}
+
+func (s *MemoryWorkflowService) UpdateMemoryEpisode(ctx context.Context, userID string, episode MemoryEpisode) (MemoryEpisode, error) {
+	if s.episodes == nil {
+		return MemoryEpisode{}, fmt.Errorf("memory episode service is not supported")
+	}
+	return s.episodes.UpdateMemoryEpisode(ctx, userID, episode)
+}
+
+func (s *MemoryWorkflowService) DeleteMemoryEpisode(ctx context.Context, userID, episodeID string) error {
+	if s.episodes == nil {
+		return fmt.Errorf("memory episode service is not supported")
+	}
+	return s.episodes.DeleteMemoryEpisode(ctx, userID, episodeID)
+}
+
+func (s *MemoryWorkflowService) SearchMemoryEpisodes(ctx context.Context, userID, query string, opts MemoryEpisodeSearchOptions) ([]MemoryEpisodeSearchResult, error) {
+	if s.episodes == nil {
+		return []MemoryEpisodeSearchResult{}, fmt.Errorf("memory episode service is not supported")
+	}
+	return s.episodes.SearchMemoryEpisodes(ctx, userID, query, opts)
+}
+
+func (s *MemoryWorkflowService) RecordMemoryEpisodeRecall(ctx context.Context, userID, episodeID string, score float64) error {
+	if s.episodes == nil {
+		return fmt.Errorf("memory episode service is not supported")
+	}
+	return s.episodes.RecordMemoryEpisodeRecall(ctx, userID, episodeID, score)
+}
+
+func (s *MemoryWorkflowService) RecordMemoryEpisodeUse(ctx context.Context, userID, episodeID string) error {
+	if s.episodes == nil {
+		return fmt.Errorf("memory episode service is not supported")
+	}
+	return s.episodes.RecordMemoryEpisodeUse(ctx, userID, episodeID)
+}
+
+func (s *MemoryWorkflowService) ListUnpromotedMemoryEpisodes(ctx context.Context, userID string, limit int) ([]MemoryEpisode, error) {
+	if s.episodes == nil {
+		return []MemoryEpisode{}, fmt.Errorf("memory episode service is not supported")
+	}
+	return s.episodes.ListUnpromotedMemoryEpisodes(ctx, userID, limit)
+}
+
+func (s *MemoryWorkflowService) MarkMemoryEpisodesPromoted(ctx context.Context, userID string, episodeIDs []string) error {
+	if s.episodes == nil {
+		return fmt.Errorf("memory episode service is not supported")
+	}
+	return s.episodes.MarkMemoryEpisodesPromoted(ctx, userID, episodeIDs)
+}
+
+func (s *MemoryWorkflowService) DeleteMemoryEpisodesForSession(ctx context.Context, userID, sessionID string) error {
+	if s.episodes == nil {
+		return nil
+	}
+	return s.episodes.DeleteMemoryEpisodesForSession(ctx, userID, sessionID)
+}
+
 func (s *MemoryWorkflowService) GetMemorySettings(ctx context.Context, userID string) (MemorySettings, error) {
 	if service, ok := s.base.(MemorySettingsService); ok {
 		return service.GetMemorySettings(ctx, userID)
@@ -216,4 +295,21 @@ func (s *MemoryWorkflowService) DeletePersonalizationSettings(ctx context.Contex
 func memoryItemServiceFrom(service MemoryService) MemoryItemService {
 	items, _ := service.(MemoryItemService)
 	return items
+}
+
+func memoryEpisodeServiceFrom(service MemoryService) MemoryEpisodeService {
+	switch s := service.(type) {
+	case *MemoryWorkflowService:
+		if s.episodes == nil {
+			return nil
+		}
+		return s
+	case *MemoryVectorService:
+		if s.episodes == nil {
+			return nil
+		}
+		return s
+	}
+	episodes, _ := service.(MemoryEpisodeService)
+	return episodes
 }

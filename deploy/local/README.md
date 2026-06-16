@@ -51,14 +51,18 @@ To include Elasticsearch and Qdrant in the local stack:
 docker compose --profile search -f deploy/local/docker-compose.yml up --build
 ```
 
-The local stack includes Vertex AI embedding configuration for semantic search:
-`AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER=vertex`,
-`AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID=vigilant-router-378708`,
-`AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION=global`,
-`AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL=gemini-embedding-2`, and
-`AGENT_API_MESSAGE_SEARCH_EMBEDDING_DIMENSIONS=768`. Set
-`AGENT_API_MESSAGE_SEARCH_BACKEND=semantic` or `hybrid` plus a Vertex token or
-service account environment variable to query Qdrant with Gemini embeddings.
+The local stack defaults semantic retrieval to NVIDIA embeddings:
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER=nvidia`,
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT=https://integrate.api.nvidia.com/v1`,
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL=nvidia/llama-nemotron-embed-1b-v2`,
+and `AGENT_API_MESSAGE_SEARCH_EMBEDDING_DIMENSIONS=768`. Set
+`AGENT_API_MESSAGE_SEARCH_BACKEND=semantic` or `hybrid` plus
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY` to query Qdrant. L2 episodic
+memory retrieval uses the same embedding model and can rerank the top 50
+vector candidates with
+`AGENT_API_MEMORY_VECTOR_RERANK_ENDPOINT=https://ai.api.nvidia.com/v1/retrieval/nvidia/llama-nemotron-rerank-1b-v2/reranking` and
+`AGENT_API_MEMORY_VECTOR_RERANK_MODEL=nvidia/llama-nemotron-rerank-1b-v2`,
+returning the top 5 memories by default.
 Set `AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED=true` with
 `AGENT_API_MESSAGE_SEARCH_BACKEND=elasticsearch` or `hybrid` to bootstrap ES
 ILM, rollover templates, and IK analyzer mappings. The local Elasticsearch image

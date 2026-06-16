@@ -207,6 +207,13 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		llmMemoryExtractor,
 		agentruntime.NewRuleMemoryExtractor(),
 	))
+	llmEpisodeSummarizer := agentruntime.NewLLMMemoryEpisodeSummarizer(engineFactory)
+	llmEpisodeSummarizer.Timeout = cfg.EpisodicMemorySummarizeTimeout
+	llmEpisodeSummarizer.PromptResolver = agentruntime.NewCachedPromptResolver(promptStore, nil, cacheStore, cfg.CacheDefaultTTL, cfg.CacheFailOpen, cacheMetrics)
+	runtime.SetMemoryEpisodeSummarizer(agentruntime.NewHybridMemoryEpisodeSummarizer(
+		llmEpisodeSummarizer,
+		agentruntime.RuleMemoryEpisodeSummarizer{},
+	))
 	runtime.SetMemoryOrganizer(agentruntime.NewHybridMemoryOrganizer(
 		agentruntime.NewLLMMemoryOrganizer(engineFactory),
 		agentruntime.NewRuleMemoryOrganizer(),

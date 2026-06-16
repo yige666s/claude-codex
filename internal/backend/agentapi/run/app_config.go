@@ -100,8 +100,45 @@ func runtimeConfigFromStartup(cfg startupconfig.Config, skillShellSandboxConfig 
 		},
 		MessageSearch:     messageSearchConfigFromStartup(cfg),
 		MemoryVector:      memoryVectorConfigFromStartup(cfg),
+		MemoryRecall:      memoryRecallConfigFromStartup(cfg),
+		EpisodicMemory:    episodicMemoryConfigFromStartup(cfg),
 		Live:              liveConfigFromStartup(cfg),
 		SkillShellSandbox: skillShellSandboxConfig,
+	}
+}
+
+func memoryRecallConfigFromStartup(cfg startupconfig.Config) agentruntime.MemoryRecallConfig {
+	return agentruntime.MemoryRecallConfig{
+		Configured:                   true,
+		Enabled:                      cfg.MemoryRecallEnabled,
+		ConditionalEnabled:           cfg.MemoryRecallConditionalEnabled,
+		AsyncEnabled:                 cfg.MemoryRecallAsyncEnabled,
+		Timeout:                      cfg.MemoryRecallTimeout,
+		MinQueryRunes:                cfg.MemoryRecallMinQueryRunes,
+		RecentContextMessages:        cfg.MemoryRecallRecentContextMessages,
+		RecentContextMaxRunes:        cfg.MemoryRecallRecentContextMaxRunes,
+		ForceInterval:                cfg.MemoryRecallForceInterval,
+		ComplexTokenThreshold:        cfg.MemoryRecallComplexTokenThreshold,
+		EmbeddingEnabled:             cfg.MemoryRecallEmbeddingEnabled,
+		EmbeddingSimilarityThreshold: cfg.MemoryRecallEmbeddingSimilarityThreshold,
+		EmbeddingWindow:              cfg.MemoryRecallEmbeddingWindow,
+		IntentClassifierEnabled:      cfg.MemoryRecallIntentClassifierEnabled,
+		IntentClassifierThreshold:    cfg.MemoryRecallIntentClassifierThreshold,
+		IntentClassifierContextTurns: cfg.MemoryRecallIntentClassifierContextTurns,
+	}
+}
+
+func episodicMemoryConfigFromStartup(cfg startupconfig.Config) agentruntime.EpisodicMemoryConfig {
+	return agentruntime.EpisodicMemoryConfig{
+		Configured:       true,
+		Enabled:          cfg.EpisodicMemoryEnabled,
+		CaptureEnabled:   cfg.EpisodicMemoryCaptureEnabled,
+		ContextEnabled:   cfg.EpisodicMemoryContextEnabled,
+		MinMessages:      cfg.EpisodicMemoryMinMessages,
+		MaxMessages:      cfg.EpisodicMemoryMaxMessages,
+		InjectLimit:      cfg.EpisodicMemoryInjectLimit,
+		TTL:              cfg.EpisodicMemoryTTL,
+		SummarizeTimeout: cfg.EpisodicMemorySummarizeTimeout,
 	}
 }
 
@@ -157,6 +194,7 @@ func memoryVectorConfigFromStartup(cfg startupconfig.Config) agentruntime.Memory
 		Enabled:                cfg.MemoryVectorEnabled,
 		QdrantEndpoint:         cfg.MemoryVectorQdrantEndpoint,
 		QdrantCollection:       cfg.MemoryVectorQdrantCollection,
+		EpisodeCollection:      cfg.MemoryVectorEpisodeQdrantCollection,
 		QdrantAPIKey:           cfg.MemoryVectorQdrantAPIKey,
 		QdrantScoreThreshold:   cfg.MemoryVectorQdrantScoreThreshold,
 		EmbeddingProvider:      cfg.MemoryVectorEmbeddingProvider,
@@ -173,6 +211,14 @@ func memoryVectorConfigFromStartup(cfg startupconfig.Config) agentruntime.Memory
 		EmbeddingAutoTruncate:  cfg.MemoryVectorEmbeddingAutoTruncate,
 		Timeout:                cfg.MessageSearchTimeout,
 		RRFK:                   cfg.MemoryVectorRRFK,
+		RerankEnabled:          cfg.MemoryVectorRerankEnabled,
+		RerankEndpoint:         cfg.MemoryVectorRerankEndpoint,
+		RerankAPIKey:           cfg.MemoryVectorRerankAPIKey,
+		RerankModel:            cfg.MemoryVectorRerankModel,
+		RerankCandidateLimit:   cfg.MemoryVectorRerankCandidateLimit,
+		RerankResultLimit:      cfg.MemoryVectorRerankResultLimit,
+		RerankTimeout:          cfg.MemoryVectorRerankTimeout,
+		RerankTruncate:         cfg.MemoryVectorRerankTruncate,
 	}
 }
 

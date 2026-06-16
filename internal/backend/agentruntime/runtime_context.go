@@ -10,13 +10,18 @@ import (
 )
 
 const (
-	temporalContextMarker = "<temporal-context>"
-	localeContextMarker   = "<locale-context>"
+	temporalContextMarker       = "<temporal-context>"
+	localeContextMarker         = "<locale-context>"
+	memoryContextMarker         = "<memory>"
+	episodicMemoryContextMarker = "<episodic-memory>"
 )
 
 var transientRuntimeContextMarkers = []string{
 	temporalContextMarker,
 	localeContextMarker,
+	browserMemoryContextMarker,
+	memoryContextMarker,
+	episodicMemoryContextMarker,
 }
 
 type Clock interface {
@@ -42,12 +47,6 @@ func (r *Runtime) SetClock(clock Clock) {
 func (r *Runtime) injectSessionRuntimeContexts(ctx context.Context, userID string, session *state.Session) error {
 	ensureConsumerSecurityContext(session)
 	if err := r.injectPersonalization(ctx, userID, session); err != nil {
-		return err
-	}
-	if err := r.injectBrowserMemory(ctx, userID, session); err != nil {
-		return err
-	}
-	if err := r.injectMemory(ctx, userID, session); err != nil {
 		return err
 	}
 	return nil

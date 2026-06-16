@@ -30,9 +30,10 @@ const (
 	PromptTrafficScopeSession = "session"
 	PromptTrafficScopeTenant  = "tenant"
 
-	PromptIDLiveSetup     = "live_setup"
-	PromptIDEvalJudge     = "eval_judge"
-	PromptIDMemoryExtract = "memory_extract"
+	PromptIDLiveSetup              = "live_setup"
+	PromptIDEvalJudge              = "eval_judge"
+	PromptIDMemoryExtract          = "memory_extract"
+	PromptIDMemoryEpisodeSummarize = "memory_episode_summarize"
 )
 
 type promptMetadataContextKey struct{}
@@ -1611,6 +1612,15 @@ func defaultPromptFallbacks() map[string]PromptVersion {
 			Content:  memoryExtractionPromptTemplate(),
 			VariablesSchema: map[string]any{
 				"required": []any{"conversation_json"},
+			},
+		},
+		PromptIDMemoryEpisodeSummarize: {
+			PromptID: PromptIDMemoryEpisodeSummarize,
+			Version:  "builtin-v1",
+			Status:   PromptStatusPublished,
+			Content:  memoryEpisodeSummarizePromptTemplate(),
+			VariablesSchema: map[string]any{
+				"required": []any{"session_id", "conversation_json", "current_timestamp"},
 			},
 		},
 	}

@@ -316,11 +316,15 @@ func (s *HTTPMessageFullTextSearcher) searchURL() string {
 }
 
 type OpenAIEmbeddingService struct {
-	endpoint   string
-	apiKey     string
-	model      string
-	dimensions int
-	client     *http.Client
+	endpoint      string
+	apiKey        string
+	model         string
+	dimensions    int
+	provider      string
+	taskType      string
+	autoTruncate  bool
+	nvidiaRequest bool
+	client        *http.Client
 }
 
 func NewMessageQueryEmbedder(config MessageSearchConfig) QueryEmbedder {
@@ -345,11 +349,15 @@ func NewOpenAIEmbeddingService(config MessageSearchConfig) *OpenAIEmbeddingServi
 		}
 	}
 	return &OpenAIEmbeddingService{
-		endpoint:   endpoint,
-		apiKey:     strings.TrimSpace(config.EmbeddingAPIKey),
-		model:      strings.TrimSpace(config.EmbeddingModel),
-		dimensions: config.EmbeddingDimensions,
-		client:     &http.Client{Timeout: config.EmbeddingTimeout},
+		endpoint:      endpoint,
+		apiKey:        strings.TrimSpace(config.EmbeddingAPIKey),
+		model:         strings.TrimSpace(config.EmbeddingModel),
+		dimensions:    config.EmbeddingDimensions,
+		provider:      config.EmbeddingProvider,
+		taskType:      strings.TrimSpace(config.EmbeddingTaskType),
+		autoTruncate:  config.EmbeddingAutoTruncate,
+		nvidiaRequest: config.EmbeddingProvider == messageEmbeddingProviderNVIDIA,
+		client:        &http.Client{Timeout: config.EmbeddingTimeout},
 	}
 }
 
@@ -365,6 +373,20 @@ func (s *OpenAIEmbeddingService) EmbedQuery(ctx context.Context, query string) (
 	}
 	if s.dimensions > 0 {
 		body["dimensions"] = s.dimensions
+	}
+	if s.nvidiaRequest {
+		inputType := normalizeNVIDIAEmbeddingInputType(s.taskType)
+		if inputType != "" {
+			body["input_type"] = inputType
+		}
+		body["modality"] = "text"
+		body["embedding_type"] = "float"
+		body["encoding_format"] = "float"
+		if s.autoTruncate {
+			body["truncate"] = "END"
+		} else {
+			body["truncate"] = "NONE"
+		}
 	}
 	headers := make(http.Header)
 	if s.apiKey != "" {
@@ -394,6 +416,17 @@ func (s *OpenAIEmbeddingService) EmbedQuery(ctx context.Context, query string) (
 		vector[i] = float32(value)
 	}
 	return vector, nil
+}
+
+func normalizeNVIDIAEmbeddingInputType(taskType string) string {
+	switch strings.ToLower(strings.TrimSpace(taskType)) {
+	case "", "query", "retrieval_query":
+		return "query"
+	case "passage", "document", "retrieval_document":
+		return "passage"
+	default:
+		return strings.ToLower(strings.TrimSpace(taskType))
+	}
 }
 
 type QueryEmbedder interface {

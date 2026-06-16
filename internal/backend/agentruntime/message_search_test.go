@@ -482,3 +482,49 @@ func TestVertexAIEmbeddingServiceEmbedQuery(t *testing.T) {
 		t.Fatalf("unexpected embedContent body: %#v", gotBody)
 	}
 }
+
+func TestNVIDIAEmbeddingServiceEmbedQueryUsesNIMFields(t *testing.T) {
+	var gotAuth string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/embeddings" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]}],"model":"nvidia/test","usage":{"prompt_tokens":2,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	service := NewOpenAIEmbeddingService(MessageSearchConfig{
+		EmbeddingProvider:     messageEmbeddingProviderNVIDIA,
+		EmbeddingEndpoint:     server.URL,
+		EmbeddingAPIKey:       "nvidia-token",
+		EmbeddingModel:        "nvidia/test",
+		EmbeddingDimensions:   1024,
+		EmbeddingTaskType:     "RETRIEVAL_QUERY",
+		EmbeddingAutoTruncate: true,
+	})
+	vector, err := service.EmbedQuery(context.Background(), "classify this")
+	if err != nil {
+		t.Fatalf("EmbedQuery() error = %v", err)
+	}
+	if len(vector) != 3 || vector[0] != float32(0.1) || vector[2] != float32(0.3) {
+		t.Fatalf("unexpected vector: %#v", vector)
+	}
+	if gotAuth != "Bearer nvidia-token" {
+		t.Fatalf("unexpected authorization header: %q", gotAuth)
+	}
+	if gotBody["input"] != "classify this" || gotBody["model"] != "nvidia/test" {
+		t.Fatalf("unexpected core payload: %#v", gotBody)
+	}
+	if gotBody["input_type"] != "query" || gotBody["modality"] != "text" || gotBody["embedding_type"] != "float" || gotBody["encoding_format"] != "float" || gotBody["truncate"] != "END" {
+		t.Fatalf("unexpected NVIDIA NIM payload: %#v", gotBody)
+	}
+	if gotBody["dimensions"] != float64(1024) {
+		t.Fatalf("unexpected dimensions: %#v", gotBody["dimensions"])
+	}
+}

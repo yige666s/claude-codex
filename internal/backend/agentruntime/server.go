@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -2744,6 +2745,152 @@ func (s *Server) handleListMemory(w http.ResponseWriter, r *http.Request, user U
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleListMemoryEpisodes(w http.ResponseWriter, r *http.Request, user User) {
+	limit := parseBoundedInt(r.URL.Query().Get("limit"), 50, 0, 200)
+	offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, 10000)
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status == "" {
+		status = MemoryEpisodeStatusActive
+	} else if status == "all" {
+		status = ""
+	}
+	episodes, err := s.runtime.ListMemoryEpisodes(r.Context(), user.ID, MemoryEpisodeFilter{
+		SessionID: strings.TrimSpace(r.URL.Query().Get("session_id")),
+		Status:    status,
+		Query:     strings.TrimSpace(r.URL.Query().Get("q")),
+		Limit:     limit,
+		Offset:    offset,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"episodes": episodes})
+}
+
+func (s *Server) handleSearchMemoryEpisodes(w http.ResponseWriter, r *http.Request, user User) {
+	var body memoryEpisodeSearchRequest
+	if err := readJSON(r, &body); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	results, err := s.runtime.SearchMemoryEpisodes(r.Context(), user.ID, body.Query, MemoryEpisodeSearchOptions{
+		Limit: body.Limit,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+func (s *Server) handlePromoteMemoryEpisodes(w http.ResponseWriter, r *http.Request, user User) {
+	var body memoryEpisodePromoteRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := readJSON(r, &body); err != nil {
+			writeJSONError(w, err)
+			return
+		}
+	}
+	items, err := s.runtime.PromoteMemoryEpisodes(r.Context(), user.ID, body.EpisodeIDs, body.Limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "memory_episode_promote", user, map[string]any{"episode_ids": normalizeMemoryIDs(body.EpisodeIDs), "count": len(items)})
+	s.recordGovernanceEvent("memory_episode_promote")
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleGetMemoryEpisode(w http.ResponseWriter, r *http.Request, user User, episodeID string) {
+	episode, err := s.runtime.GetMemoryEpisode(r.Context(), user.ID, episodeID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, episode)
+}
+
+func (s *Server) handleExpandMemoryEpisode(w http.ResponseWriter, r *http.Request, user User, episodeID string) {
+	episode, err := s.runtime.ExpandMemoryEpisode(r.Context(), user.ID, episodeID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"episode": episode})
+}
+
+func (s *Server) handleUseMemoryEpisode(w http.ResponseWriter, r *http.Request, user User, episodeID string) {
+	if err := s.runtime.RecordMemoryEpisodeUse(r.Context(), user.ID, episodeID); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	episode, err := s.runtime.GetMemoryEpisode(r.Context(), user.ID, episodeID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"episode": episode})
+}
+
+func (s *Server) handleHideMemoryEpisode(w http.ResponseWriter, r *http.Request, user User, episodeID string) {
+	episode, err := s.runtime.HideMemoryEpisode(r.Context(), user.ID, episodeID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "memory_episode_hide", user, map[string]any{"episode_id": episode.ID})
+	s.recordGovernanceEvent("memory_episode_hide")
+	writeJSON(w, http.StatusOK, map[string]any{"episode": episode})
+}
+
+func (s *Server) handleRestoreMemoryEpisode(w http.ResponseWriter, r *http.Request, user User, episodeID string) {
+	episode, err := s.runtime.RestoreMemoryEpisode(r.Context(), user.ID, episodeID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "memory_episode_restore", user, map[string]any{"episode_id": episode.ID})
+	s.recordGovernanceEvent("memory_episode_restore")
+	writeJSON(w, http.StatusOK, map[string]any{"episode": episode})
+}
+
+func (s *Server) handleDeleteMemoryEpisode(w http.ResponseWriter, r *http.Request, user User, episodeID string) {
+	if err := s.runtime.DeleteMemoryEpisode(r.Context(), user.ID, episodeID); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "episode_deleted"})
 }
 
 func (s *Server) handleGetMemorySettings(w http.ResponseWriter, r *http.Request, user User) {

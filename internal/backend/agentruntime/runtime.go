@@ -66,38 +66,41 @@ var ErrSessionNotRunning = errors.New("session is not running")
 var ErrRuntimeShuttingDown = errors.New("runtime is shutting down")
 
 type Runtime struct {
-	config           RuntimeConfig
-	sessions         SessionStore
-	messageWriter    *MessageWriteService
-	sessionLoader    *SessionLoadService
-	contextCompactor *ContextCompactionService
-	messageSearch    *MessageSearchService
-	messageCache     SessionContextCache
-	messagePublisher MessageEventPublisher
-	live             *VertexLiveService
-	vectorIndexer    *AsyncMessageVectorIndexPublisher
-	localVectorIndex bool
-	memory           MemoryService
-	memoryExtract    MemoryExtractor
-	memoryAbstract   MemoryAbstractor
-	memoryOrganizer  MemoryOrganizer
-	artifacts        *ArtifactService
-	assetInsights    AssetInsightStore
-	jobs             JobStore
-	jobQueue         JobQueue
-	jobEventFanout   JobEventPublisher
-	jobEvents        JobEventBus
-	skills           SkillCatalog
-	skillExecutions  SkillExecutionStore
-	workflowStore    WorkflowStore
-	toolCallLedger   ToolCallLedgerStore
-	promptStore      PromptStore
-	promptResolver   PromptResolver
-	engineFactory    EngineFactory
-	riskScanner      RiskScanner
-	riskRecorder     func(context.Context, RiskEvent)
-	logger           *slog.Logger
-	clock            Clock
+	config            RuntimeConfig
+	sessions          SessionStore
+	messageWriter     *MessageWriteService
+	sessionLoader     *SessionLoadService
+	contextCompactor  *ContextCompactionService
+	messageSearch     *MessageSearchService
+	messageCache      SessionContextCache
+	messagePublisher  MessageEventPublisher
+	live              *VertexLiveService
+	vectorIndexer     *AsyncMessageVectorIndexPublisher
+	localVectorIndex  bool
+	memory            MemoryService
+	episodeMemory     MemoryEpisodeService
+	memoryExtract     MemoryExtractor
+	memoryAbstract    MemoryAbstractor
+	memoryOrganizer   MemoryOrganizer
+	memoryRecall      *MemoryRecallDecider
+	episodeSummarizer MemoryEpisodeSummarizer
+	artifacts         *ArtifactService
+	assetInsights     AssetInsightStore
+	jobs              JobStore
+	jobQueue          JobQueue
+	jobEventFanout    JobEventPublisher
+	jobEvents         JobEventBus
+	skills            SkillCatalog
+	skillExecutions   SkillExecutionStore
+	workflowStore     WorkflowStore
+	toolCallLedger    ToolCallLedgerStore
+	promptStore       PromptStore
+	promptResolver    PromptResolver
+	engineFactory     EngineFactory
+	riskScanner       RiskScanner
+	riskRecorder      func(context.Context, RiskEvent)
+	logger            *slog.Logger
+	clock             Clock
 
 	mu                    sync.Mutex
 	wg                    sync.WaitGroup
@@ -193,14 +196,19 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 	config.MemoryVector.CacheDefaultTTL = config.CacheDefaultTTL
 	config.MemoryVector.CacheFailOpen = config.CacheFailOpen
 	config.SkillShellSandbox = config.SkillShellSandbox.normalized()
+	config.MemoryRecall = normalizeMemoryRecallConfig(config.MemoryRecall)
+	config.EpisodicMemory = normalizeEpisodicMemoryConfig(config.EpisodicMemory)
 	logger := componentLogger(config.Logger, "runtime")
 	runtime := &Runtime{
 		config:                config,
 		sessions:              sessions,
 		memory:                memory,
+		episodeMemory:         memoryEpisodeServiceFrom(memory),
 		memoryExtract:         NewRuleMemoryExtractor(),
 		memoryAbstract:        NewRuleMemoryAbstractor(),
 		memoryOrganizer:       NewRuleMemoryOrganizer(),
+		memoryRecall:          NewMemoryRecallDecider(config.MemoryRecall, memoryRecallEmbedderFromConfig(config), componentLogger(logger, "memory_recall")),
+		episodeSummarizer:     RuleMemoryEpisodeSummarizer{},
 		skills:                skills,
 		workflowStore:         NewMemoryWorkflowStore(),
 		toolCallLedger:        NewMemoryToolCallLedgerStore(),
@@ -218,6 +226,11 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 	if memory != nil {
 		memory = NewMemoryVectorService(memory, config.MemoryVector, componentLogger(logger, "memory_vector"))
 		runtime.memory = NewMemoryWorkflowService(memory, runtime.workflowStore, ContextWorkflowEventSink{})
+		runtime.episodeMemory = memoryEpisodeServiceFrom(runtime.memory)
+	}
+	if !config.EpisodicMemory.Enabled {
+		runtime.episodeMemory = nil
+		runtime.episodeSummarizer = nil
 	}
 	if _, ok := sessions.(MessageRepository); ok {
 		if metaStore, ok := sessions.(MessageEmbeddingMetaStore); ok && messageVectorIndexingEnabled(config.MessageSearch) {
@@ -401,6 +414,18 @@ func (r *Runtime) SetMemoryOrganizer(organizer MemoryOrganizer) {
 	}
 }
 
+func (r *Runtime) SetMemoryEpisodeService(service MemoryEpisodeService) {
+	if service != nil {
+		r.episodeMemory = service
+	}
+}
+
+func (r *Runtime) SetMemoryEpisodeSummarizer(summarizer MemoryEpisodeSummarizer) {
+	if summarizer != nil {
+		r.episodeSummarizer = summarizer
+	}
+}
+
 func (r *Runtime) CreateSession(ctx context.Context, userID, workingDir string) (*state.Session, error) {
 	if strings.TrimSpace(userID) == "" {
 		return nil, fmt.Errorf("user ID is required")
@@ -576,33 +601,12 @@ func (r *Runtime) DeleteSession(ctx context.Context, userID, sessionID string) e
 	if r.sessions == nil {
 		return fmt.Errorf("session store is required")
 	}
-	deletedMessages, err := r.loadMessagesForIndexDelete(ctx, userID, sessionID)
-	if err != nil {
-		return err
-	}
-	r.Cancel(userID, sessionID)
-	if r.memory != nil {
-		if err := r.memory.DeleteSession(ctx, userID, sessionID); err != nil {
-			return err
-		}
-	}
-	if r.artifacts != nil {
-		if err := r.artifacts.DeleteSession(ctx, userID, sessionID); err != nil {
-			return err
-		}
-	}
-	if r.jobs != nil {
-		if err := r.jobs.DeleteSession(ctx, userID, sessionID); err != nil {
-			return err
-		}
-	}
 	if err := r.sessions.Delete(ctx, userID, sessionID); err != nil {
 		return err
 	}
 	if r.messageCache != nil {
 		_ = r.messageCache.InvalidateContext(ctx, userID, sessionID)
 	}
-	r.publishDeletedMessageEvents(ctx, userID, deletedMessages)
 	return nil
 }
 
@@ -639,6 +643,140 @@ func (r *Runtime) ListMemoryItems(ctx context.Context, userID string, filter Mem
 		items = excludeManagedPersonalizationMemory(items)
 	}
 	return items, nil
+}
+
+func (r *Runtime) ListMemoryEpisodes(ctx context.Context, userID string, filter MemoryEpisodeFilter) ([]MemoryEpisode, error) {
+	if r == nil || r.episodeMemory == nil {
+		return []MemoryEpisode{}, nil
+	}
+	return r.episodeMemory.ListMemoryEpisodes(ctx, userID, filter)
+}
+
+func (r *Runtime) GetMemoryEpisode(ctx context.Context, userID, episodeID string) (MemoryEpisode, error) {
+	if r == nil || r.episodeMemory == nil {
+		return MemoryEpisode{}, fmt.Errorf("memory episodes are not configured")
+	}
+	return r.episodeMemory.GetMemoryEpisode(ctx, userID, episodeID)
+}
+
+func (r *Runtime) ExpandMemoryEpisode(ctx context.Context, userID, episodeID string) (MemoryEpisode, error) {
+	if _, err := r.GetMemoryEpisode(ctx, userID, episodeID); err != nil {
+		return MemoryEpisode{}, err
+	}
+	if err := r.RecordMemoryEpisodeUse(ctx, userID, episodeID); err != nil {
+		return MemoryEpisode{}, err
+	}
+	return r.GetMemoryEpisode(ctx, userID, episodeID)
+}
+
+func (r *Runtime) SearchMemoryEpisodes(ctx context.Context, userID, query string, opts MemoryEpisodeSearchOptions) ([]MemoryEpisodeSearchResult, error) {
+	if r == nil || r.episodeMemory == nil {
+		return []MemoryEpisodeSearchResult{}, nil
+	}
+	return r.episodeMemory.SearchMemoryEpisodes(ctx, userID, query, opts)
+}
+
+func (r *Runtime) RecordMemoryEpisodeUse(ctx context.Context, userID, episodeID string) error {
+	if r == nil || r.episodeMemory == nil {
+		return fmt.Errorf("memory episodes are not configured")
+	}
+	return r.episodeMemory.RecordMemoryEpisodeUse(ctx, userID, episodeID)
+}
+
+func (r *Runtime) DeleteMemoryEpisode(ctx context.Context, userID, episodeID string) error {
+	if r == nil || r.episodeMemory == nil {
+		return nil
+	}
+	return r.episodeMemory.DeleteMemoryEpisode(ctx, userID, episodeID)
+}
+
+func (r *Runtime) HideMemoryEpisode(ctx context.Context, userID, episodeID string) (MemoryEpisode, error) {
+	if r == nil || r.episodeMemory == nil {
+		return MemoryEpisode{}, fmt.Errorf("memory episodes are not configured")
+	}
+	episode, err := r.episodeMemory.GetMemoryEpisode(ctx, userID, episodeID)
+	if err != nil {
+		return MemoryEpisode{}, err
+	}
+	episode.Status = MemoryEpisodeStatusArchived
+	episode.UpdatedAt = time.Now().UTC()
+	return r.episodeMemory.UpdateMemoryEpisode(ctx, userID, episode)
+}
+
+func (r *Runtime) RestoreMemoryEpisode(ctx context.Context, userID, episodeID string) (MemoryEpisode, error) {
+	if r == nil || r.episodeMemory == nil {
+		return MemoryEpisode{}, fmt.Errorf("memory episodes are not configured")
+	}
+	episode, err := r.episodeMemory.GetMemoryEpisode(ctx, userID, episodeID)
+	if err != nil {
+		return MemoryEpisode{}, err
+	}
+	episode.Status = MemoryEpisodeStatusActive
+	episode.UpdatedAt = time.Now().UTC()
+	return r.episodeMemory.UpdateMemoryEpisode(ctx, userID, episode)
+}
+
+func (r *Runtime) PromoteMemoryEpisodes(ctx context.Context, userID string, episodeIDs []string, limit int) ([]MemoryItem, error) {
+	if r == nil || r.episodeMemory == nil {
+		return nil, fmt.Errorf("memory episodes are not configured")
+	}
+	service, err := r.memoryItemService()
+	if err != nil {
+		return nil, err
+	}
+	episodes, err := r.memoryEpisodesForPromotion(ctx, userID, episodeIDs, limit)
+	if err != nil {
+		return nil, err
+	}
+	promoter := RuleMemoryEpisodePromoter{
+		Extractor: r.memoryExtract,
+		Items:     service,
+	}
+	items, err := promoter.PromoteEpisodes(ctx, userID, episodes)
+	if err != nil {
+		return items, err
+	}
+	promotedEpisodeIDs := promotedEpisodeIDsFromItems(items)
+	if len(promotedEpisodeIDs) > 0 {
+		if err := r.episodeMemory.MarkMemoryEpisodesPromoted(ctx, userID, promotedEpisodeIDs); err != nil {
+			return items, err
+		}
+	}
+	return items, nil
+}
+
+func (r *Runtime) memoryEpisodesForPromotion(ctx context.Context, userID string, episodeIDs []string, limit int) ([]MemoryEpisode, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 10
+	}
+	episodeIDs = normalizeMemoryIDs(episodeIDs)
+	if len(episodeIDs) == 0 {
+		return r.episodeMemory.ListUnpromotedMemoryEpisodes(ctx, userID, limit)
+	}
+	episodes := make([]MemoryEpisode, 0, len(episodeIDs))
+	for _, episodeID := range episodeIDs {
+		episode, err := r.episodeMemory.GetMemoryEpisode(ctx, userID, episodeID)
+		if err != nil {
+			return nil, err
+		}
+		if episode.PromotedAt != nil {
+			continue
+		}
+		episodes = append(episodes, episode)
+	}
+	return episodes, nil
+}
+
+func promotedEpisodeIDsFromItems(items []MemoryItem) []string {
+	ids := []string{}
+	for _, item := range items {
+		for _, ref := range item.SourceRefs {
+			if ref.Kind == "episode" && strings.TrimSpace(ref.ID) != "" {
+				ids = append(ids, ref.ID)
+			}
+		}
+	}
+	return normalizeMemoryIDs(ids)
 }
 
 func (r *Runtime) GetMemorySettings(ctx context.Context, userID string) (MemorySettings, error) {
@@ -1005,7 +1143,69 @@ func (r *Runtime) PlanMemoryMaintenance(ctx context.Context, userID string) ([]M
 	for _, item := range items {
 		scored = append(scored, scoreMemoryQuality(item, items, now))
 	}
-	return r.memoryOrganizer.Plan(ctx, userID, scored, now)
+	actions, err := r.memoryOrganizer.Plan(ctx, userID, scored, now)
+	if err != nil {
+		return nil, err
+	}
+	episodeActions, err := r.planEpisodePromotionMaintenance(ctx, userID, now)
+	if err != nil {
+		return nil, err
+	}
+	actions = append(actions, episodeActions...)
+	sort.Slice(actions, func(i, j int) bool {
+		if actions[i].Confidence == actions[j].Confidence {
+			return actions[i].Type < actions[j].Type
+		}
+		return actions[i].Confidence > actions[j].Confidence
+	})
+	return actions, nil
+}
+
+func (r *Runtime) planEpisodePromotionMaintenance(ctx context.Context, userID string, now time.Time) ([]MemoryMaintenanceAction, error) {
+	if r == nil || r.episodeMemory == nil {
+		return nil, nil
+	}
+	episodes, err := r.episodeMemory.ListUnpromotedMemoryEpisodes(ctx, userID, 5)
+	if err != nil {
+		return nil, err
+	}
+	ids := []string{}
+	var confidence float64
+	for _, episode := range episodes {
+		if episode.Status != MemoryEpisodeStatusActive {
+			continue
+		}
+		score := clamp01(0.45*episode.Weight + 0.25*episode.Confidence + 0.20*episode.RecallScore)
+		if episode.UseCount > 0 {
+			score += 0.08
+		}
+		if episode.RecallCount > 0 {
+			score += 0.04
+		}
+		score = clamp01(score)
+		if score < 0.62 {
+			continue
+		}
+		ids = append(ids, episode.ID)
+		if score > confidence {
+			confidence = score
+		}
+	}
+	ids = normalizeMemoryIDs(ids)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	action := MemoryMaintenanceAction{
+		UserID:     userID,
+		Type:       "promote_episodes",
+		MemoryIDs:  ids,
+		Reason:     "Unpromoted episodic memories look stable enough to extract durable L3 memory candidates.",
+		Confidence: confidence,
+		Status:     MemoryMaintenancePending,
+		CreatedAt:  now,
+	}
+	action.ID = memoryMaintenanceActionID(action.Type, action.MemoryIDs)
+	return []MemoryMaintenanceAction{action}, nil
 }
 
 func (r *Runtime) RunMemoryMaintenance(ctx context.Context, userID string) (MemoryMaintenanceRunReport, error) {
@@ -1133,6 +1333,10 @@ func (r *Runtime) applyMemoryMaintenanceAction(ctx context.Context, userID strin
 				return MemoryMaintenanceAction{}, err
 			}
 		}
+	case "promote_episodes":
+		if _, err := r.PromoteMemoryEpisodes(ctx, userID, action.MemoryIDs, len(action.MemoryIDs)); err != nil {
+			return MemoryMaintenanceAction{}, err
+		}
 	default:
 		return MemoryMaintenanceAction{}, fmt.Errorf("unsupported memory maintenance action")
 	}
@@ -1251,6 +1455,13 @@ func (r *Runtime) ExportUserData(ctx context.Context, user *UserProfile) (*UserD
 			}
 			out.JobEvents[job.ID] = events
 		}
+	}
+	if r.episodeMemory != nil {
+		episodes, err := r.episodeMemory.ListMemoryEpisodes(ctx, user.ID, MemoryEpisodeFilter{})
+		if err != nil {
+			return nil, err
+		}
+		out.Memory.Episodes = episodes
 	}
 	if r.memory == nil {
 		return out, nil
@@ -2278,12 +2489,6 @@ func (r *Runtime) executeLiveSkillCommand(ctx context.Context, userID, sessionID
 	if err := r.injectPersonalization(ctx, userID, session); err != nil {
 		return true, "", err
 	}
-	if err := r.injectBrowserMemory(ctx, userID, session); err != nil {
-		return true, "", err
-	}
-	if err := r.injectMemory(ctx, userID, session); err != nil {
-		return true, "", err
-	}
 	startMessageCount := len(session.Messages)
 	displayText = strings.TrimSpace(displayText)
 	if displayText == "" {
@@ -2319,6 +2524,9 @@ func (r *Runtime) executeLiveSkillCommand(ctx context.Context, userID, sessionID
 		}
 		return true, fmt.Sprintf("%s job_id=%s command=%s", output, job.ID, command), nil
 	}
+	if err := r.injectTurnMemoryContexts(ctx, userID, session, displayText); err != nil {
+		return true, "", err
+	}
 
 	turnCtx, cancel := context.WithTimeout(ctx, r.config.TurnTimeout)
 	turnKey := sessionKey(userID, session.ID)
@@ -2339,6 +2547,7 @@ func (r *Runtime) executeLiveSkillCommand(ctx context.Context, userID, sessionID
 		_ = sink.Send(ctx, Event{Type: "delta", SessionID: session.ID, Role: state.MessageRoleAssistant, Content: token})
 	})
 	if err != nil {
+		stripTransientRuntimeContexts(session)
 		r.appendFailedTurn(session, displayText, err)
 		if saveErr := r.persistChatSession(ctx, userID, session, startMessageCount); saveErr != nil {
 			_ = sink.Send(ctx, Event{Type: "error", SessionID: session.ID, Error: err.Error()})
@@ -2837,7 +3046,7 @@ func (r *Runtime) publishDeletedMessageEvents(ctx context.Context, userID string
 }
 
 func (r *Runtime) afterTurnMemory(ctx context.Context, userID string, session *state.Session) error {
-	if r.memory == nil || session == nil {
+	if r == nil || session == nil {
 		return nil
 	}
 	settings, err := r.GetMemorySettings(ctx, userID)
@@ -2847,50 +3056,128 @@ func (r *Runtime) afterTurnMemory(ctx context.Context, userID string, session *s
 	if !settings.CaptureEnabled {
 		return nil
 	}
-	service, ok := r.memory.(MemoryItemService)
-	if !ok || r.memoryExtract == nil {
-		return r.memory.AfterTurn(ctx, userID, session)
-	}
-	candidates, err := r.memoryExtract.Extract(ctx, MemoryExtractionInput{
-		UserID:    userID,
-		SessionID: session.ID,
-		Messages:  session.Messages,
-		Now:       time.Now().UTC(),
-	})
-	if err != nil {
-		return r.memory.AfterTurn(ctx, userID, session)
-	}
-	items := evaluateMemoryCandidates(userID, session.ID, candidates)
-	if len(items) == 0 {
-		return nil
-	}
-	existing, err := service.ListMemoryItems(ctx, userID, MemoryItemFilter{})
-	if err != nil {
-		return err
-	}
-	for _, candidate := range items {
-		var conflictUpdates []MemoryItem
-		candidate, conflictUpdates = applyMemoryConflictResolution(existing, candidate)
-		for _, update := range conflictUpdates {
-			if _, err := service.UpdateMemoryItem(ctx, userID, update); err != nil {
+	if r.memory != nil {
+		service, ok := r.memory.(MemoryItemService)
+		if !ok || r.memoryExtract == nil {
+			if err := r.memory.AfterTurn(ctx, userID, session); err != nil {
 				return err
 			}
-			existing = append(existing, update)
+		} else {
+			candidates, err := r.memoryExtract.Extract(ctx, MemoryExtractionInput{
+				UserID:    userID,
+				SessionID: session.ID,
+				Messages:  session.Messages,
+				Now:       time.Now().UTC(),
+			})
+			if err != nil {
+				if err := r.memory.AfterTurn(ctx, userID, session); err != nil {
+					return err
+				}
+			} else {
+				items := evaluateMemoryCandidates(userID, session.ID, candidates)
+				if len(items) > 0 {
+					existing, err := service.ListMemoryItems(ctx, userID, MemoryItemFilter{})
+					if err != nil {
+						return err
+					}
+					for _, candidate := range items {
+						var conflictUpdates []MemoryItem
+						candidate, conflictUpdates = applyMemoryConflictResolution(existing, candidate)
+						for _, update := range conflictUpdates {
+							if _, err := service.UpdateMemoryItem(ctx, userID, update); err != nil {
+								return err
+							}
+							existing = append(existing, update)
+						}
+						item := upsertMemoryItem(existing, candidate)
+						if _, err := service.UpdateMemoryItem(ctx, userID, item); err != nil {
+							return err
+						}
+						existing = append(existing, item)
+					}
+					if err := r.markMemoryAbstractionsDirty(ctx, userID, service); err != nil {
+						return err
+					}
+				}
+			}
 		}
-		item := upsertMemoryItem(existing, candidate)
-		if _, err := service.UpdateMemoryItem(ctx, userID, item); err != nil {
-			return err
-		}
-		existing = append(existing, item)
 	}
-	if err := r.markMemoryAbstractionsDirty(ctx, userID, service); err != nil {
+	return r.captureEpisodeAfterTurn(ctx, userID, session)
+}
+
+func (r *Runtime) captureEpisodeAfterTurn(ctx context.Context, userID string, session *state.Session) error {
+	if r == nil || r.episodeMemory == nil || r.episodeSummarizer == nil || session == nil {
+		return nil
+	}
+	config := normalizeEpisodicMemoryConfig(r.config.EpisodicMemory)
+	if !config.Enabled || !config.CaptureEnabled {
+		return nil
+	}
+	episode, ok, err := buildMemoryEpisodeFromSessionWithConfig(ctx, userID, session, r.episodeSummarizer, time.Now().UTC(), config)
+	if err != nil || !ok {
 		return err
 	}
+	_, err = r.episodeMemory.UpsertMemoryEpisode(ctx, userID, episode)
+	return err
+}
+
+func (r *Runtime) recordEpisodeRecall(ctx context.Context, userID string, results []MemoryEpisodeSearchResult) {
+	if r == nil || r.episodeMemory == nil {
+		return
+	}
+	for _, result := range results {
+		if strings.TrimSpace(result.Episode.ID) == "" {
+			continue
+		}
+		if err := r.episodeMemory.RecordMemoryEpisodeRecall(ctx, userID, result.Episode.ID, result.Score); err != nil {
+			logError(ctx, r.logger, "memory episode recall record failed", err, contextLogAttrs(ctx, userID, result.Episode.SessionID, result.Episode.ID)...)
+		}
+	}
+}
+
+func (r *Runtime) injectTurnEpisodeContexts(ctx context.Context, userID string, session *state.Session, query string) error {
+	if r == nil || r.episodeMemory == nil || session == nil || strings.TrimSpace(query) == "" {
+		return nil
+	}
+	content, results, err := r.searchTurnEpisodeContexts(ctx, userID, query)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	session.AddSystemContext(episodicMemoryContextMarker + "\n" + content + "\n</episodic-memory>")
+	r.recordEpisodeRecall(ctx, userID, results)
 	return nil
 }
 
+func (r *Runtime) searchTurnEpisodeContexts(ctx context.Context, userID, query string) (string, []MemoryEpisodeSearchResult, error) {
+	if r == nil || r.episodeMemory == nil || strings.TrimSpace(query) == "" {
+		return "", nil, nil
+	}
+	config := normalizeEpisodicMemoryConfig(r.config.EpisodicMemory)
+	if !config.Enabled || !config.ContextEnabled {
+		return "", nil, nil
+	}
+	results, err := r.episodeMemory.SearchMemoryEpisodes(ctx, userID, query, MemoryEpisodeSearchOptions{
+		Limit:    config.InjectLimit,
+		MinScore: 0.12,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return formatEpisodeContextForPrompt(results), results, nil
+}
+
+func (r *Runtime) shouldScheduleAfterTurnMemory(session *state.Session) bool {
+	if r == nil || session == nil {
+		return false
+	}
+	return r.memory != nil || r.episodeMemory != nil
+}
+
 func (r *Runtime) scheduleAfterTurnMemory(ctx context.Context, userID string, session *state.Session) {
-	if r == nil || r.memory == nil || session == nil {
+	if !r.shouldScheduleAfterTurnMemory(session) {
 		return
 	}
 	sessionCopy := cloneSessionForBackgroundMemory(session)
@@ -3724,6 +4011,128 @@ func (r *Runtime) injectMemory(ctx context.Context, userID string, session *stat
 	return nil
 }
 
+func (r *Runtime) injectTurnMemoryContexts(ctx context.Context, userID string, session *state.Session, query string) error {
+	if r == nil || session == nil {
+		return nil
+	}
+	personalization, err := r.GetPersonalizationSettings(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !personalization.FeatureFlags.UseSavedMemory {
+		return nil
+	}
+	settings, err := r.GetMemorySettings(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !settings.ContextEnabled {
+		return nil
+	}
+	recall := r.memoryRecall
+	if recall == nil {
+		recall = NewMemoryRecallDecider(r.config.MemoryRecall, nil, componentLogger(r.logger, "memory_recall"))
+	}
+	decision := recall.Decide(ctx, MemoryRecallInput{
+		Session:         session,
+		Message:         query,
+		Personalization: personalization,
+	})
+	if !decision.Should {
+		return nil
+	}
+	result, err := r.loadTurnMemoryContexts(ctx, userID, session, firstNonEmptyString(decision.Query, query), recall.config)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(result.MemoryContent) != "" {
+		session.AddSystemContext(memoryContextMarker + "\n" + result.MemoryContent + "\n</memory>")
+	}
+	if strings.TrimSpace(result.EpisodeContent) != "" {
+		session.AddSystemContext(episodicMemoryContextMarker + "\n" + result.EpisodeContent + "\n</episodic-memory>")
+		r.recordEpisodeRecall(ctx, userID, result.EpisodeResults)
+	}
+	return nil
+}
+
+type turnMemoryContextResult struct {
+	MemoryContent  string
+	EpisodeContent string
+	EpisodeResults []MemoryEpisodeSearchResult
+}
+
+func (r *Runtime) loadTurnMemoryContexts(ctx context.Context, userID string, session *state.Session, query string, config MemoryRecallConfig) (turnMemoryContextResult, error) {
+	config = normalizeMemoryRecallConfig(config)
+	if !config.AsyncEnabled {
+		return r.loadTurnMemoryContextsSync(ctx, userID, session, query, config)
+	}
+	timeout := config.Timeout
+	if timeout <= 0 {
+		timeout = defaultMemoryRecallTimeout
+	}
+	recallCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	type outcome struct {
+		result turnMemoryContextResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := r.loadTurnMemoryContextsSync(recallCtx, userID, session, query, config)
+		done <- outcome{result: result, err: err}
+	}()
+	select {
+	case got := <-done:
+		return got.result, got.err
+	case <-recallCtx.Done():
+		if errors.Is(recallCtx.Err(), context.DeadlineExceeded) {
+			if r.logger != nil {
+				r.logger.LogAttrs(ctx, slog.LevelDebug, "memory recall timed out", contextLogAttrs(ctx, userID, session.ID, "")...)
+			}
+			return turnMemoryContextResult{}, nil
+		}
+		return turnMemoryContextResult{}, recallCtx.Err()
+	}
+}
+
+func (r *Runtime) loadTurnMemoryContextsSync(ctx context.Context, userID string, session *state.Session, query string, config MemoryRecallConfig) (turnMemoryContextResult, error) {
+	recallQuery := strings.TrimSpace(query)
+	querySession := runtimeContextQuerySession(session, recallQuery)
+	var result turnMemoryContextResult
+	if r.memory != nil {
+		content, err := r.memory.LoadContext(ctx, userID, querySession)
+		if err != nil {
+			return result, err
+		}
+		result.MemoryContent = content
+	}
+	episodeContent, episodeResults, err := r.searchTurnEpisodeContexts(ctx, userID, recallQuery)
+	if err != nil {
+		return result, err
+	}
+	result.EpisodeContent = episodeContent
+	result.EpisodeResults = episodeResults
+	return result, nil
+}
+
+func runtimeContextQuerySession(session *state.Session, query string) *state.Session {
+	if session == nil {
+		return nil
+	}
+	clone := *session
+	clone.Messages = append([]state.Message(nil), session.Messages...)
+	if session.Metadata != nil {
+		clone.Metadata = make(map[string]string, len(session.Metadata))
+		for key, value := range session.Metadata {
+			clone.Metadata[key] = value
+		}
+	}
+	if strings.TrimSpace(query) != "" {
+		clone.AddUserMessage(query)
+	}
+	return &clone
+}
+
 func (r *Runtime) injectPersonalization(ctx context.Context, userID string, session *state.Session) error {
 	if session == nil {
 		return nil
@@ -3788,6 +4197,9 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	}
 	llmSession, err := r.materializedSessionForLLM(ctx, userID, session)
 	if err != nil {
+		return runnerResult{}, err
+	}
+	if err := r.injectTurnMemoryContexts(ctx, userID, llmSession, content); err != nil {
 		return runnerResult{}, err
 	}
 	r.injectTransientRuntimeContexts(llmSession)

@@ -112,6 +112,53 @@ type MemoryItemFilter struct {
 	Limit      int
 }
 
+type MemoryEpisode struct {
+	ID             string            `json:"id"`
+	UserID         string            `json:"user_id,omitempty"`
+	SessionID      string            `json:"session_id,omitempty"`
+	Title          string            `json:"title,omitempty"`
+	Summary        string            `json:"summary"`
+	L0Abstract     string            `json:"l0_abstract,omitempty"`
+	KeyTopics      []string          `json:"key_topics,omitempty"`
+	SourceType     string            `json:"source_type"`
+	SourceID       string            `json:"source_id,omitempty"`
+	SourceRefs     []MemorySourceRef `json:"source_refs,omitempty"`
+	Status         string            `json:"status"`
+	Visibility     string            `json:"visibility"`
+	TurnCount      int64             `json:"turn_count"`
+	TokenCount     int64             `json:"token_count"`
+	Confidence     float64           `json:"confidence"`
+	Weight         float64           `json:"weight"`
+	RecallCount    int64             `json:"recall_count"`
+	UseCount       int64             `json:"use_count"`
+	RecallScore    float64           `json:"recall_score"`
+	LastRecalledAt *time.Time        `json:"last_recalled_at,omitempty"`
+	LastUsedAt     *time.Time        `json:"last_used_at,omitempty"`
+	PromotedAt     *time.Time        `json:"promoted_at,omitempty"`
+	Metadata       map[string]any    `json:"metadata,omitempty"`
+	ExpiresAt      *time.Time        `json:"expires_at,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+}
+
+type MemoryEpisodeFilter struct {
+	SessionID string
+	Status    string
+	Query     string
+	Limit     int
+	Offset    int
+}
+
+type MemoryEpisodeSearchOptions struct {
+	Limit    int
+	MinScore float64
+}
+
+type MemoryEpisodeSearchResult struct {
+	Episode MemoryEpisode `json:"episode"`
+	Score   float64       `json:"score"`
+}
+
 type MemorySettings struct {
 	Enabled        bool      `json:"enabled"`
 	CaptureEnabled bool      `json:"capture_enabled"`
@@ -159,6 +206,24 @@ type MemoryItemService interface {
 	ListMemoryItems(ctx context.Context, userID string, filter MemoryItemFilter) ([]MemoryItem, error)
 	UpdateMemoryItem(ctx context.Context, userID string, item MemoryItem) (MemoryItem, error)
 	DeleteMemoryItem(ctx context.Context, userID, itemID string) error
+}
+
+type MemoryEpisodeService interface {
+	UpsertMemoryEpisode(ctx context.Context, userID string, episode MemoryEpisode) (MemoryEpisode, error)
+	GetMemoryEpisode(ctx context.Context, userID, episodeID string) (MemoryEpisode, error)
+	ListMemoryEpisodes(ctx context.Context, userID string, filter MemoryEpisodeFilter) ([]MemoryEpisode, error)
+	UpdateMemoryEpisode(ctx context.Context, userID string, episode MemoryEpisode) (MemoryEpisode, error)
+	DeleteMemoryEpisode(ctx context.Context, userID, episodeID string) error
+	SearchMemoryEpisodes(ctx context.Context, userID, query string, opts MemoryEpisodeSearchOptions) ([]MemoryEpisodeSearchResult, error)
+	RecordMemoryEpisodeRecall(ctx context.Context, userID, episodeID string, score float64) error
+	RecordMemoryEpisodeUse(ctx context.Context, userID, episodeID string) error
+	ListUnpromotedMemoryEpisodes(ctx context.Context, userID string, limit int) ([]MemoryEpisode, error)
+	MarkMemoryEpisodesPromoted(ctx context.Context, userID string, episodeIDs []string) error
+	DeleteMemoryEpisodesForSession(ctx context.Context, userID, sessionID string) error
+}
+
+type MemoryEpisodePromoter interface {
+	PromoteEpisodes(ctx context.Context, userID string, episodes []MemoryEpisode) ([]MemoryItem, error)
 }
 
 type MemorySettingsService interface {
@@ -228,6 +293,13 @@ const (
 	MemoryStatusDeleted            = "deleted"
 	MemoryStatusConflicted         = "conflicted"
 	MemoryStatusPendingConfirm     = "pending_confirm"
+	MemoryEpisodeStatusActive      = "active"
+	MemoryEpisodeStatusArchived    = "archived"
+	MemoryEpisodeStatusDeleted     = "deleted"
+	MemoryEpisodeStatusPending     = "pending"
+	MemoryEpisodeSourceSession     = "session"
+	MemoryEpisodeSourceJob         = "job"
+	MemoryEpisodeSourceManual      = "manual"
 
 	MemoryMaintenancePending   = "pending"
 	MemoryMaintenanceApplied   = "applied"
@@ -419,6 +491,7 @@ type MemoryExport struct {
 	User     string            `json:"user,omitempty"`
 	Sessions map[string]string `json:"sessions"`
 	Items    []MemoryItem      `json:"items,omitempty"`
+	Episodes []MemoryEpisode   `json:"episodes,omitempty"`
 }
 
 type RuntimeConfig struct {
@@ -433,12 +506,45 @@ type RuntimeConfig struct {
 	SkillShellSandbox     SkillShellSandboxConfig
 	MessageSearch         MessageSearchConfig
 	MemoryVector          MemoryVectorConfig
+	MemoryRecall          MemoryRecallConfig
+	EpisodicMemory        EpisodicMemoryConfig
 	Live                  LiveConfig
 	CacheStore            CacheStore    `json:"-"`
 	CacheMetrics          *CacheMetrics `json:"-"`
 	CacheDefaultTTL       time.Duration
 	CacheFailOpen         bool
 	Logger                *slog.Logger `json:"-"`
+}
+
+type EpisodicMemoryConfig struct {
+	Configured       bool
+	Enabled          bool
+	CaptureEnabled   bool
+	ContextEnabled   bool
+	MinMessages      int
+	MaxMessages      int
+	InjectLimit      int
+	TTL              time.Duration
+	SummarizeTimeout time.Duration
+}
+
+type MemoryRecallConfig struct {
+	Configured                   bool
+	Enabled                      bool
+	ConditionalEnabled           bool
+	AsyncEnabled                 bool
+	Timeout                      time.Duration
+	MinQueryRunes                int
+	RecentContextMessages        int
+	RecentContextMaxRunes        int
+	ForceInterval                int
+	ComplexTokenThreshold        int
+	EmbeddingEnabled             bool
+	EmbeddingSimilarityThreshold float64
+	EmbeddingWindow              int
+	IntentClassifierEnabled      bool
+	IntentClassifierThreshold    float64
+	IntentClassifierContextTurns int
 }
 
 type DeepAgentRuntimeConfig struct {
@@ -490,6 +596,7 @@ type MessageSearchConfig struct {
 
 	QdrantEndpoint       string
 	QdrantCollection     string
+	EpisodeCollection    string
 	QdrantAPIKey         string
 	QdrantScoreThreshold float64
 
@@ -527,6 +634,7 @@ type MemoryVectorConfig struct {
 
 	QdrantEndpoint       string
 	QdrantCollection     string
+	EpisodeCollection    string
 	QdrantAPIKey         string
 	QdrantScoreThreshold float64
 
@@ -545,6 +653,15 @@ type MemoryVectorConfig struct {
 
 	Timeout time.Duration
 	RRFK    int
+
+	RerankEnabled        bool
+	RerankEndpoint       string
+	RerankAPIKey         string
+	RerankModel          string
+	RerankCandidateLimit int
+	RerankResultLimit    int
+	RerankTimeout        time.Duration
+	RerankTruncate       string
 
 	CacheStore      CacheStore    `json:"-"`
 	CacheMetrics    *CacheMetrics `json:"-"`

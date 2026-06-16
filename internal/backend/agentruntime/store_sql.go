@@ -400,16 +400,6 @@ func (s *SQLSessionStore) Delete(ctx context.Context, userID, sessionID string) 
 	now := time.Now().UTC()
 	if s.dialect == SQLDialectPostgres && s.queries != nil {
 		q := s.queries.WithTx(tx)
-		if err := q.SoftDeleteSessionMessages(ctx, dbsqlc.SoftDeleteSessionMessagesParams{
-			Status:    int32(state.MessageStatusDeleted),
-			UpdatedAt: now,
-			UserID:    userID,
-			SessionID: sessionID,
-			Status_2:  int32(state.MessageStatusDeleted),
-		}); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
 		if err := q.SoftDeleteSession(ctx, dbsqlc.SoftDeleteSessionParams{
 			Status:    int32(state.SessionStatusDeleted),
 			Archived:  int32(sqlIntFromBool(true)),
@@ -421,19 +411,6 @@ func (s *SQLSessionStore) Delete(ctx context.Context, userID, sessionID string) 
 			_ = tx.Rollback()
 			return err
 		}
-	} else if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
-UPDATE agent_messages
-SET status = ?,
-	updated_at = ?
-WHERE user_id = ? AND session_id = ? AND status <> ?`),
-		state.MessageStatusDeleted,
-		sqlTimeValue(now, s.dialect),
-		userID,
-		sessionID,
-		state.MessageStatusDeleted,
-	); err != nil {
-		_ = tx.Rollback()
-		return err
 	} else if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_sessions
 SET status = ?, archived = ?, updated_at = ?
@@ -2203,6 +2180,15 @@ func (m *SQLMemoryService) Init(ctx context.Context) error {
 	if err := requireSQLColumns(ctx, m.db, "agent_memory_settings", "user_id", "payload", "updated_at"); err != nil {
 		return err
 	}
+	if err := requireSQLColumns(ctx, m.db, "agent_memory_episodes",
+		"id", "user_id", "session_id", "title", "summary", "l0_abstract", "key_topics",
+		"source_type", "source_id", "source_refs", "status", "visibility", "turn_count",
+		"token_count", "confidence", "weight", "recall_count", "use_count", "recall_score",
+		"last_recalled_at", "last_used_at", "promoted_at", "metadata", "expires_at",
+		"created_at", "updated_at",
+	); err != nil {
+		return err
+	}
 	return requireSQLColumns(ctx, m.db, "agent_personalization_settings",
 		"user_id", "payload", "version", "updated_at",
 	)
@@ -2290,18 +2276,26 @@ func (m *SQLMemoryService) AfterTurn(ctx context.Context, userID string, session
 
 func (m *SQLMemoryService) DeleteSession(ctx context.Context, userID, sessionID string) error {
 	if m.dialect == SQLDialectPostgres && m.queries != nil {
-		return m.queries.DeleteMemoryForSession(ctx, dbsqlc.DeleteMemoryForSessionParams{
+		if err := m.queries.DeleteMemoryForSession(ctx, dbsqlc.DeleteMemoryForSessionParams{
 			UserID:    userID,
 			SessionID: sqlNullString(sessionID),
-		})
+		}); err != nil {
+			return err
+		}
+		return m.DeleteMemoryEpisodesForSession(ctx, userID, sessionID)
 	}
-	_, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory WHERE user_id = ? AND session_id = ?`), userID, sessionID)
-	return err
+	if _, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory WHERE user_id = ? AND session_id = ?`), userID, sessionID); err != nil {
+		return err
+	}
+	return m.DeleteMemoryEpisodesForSession(ctx, userID, sessionID)
 }
 
 func (m *SQLMemoryService) DeleteUser(ctx context.Context, userID string) error {
 	if m.dialect == SQLDialectPostgres && m.queries != nil {
 		if err := m.queries.DeleteMemoryForUser(ctx, userID); err != nil {
+			return err
+		}
+		if _, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory_episodes WHERE user_id = ?`), userID); err != nil {
 			return err
 		}
 		if err := m.queries.DeleteMemorySettingsForUser(ctx, userID); err != nil {
@@ -2310,6 +2304,9 @@ func (m *SQLMemoryService) DeleteUser(ctx context.Context, userID string) error 
 		return m.queries.DeletePersonalizationSettingsForUser(ctx, userID)
 	}
 	if _, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory WHERE user_id = ?`), userID); err != nil {
+		return err
+	}
+	if _, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory_episodes WHERE user_id = ?`), userID); err != nil {
 		return err
 	}
 	if _, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory_settings WHERE user_id = ?`), userID); err != nil {
@@ -2333,6 +2330,9 @@ func (m *SQLMemoryService) DeleteSavedMemory(ctx context.Context, userID string)
 		if err := m.DeleteMemoryItem(ctx, userID, item.ID); err != nil {
 			return err
 		}
+	}
+	if _, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory_episodes WHERE user_id = ?`), userID); err != nil {
+		return err
 	}
 	return nil
 }
@@ -2746,8 +2746,278 @@ func (m *SQLMemoryService) DeleteMemoryItem(ctx context.Context, userID, itemID 
 	return err
 }
 
+func (m *SQLMemoryService) UpsertMemoryEpisode(ctx context.Context, userID string, episode MemoryEpisode) (MemoryEpisode, error) {
+	episode.UserID = userID
+	episode.Summary = sanitizeSQLText(episode.Summary)
+	episode.L0Abstract = sanitizeSQLText(episode.L0Abstract)
+	episode.Title = sanitizeSQLText(episode.Title)
+	episode = normalizeMemoryEpisode(episode)
+	keyTopicsJSON, err := json.Marshal(episode.KeyTopics)
+	if err != nil {
+		return MemoryEpisode{}, err
+	}
+	sourceRefsJSON, err := json.Marshal(episode.SourceRefs)
+	if err != nil {
+		return MemoryEpisode{}, err
+	}
+	metadataJSON, err := json.Marshal(episode.Metadata)
+	if err != nil {
+		return MemoryEpisode{}, err
+	}
+	_, err = m.db.ExecContext(ctx, m.dialect.Bind(`
+INSERT INTO agent_memory_episodes (id, user_id, session_id, title, summary, l0_abstract, key_topics, source_type, source_id, source_refs, status, visibility, turn_count, token_count, confidence, weight, recall_count, use_count, recall_score, last_recalled_at, last_used_at, promoted_at, metadata, expires_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+	session_id = excluded.session_id,
+	title = excluded.title,
+	summary = excluded.summary,
+	l0_abstract = excluded.l0_abstract,
+	key_topics = excluded.key_topics,
+	source_type = excluded.source_type,
+	source_id = excluded.source_id,
+	source_refs = excluded.source_refs,
+	status = excluded.status,
+	visibility = excluded.visibility,
+	turn_count = excluded.turn_count,
+	token_count = excluded.token_count,
+	confidence = excluded.confidence,
+	weight = excluded.weight,
+	recall_count = excluded.recall_count,
+	use_count = excluded.use_count,
+	recall_score = excluded.recall_score,
+	last_recalled_at = excluded.last_recalled_at,
+	last_used_at = excluded.last_used_at,
+	promoted_at = excluded.promoted_at,
+	metadata = excluded.metadata,
+	expires_at = excluded.expires_at,
+	updated_at = excluded.updated_at`),
+		episode.ID,
+		episode.UserID,
+		episode.SessionID,
+		episode.Title,
+		episode.Summary,
+		episode.L0Abstract,
+		string(keyTopicsJSON),
+		episode.SourceType,
+		episode.SourceID,
+		string(sourceRefsJSON),
+		episode.Status,
+		episode.Visibility,
+		episode.TurnCount,
+		episode.TokenCount,
+		episode.Confidence,
+		episode.Weight,
+		episode.RecallCount,
+		episode.UseCount,
+		episode.RecallScore,
+		nullableSQLTimeValue(episode.LastRecalledAt, m.dialect),
+		nullableSQLTimeValue(episode.LastUsedAt, m.dialect),
+		nullableSQLTimeValue(episode.PromotedAt, m.dialect),
+		string(metadataJSON),
+		nullableSQLTimeValue(episode.ExpiresAt, m.dialect),
+		sqlTimeValue(episode.CreatedAt, m.dialect),
+		sqlTimeValue(episode.UpdatedAt, m.dialect),
+	)
+	return episode, err
+}
+
+func (m *SQLMemoryService) GetMemoryEpisode(ctx context.Context, userID, episodeID string) (MemoryEpisode, error) {
+	row := m.db.QueryRowContext(ctx, m.dialect.Bind(`SELECT id, user_id, session_id, title, summary, l0_abstract, key_topics, source_type, source_id, source_refs, status, visibility, turn_count, token_count, confidence, weight, recall_count, use_count, recall_score, last_recalled_at, last_used_at, promoted_at, metadata, expires_at, created_at, updated_at
+FROM agent_memory_episodes
+WHERE user_id = ? AND id = ? AND status <> ?`), userID, episodeID, MemoryEpisodeStatusDeleted)
+	episode, err := scanMemoryEpisodeRows(row)
+	if err != nil {
+		return MemoryEpisode{}, err
+	}
+	return normalizeMemoryEpisode(episode), nil
+}
+
+func (m *SQLMemoryService) UpdateMemoryEpisode(ctx context.Context, userID string, episode MemoryEpisode) (MemoryEpisode, error) {
+	if strings.TrimSpace(episode.ID) == "" {
+		return MemoryEpisode{}, fmt.Errorf("memory episode ID is required")
+	}
+	episode.UserID = userID
+	if episode.UpdatedAt.IsZero() {
+		episode.UpdatedAt = time.Now().UTC()
+	}
+	return m.UpsertMemoryEpisode(ctx, userID, episode)
+}
+
+func (m *SQLMemoryService) DeleteMemoryEpisode(ctx context.Context, userID, episodeID string) error {
+	now := time.Now().UTC()
+	_, err := m.db.ExecContext(ctx, m.dialect.Bind(`UPDATE agent_memory_episodes SET status = ?, updated_at = ? WHERE user_id = ? AND id = ?`),
+		MemoryEpisodeStatusDeleted, sqlTimeValue(now, m.dialect), userID, episodeID)
+	return err
+}
+
+func (m *SQLMemoryService) ListMemoryEpisodes(ctx context.Context, userID string, filter MemoryEpisodeFilter) ([]MemoryEpisode, error) {
+	query := `SELECT id, user_id, session_id, title, summary, l0_abstract, key_topics, source_type, source_id, source_refs, status, visibility, turn_count, token_count, confidence, weight, recall_count, use_count, recall_score, last_recalled_at, last_used_at, promoted_at, metadata, expires_at, created_at, updated_at
+FROM agent_memory_episodes
+WHERE user_id = ?`
+	args := []any{userID}
+	if filter.SessionID != "" {
+		query += ` AND session_id = ?`
+		args = append(args, filter.SessionID)
+	}
+	if filter.Status != "" {
+		query += ` AND status = ?`
+		args = append(args, filter.Status)
+	} else {
+		query += ` AND status <> ?`
+		args = append(args, MemoryEpisodeStatusDeleted)
+	}
+	if filter.Query != "" {
+		query += ` AND (LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(l0_abstract) LIKE ? OR LOWER(key_topics) LIKE ?)`
+		pattern := "%" + strings.ToLower(filter.Query) + "%"
+		args = append(args, pattern, pattern, pattern, pattern)
+	}
+	query += ` ORDER BY weight DESC, updated_at DESC, id DESC`
+	if filter.Limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, filter.Limit)
+	}
+	if filter.Offset > 0 {
+		query += ` OFFSET ?`
+		args = append(args, filter.Offset)
+	}
+	rows, err := m.db.QueryContext(ctx, m.dialect.Bind(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	episodes := make([]MemoryEpisode, 0)
+	for rows.Next() {
+		episode, err := scanMemoryEpisodeRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		episodes = append(episodes, normalizeMemoryEpisode(episode))
+	}
+	return episodes, rows.Err()
+}
+
+func (m *SQLMemoryService) SearchMemoryEpisodes(ctx context.Context, userID, query string, opts MemoryEpisodeSearchOptions) ([]MemoryEpisodeSearchResult, error) {
+	limit := opts.Limit
+	if limit <= 0 || limit > 50 {
+		limit = defaultMemoryEpisodeInjectLimit
+	}
+	episodes, err := m.ListMemoryEpisodes(ctx, userID, MemoryEpisodeFilter{Status: MemoryEpisodeStatusActive})
+	if err != nil {
+		return nil, err
+	}
+	results := make([]MemoryEpisodeSearchResult, 0, len(episodes))
+	for _, episode := range episodes {
+		score := memoryEpisodeSearchScore(episode, query)
+		if score <= 0 || (opts.MinScore > 0 && score < opts.MinScore) {
+			continue
+		}
+		results = append(results, MemoryEpisodeSearchResult{Episode: episode, Score: score})
+	}
+	sortMemoryEpisodeSearchResults(results)
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+func (m *SQLMemoryService) RecordMemoryEpisodeRecall(ctx context.Context, userID, episodeID string, score float64) error {
+	episode, err := m.GetMemoryEpisode(ctx, userID, episodeID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	recallScore := clamp01((episode.RecallScore + clamp01(score)) / 2)
+	_, err = m.db.ExecContext(ctx, m.dialect.Bind(`UPDATE agent_memory_episodes SET recall_count = recall_count + 1, recall_score = ?, last_recalled_at = ?, updated_at = ? WHERE user_id = ? AND id = ?`),
+		recallScore, sqlTimeValue(now, m.dialect), sqlTimeValue(now, m.dialect), userID, episodeID)
+	return err
+}
+
+func (m *SQLMemoryService) RecordMemoryEpisodeUse(ctx context.Context, userID, episodeID string) error {
+	now := time.Now().UTC()
+	result, err := m.db.ExecContext(ctx, m.dialect.Bind(`UPDATE agent_memory_episodes SET use_count = use_count + 1, last_used_at = ?, updated_at = ? WHERE user_id = ? AND id = ? AND status <> ?`),
+		sqlTimeValue(now, m.dialect), sqlTimeValue(now, m.dialect), userID, episodeID, MemoryEpisodeStatusDeleted)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (m *SQLMemoryService) ListUnpromotedMemoryEpisodes(ctx context.Context, userID string, limit int) ([]MemoryEpisode, error) {
+	filter := MemoryEpisodeFilter{Status: MemoryEpisodeStatusActive, Limit: limit}
+	episodes, err := m.ListMemoryEpisodes(ctx, userID, filter)
+	if err != nil {
+		return nil, err
+	}
+	out := episodes[:0]
+	for _, episode := range episodes {
+		if episode.PromotedAt == nil {
+			out = append(out, episode)
+		}
+	}
+	return out, nil
+}
+
+func (m *SQLMemoryService) MarkMemoryEpisodesPromoted(ctx context.Context, userID string, episodeIDs []string) error {
+	now := time.Now().UTC()
+	for _, episodeID := range episodeIDs {
+		episodeID = strings.TrimSpace(episodeID)
+		if episodeID == "" {
+			continue
+		}
+		if _, err := m.db.ExecContext(ctx, m.dialect.Bind(`UPDATE agent_memory_episodes SET promoted_at = ?, updated_at = ? WHERE user_id = ? AND id = ?`),
+			sqlTimeValue(now, m.dialect), sqlTimeValue(now, m.dialect), userID, episodeID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *SQLMemoryService) DeleteMemoryEpisodesForSession(ctx context.Context, userID, sessionID string) error {
+	_, err := m.db.ExecContext(ctx, m.dialect.Bind(`DELETE FROM agent_memory_episodes WHERE user_id = ? AND session_id = ?`), userID, sessionID)
+	return err
+}
+
 type memoryItemScanner interface {
 	Scan(dest ...any) error
+}
+
+type memoryEpisodeScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanMemoryEpisodeRows(row memoryEpisodeScanner) (MemoryEpisode, error) {
+	var episode MemoryEpisode
+	var keyTopicsJSON, sourceRefsJSON, metadataJSON string
+	var lastRecalledAt, lastUsedAt, promotedAt, expiresAt, createdAt, updatedAt any
+	if err := row.Scan(&episode.ID, &episode.UserID, &episode.SessionID, &episode.Title, &episode.Summary, &episode.L0Abstract, &keyTopicsJSON, &episode.SourceType, &episode.SourceID, &sourceRefsJSON, &episode.Status, &episode.Visibility, &episode.TurnCount, &episode.TokenCount, &episode.Confidence, &episode.Weight, &episode.RecallCount, &episode.UseCount, &episode.RecallScore, &lastRecalledAt, &lastUsedAt, &promotedAt, &metadataJSON, &expiresAt, &createdAt, &updatedAt); err != nil {
+		return MemoryEpisode{}, err
+	}
+	_ = json.Unmarshal([]byte(keyTopicsJSON), &episode.KeyTopics)
+	_ = json.Unmarshal([]byte(sourceRefsJSON), &episode.SourceRefs)
+	_ = json.Unmarshal([]byte(metadataJSON), &episode.Metadata)
+	var err error
+	if episode.LastRecalledAt, err = parseNullableSQLTime(lastRecalledAt); err != nil {
+		return MemoryEpisode{}, err
+	}
+	if episode.LastUsedAt, err = parseNullableSQLTime(lastUsedAt); err != nil {
+		return MemoryEpisode{}, err
+	}
+	if episode.PromotedAt, err = parseNullableSQLTime(promotedAt); err != nil {
+		return MemoryEpisode{}, err
+	}
+	if episode.ExpiresAt, err = parseNullableSQLTime(expiresAt); err != nil {
+		return MemoryEpisode{}, err
+	}
+	if episode.CreatedAt, err = parseSQLTime(createdAt); err != nil {
+		return MemoryEpisode{}, err
+	}
+	if episode.UpdatedAt, err = parseSQLTime(updatedAt); err != nil {
+		return MemoryEpisode{}, err
+	}
+	return episode, nil
 }
 
 func scanMemoryItemRows(row memoryItemScanner) (MemoryItem, error) {

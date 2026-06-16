@@ -12,483 +12,547 @@ import (
 
 // Config contains agentapi startup configuration after environment defaults and CLI overrides are applied.
 type Config struct {
-	Addr                                    string
-	DataDir                                 string
-	StoreBackend                            string
-	ObjectBaseURL                           string
-	ObjectToken                             string
-	ObjectTimeout                           time.Duration
-	ArtifactStore                           string
-	ArtifactS3Endpoint                      string
-	ArtifactS3AccessKey                     string
-	ArtifactS3SecretKey                     string
-	ArtifactS3Bucket                        string
-	ArtifactS3Prefix                        string
-	ArtifactS3SSL                           bool
-	AssetMaxBytes                           int64
-	SQLDriver                               string
-	SQLDSN                                  string
-	SQLDialect                              string
-	SQLMaxOpen                              int
-	SQLMaxIdle                              int
-	SQLConnMaxLifetime                      time.Duration
-	MessageSearchBackend                    string
-	MessageSearchEndpoint                   string
-	MessageSearchIndex                      string
-	MessageSearchAPIKey                     string
-	MessageSearchUsername                   string
-	MessageSearchPassword                   string
-	MessageSearchTimeout                    time.Duration
-	MessageSearchIndexManagementEnabled     bool
-	MessageSearchIndexLifecyclePolicy       string
-	MessageSearchIndexTemplate              string
-	MessageSearchIndexWriteAlias            string
-	MessageSearchIndexAnalyzer              string
-	MessageSearchIndexSearchAnalyzer        string
-	MessageSearchIndexDowngradeAfter        time.Duration
-	MessageSearchIndexCloseAfter            time.Duration
-	MessageSearchIndexMaintenanceInterval   time.Duration
-	MessageSearchIndexMaintenanceBatchLimit int
-	MessageSearchQdrantEndpoint             string
-	MessageSearchQdrantCollection           string
-	MessageSearchQdrantAPIKey               string
-	MessageSearchQdrantScoreThreshold       float64
-	MessageSearchEmbeddingProvider          string
-	MessageSearchEmbeddingEndpoint          string
-	MessageSearchEmbeddingAPIKey            string
-	MessageSearchEmbeddingAccessToken       string
-	MessageSearchEmbeddingModel             string
-	MessageSearchEmbeddingDimensions        int
-	MessageSearchEmbeddingProjectID         string
-	MessageSearchEmbeddingLocation          string
-	MessageSearchEmbeddingTaskType          string
-	MessageSearchEmbeddingIndexTaskType     string
-	MessageSearchEmbeddingAutoTruncate      bool
-	MessageSearchRRFK                       int
-	MessageSearchQueryRewriteEnabled        bool
-	MessageSearchDynamicTopKEnabled         bool
-	MessageSearchMinRecallWindow            int
-	MessageSearchMaxRecallWindow            int
-	MessageSearchMultiTurnEnabled           bool
-	MessageSearchRerankEnabled              bool
-	MessageSearchRerankCandidateLimit       int
-	MessageSearchLowConfidenceScore         float64
-	MemoryVectorEnabled                     bool
-	MemoryVectorQdrantEndpoint              string
-	MemoryVectorQdrantCollection            string
-	MemoryVectorQdrantAPIKey                string
-	MemoryVectorQdrantScoreThreshold        float64
-	MemoryVectorEmbeddingProvider           string
-	MemoryVectorEmbeddingEndpoint           string
-	MemoryVectorEmbeddingAPIKey             string
-	MemoryVectorEmbeddingAccessToken        string
-	MemoryVectorEmbeddingModel              string
-	MemoryVectorEmbeddingDimensions         int
-	MemoryVectorEmbeddingProjectID          string
-	MemoryVectorEmbeddingLocation           string
-	MemoryVectorEmbeddingTaskType           string
-	MemoryVectorEmbeddingIndexTaskType      string
-	MemoryVectorEmbeddingAutoTruncate       bool
-	MemoryVectorRRFK                        int
-	Workspace                               string
-	UserWorkspaceRoot                       string
-	AllowCustomWorkingDir                   bool
-	Timezone                                string
-	Locale                                  string
-	LLMProvider                             string
-	APIKey                                  string
-	APIToken                                string
-	APIBaseURL                              string
-	Model                                   string
-	LLMFallbacks                            string
-	LLMModelRoutes                          string
-	LLMMaxAttempts                          int
-	LLMRetryBackoff                         time.Duration
-	LLMChatTimeout                          time.Duration
-	LLMSkillTimeout                         time.Duration
-	LLMDailyTokenQuota                      int
-	LLMDailyRequestQuota                    int
-	LLMDailyCostQuotaUSD                    float64
-	LLMInputCostPerMillion                  float64
-	LLMOutputCostPerMillion                 float64
-	LLMFailureThreshold                     int
-	LLMCircuitCooldown                      time.Duration
-	LiveEnabled                             bool
-	LiveProvider                            string
-	LiveModel                               string
-	LiveVertexProjectID                     string
-	LiveVertexLocation                      string
-	LiveVertexBaseURL                       string
-	LiveVertexAPIVersion                    string
-	LiveInputAudioMIME                      string
-	LiveOutputAudioMIME                     string
-	LiveVoiceName                           string
-	LiveLanguageCode                        string
-	LiveInputTranscription                  bool
-	LiveOutputTranscription                 bool
-	LiveVADStartSensitivity                 string
-	LiveVADEndSensitivity                   string
-	LiveVADPrefixPadding                    time.Duration
-	LiveVADSilenceDuration                  time.Duration
-	LiveSessionTimeout                      time.Duration
-	LiveSetupPromptCacheBackend             string
-	LiveSetupPromptCacheRedisURL            string
-	LiveSetupPromptCacheTTL                 time.Duration
-	AuthMode                                string
-	AuthToken                               string
-	UserHeader                              string
-	JWTSecret                               string
-	JWTIssuer                               string
-	JWTAudience                             string
-	JWTUserClaim                            string
-	EnableUserSystem                        bool
-	AuthAccessTTL                           time.Duration
-	AuthRefreshTTL                          time.Duration
-	EmailVerificationRequired               bool
-	EmailVerificationTTL                    time.Duration
-	EmailProvider                           string
-	EmailFrom                               string
-	EmailPublicBaseURL                      string
-	ResendAPIKey                            string
-	ResendBaseURL                           string
-	SessionCookieName                       string
-	SessionCookieSecret                     string
-	SessionCookieDomain                     string
-	SessionCookieSecure                     bool
-	SessionCookieSameSite                   string
-	CSRFEnabled                             bool
-	CSRFCookieName                          string
-	CSRFHeaderName                          string
-	CORSAllowedOrigins                      string
-	CORSAllowCredentials                    bool
-	AdminToken                              string
-	EvalDailyEnabled                        bool
-	EvalDailyHour                           int
-	EvalDailyMinute                         int
-	EvalDailyUserIDs                        string
-	EvalDailyBatchLimit                     int
-	EvalDailyTimeout                        time.Duration
-	EvalJudgeEnabled                        bool
-	EvalJudgeModel                          string
-	EvalJudgePromptVersion                  string
-	TrustedUserHeader                       string
-	TrustedSecretHeader                     string
-	TrustedSecret                           string
-	AllowDangerousTools                     bool
-	NetworkAllowlist                        string
-	SkillDirs                               string
-	RateLimitBackend                        string
-	RateLimit                               int
-	OperationRateLimits                     string
-	CacheBackend                            string
-	CacheRedisURL                           string
-	CachePrefix                             string
-	CacheDefaultTTL                         time.Duration
-	CacheFailOpen                           bool
-	RedisURL                                string
-	RedisFailOpen                           bool
-	MessageContextCacheBackend              string
-	MessageContextCacheRedisURL             string
-	MessageContextCacheTTL                  time.Duration
-	SessionListCacheBackend                 string
-	SessionListCacheRedisURL                string
-	SessionListCacheTTL                     time.Duration
-	MessageSequenceBackend                  string
-	MessageSequenceRedisURL                 string
-	MessageEventsBackend                    string
-	MessageEventsKafkaBrokers               string
-	MessageEventsKafkaTopic                 string
-	MessageEventsKafkaClientID              string
-	MessageEventsKafkaConsumerEnabled       bool
-	MessageEventsKafkaConsumerGroup         string
-	MessageEventsKafkaDLQTopic              string
-	MessageEventsKafkaRetryAttempts         int
-	MessageEventsKafkaRetryBackoff          time.Duration
-	MessageEventsKafkaProcessTimeout        time.Duration
-	MessageEventsProcessedLockBackend       string
-	MessageEventsProcessedLockRedisURL      string
-	MessageEventsProcessedLockTTL           time.Duration
-	JobQueueRedisURL                        string
-	JobQueueStream                          string
-	JobQueueConsumerGroup                   string
-	JobQueueConsumer                        string
-	JobQueueBlockTimeout                    time.Duration
-	JobQueueClaimIdle                       time.Duration
-	JobQueueLockTTL                         time.Duration
-	JobWorkerEnabled                        bool
-	JobEventFanoutEnabled                   bool
-	JobEventFanoutChannel                   string
-	JobEventFanoutOrigin                    string
-	MessageAttachmentWorkerEnabled          bool
-	MessageAttachmentWorkerBatchSize        int
-	MessageAttachmentWorkerPollInterval     time.Duration
-	MessageAttachmentWorkerProcessTimeout   time.Duration
-	MessageAttachmentThumbnailMaxDimension  int
-	MessageArchiveWorkerEnabled             bool
-	MessageArchiveAfter                     time.Duration
-	MessageArchiveWorkerBatchSize           int
-	MessageArchiveWorkerPollInterval        time.Duration
-	MessageArchiveWorkerProcessTimeout      time.Duration
-	MessageArchivePrefix                    string
-	MessageArchiveClearPGPayload            bool
-	RetentionDays                           int
-	LocalArtifactStagingRetention           time.Duration
-	ShutdownTimeout                         time.Duration
-	RequestTimeout                          time.Duration
-	TurnTimeout                             time.Duration
-	DeepAgentV2Enabled                      bool
-	DeepAgentV2ShadowRoute                  bool
-	SkillShellTimeout                       time.Duration
-	SkillShellRunner                        string
-	SkillSandboxImage                       string
-	SkillSandboxNetwork                     string
-	SkillSandboxMemory                      string
-	SkillSandboxCPUs                        string
-	SkillSandboxPidsLimit                   int
-	SkillSandboxTmpfsSize                   string
-	SkillSandboxPrepullImages               string
-	SkillSandboxWarmPoolSize                int
+	Addr                                     string
+	DataDir                                  string
+	StoreBackend                             string
+	ObjectBaseURL                            string
+	ObjectToken                              string
+	ObjectTimeout                            time.Duration
+	ArtifactStore                            string
+	ArtifactS3Endpoint                       string
+	ArtifactS3AccessKey                      string
+	ArtifactS3SecretKey                      string
+	ArtifactS3Bucket                         string
+	ArtifactS3Prefix                         string
+	ArtifactS3SSL                            bool
+	AssetMaxBytes                            int64
+	SQLDriver                                string
+	SQLDSN                                   string
+	SQLDialect                               string
+	SQLMaxOpen                               int
+	SQLMaxIdle                               int
+	SQLConnMaxLifetime                       time.Duration
+	MessageSearchBackend                     string
+	MessageSearchEndpoint                    string
+	MessageSearchIndex                       string
+	MessageSearchAPIKey                      string
+	MessageSearchUsername                    string
+	MessageSearchPassword                    string
+	MessageSearchTimeout                     time.Duration
+	MessageSearchIndexManagementEnabled      bool
+	MessageSearchIndexLifecyclePolicy        string
+	MessageSearchIndexTemplate               string
+	MessageSearchIndexWriteAlias             string
+	MessageSearchIndexAnalyzer               string
+	MessageSearchIndexSearchAnalyzer         string
+	MessageSearchIndexDowngradeAfter         time.Duration
+	MessageSearchIndexCloseAfter             time.Duration
+	MessageSearchIndexMaintenanceInterval    time.Duration
+	MessageSearchIndexMaintenanceBatchLimit  int
+	MessageSearchQdrantEndpoint              string
+	MessageSearchQdrantCollection            string
+	MessageSearchQdrantAPIKey                string
+	MessageSearchQdrantScoreThreshold        float64
+	MessageSearchEmbeddingProvider           string
+	MessageSearchEmbeddingEndpoint           string
+	MessageSearchEmbeddingAPIKey             string
+	MessageSearchEmbeddingAccessToken        string
+	MessageSearchEmbeddingModel              string
+	MessageSearchEmbeddingDimensions         int
+	MessageSearchEmbeddingProjectID          string
+	MessageSearchEmbeddingLocation           string
+	MessageSearchEmbeddingTaskType           string
+	MessageSearchEmbeddingIndexTaskType      string
+	MessageSearchEmbeddingAutoTruncate       bool
+	MessageSearchRRFK                        int
+	MessageSearchQueryRewriteEnabled         bool
+	MessageSearchDynamicTopKEnabled          bool
+	MessageSearchMinRecallWindow             int
+	MessageSearchMaxRecallWindow             int
+	MessageSearchMultiTurnEnabled            bool
+	MessageSearchRerankEnabled               bool
+	MessageSearchRerankCandidateLimit        int
+	MessageSearchLowConfidenceScore          float64
+	MemoryVectorEnabled                      bool
+	MemoryVectorQdrantEndpoint               string
+	MemoryVectorQdrantCollection             string
+	MemoryVectorEpisodeQdrantCollection      string
+	MemoryVectorQdrantAPIKey                 string
+	MemoryVectorQdrantScoreThreshold         float64
+	MemoryVectorEmbeddingProvider            string
+	MemoryVectorEmbeddingEndpoint            string
+	MemoryVectorEmbeddingAPIKey              string
+	MemoryVectorEmbeddingAccessToken         string
+	MemoryVectorEmbeddingModel               string
+	MemoryVectorEmbeddingDimensions          int
+	MemoryVectorEmbeddingProjectID           string
+	MemoryVectorEmbeddingLocation            string
+	MemoryVectorEmbeddingTaskType            string
+	MemoryVectorEmbeddingIndexTaskType       string
+	MemoryVectorEmbeddingAutoTruncate        bool
+	MemoryVectorRRFK                         int
+	MemoryVectorRerankEnabled                bool
+	MemoryVectorRerankEndpoint               string
+	MemoryVectorRerankAPIKey                 string
+	MemoryVectorRerankModel                  string
+	MemoryVectorRerankCandidateLimit         int
+	MemoryVectorRerankResultLimit            int
+	MemoryVectorRerankTimeout                time.Duration
+	MemoryVectorRerankTruncate               string
+	MemoryRecallEnabled                      bool
+	MemoryRecallConditionalEnabled           bool
+	MemoryRecallAsyncEnabled                 bool
+	MemoryRecallTimeout                      time.Duration
+	MemoryRecallMinQueryRunes                int
+	MemoryRecallRecentContextMessages        int
+	MemoryRecallRecentContextMaxRunes        int
+	MemoryRecallForceInterval                int
+	MemoryRecallComplexTokenThreshold        int
+	MemoryRecallEmbeddingEnabled             bool
+	MemoryRecallEmbeddingSimilarityThreshold float64
+	MemoryRecallEmbeddingWindow              int
+	MemoryRecallIntentClassifierEnabled      bool
+	MemoryRecallIntentClassifierThreshold    float64
+	MemoryRecallIntentClassifierContextTurns int
+	EpisodicMemoryEnabled                    bool
+	EpisodicMemoryCaptureEnabled             bool
+	EpisodicMemoryContextEnabled             bool
+	EpisodicMemoryMinMessages                int
+	EpisodicMemoryMaxMessages                int
+	EpisodicMemoryInjectLimit                int
+	EpisodicMemoryTTL                        time.Duration
+	EpisodicMemorySummarizeTimeout           time.Duration
+	Workspace                                string
+	UserWorkspaceRoot                        string
+	AllowCustomWorkingDir                    bool
+	Timezone                                 string
+	Locale                                   string
+	LLMProvider                              string
+	APIKey                                   string
+	APIToken                                 string
+	APIBaseURL                               string
+	Model                                    string
+	LLMFallbacks                             string
+	LLMModelRoutes                           string
+	LLMMaxAttempts                           int
+	LLMRetryBackoff                          time.Duration
+	LLMChatTimeout                           time.Duration
+	LLMSkillTimeout                          time.Duration
+	LLMDailyTokenQuota                       int
+	LLMDailyRequestQuota                     int
+	LLMDailyCostQuotaUSD                     float64
+	LLMInputCostPerMillion                   float64
+	LLMOutputCostPerMillion                  float64
+	LLMFailureThreshold                      int
+	LLMCircuitCooldown                       time.Duration
+	LiveEnabled                              bool
+	LiveProvider                             string
+	LiveModel                                string
+	LiveVertexProjectID                      string
+	LiveVertexLocation                       string
+	LiveVertexBaseURL                        string
+	LiveVertexAPIVersion                     string
+	LiveInputAudioMIME                       string
+	LiveOutputAudioMIME                      string
+	LiveVoiceName                            string
+	LiveLanguageCode                         string
+	LiveInputTranscription                   bool
+	LiveOutputTranscription                  bool
+	LiveVADStartSensitivity                  string
+	LiveVADEndSensitivity                    string
+	LiveVADPrefixPadding                     time.Duration
+	LiveVADSilenceDuration                   time.Duration
+	LiveSessionTimeout                       time.Duration
+	LiveSetupPromptCacheBackend              string
+	LiveSetupPromptCacheRedisURL             string
+	LiveSetupPromptCacheTTL                  time.Duration
+	AuthMode                                 string
+	AuthToken                                string
+	UserHeader                               string
+	JWTSecret                                string
+	JWTIssuer                                string
+	JWTAudience                              string
+	JWTUserClaim                             string
+	EnableUserSystem                         bool
+	AuthAccessTTL                            time.Duration
+	AuthRefreshTTL                           time.Duration
+	EmailVerificationRequired                bool
+	EmailVerificationTTL                     time.Duration
+	EmailProvider                            string
+	EmailFrom                                string
+	EmailPublicBaseURL                       string
+	ResendAPIKey                             string
+	ResendBaseURL                            string
+	SessionCookieName                        string
+	SessionCookieSecret                      string
+	SessionCookieDomain                      string
+	SessionCookieSecure                      bool
+	SessionCookieSameSite                    string
+	CSRFEnabled                              bool
+	CSRFCookieName                           string
+	CSRFHeaderName                           string
+	CORSAllowedOrigins                       string
+	CORSAllowCredentials                     bool
+	AdminToken                               string
+	EvalDailyEnabled                         bool
+	EvalDailyHour                            int
+	EvalDailyMinute                          int
+	EvalDailyUserIDs                         string
+	EvalDailyBatchLimit                      int
+	EvalDailyTimeout                         time.Duration
+	EvalJudgeEnabled                         bool
+	EvalJudgeModel                           string
+	EvalJudgePromptVersion                   string
+	TrustedUserHeader                        string
+	TrustedSecretHeader                      string
+	TrustedSecret                            string
+	AllowDangerousTools                      bool
+	NetworkAllowlist                         string
+	SkillDirs                                string
+	RateLimitBackend                         string
+	RateLimit                                int
+	OperationRateLimits                      string
+	CacheBackend                             string
+	CacheRedisURL                            string
+	CachePrefix                              string
+	CacheDefaultTTL                          time.Duration
+	CacheFailOpen                            bool
+	RedisURL                                 string
+	RedisFailOpen                            bool
+	MessageContextCacheBackend               string
+	MessageContextCacheRedisURL              string
+	MessageContextCacheTTL                   time.Duration
+	SessionListCacheBackend                  string
+	SessionListCacheRedisURL                 string
+	SessionListCacheTTL                      time.Duration
+	MessageSequenceBackend                   string
+	MessageSequenceRedisURL                  string
+	MessageEventsBackend                     string
+	MessageEventsKafkaBrokers                string
+	MessageEventsKafkaTopic                  string
+	MessageEventsKafkaClientID               string
+	MessageEventsKafkaConsumerEnabled        bool
+	MessageEventsKafkaConsumerGroup          string
+	MessageEventsKafkaDLQTopic               string
+	MessageEventsKafkaRetryAttempts          int
+	MessageEventsKafkaRetryBackoff           time.Duration
+	MessageEventsKafkaProcessTimeout         time.Duration
+	MessageEventsProcessedLockBackend        string
+	MessageEventsProcessedLockRedisURL       string
+	MessageEventsProcessedLockTTL            time.Duration
+	JobQueueRedisURL                         string
+	JobQueueStream                           string
+	JobQueueConsumerGroup                    string
+	JobQueueConsumer                         string
+	JobQueueBlockTimeout                     time.Duration
+	JobQueueClaimIdle                        time.Duration
+	JobQueueLockTTL                          time.Duration
+	JobWorkerEnabled                         bool
+	JobEventFanoutEnabled                    bool
+	JobEventFanoutChannel                    string
+	JobEventFanoutOrigin                     string
+	MessageAttachmentWorkerEnabled           bool
+	MessageAttachmentWorkerBatchSize         int
+	MessageAttachmentWorkerPollInterval      time.Duration
+	MessageAttachmentWorkerProcessTimeout    time.Duration
+	MessageAttachmentThumbnailMaxDimension   int
+	MessageArchiveWorkerEnabled              bool
+	MessageArchiveAfter                      time.Duration
+	MessageArchiveWorkerBatchSize            int
+	MessageArchiveWorkerPollInterval         time.Duration
+	MessageArchiveWorkerProcessTimeout       time.Duration
+	MessageArchivePrefix                     string
+	MessageArchiveClearPGPayload             bool
+	RetentionDays                            int
+	LocalArtifactStagingRetention            time.Duration
+	ShutdownTimeout                          time.Duration
+	RequestTimeout                           time.Duration
+	TurnTimeout                              time.Duration
+	DeepAgentV2Enabled                       bool
+	DeepAgentV2ShadowRoute                   bool
+	SkillShellTimeout                        time.Duration
+	SkillShellRunner                         string
+	SkillSandboxImage                        string
+	SkillSandboxNetwork                      string
+	SkillSandboxMemory                       string
+	SkillSandboxCPUs                         string
+	SkillSandboxPidsLimit                    int
+	SkillSandboxTmpfsSize                    string
+	SkillSandboxPrepullImages                string
+	SkillSandboxWarmPoolSize                 int
 }
 
 // Default returns startup configuration populated from process environment fallbacks.
 func Default() Config {
 	return Config{
-		Addr:                                    ":8081",
-		DataDir:                                 DefaultDataDir(),
-		StoreBackend:                            FirstNonEmpty(os.Getenv("AGENT_API_STORE_BACKEND"), "file"),
-		ObjectBaseURL:                           os.Getenv("AGENT_API_OBJECT_BASE_URL"),
-		ObjectToken:                             os.Getenv("AGENT_API_OBJECT_TOKEN"),
-		ObjectTimeout:                           EnvDuration("AGENT_API_OBJECT_TIMEOUT", 10*time.Second),
-		ArtifactStore:                           FirstNonEmpty(os.Getenv("AGENT_API_ARTIFACT_STORE"), "file"),
-		ArtifactS3Endpoint:                      FirstNonEmpty(os.Getenv("AGENT_API_ARTIFACT_S3_ENDPOINT"), "localhost:9000"),
-		ArtifactS3AccessKey:                     FirstNonEmpty(os.Getenv("AGENT_API_ARTIFACT_S3_ACCESS_KEY"), "minioadmin"),
-		ArtifactS3SecretKey:                     FirstNonEmpty(os.Getenv("AGENT_API_ARTIFACT_S3_SECRET_KEY"), "minioadmin"),
-		ArtifactS3Bucket:                        FirstNonEmpty(os.Getenv("AGENT_API_ARTIFACT_S3_BUCKET"), "agentapi"),
-		ArtifactS3Prefix:                        os.Getenv("AGENT_API_ARTIFACT_S3_PREFIX"),
-		ArtifactS3SSL:                           EnvBool("AGENT_API_ARTIFACT_S3_SSL", false),
-		AssetMaxBytes:                           EnvInt64("AGENT_API_ASSET_MAX_BYTES", agentruntime.DefaultMaxAssetBytes),
-		SQLDriver:                               os.Getenv("AGENT_API_SQL_DRIVER"),
-		SQLDSN:                                  os.Getenv("AGENT_API_SQL_DSN"),
-		SQLDialect:                              os.Getenv("AGENT_API_SQL_DIALECT"),
-		SQLMaxOpen:                              EnvInt("AGENT_API_SQL_MAX_OPEN_CONNS", 20),
-		SQLMaxIdle:                              EnvInt("AGENT_API_SQL_MAX_IDLE_CONNS", 10),
-		SQLConnMaxLifetime:                      EnvDuration("AGENT_API_SQL_CONN_MAX_LIFETIME", 30*time.Minute),
-		MessageSearchBackend:                    FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_BACKEND"), "sql"),
-		MessageSearchEndpoint:                   FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_ENDPOINT"), os.Getenv("AGENT_API_MESSAGE_SEARCH_URL")),
-		MessageSearchIndex:                      FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX"), "agent_messages"),
-		MessageSearchAPIKey:                     os.Getenv("AGENT_API_MESSAGE_SEARCH_API_KEY"),
-		MessageSearchUsername:                   os.Getenv("AGENT_API_MESSAGE_SEARCH_USERNAME"),
-		MessageSearchPassword:                   os.Getenv("AGENT_API_MESSAGE_SEARCH_PASSWORD"),
-		MessageSearchTimeout:                    EnvDuration("AGENT_API_MESSAGE_SEARCH_TIMEOUT", 5*time.Second),
-		MessageSearchIndexManagementEnabled:     EnvBool("AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED", false),
-		MessageSearchIndexLifecyclePolicy:       os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_LIFECYCLE_POLICY"),
-		MessageSearchIndexTemplate:              os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_TEMPLATE"),
-		MessageSearchIndexWriteAlias:            os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_WRITE_ALIAS"),
-		MessageSearchIndexAnalyzer:              FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_ANALYZER"), "ik_max_word"),
-		MessageSearchIndexSearchAnalyzer:        FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_SEARCH_ANALYZER"), "ik_smart"),
-		MessageSearchIndexDowngradeAfter:        EnvDuration("AGENT_API_MESSAGE_SEARCH_INDEX_DOWNGRADE_AFTER", 90*24*time.Hour),
-		MessageSearchIndexCloseAfter:            EnvDuration("AGENT_API_MESSAGE_SEARCH_INDEX_CLOSE_AFTER", 180*24*time.Hour),
-		MessageSearchIndexMaintenanceInterval:   EnvDuration("AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_INTERVAL", 24*time.Hour),
-		MessageSearchIndexMaintenanceBatchLimit: EnvInt("AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_BATCH_LIMIT", 50),
-		MessageSearchQdrantEndpoint:             FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_ENDPOINT"), os.Getenv("AGENT_API_QDRANT_ENDPOINT")),
-		MessageSearchQdrantCollection:           FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_COLLECTION"), "agent_messages"),
-		MessageSearchQdrantAPIKey:               FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_API_KEY"), os.Getenv("AGENT_API_QDRANT_API_KEY")),
-		MessageSearchQdrantScoreThreshold:       EnvFloat64("AGENT_API_MESSAGE_SEARCH_QDRANT_SCORE_THRESHOLD", 0),
-		MessageSearchEmbeddingProvider:          FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER"), os.Getenv("AGENT_API_EMBEDDING_PROVIDER")),
-		MessageSearchEmbeddingEndpoint:          FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT"), os.Getenv("AGENT_API_EMBEDDING_ENDPOINT")),
-		MessageSearchEmbeddingAPIKey:            FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"), os.Getenv("OPENAI_API_KEY")),
-		MessageSearchEmbeddingAccessToken:       FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_TOKEN"), os.Getenv("VERTEX_ACCESS_TOKEN"), os.Getenv("GOOGLE_OAUTH_ACCESS_TOKEN"), os.Getenv("GOOGLE_ACCESS_TOKEN")),
-		MessageSearchEmbeddingModel:             os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL"),
-		MessageSearchEmbeddingDimensions:        EnvInt("AGENT_API_MESSAGE_SEARCH_EMBEDDING_DIMENSIONS", 0),
-		MessageSearchEmbeddingProjectID:         FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID"), os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")),
-		MessageSearchEmbeddingLocation:          FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION"), os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "global"),
-		MessageSearchEmbeddingTaskType:          FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_TASK_TYPE"), "RETRIEVAL_QUERY"),
-		MessageSearchEmbeddingIndexTaskType:     FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_INDEX_TASK_TYPE"), "RETRIEVAL_DOCUMENT"),
-		MessageSearchEmbeddingAutoTruncate:      EnvBool("AGENT_API_MESSAGE_SEARCH_EMBEDDING_AUTO_TRUNCATE", true),
-		MessageSearchRRFK:                       EnvInt("AGENT_API_MESSAGE_SEARCH_RRF_K", 60),
-		MessageSearchQueryRewriteEnabled:        EnvBool("AGENT_API_MESSAGE_SEARCH_QUERY_REWRITE_ENABLED", true),
-		MessageSearchDynamicTopKEnabled:         EnvBool("AGENT_API_MESSAGE_SEARCH_DYNAMIC_TOPK_ENABLED", true),
-		MessageSearchMinRecallWindow:            EnvInt("AGENT_API_MESSAGE_SEARCH_MIN_RECALL_WINDOW", 50),
-		MessageSearchMaxRecallWindow:            EnvInt("AGENT_API_MESSAGE_SEARCH_MAX_RECALL_WINDOW", 120),
-		MessageSearchMultiTurnEnabled:           EnvBool("AGENT_API_MESSAGE_SEARCH_MULTI_TURN_ENABLED", true),
-		MessageSearchRerankEnabled:              EnvBool("AGENT_API_MESSAGE_SEARCH_RERANK_ENABLED", true),
-		MessageSearchRerankCandidateLimit:       EnvInt("AGENT_API_MESSAGE_SEARCH_RERANK_CANDIDATE_LIMIT", 50),
-		MessageSearchLowConfidenceScore:         EnvFloat64("AGENT_API_MESSAGE_SEARCH_LOW_CONFIDENCE_SCORE", 0.04),
-		MemoryVectorEnabled:                     EnvBool("AGENT_API_MEMORY_VECTOR_ENABLED", true),
-		MemoryVectorQdrantEndpoint:              FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_QDRANT_ENDPOINT"), os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_ENDPOINT"), os.Getenv("AGENT_API_QDRANT_ENDPOINT")),
-		MemoryVectorQdrantCollection:            FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_QDRANT_COLLECTION"), "agent_memories"),
-		MemoryVectorQdrantAPIKey:                FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_QDRANT_API_KEY"), os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_API_KEY"), os.Getenv("AGENT_API_QDRANT_API_KEY")),
-		MemoryVectorQdrantScoreThreshold:        EnvFloat64("AGENT_API_MEMORY_VECTOR_QDRANT_SCORE_THRESHOLD", EnvFloat64("AGENT_API_MESSAGE_SEARCH_QDRANT_SCORE_THRESHOLD", 0)),
-		MemoryVectorEmbeddingProvider:           FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_PROVIDER"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER"), os.Getenv("AGENT_API_EMBEDDING_PROVIDER")),
-		MemoryVectorEmbeddingEndpoint:           FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_ENDPOINT"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT"), os.Getenv("AGENT_API_EMBEDDING_ENDPOINT")),
-		MemoryVectorEmbeddingAPIKey:             FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"), os.Getenv("OPENAI_API_KEY")),
-		MemoryVectorEmbeddingAccessToken:        FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_TOKEN"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_TOKEN"), os.Getenv("VERTEX_ACCESS_TOKEN"), os.Getenv("GOOGLE_OAUTH_ACCESS_TOKEN"), os.Getenv("GOOGLE_ACCESS_TOKEN")),
-		MemoryVectorEmbeddingModel:              FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_MODEL"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL")),
-		MemoryVectorEmbeddingDimensions:         EnvInt("AGENT_API_MEMORY_VECTOR_EMBEDDING_DIMENSIONS", EnvInt("AGENT_API_MESSAGE_SEARCH_EMBEDDING_DIMENSIONS", 0)),
-		MemoryVectorEmbeddingProjectID:          FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_PROJECT_ID"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID"), os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")),
-		MemoryVectorEmbeddingLocation:           FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_LOCATION"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION"), os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "global"),
-		MemoryVectorEmbeddingTaskType:           FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_TASK_TYPE"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_TASK_TYPE"), "RETRIEVAL_QUERY"),
-		MemoryVectorEmbeddingIndexTaskType:      FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_INDEX_TASK_TYPE"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_INDEX_TASK_TYPE"), "RETRIEVAL_DOCUMENT"),
-		MemoryVectorEmbeddingAutoTruncate:       EnvBool("AGENT_API_MEMORY_VECTOR_EMBEDDING_AUTO_TRUNCATE", EnvBool("AGENT_API_MESSAGE_SEARCH_EMBEDDING_AUTO_TRUNCATE", true)),
-		MemoryVectorRRFK:                        EnvInt("AGENT_API_MEMORY_VECTOR_RRF_K", EnvInt("AGENT_API_MESSAGE_SEARCH_RRF_K", 60)),
-		Workspace:                               MustWorkingDir(),
-		UserWorkspaceRoot:                       os.Getenv("AGENT_API_USER_WORKSPACE_ROOT"),
-		AllowCustomWorkingDir:                   EnvBool("AGENT_API_ALLOW_CUSTOM_WORKING_DIR", false),
-		Timezone:                                os.Getenv("AGENT_API_TIMEZONE"),
-		Locale:                                  os.Getenv("AGENT_API_LOCALE"),
-		LLMProvider:                             FirstNonEmpty(os.Getenv("AGENT_API_LLM_PROVIDER"), os.Getenv("CLAUDE_CODE_PROVIDER"), "anthropic"),
-		APIKey:                                  "",
-		APIToken:                                "",
-		APIBaseURL:                              "",
-		Model:                                   FirstNonEmpty(os.Getenv("AGENT_API_MODEL"), os.Getenv("AGENT_API_LLM_MODEL")),
-		LLMFallbacks:                            os.Getenv("AGENT_API_LLM_FALLBACKS"),
-		LLMModelRoutes:                          os.Getenv("AGENT_API_LLM_MODEL_ROUTES"),
-		LLMMaxAttempts:                          EnvInt("AGENT_API_LLM_MAX_ATTEMPTS", 2),
-		LLMRetryBackoff:                         EnvDuration("AGENT_API_LLM_RETRY_BACKOFF", 300*time.Millisecond),
-		LLMChatTimeout:                          EnvDuration("AGENT_API_LLM_CHAT_TIMEOUT", 60*time.Second),
-		LLMSkillTimeout:                         EnvDuration("AGENT_API_LLM_SKILL_TIMEOUT", 90*time.Second),
-		LLMDailyTokenQuota:                      EnvInt("AGENT_API_LLM_DAILY_TOKEN_QUOTA", 0),
-		LLMDailyRequestQuota:                    EnvInt("AGENT_API_LLM_DAILY_REQUEST_QUOTA", 0),
-		LLMDailyCostQuotaUSD:                    EnvFloat64("AGENT_API_LLM_DAILY_COST_QUOTA_USD", 0),
-		LLMInputCostPerMillion:                  EnvFloat64("AGENT_API_LLM_INPUT_COST_PER_MILLION", 0.30),
-		LLMOutputCostPerMillion:                 EnvFloat64("AGENT_API_LLM_OUTPUT_COST_PER_MILLION", 2.50),
-		LLMFailureThreshold:                     EnvInt("AGENT_API_LLM_FAILURE_THRESHOLD", 3),
-		LLMCircuitCooldown:                      EnvDuration("AGENT_API_LLM_CIRCUIT_COOLDOWN", time.Minute),
-		LiveEnabled:                             EnvBool("AGENT_API_LIVE_ENABLED", false),
-		LiveProvider:                            FirstNonEmpty(os.Getenv("AGENT_API_LIVE_PROVIDER"), "vertex"),
-		LiveModel:                               FirstNonEmpty(os.Getenv("AGENT_API_LIVE_MODEL"), "gemini-live-2.5-flash-preview-native-audio-09-2025"),
-		LiveVertexProjectID:                     FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_PROJECT_ID"), os.Getenv("GOCLAW_VERTEX_PROJECT_ID"), os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")),
-		LiveVertexLocation:                      FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_LOCATION"), os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "us-central1"),
-		LiveVertexBaseURL:                       os.Getenv("AGENT_API_LIVE_VERTEX_BASE_URL"),
-		LiveVertexAPIVersion:                    FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_API_VERSION"), "v1beta1"),
-		LiveInputAudioMIME:                      FirstNonEmpty(os.Getenv("AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE"), "audio/pcm;rate=16000"),
-		LiveOutputAudioMIME:                     os.Getenv("AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE"),
-		LiveVoiceName:                           os.Getenv("AGENT_API_LIVE_VOICE_NAME"),
-		LiveLanguageCode:                        os.Getenv("AGENT_API_LIVE_LANGUAGE_CODE"),
-		LiveInputTranscription:                  EnvBool("AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED", true),
-		LiveOutputTranscription:                 EnvBool("AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED", true),
-		LiveVADStartSensitivity:                 FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VAD_START_SENSITIVITY"), "START_SENSITIVITY_HIGH"),
-		LiveVADEndSensitivity:                   FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VAD_END_SENSITIVITY"), "END_SENSITIVITY_HIGH"),
-		LiveVADPrefixPadding:                    EnvDuration("AGENT_API_LIVE_VAD_PREFIX_PADDING", 150*time.Millisecond),
-		LiveVADSilenceDuration:                  EnvDuration("AGENT_API_LIVE_VAD_SILENCE_DURATION", 350*time.Millisecond),
-		LiveSessionTimeout:                      EnvDuration("AGENT_API_LIVE_SESSION_TIMEOUT", 10*time.Minute),
-		LiveSetupPromptCacheBackend:             FirstNonEmpty(os.Getenv("AGENT_API_LIVE_SETUP_PROMPT_CACHE_BACKEND"), os.Getenv("AGENT_API_CACHE_BACKEND"), "memory"),
-		LiveSetupPromptCacheRedisURL:            FirstNonEmpty(os.Getenv("AGENT_API_LIVE_SETUP_PROMPT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
-		LiveSetupPromptCacheTTL:                 EnvDuration("AGENT_API_LIVE_SETUP_PROMPT_CACHE_TTL", EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", time.Minute)),
-		AuthMode:                                FirstNonEmpty(os.Getenv("AGENT_API_AUTH_MODE"), "auto"),
-		AuthToken:                               os.Getenv("AGENT_API_AUTH_TOKEN"),
-		UserHeader:                              "X-User-ID",
-		JWTSecret:                               os.Getenv("AGENT_API_JWT_SECRET"),
-		JWTIssuer:                               os.Getenv("AGENT_API_JWT_ISSUER"),
-		JWTAudience:                             os.Getenv("AGENT_API_JWT_AUDIENCE"),
-		JWTUserClaim:                            FirstNonEmpty(os.Getenv("AGENT_API_JWT_USER_CLAIM"), "sub"),
-		EnableUserSystem:                        EnvBool("AGENT_API_ENABLE_USER_SYSTEM", false),
-		AuthAccessTTL:                           EnvDuration("AGENT_API_AUTH_ACCESS_TTL", 15*time.Minute),
-		AuthRefreshTTL:                          EnvDuration("AGENT_API_AUTH_REFRESH_TTL", 30*24*time.Hour),
-		EmailVerificationRequired:               EnvBool("AGENT_API_EMAIL_VERIFICATION_REQUIRED", false),
-		EmailVerificationTTL:                    EnvDuration("AGENT_API_EMAIL_VERIFICATION_TTL", 24*time.Hour),
-		EmailProvider:                           os.Getenv("AGENT_API_EMAIL_PROVIDER"),
-		EmailFrom:                               os.Getenv("AGENT_API_EMAIL_FROM"),
-		EmailPublicBaseURL:                      os.Getenv("AGENT_API_EMAIL_PUBLIC_BASE_URL"),
-		ResendAPIKey:                            os.Getenv("AGENT_API_RESEND_API_KEY"),
-		ResendBaseURL:                           os.Getenv("AGENT_API_RESEND_BASE_URL"),
-		SessionCookieName:                       FirstNonEmpty(os.Getenv("AGENT_API_SESSION_COOKIE_NAME"), "agentapi_session"),
-		SessionCookieSecret:                     os.Getenv("AGENT_API_SESSION_COOKIE_SECRET"),
-		SessionCookieDomain:                     os.Getenv("AGENT_API_SESSION_COOKIE_DOMAIN"),
-		SessionCookieSecure:                     EnvBool("AGENT_API_SESSION_COOKIE_SECURE", false),
-		SessionCookieSameSite:                   FirstNonEmpty(os.Getenv("AGENT_API_SESSION_COOKIE_SAMESITE"), "lax"),
-		CSRFEnabled:                             EnvBool("AGENT_API_CSRF_ENABLED", false),
-		CSRFCookieName:                          FirstNonEmpty(os.Getenv("AGENT_API_CSRF_COOKIE_NAME"), "agentapi_csrf"),
-		CSRFHeaderName:                          FirstNonEmpty(os.Getenv("AGENT_API_CSRF_HEADER_NAME"), "X-CSRF-Token"),
-		CORSAllowedOrigins:                      os.Getenv("AGENT_API_CORS_ALLOWED_ORIGINS"),
-		CORSAllowCredentials:                    EnvBool("AGENT_API_CORS_ALLOW_CREDENTIALS", true),
-		AdminToken:                              os.Getenv("AGENT_API_ADMIN_TOKEN"),
-		EvalDailyEnabled:                        EnvBool("AGENT_API_EVAL_DAILY_ENABLED", true),
-		EvalDailyHour:                           EnvInt("AGENT_API_EVAL_DAILY_HOUR", 5),
-		EvalDailyMinute:                         EnvInt("AGENT_API_EVAL_DAILY_MINUTE", 0),
-		EvalDailyUserIDs:                        os.Getenv("AGENT_API_EVAL_DAILY_USER_IDS"),
-		EvalDailyBatchLimit:                     EnvInt("AGENT_API_EVAL_DAILY_BATCH_LIMIT", 200),
-		EvalDailyTimeout:                        EnvDuration("AGENT_API_EVAL_DAILY_TIMEOUT", 10*time.Minute),
-		EvalJudgeEnabled:                        EnvBool("AGENT_API_EVAL_JUDGE_ENABLED", strings.TrimSpace(os.Getenv("AGENT_API_EVAL_JUDGE_MODEL")) != ""),
-		EvalJudgeModel:                          os.Getenv("AGENT_API_EVAL_JUDGE_MODEL"),
-		EvalJudgePromptVersion:                  FirstNonEmpty(os.Getenv("AGENT_API_EVAL_JUDGE_PROMPT_VERSION"), agentruntime.DefaultGoldenJudgePromptVersion),
-		TrustedUserHeader:                       FirstNonEmpty(os.Getenv("AGENT_API_TRUSTED_USER_HEADER"), "X-User-ID"),
-		TrustedSecretHeader:                     os.Getenv("AGENT_API_TRUSTED_SECRET_HEADER"),
-		TrustedSecret:                           os.Getenv("AGENT_API_TRUSTED_SECRET"),
-		AllowDangerousTools:                     false,
-		NetworkAllowlist:                        os.Getenv("AGENT_API_NETWORK_ALLOWLIST"),
-		SkillDirs:                               os.Getenv("AGENT_API_SKILL_DIRS"),
-		RateLimitBackend:                        FirstNonEmpty(os.Getenv("AGENT_API_RATE_LIMIT_BACKEND"), "memory"),
-		RateLimit:                               60,
-		OperationRateLimits:                     os.Getenv("AGENT_API_OPERATION_RATE_LIMITS"),
-		CacheBackend:                            FirstNonEmpty(os.Getenv("AGENT_API_CACHE_BACKEND"), "memory"),
-		CacheRedisURL:                           FirstNonEmpty(os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
-		CachePrefix:                             FirstNonEmpty(os.Getenv("AGENT_API_CACHE_PREFIX"), "agent:cache"),
-		CacheDefaultTTL:                         EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", 10*time.Minute),
-		CacheFailOpen:                           EnvBool("AGENT_API_CACHE_FAIL_OPEN", EnvBool("AGENT_API_REDIS_FAIL_OPEN", false)),
-		RedisURL:                                os.Getenv("AGENT_API_REDIS_URL"),
-		RedisFailOpen:                           EnvBool("AGENT_API_REDIS_FAIL_OPEN", false),
-		MessageContextCacheBackend:              FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND"), os.Getenv("AGENT_API_CACHE_BACKEND"), "memory"),
-		MessageContextCacheRedisURL:             FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
-		MessageContextCacheTTL:                  EnvDuration("AGENT_API_MESSAGE_CONTEXT_CACHE_TTL", EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", 24*time.Hour)),
-		SessionListCacheBackend:                 FirstNonEmpty(os.Getenv("AGENT_API_SESSION_LIST_CACHE_BACKEND"), "none"),
-		SessionListCacheRedisURL:                FirstNonEmpty(os.Getenv("AGENT_API_SESSION_LIST_CACHE_REDIS_URL"), os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
-		SessionListCacheTTL:                     EnvDuration("AGENT_API_SESSION_LIST_CACHE_TTL", EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", 10*time.Minute)),
-		MessageSequenceBackend:                  FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEQUENCE_BACKEND"), "redis"),
-		MessageSequenceRedisURL:                 FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEQUENCE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
-		MessageEventsBackend:                    FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_BACKEND"), "local"),
-		MessageEventsKafkaBrokers:               os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_BROKERS"),
-		MessageEventsKafkaTopic:                 FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_TOPIC"), "agent.messages"),
-		MessageEventsKafkaClientID:              FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_CLIENT_ID"), "agentapi"),
-		MessageEventsKafkaConsumerEnabled:       EnvBool("AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_ENABLED", false),
-		MessageEventsKafkaConsumerGroup:         FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_GROUP"), "agentapi-message-workers"),
-		MessageEventsKafkaDLQTopic:              os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_DLQ_TOPIC"),
-		MessageEventsKafkaRetryAttempts:         EnvInt("AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_ATTEMPTS", 3),
-		MessageEventsKafkaRetryBackoff:          EnvDuration("AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_BACKOFF", time.Second),
-		MessageEventsKafkaProcessTimeout:        EnvDuration("AGENT_API_MESSAGE_EVENTS_KAFKA_PROCESS_TIMEOUT", 30*time.Second),
-		MessageEventsProcessedLockBackend:       FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_BACKEND"), "redis"),
-		MessageEventsProcessedLockRedisURL:      FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL"), os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
-		MessageEventsProcessedLockTTL:           EnvDuration("AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL", 24*time.Hour),
-		JobQueueRedisURL:                        FirstNonEmpty(os.Getenv("AGENT_API_JOB_QUEUE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
-		JobQueueStream:                          FirstNonEmpty(os.Getenv("AGENT_API_JOB_QUEUE_STREAM"), agentruntime.DefaultJobQueueStream),
-		JobQueueConsumerGroup:                   FirstNonEmpty(os.Getenv("AGENT_API_JOB_QUEUE_CONSUMER_GROUP"), agentruntime.DefaultJobQueueConsumerGroup),
-		JobQueueConsumer:                        os.Getenv("AGENT_API_JOB_QUEUE_CONSUMER"),
-		JobQueueBlockTimeout:                    EnvDuration("AGENT_API_JOB_QUEUE_BLOCK_TIMEOUT", agentruntime.DefaultJobQueueBlockTimeout),
-		JobQueueClaimIdle:                       EnvDuration("AGENT_API_JOB_QUEUE_CLAIM_IDLE", agentruntime.DefaultJobQueueClaimIdle),
-		JobQueueLockTTL:                         EnvDuration("AGENT_API_JOB_QUEUE_LOCK_TTL", agentruntime.DefaultJobQueueLockTTL),
-		JobWorkerEnabled:                        EnvBool("AGENT_API_JOB_WORKER_ENABLED", true),
-		JobEventFanoutEnabled:                   EnvBool("AGENT_API_JOB_EVENT_FANOUT_ENABLED", true),
-		JobEventFanoutChannel:                   FirstNonEmpty(os.Getenv("AGENT_API_JOB_EVENT_FANOUT_CHANNEL"), agentruntime.DefaultJobEventFanoutChannel),
-		JobEventFanoutOrigin:                    os.Getenv("AGENT_API_JOB_EVENT_FANOUT_ORIGIN"),
-		MessageAttachmentWorkerEnabled:          EnvBool("AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED", true),
-		MessageAttachmentWorkerBatchSize:        EnvInt("AGENT_API_MESSAGE_ATTACHMENT_WORKER_BATCH_SIZE", 25),
-		MessageAttachmentWorkerPollInterval:     EnvDuration("AGENT_API_MESSAGE_ATTACHMENT_WORKER_POLL_INTERVAL", 5*time.Second),
-		MessageAttachmentWorkerProcessTimeout:   EnvDuration("AGENT_API_MESSAGE_ATTACHMENT_WORKER_PROCESS_TIMEOUT", 30*time.Second),
-		MessageAttachmentThumbnailMaxDimension:  EnvInt("AGENT_API_MESSAGE_ATTACHMENT_THUMBNAIL_MAX_DIMENSION", 512),
-		MessageArchiveWorkerEnabled:             EnvBool("AGENT_API_MESSAGE_ARCHIVE_WORKER_ENABLED", false),
-		MessageArchiveAfter:                     EnvDuration("AGENT_API_MESSAGE_ARCHIVE_AFTER", 30*24*time.Hour),
-		MessageArchiveWorkerBatchSize:           EnvInt("AGENT_API_MESSAGE_ARCHIVE_WORKER_BATCH_SIZE", 100),
-		MessageArchiveWorkerPollInterval:        EnvDuration("AGENT_API_MESSAGE_ARCHIVE_WORKER_POLL_INTERVAL", time.Hour),
-		MessageArchiveWorkerProcessTimeout:      EnvDuration("AGENT_API_MESSAGE_ARCHIVE_WORKER_PROCESS_TIMEOUT", 2*time.Minute),
-		MessageArchivePrefix:                    FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_ARCHIVE_PREFIX"), "message-archive"),
-		MessageArchiveClearPGPayload:            EnvBool("AGENT_API_MESSAGE_ARCHIVE_CLEAR_PG_PAYLOAD", true),
-		RetentionDays:                           EnvInt("AGENT_API_RETENTION_DAYS", 0),
-		LocalArtifactStagingRetention:           EnvDuration("AGENT_API_LOCAL_ARTIFACT_STAGING_RETENTION", 24*time.Hour),
-		ShutdownTimeout:                         EnvDuration("AGENT_API_SHUTDOWN_TIMEOUT", 30*time.Second),
-		RequestTimeout:                          EnvDuration("AGENT_API_REQUEST_TIMEOUT", 0),
-		TurnTimeout:                             2 * time.Minute,
-		DeepAgentV2Enabled:                      EnvBool("AGENT_API_DEEP_AGENT_V2_ENABLED", false),
-		DeepAgentV2ShadowRoute:                  EnvBool("AGENT_API_DEEP_AGENT_V2_SHADOW_ROUTE", false),
-		SkillShellTimeout:                       EnvDuration("AGENT_API_SKILL_SHELL_TIMEOUT", 90*time.Second),
-		SkillShellRunner:                        FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SHELL_RUNNER"), agentruntime.DefaultSkillShellRunner),
-		SkillSandboxImage:                       FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_IMAGE"), agentruntime.DefaultSkillSandboxImage),
-		SkillSandboxNetwork:                     FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_NETWORK"), agentruntime.DefaultSkillSandboxNetwork),
-		SkillSandboxMemory:                      FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_MEMORY"), agentruntime.DefaultSkillSandboxMemory),
-		SkillSandboxCPUs:                        FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_CPUS"), agentruntime.DefaultSkillSandboxCPUs),
-		SkillSandboxPidsLimit:                   EnvInt("AGENT_API_SKILL_SANDBOX_PIDS_LIMIT", agentruntime.DefaultSkillSandboxPidsLimit),
-		SkillSandboxTmpfsSize:                   FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_TMPFS_SIZE"), agentruntime.DefaultSkillSandboxTmpfsSize),
-		SkillSandboxPrepullImages:               FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_PREPULL_IMAGES"), "python:3.12-slim,node:22-alpine"),
-		SkillSandboxWarmPoolSize:                EnvInt("AGENT_API_SKILL_SANDBOX_WARM_POOL_SIZE", 1),
+		Addr:                                     ":8081",
+		DataDir:                                  DefaultDataDir(),
+		StoreBackend:                             FirstNonEmpty(os.Getenv("AGENT_API_STORE_BACKEND"), "file"),
+		ObjectBaseURL:                            os.Getenv("AGENT_API_OBJECT_BASE_URL"),
+		ObjectToken:                              os.Getenv("AGENT_API_OBJECT_TOKEN"),
+		ObjectTimeout:                            EnvDuration("AGENT_API_OBJECT_TIMEOUT", 10*time.Second),
+		ArtifactStore:                            FirstNonEmpty(os.Getenv("AGENT_API_ARTIFACT_STORE"), "file"),
+		ArtifactS3Endpoint:                       FirstNonEmpty(os.Getenv("AGENT_API_ARTIFACT_S3_ENDPOINT"), "localhost:9000"),
+		ArtifactS3AccessKey:                      FirstNonEmpty(os.Getenv("AGENT_API_ARTIFACT_S3_ACCESS_KEY"), "minioadmin"),
+		ArtifactS3SecretKey:                      FirstNonEmpty(os.Getenv("AGENT_API_ARTIFACT_S3_SECRET_KEY"), "minioadmin"),
+		ArtifactS3Bucket:                         FirstNonEmpty(os.Getenv("AGENT_API_ARTIFACT_S3_BUCKET"), "agentapi"),
+		ArtifactS3Prefix:                         os.Getenv("AGENT_API_ARTIFACT_S3_PREFIX"),
+		ArtifactS3SSL:                            EnvBool("AGENT_API_ARTIFACT_S3_SSL", false),
+		AssetMaxBytes:                            EnvInt64("AGENT_API_ASSET_MAX_BYTES", agentruntime.DefaultMaxAssetBytes),
+		SQLDriver:                                os.Getenv("AGENT_API_SQL_DRIVER"),
+		SQLDSN:                                   os.Getenv("AGENT_API_SQL_DSN"),
+		SQLDialect:                               os.Getenv("AGENT_API_SQL_DIALECT"),
+		SQLMaxOpen:                               EnvInt("AGENT_API_SQL_MAX_OPEN_CONNS", 20),
+		SQLMaxIdle:                               EnvInt("AGENT_API_SQL_MAX_IDLE_CONNS", 10),
+		SQLConnMaxLifetime:                       EnvDuration("AGENT_API_SQL_CONN_MAX_LIFETIME", 30*time.Minute),
+		MessageSearchBackend:                     FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_BACKEND"), "sql"),
+		MessageSearchEndpoint:                    FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_ENDPOINT"), os.Getenv("AGENT_API_MESSAGE_SEARCH_URL")),
+		MessageSearchIndex:                       FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX"), "agent_messages"),
+		MessageSearchAPIKey:                      os.Getenv("AGENT_API_MESSAGE_SEARCH_API_KEY"),
+		MessageSearchUsername:                    os.Getenv("AGENT_API_MESSAGE_SEARCH_USERNAME"),
+		MessageSearchPassword:                    os.Getenv("AGENT_API_MESSAGE_SEARCH_PASSWORD"),
+		MessageSearchTimeout:                     EnvDuration("AGENT_API_MESSAGE_SEARCH_TIMEOUT", 5*time.Second),
+		MessageSearchIndexManagementEnabled:      EnvBool("AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED", false),
+		MessageSearchIndexLifecyclePolicy:        os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_LIFECYCLE_POLICY"),
+		MessageSearchIndexTemplate:               os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_TEMPLATE"),
+		MessageSearchIndexWriteAlias:             os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_WRITE_ALIAS"),
+		MessageSearchIndexAnalyzer:               FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_ANALYZER"), "ik_max_word"),
+		MessageSearchIndexSearchAnalyzer:         FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_SEARCH_ANALYZER"), "ik_smart"),
+		MessageSearchIndexDowngradeAfter:         EnvDuration("AGENT_API_MESSAGE_SEARCH_INDEX_DOWNGRADE_AFTER", 90*24*time.Hour),
+		MessageSearchIndexCloseAfter:             EnvDuration("AGENT_API_MESSAGE_SEARCH_INDEX_CLOSE_AFTER", 180*24*time.Hour),
+		MessageSearchIndexMaintenanceInterval:    EnvDuration("AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_INTERVAL", 24*time.Hour),
+		MessageSearchIndexMaintenanceBatchLimit:  EnvInt("AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_BATCH_LIMIT", 50),
+		MessageSearchQdrantEndpoint:              FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_ENDPOINT"), os.Getenv("AGENT_API_QDRANT_ENDPOINT")),
+		MessageSearchQdrantCollection:            FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_COLLECTION"), "agent_messages"),
+		MessageSearchQdrantAPIKey:                FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_API_KEY"), os.Getenv("AGENT_API_QDRANT_API_KEY")),
+		MessageSearchQdrantScoreThreshold:        EnvFloat64("AGENT_API_MESSAGE_SEARCH_QDRANT_SCORE_THRESHOLD", 0),
+		MessageSearchEmbeddingProvider:           FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER"), os.Getenv("AGENT_API_EMBEDDING_PROVIDER")),
+		MessageSearchEmbeddingEndpoint:           FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT"), os.Getenv("AGENT_API_EMBEDDING_ENDPOINT")),
+		MessageSearchEmbeddingAPIKey:             FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_EMBEDDING_API_KEY"), os.Getenv("NVIDIA_API_KEY"), os.Getenv("NGC_API_KEY"), os.Getenv("OPENAI_API_KEY")),
+		MessageSearchEmbeddingAccessToken:        FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_TOKEN"), os.Getenv("VERTEX_ACCESS_TOKEN"), os.Getenv("GOOGLE_OAUTH_ACCESS_TOKEN"), os.Getenv("GOOGLE_ACCESS_TOKEN")),
+		MessageSearchEmbeddingModel:              os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL"),
+		MessageSearchEmbeddingDimensions:         EnvInt("AGENT_API_MESSAGE_SEARCH_EMBEDDING_DIMENSIONS", 0),
+		MessageSearchEmbeddingProjectID:          FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID"), os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")),
+		MessageSearchEmbeddingLocation:           FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION"), os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "global"),
+		MessageSearchEmbeddingTaskType:           FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_TASK_TYPE"), "RETRIEVAL_QUERY"),
+		MessageSearchEmbeddingIndexTaskType:      FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_INDEX_TASK_TYPE"), "RETRIEVAL_DOCUMENT"),
+		MessageSearchEmbeddingAutoTruncate:       EnvBool("AGENT_API_MESSAGE_SEARCH_EMBEDDING_AUTO_TRUNCATE", true),
+		MessageSearchRRFK:                        EnvInt("AGENT_API_MESSAGE_SEARCH_RRF_K", 60),
+		MessageSearchQueryRewriteEnabled:         EnvBool("AGENT_API_MESSAGE_SEARCH_QUERY_REWRITE_ENABLED", true),
+		MessageSearchDynamicTopKEnabled:          EnvBool("AGENT_API_MESSAGE_SEARCH_DYNAMIC_TOPK_ENABLED", true),
+		MessageSearchMinRecallWindow:             EnvInt("AGENT_API_MESSAGE_SEARCH_MIN_RECALL_WINDOW", 50),
+		MessageSearchMaxRecallWindow:             EnvInt("AGENT_API_MESSAGE_SEARCH_MAX_RECALL_WINDOW", 120),
+		MessageSearchMultiTurnEnabled:            EnvBool("AGENT_API_MESSAGE_SEARCH_MULTI_TURN_ENABLED", true),
+		MessageSearchRerankEnabled:               EnvBool("AGENT_API_MESSAGE_SEARCH_RERANK_ENABLED", true),
+		MessageSearchRerankCandidateLimit:        EnvInt("AGENT_API_MESSAGE_SEARCH_RERANK_CANDIDATE_LIMIT", 50),
+		MessageSearchLowConfidenceScore:          EnvFloat64("AGENT_API_MESSAGE_SEARCH_LOW_CONFIDENCE_SCORE", 0.04),
+		MemoryVectorEnabled:                      EnvBool("AGENT_API_MEMORY_VECTOR_ENABLED", true),
+		MemoryVectorQdrantEndpoint:               FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_QDRANT_ENDPOINT"), os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_ENDPOINT"), os.Getenv("AGENT_API_QDRANT_ENDPOINT")),
+		MemoryVectorQdrantCollection:             FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_QDRANT_COLLECTION"), "agent_memories"),
+		MemoryVectorEpisodeQdrantCollection:      FirstNonEmpty(os.Getenv("AGENT_API_EPISODIC_MEMORY_QDRANT_COLLECTION"), "agent_memory_episodes"),
+		MemoryVectorQdrantAPIKey:                 FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_QDRANT_API_KEY"), os.Getenv("AGENT_API_MESSAGE_SEARCH_QDRANT_API_KEY"), os.Getenv("AGENT_API_QDRANT_API_KEY")),
+		MemoryVectorQdrantScoreThreshold:         EnvFloat64("AGENT_API_MEMORY_VECTOR_QDRANT_SCORE_THRESHOLD", EnvFloat64("AGENT_API_MESSAGE_SEARCH_QDRANT_SCORE_THRESHOLD", 0)),
+		MemoryVectorEmbeddingProvider:            FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_PROVIDER"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER"), os.Getenv("AGENT_API_EMBEDDING_PROVIDER")),
+		MemoryVectorEmbeddingEndpoint:            FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_ENDPOINT"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT"), os.Getenv("AGENT_API_EMBEDDING_ENDPOINT")),
+		MemoryVectorEmbeddingAPIKey:              FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_EMBEDDING_API_KEY"), os.Getenv("NVIDIA_API_KEY"), os.Getenv("NGC_API_KEY"), os.Getenv("OPENAI_API_KEY")),
+		MemoryVectorEmbeddingAccessToken:         FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_TOKEN"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_TOKEN"), os.Getenv("VERTEX_ACCESS_TOKEN"), os.Getenv("GOOGLE_OAUTH_ACCESS_TOKEN"), os.Getenv("GOOGLE_ACCESS_TOKEN")),
+		MemoryVectorEmbeddingModel:               FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_MODEL"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL")),
+		MemoryVectorEmbeddingDimensions:          EnvInt("AGENT_API_MEMORY_VECTOR_EMBEDDING_DIMENSIONS", EnvInt("AGENT_API_MESSAGE_SEARCH_EMBEDDING_DIMENSIONS", 0)),
+		MemoryVectorEmbeddingProjectID:           FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_PROJECT_ID"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROJECT_ID"), os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")),
+		MemoryVectorEmbeddingLocation:            FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_LOCATION"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_LOCATION"), os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "global"),
+		MemoryVectorEmbeddingTaskType:            FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_TASK_TYPE"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_TASK_TYPE"), "RETRIEVAL_QUERY"),
+		MemoryVectorEmbeddingIndexTaskType:       FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_INDEX_TASK_TYPE"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_INDEX_TASK_TYPE"), "RETRIEVAL_DOCUMENT"),
+		MemoryVectorEmbeddingAutoTruncate:        EnvBool("AGENT_API_MEMORY_VECTOR_EMBEDDING_AUTO_TRUNCATE", EnvBool("AGENT_API_MESSAGE_SEARCH_EMBEDDING_AUTO_TRUNCATE", true)),
+		MemoryVectorRRFK:                         EnvInt("AGENT_API_MEMORY_VECTOR_RRF_K", EnvInt("AGENT_API_MESSAGE_SEARCH_RRF_K", 60)),
+		MemoryVectorRerankEnabled:                EnvBool("AGENT_API_MEMORY_VECTOR_RERANK_ENABLED", true),
+		MemoryVectorRerankEndpoint:               FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_RERANK_ENDPOINT"), os.Getenv("AGENT_API_RERANK_ENDPOINT"), "https://ai.api.nvidia.com/v1/retrieval/nvidia/llama-nemotron-rerank-1b-v2/reranking"),
+		MemoryVectorRerankAPIKey:                 FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_RERANK_API_KEY"), os.Getenv("AGENT_API_RERANK_API_KEY"), os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_EMBEDDING_API_KEY"), os.Getenv("NVIDIA_API_KEY"), os.Getenv("NGC_API_KEY")),
+		MemoryVectorRerankModel:                  FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_RERANK_MODEL"), os.Getenv("AGENT_API_RERANK_MODEL"), "nvidia/llama-nemotron-rerank-1b-v2"),
+		MemoryVectorRerankCandidateLimit:         EnvInt("AGENT_API_MEMORY_VECTOR_RERANK_CANDIDATE_LIMIT", 50),
+		MemoryVectorRerankResultLimit:            EnvInt("AGENT_API_MEMORY_VECTOR_RERANK_RESULT_LIMIT", 5),
+		MemoryVectorRerankTimeout:                EnvDuration("AGENT_API_MEMORY_VECTOR_RERANK_TIMEOUT", EnvDuration("AGENT_API_RERANK_TIMEOUT", 5*time.Second)),
+		MemoryVectorRerankTruncate:               FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_RERANK_TRUNCATE"), os.Getenv("AGENT_API_RERANK_TRUNCATE"), "END"),
+		MemoryRecallEnabled:                      EnvBool("AGENT_API_MEMORY_RECALL_ENABLED", true),
+		MemoryRecallConditionalEnabled:           EnvBool("AGENT_API_MEMORY_RECALL_CONDITIONAL_ENABLED", true),
+		MemoryRecallAsyncEnabled:                 EnvBool("AGENT_API_MEMORY_RECALL_ASYNC_ENABLED", true),
+		MemoryRecallTimeout:                      EnvDuration("AGENT_API_MEMORY_RECALL_TIMEOUT", 1200*time.Millisecond),
+		MemoryRecallMinQueryRunes:                EnvInt("AGENT_API_MEMORY_RECALL_MIN_QUERY_RUNES", 8),
+		MemoryRecallRecentContextMessages:        EnvInt("AGENT_API_MEMORY_RECALL_RECENT_CONTEXT_MESSAGES", 4),
+		MemoryRecallRecentContextMaxRunes:        EnvInt("AGENT_API_MEMORY_RECALL_RECENT_CONTEXT_RUNES", 400),
+		MemoryRecallForceInterval:                EnvInt("AGENT_API_MEMORY_RECALL_FORCE_INTERVAL", 10),
+		MemoryRecallComplexTokenThreshold:        EnvInt("AGENT_API_MEMORY_RECALL_COMPLEX_TOKEN_THRESHOLD", 200),
+		MemoryRecallEmbeddingEnabled:             EnvBool("AGENT_API_MEMORY_RECALL_EMBEDDING_ENABLED", true),
+		MemoryRecallEmbeddingSimilarityThreshold: EnvFloat64("AGENT_API_MEMORY_RECALL_EMBEDDING_SIMILARITY_THRESHOLD", 0.75),
+		MemoryRecallEmbeddingWindow:              EnvInt("AGENT_API_MEMORY_RECALL_EMBEDDING_WINDOW", 3),
+		MemoryRecallIntentClassifierEnabled:      EnvBool("AGENT_API_MEMORY_RECALL_INTENT_CLASSIFIER_ENABLED", true),
+		MemoryRecallIntentClassifierThreshold:    EnvFloat64("AGENT_API_MEMORY_RECALL_INTENT_CLASSIFIER_THRESHOLD", 0.6),
+		MemoryRecallIntentClassifierContextTurns: EnvInt("AGENT_API_MEMORY_RECALL_INTENT_CLASSIFIER_CONTEXT_TURNS", 4),
+		EpisodicMemoryEnabled:                    EnvBool("AGENT_API_EPISODIC_MEMORY_ENABLED", true),
+		EpisodicMemoryCaptureEnabled:             EnvBool("AGENT_API_EPISODIC_MEMORY_CAPTURE_ENABLED", true),
+		EpisodicMemoryContextEnabled:             EnvBool("AGENT_API_EPISODIC_MEMORY_CONTEXT_ENABLED", true),
+		EpisodicMemoryMinMessages:                EnvInt("AGENT_API_EPISODIC_MEMORY_MIN_MESSAGES", 4),
+		EpisodicMemoryMaxMessages:                EnvInt("AGENT_API_EPISODIC_MEMORY_MAX_MESSAGES", 40),
+		EpisodicMemoryInjectLimit:                EnvInt("AGENT_API_EPISODIC_MEMORY_INJECT_LIMIT", 5),
+		EpisodicMemoryTTL:                        EnvDuration("AGENT_API_EPISODIC_MEMORY_TTL", 180*24*time.Hour),
+		EpisodicMemorySummarizeTimeout:           EnvDuration("AGENT_API_EPISODIC_MEMORY_SUMMARIZE_TIMEOUT", 8*time.Second),
+		Workspace:                                MustWorkingDir(),
+		UserWorkspaceRoot:                        os.Getenv("AGENT_API_USER_WORKSPACE_ROOT"),
+		AllowCustomWorkingDir:                    EnvBool("AGENT_API_ALLOW_CUSTOM_WORKING_DIR", false),
+		Timezone:                                 os.Getenv("AGENT_API_TIMEZONE"),
+		Locale:                                   os.Getenv("AGENT_API_LOCALE"),
+		LLMProvider:                              FirstNonEmpty(os.Getenv("AGENT_API_LLM_PROVIDER"), os.Getenv("CLAUDE_CODE_PROVIDER"), "anthropic"),
+		APIKey:                                   "",
+		APIToken:                                 "",
+		APIBaseURL:                               "",
+		Model:                                    FirstNonEmpty(os.Getenv("AGENT_API_MODEL"), os.Getenv("AGENT_API_LLM_MODEL")),
+		LLMFallbacks:                             os.Getenv("AGENT_API_LLM_FALLBACKS"),
+		LLMModelRoutes:                           os.Getenv("AGENT_API_LLM_MODEL_ROUTES"),
+		LLMMaxAttempts:                           EnvInt("AGENT_API_LLM_MAX_ATTEMPTS", 2),
+		LLMRetryBackoff:                          EnvDuration("AGENT_API_LLM_RETRY_BACKOFF", 300*time.Millisecond),
+		LLMChatTimeout:                           EnvDuration("AGENT_API_LLM_CHAT_TIMEOUT", 60*time.Second),
+		LLMSkillTimeout:                          EnvDuration("AGENT_API_LLM_SKILL_TIMEOUT", 90*time.Second),
+		LLMDailyTokenQuota:                       EnvInt("AGENT_API_LLM_DAILY_TOKEN_QUOTA", 0),
+		LLMDailyRequestQuota:                     EnvInt("AGENT_API_LLM_DAILY_REQUEST_QUOTA", 0),
+		LLMDailyCostQuotaUSD:                     EnvFloat64("AGENT_API_LLM_DAILY_COST_QUOTA_USD", 0),
+		LLMInputCostPerMillion:                   EnvFloat64("AGENT_API_LLM_INPUT_COST_PER_MILLION", 0.30),
+		LLMOutputCostPerMillion:                  EnvFloat64("AGENT_API_LLM_OUTPUT_COST_PER_MILLION", 2.50),
+		LLMFailureThreshold:                      EnvInt("AGENT_API_LLM_FAILURE_THRESHOLD", 3),
+		LLMCircuitCooldown:                       EnvDuration("AGENT_API_LLM_CIRCUIT_COOLDOWN", time.Minute),
+		LiveEnabled:                              EnvBool("AGENT_API_LIVE_ENABLED", false),
+		LiveProvider:                             FirstNonEmpty(os.Getenv("AGENT_API_LIVE_PROVIDER"), "vertex"),
+		LiveModel:                                FirstNonEmpty(os.Getenv("AGENT_API_LIVE_MODEL"), "gemini-live-2.5-flash-preview-native-audio-09-2025"),
+		LiveVertexProjectID:                      FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_PROJECT_ID"), os.Getenv("GOCLAW_VERTEX_PROJECT_ID"), os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")),
+		LiveVertexLocation:                       FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_LOCATION"), os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "us-central1"),
+		LiveVertexBaseURL:                        os.Getenv("AGENT_API_LIVE_VERTEX_BASE_URL"),
+		LiveVertexAPIVersion:                     FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_API_VERSION"), "v1beta1"),
+		LiveInputAudioMIME:                       FirstNonEmpty(os.Getenv("AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE"), "audio/pcm;rate=16000"),
+		LiveOutputAudioMIME:                      os.Getenv("AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE"),
+		LiveVoiceName:                            os.Getenv("AGENT_API_LIVE_VOICE_NAME"),
+		LiveLanguageCode:                         os.Getenv("AGENT_API_LIVE_LANGUAGE_CODE"),
+		LiveInputTranscription:                   EnvBool("AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED", true),
+		LiveOutputTranscription:                  EnvBool("AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED", true),
+		LiveVADStartSensitivity:                  FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VAD_START_SENSITIVITY"), "START_SENSITIVITY_HIGH"),
+		LiveVADEndSensitivity:                    FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VAD_END_SENSITIVITY"), "END_SENSITIVITY_HIGH"),
+		LiveVADPrefixPadding:                     EnvDuration("AGENT_API_LIVE_VAD_PREFIX_PADDING", 150*time.Millisecond),
+		LiveVADSilenceDuration:                   EnvDuration("AGENT_API_LIVE_VAD_SILENCE_DURATION", 350*time.Millisecond),
+		LiveSessionTimeout:                       EnvDuration("AGENT_API_LIVE_SESSION_TIMEOUT", 10*time.Minute),
+		LiveSetupPromptCacheBackend:              FirstNonEmpty(os.Getenv("AGENT_API_LIVE_SETUP_PROMPT_CACHE_BACKEND"), os.Getenv("AGENT_API_CACHE_BACKEND"), "memory"),
+		LiveSetupPromptCacheRedisURL:             FirstNonEmpty(os.Getenv("AGENT_API_LIVE_SETUP_PROMPT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
+		LiveSetupPromptCacheTTL:                  EnvDuration("AGENT_API_LIVE_SETUP_PROMPT_CACHE_TTL", EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", time.Minute)),
+		AuthMode:                                 FirstNonEmpty(os.Getenv("AGENT_API_AUTH_MODE"), "auto"),
+		AuthToken:                                os.Getenv("AGENT_API_AUTH_TOKEN"),
+		UserHeader:                               "X-User-ID",
+		JWTSecret:                                os.Getenv("AGENT_API_JWT_SECRET"),
+		JWTIssuer:                                os.Getenv("AGENT_API_JWT_ISSUER"),
+		JWTAudience:                              os.Getenv("AGENT_API_JWT_AUDIENCE"),
+		JWTUserClaim:                             FirstNonEmpty(os.Getenv("AGENT_API_JWT_USER_CLAIM"), "sub"),
+		EnableUserSystem:                         EnvBool("AGENT_API_ENABLE_USER_SYSTEM", false),
+		AuthAccessTTL:                            EnvDuration("AGENT_API_AUTH_ACCESS_TTL", 15*time.Minute),
+		AuthRefreshTTL:                           EnvDuration("AGENT_API_AUTH_REFRESH_TTL", 30*24*time.Hour),
+		EmailVerificationRequired:                EnvBool("AGENT_API_EMAIL_VERIFICATION_REQUIRED", false),
+		EmailVerificationTTL:                     EnvDuration("AGENT_API_EMAIL_VERIFICATION_TTL", 24*time.Hour),
+		EmailProvider:                            os.Getenv("AGENT_API_EMAIL_PROVIDER"),
+		EmailFrom:                                os.Getenv("AGENT_API_EMAIL_FROM"),
+		EmailPublicBaseURL:                       os.Getenv("AGENT_API_EMAIL_PUBLIC_BASE_URL"),
+		ResendAPIKey:                             os.Getenv("AGENT_API_RESEND_API_KEY"),
+		ResendBaseURL:                            os.Getenv("AGENT_API_RESEND_BASE_URL"),
+		SessionCookieName:                        FirstNonEmpty(os.Getenv("AGENT_API_SESSION_COOKIE_NAME"), "agentapi_session"),
+		SessionCookieSecret:                      os.Getenv("AGENT_API_SESSION_COOKIE_SECRET"),
+		SessionCookieDomain:                      os.Getenv("AGENT_API_SESSION_COOKIE_DOMAIN"),
+		SessionCookieSecure:                      EnvBool("AGENT_API_SESSION_COOKIE_SECURE", false),
+		SessionCookieSameSite:                    FirstNonEmpty(os.Getenv("AGENT_API_SESSION_COOKIE_SAMESITE"), "lax"),
+		CSRFEnabled:                              EnvBool("AGENT_API_CSRF_ENABLED", false),
+		CSRFCookieName:                           FirstNonEmpty(os.Getenv("AGENT_API_CSRF_COOKIE_NAME"), "agentapi_csrf"),
+		CSRFHeaderName:                           FirstNonEmpty(os.Getenv("AGENT_API_CSRF_HEADER_NAME"), "X-CSRF-Token"),
+		CORSAllowedOrigins:                       os.Getenv("AGENT_API_CORS_ALLOWED_ORIGINS"),
+		CORSAllowCredentials:                     EnvBool("AGENT_API_CORS_ALLOW_CREDENTIALS", true),
+		AdminToken:                               os.Getenv("AGENT_API_ADMIN_TOKEN"),
+		EvalDailyEnabled:                         EnvBool("AGENT_API_EVAL_DAILY_ENABLED", true),
+		EvalDailyHour:                            EnvInt("AGENT_API_EVAL_DAILY_HOUR", 5),
+		EvalDailyMinute:                          EnvInt("AGENT_API_EVAL_DAILY_MINUTE", 0),
+		EvalDailyUserIDs:                         os.Getenv("AGENT_API_EVAL_DAILY_USER_IDS"),
+		EvalDailyBatchLimit:                      EnvInt("AGENT_API_EVAL_DAILY_BATCH_LIMIT", 200),
+		EvalDailyTimeout:                         EnvDuration("AGENT_API_EVAL_DAILY_TIMEOUT", 10*time.Minute),
+		EvalJudgeEnabled:                         EnvBool("AGENT_API_EVAL_JUDGE_ENABLED", strings.TrimSpace(os.Getenv("AGENT_API_EVAL_JUDGE_MODEL")) != ""),
+		EvalJudgeModel:                           os.Getenv("AGENT_API_EVAL_JUDGE_MODEL"),
+		EvalJudgePromptVersion:                   FirstNonEmpty(os.Getenv("AGENT_API_EVAL_JUDGE_PROMPT_VERSION"), agentruntime.DefaultGoldenJudgePromptVersion),
+		TrustedUserHeader:                        FirstNonEmpty(os.Getenv("AGENT_API_TRUSTED_USER_HEADER"), "X-User-ID"),
+		TrustedSecretHeader:                      os.Getenv("AGENT_API_TRUSTED_SECRET_HEADER"),
+		TrustedSecret:                            os.Getenv("AGENT_API_TRUSTED_SECRET"),
+		AllowDangerousTools:                      false,
+		NetworkAllowlist:                         os.Getenv("AGENT_API_NETWORK_ALLOWLIST"),
+		SkillDirs:                                os.Getenv("AGENT_API_SKILL_DIRS"),
+		RateLimitBackend:                         FirstNonEmpty(os.Getenv("AGENT_API_RATE_LIMIT_BACKEND"), "memory"),
+		RateLimit:                                60,
+		OperationRateLimits:                      os.Getenv("AGENT_API_OPERATION_RATE_LIMITS"),
+		CacheBackend:                             FirstNonEmpty(os.Getenv("AGENT_API_CACHE_BACKEND"), "memory"),
+		CacheRedisURL:                            FirstNonEmpty(os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
+		CachePrefix:                              FirstNonEmpty(os.Getenv("AGENT_API_CACHE_PREFIX"), "agent:cache"),
+		CacheDefaultTTL:                          EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", 10*time.Minute),
+		CacheFailOpen:                            EnvBool("AGENT_API_CACHE_FAIL_OPEN", EnvBool("AGENT_API_REDIS_FAIL_OPEN", false)),
+		RedisURL:                                 os.Getenv("AGENT_API_REDIS_URL"),
+		RedisFailOpen:                            EnvBool("AGENT_API_REDIS_FAIL_OPEN", false),
+		MessageContextCacheBackend:               FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND"), os.Getenv("AGENT_API_CACHE_BACKEND"), "memory"),
+		MessageContextCacheRedisURL:              FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
+		MessageContextCacheTTL:                   EnvDuration("AGENT_API_MESSAGE_CONTEXT_CACHE_TTL", EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", 24*time.Hour)),
+		SessionListCacheBackend:                  FirstNonEmpty(os.Getenv("AGENT_API_SESSION_LIST_CACHE_BACKEND"), "none"),
+		SessionListCacheRedisURL:                 FirstNonEmpty(os.Getenv("AGENT_API_SESSION_LIST_CACHE_REDIS_URL"), os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
+		SessionListCacheTTL:                      EnvDuration("AGENT_API_SESSION_LIST_CACHE_TTL", EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", 10*time.Minute)),
+		MessageSequenceBackend:                   FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEQUENCE_BACKEND"), "redis"),
+		MessageSequenceRedisURL:                  FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_SEQUENCE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
+		MessageEventsBackend:                     FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_BACKEND"), "local"),
+		MessageEventsKafkaBrokers:                os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_BROKERS"),
+		MessageEventsKafkaTopic:                  FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_TOPIC"), "agent.messages"),
+		MessageEventsKafkaClientID:               FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_CLIENT_ID"), "agentapi"),
+		MessageEventsKafkaConsumerEnabled:        EnvBool("AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_ENABLED", false),
+		MessageEventsKafkaConsumerGroup:          FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_GROUP"), "agentapi-message-workers"),
+		MessageEventsKafkaDLQTopic:               os.Getenv("AGENT_API_MESSAGE_EVENTS_KAFKA_DLQ_TOPIC"),
+		MessageEventsKafkaRetryAttempts:          EnvInt("AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_ATTEMPTS", 3),
+		MessageEventsKafkaRetryBackoff:           EnvDuration("AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_BACKOFF", time.Second),
+		MessageEventsKafkaProcessTimeout:         EnvDuration("AGENT_API_MESSAGE_EVENTS_KAFKA_PROCESS_TIMEOUT", 30*time.Second),
+		MessageEventsProcessedLockBackend:        FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_BACKEND"), "redis"),
+		MessageEventsProcessedLockRedisURL:       FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL"), os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
+		MessageEventsProcessedLockTTL:            EnvDuration("AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL", 24*time.Hour),
+		JobQueueRedisURL:                         FirstNonEmpty(os.Getenv("AGENT_API_JOB_QUEUE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
+		JobQueueStream:                           FirstNonEmpty(os.Getenv("AGENT_API_JOB_QUEUE_STREAM"), agentruntime.DefaultJobQueueStream),
+		JobQueueConsumerGroup:                    FirstNonEmpty(os.Getenv("AGENT_API_JOB_QUEUE_CONSUMER_GROUP"), agentruntime.DefaultJobQueueConsumerGroup),
+		JobQueueConsumer:                         os.Getenv("AGENT_API_JOB_QUEUE_CONSUMER"),
+		JobQueueBlockTimeout:                     EnvDuration("AGENT_API_JOB_QUEUE_BLOCK_TIMEOUT", agentruntime.DefaultJobQueueBlockTimeout),
+		JobQueueClaimIdle:                        EnvDuration("AGENT_API_JOB_QUEUE_CLAIM_IDLE", agentruntime.DefaultJobQueueClaimIdle),
+		JobQueueLockTTL:                          EnvDuration("AGENT_API_JOB_QUEUE_LOCK_TTL", agentruntime.DefaultJobQueueLockTTL),
+		JobWorkerEnabled:                         EnvBool("AGENT_API_JOB_WORKER_ENABLED", true),
+		JobEventFanoutEnabled:                    EnvBool("AGENT_API_JOB_EVENT_FANOUT_ENABLED", true),
+		JobEventFanoutChannel:                    FirstNonEmpty(os.Getenv("AGENT_API_JOB_EVENT_FANOUT_CHANNEL"), agentruntime.DefaultJobEventFanoutChannel),
+		JobEventFanoutOrigin:                     os.Getenv("AGENT_API_JOB_EVENT_FANOUT_ORIGIN"),
+		MessageAttachmentWorkerEnabled:           EnvBool("AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED", true),
+		MessageAttachmentWorkerBatchSize:         EnvInt("AGENT_API_MESSAGE_ATTACHMENT_WORKER_BATCH_SIZE", 25),
+		MessageAttachmentWorkerPollInterval:      EnvDuration("AGENT_API_MESSAGE_ATTACHMENT_WORKER_POLL_INTERVAL", 5*time.Second),
+		MessageAttachmentWorkerProcessTimeout:    EnvDuration("AGENT_API_MESSAGE_ATTACHMENT_WORKER_PROCESS_TIMEOUT", 30*time.Second),
+		MessageAttachmentThumbnailMaxDimension:   EnvInt("AGENT_API_MESSAGE_ATTACHMENT_THUMBNAIL_MAX_DIMENSION", 512),
+		MessageArchiveWorkerEnabled:              EnvBool("AGENT_API_MESSAGE_ARCHIVE_WORKER_ENABLED", false),
+		MessageArchiveAfter:                      EnvDuration("AGENT_API_MESSAGE_ARCHIVE_AFTER", 30*24*time.Hour),
+		MessageArchiveWorkerBatchSize:            EnvInt("AGENT_API_MESSAGE_ARCHIVE_WORKER_BATCH_SIZE", 100),
+		MessageArchiveWorkerPollInterval:         EnvDuration("AGENT_API_MESSAGE_ARCHIVE_WORKER_POLL_INTERVAL", time.Hour),
+		MessageArchiveWorkerProcessTimeout:       EnvDuration("AGENT_API_MESSAGE_ARCHIVE_WORKER_PROCESS_TIMEOUT", 2*time.Minute),
+		MessageArchivePrefix:                     FirstNonEmpty(os.Getenv("AGENT_API_MESSAGE_ARCHIVE_PREFIX"), "message-archive"),
+		MessageArchiveClearPGPayload:             EnvBool("AGENT_API_MESSAGE_ARCHIVE_CLEAR_PG_PAYLOAD", true),
+		RetentionDays:                            EnvInt("AGENT_API_RETENTION_DAYS", 0),
+		LocalArtifactStagingRetention:            EnvDuration("AGENT_API_LOCAL_ARTIFACT_STAGING_RETENTION", 24*time.Hour),
+		ShutdownTimeout:                          EnvDuration("AGENT_API_SHUTDOWN_TIMEOUT", 30*time.Second),
+		RequestTimeout:                           EnvDuration("AGENT_API_REQUEST_TIMEOUT", 0),
+		TurnTimeout:                              2 * time.Minute,
+		DeepAgentV2Enabled:                       EnvBool("AGENT_API_DEEP_AGENT_V2_ENABLED", false),
+		DeepAgentV2ShadowRoute:                   EnvBool("AGENT_API_DEEP_AGENT_V2_SHADOW_ROUTE", false),
+		SkillShellTimeout:                        EnvDuration("AGENT_API_SKILL_SHELL_TIMEOUT", 90*time.Second),
+		SkillShellRunner:                         FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SHELL_RUNNER"), agentruntime.DefaultSkillShellRunner),
+		SkillSandboxImage:                        FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_IMAGE"), agentruntime.DefaultSkillSandboxImage),
+		SkillSandboxNetwork:                      FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_NETWORK"), agentruntime.DefaultSkillSandboxNetwork),
+		SkillSandboxMemory:                       FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_MEMORY"), agentruntime.DefaultSkillSandboxMemory),
+		SkillSandboxCPUs:                         FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_CPUS"), agentruntime.DefaultSkillSandboxCPUs),
+		SkillSandboxPidsLimit:                    EnvInt("AGENT_API_SKILL_SANDBOX_PIDS_LIMIT", agentruntime.DefaultSkillSandboxPidsLimit),
+		SkillSandboxTmpfsSize:                    FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_TMPFS_SIZE"), agentruntime.DefaultSkillSandboxTmpfsSize),
+		SkillSandboxPrepullImages:                FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_PREPULL_IMAGES"), "python:3.12-slim,node:22-alpine"),
+		SkillSandboxWarmPoolSize:                 EnvInt("AGENT_API_SKILL_SANDBOX_WARM_POOL_SIZE", 1),
 	}
 }
 
@@ -536,8 +600,8 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.StringVar(&cfg.MessageSearchQdrantCollection, "message-search-qdrant-collection", cfg.MessageSearchQdrantCollection, "Qdrant collection for semantic message search")
 	flags.StringVar(&cfg.MessageSearchQdrantAPIKey, "message-search-qdrant-api-key", cfg.MessageSearchQdrantAPIKey, "Qdrant API key for semantic message search")
 	flags.Float64Var(&cfg.MessageSearchQdrantScoreThreshold, "message-search-qdrant-score-threshold", cfg.MessageSearchQdrantScoreThreshold, "minimum Qdrant semantic search score; 0 disables")
-	flags.StringVar(&cfg.MessageSearchEmbeddingProvider, "message-search-embedding-provider", cfg.MessageSearchEmbeddingProvider, "embedding provider for semantic message search: openai or vertex")
-	flags.StringVar(&cfg.MessageSearchEmbeddingEndpoint, "message-search-embedding-endpoint", cfg.MessageSearchEmbeddingEndpoint, "embedding endpoint for semantic message search; OpenAI-compatible base URL or Vertex AI base URL")
+	flags.StringVar(&cfg.MessageSearchEmbeddingProvider, "message-search-embedding-provider", cfg.MessageSearchEmbeddingProvider, "embedding provider for semantic message search: openai, nvidia, or vertex")
+	flags.StringVar(&cfg.MessageSearchEmbeddingEndpoint, "message-search-embedding-endpoint", cfg.MessageSearchEmbeddingEndpoint, "embedding endpoint for semantic message search; OpenAI-compatible, NVIDIA NIM, or Vertex AI base URL")
 	flags.StringVar(&cfg.MessageSearchEmbeddingAPIKey, "message-search-embedding-api-key", cfg.MessageSearchEmbeddingAPIKey, "embedding API key for OpenAI-compatible semantic message search")
 	flags.StringVar(&cfg.MessageSearchEmbeddingAccessToken, "message-search-embedding-token", cfg.MessageSearchEmbeddingAccessToken, "OAuth access token for Vertex AI semantic message search; service account env or gcloud are used when empty")
 	flags.StringVar(&cfg.MessageSearchEmbeddingModel, "message-search-embedding-model", cfg.MessageSearchEmbeddingModel, "embedding model for semantic message search")
@@ -559,10 +623,11 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.BoolVar(&cfg.MemoryVectorEnabled, "memory-vector-enabled", cfg.MemoryVectorEnabled, "enable Qdrant vector indexing and retrieval for saved memory when embeddings are configured")
 	flags.StringVar(&cfg.MemoryVectorQdrantEndpoint, "memory-vector-qdrant-endpoint", cfg.MemoryVectorQdrantEndpoint, "Qdrant endpoint for saved memory vector retrieval")
 	flags.StringVar(&cfg.MemoryVectorQdrantCollection, "memory-vector-qdrant-collection", cfg.MemoryVectorQdrantCollection, "Qdrant collection for saved memory vectors")
+	flags.StringVar(&cfg.MemoryVectorEpisodeQdrantCollection, "episodic-memory-qdrant-collection", cfg.MemoryVectorEpisodeQdrantCollection, "Qdrant collection for episodic memory vectors")
 	flags.StringVar(&cfg.MemoryVectorQdrantAPIKey, "memory-vector-qdrant-api-key", cfg.MemoryVectorQdrantAPIKey, "Qdrant API key for saved memory vectors")
 	flags.Float64Var(&cfg.MemoryVectorQdrantScoreThreshold, "memory-vector-qdrant-score-threshold", cfg.MemoryVectorQdrantScoreThreshold, "minimum Qdrant saved memory vector search score; 0 disables")
-	flags.StringVar(&cfg.MemoryVectorEmbeddingProvider, "memory-vector-embedding-provider", cfg.MemoryVectorEmbeddingProvider, "embedding provider for saved memory vector retrieval: openai or vertex")
-	flags.StringVar(&cfg.MemoryVectorEmbeddingEndpoint, "memory-vector-embedding-endpoint", cfg.MemoryVectorEmbeddingEndpoint, "embedding endpoint for saved memory vector retrieval")
+	flags.StringVar(&cfg.MemoryVectorEmbeddingProvider, "memory-vector-embedding-provider", cfg.MemoryVectorEmbeddingProvider, "embedding provider for saved memory vector retrieval: openai, nvidia, or vertex")
+	flags.StringVar(&cfg.MemoryVectorEmbeddingEndpoint, "memory-vector-embedding-endpoint", cfg.MemoryVectorEmbeddingEndpoint, "embedding endpoint for saved memory vector retrieval; OpenAI-compatible, NVIDIA NIM, or Vertex AI base URL")
 	flags.StringVar(&cfg.MemoryVectorEmbeddingAPIKey, "memory-vector-embedding-api-key", cfg.MemoryVectorEmbeddingAPIKey, "embedding API key for OpenAI-compatible saved memory vector retrieval")
 	flags.StringVar(&cfg.MemoryVectorEmbeddingAccessToken, "memory-vector-embedding-token", cfg.MemoryVectorEmbeddingAccessToken, "OAuth access token for Vertex AI saved memory vector retrieval; service account env or gcloud are used when empty")
 	flags.StringVar(&cfg.MemoryVectorEmbeddingModel, "memory-vector-embedding-model", cfg.MemoryVectorEmbeddingModel, "embedding model for saved memory vector retrieval")
@@ -573,6 +638,37 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.StringVar(&cfg.MemoryVectorEmbeddingIndexTaskType, "memory-vector-embedding-index-task-type", cfg.MemoryVectorEmbeddingIndexTaskType, "Vertex AI embedding task_type for indexed saved memory documents")
 	flags.BoolVar(&cfg.MemoryVectorEmbeddingAutoTruncate, "memory-vector-embedding-auto-truncate", cfg.MemoryVectorEmbeddingAutoTruncate, "allow Vertex AI saved memory embedding input auto truncation")
 	flags.IntVar(&cfg.MemoryVectorRRFK, "memory-vector-rrf-k", cfg.MemoryVectorRRFK, "RRF k constant for saved memory hybrid retrieval")
+	flags.BoolVar(&cfg.MemoryVectorRerankEnabled, "memory-vector-rerank-enabled", cfg.MemoryVectorRerankEnabled, "enable NVIDIA reranking for L2 episodic memory vector candidates")
+	flags.StringVar(&cfg.MemoryVectorRerankEndpoint, "memory-vector-rerank-endpoint", cfg.MemoryVectorRerankEndpoint, "NVIDIA reranking endpoint base URL or /v1/ranking URL")
+	flags.StringVar(&cfg.MemoryVectorRerankAPIKey, "memory-vector-rerank-api-key", cfg.MemoryVectorRerankAPIKey, "NVIDIA reranking API key")
+	flags.StringVar(&cfg.MemoryVectorRerankModel, "memory-vector-rerank-model", cfg.MemoryVectorRerankModel, "NVIDIA reranking model for L2 episodic memory")
+	flags.IntVar(&cfg.MemoryVectorRerankCandidateLimit, "memory-vector-rerank-candidate-limit", cfg.MemoryVectorRerankCandidateLimit, "number of L2 memory vector candidates to rerank")
+	flags.IntVar(&cfg.MemoryVectorRerankResultLimit, "memory-vector-rerank-result-limit", cfg.MemoryVectorRerankResultLimit, "default number of L2 reranked memories to return when no search limit is requested")
+	flags.DurationVar(&cfg.MemoryVectorRerankTimeout, "memory-vector-rerank-timeout", cfg.MemoryVectorRerankTimeout, "NVIDIA reranking request timeout")
+	flags.StringVar(&cfg.MemoryVectorRerankTruncate, "memory-vector-rerank-truncate", cfg.MemoryVectorRerankTruncate, "NVIDIA reranking truncate policy: END or NONE")
+	flags.BoolVar(&cfg.MemoryRecallEnabled, "memory-recall-enabled", cfg.MemoryRecallEnabled, "enable per-turn memory recall")
+	flags.BoolVar(&cfg.MemoryRecallConditionalEnabled, "memory-recall-conditional-enabled", cfg.MemoryRecallConditionalEnabled, "skip per-turn memory recall for low-information messages")
+	flags.BoolVar(&cfg.MemoryRecallAsyncEnabled, "memory-recall-async-enabled", cfg.MemoryRecallAsyncEnabled, "run per-turn memory recall with a bounded async timeout")
+	flags.DurationVar(&cfg.MemoryRecallTimeout, "memory-recall-timeout", cfg.MemoryRecallTimeout, "maximum time to wait for per-turn memory recall before continuing without memory")
+	flags.IntVar(&cfg.MemoryRecallMinQueryRunes, "memory-recall-min-query-runes", cfg.MemoryRecallMinQueryRunes, "minimum CJK query length that can trigger conditional memory recall")
+	flags.IntVar(&cfg.MemoryRecallRecentContextMessages, "memory-recall-recent-context-messages", cfg.MemoryRecallRecentContextMessages, "number of recent messages used to enrich memory recall queries")
+	flags.IntVar(&cfg.MemoryRecallRecentContextMaxRunes, "memory-recall-recent-context-runes", cfg.MemoryRecallRecentContextMaxRunes, "maximum runes of recent context used to enrich memory recall queries")
+	flags.IntVar(&cfg.MemoryRecallForceInterval, "memory-recall-force-interval", cfg.MemoryRecallForceInterval, "force memory recall every N user turns; 0 disables interval forcing")
+	flags.IntVar(&cfg.MemoryRecallComplexTokenThreshold, "memory-recall-complex-token-threshold", cfg.MemoryRecallComplexTokenThreshold, "estimated token count above which memory recall is forced")
+	flags.BoolVar(&cfg.MemoryRecallEmbeddingEnabled, "memory-recall-embedding-enabled", cfg.MemoryRecallEmbeddingEnabled, "enable embedding-drift memory recall trigger")
+	flags.Float64Var(&cfg.MemoryRecallEmbeddingSimilarityThreshold, "memory-recall-embedding-similarity-threshold", cfg.MemoryRecallEmbeddingSimilarityThreshold, "average recent-message cosine similarity below which memory recall triggers")
+	flags.IntVar(&cfg.MemoryRecallEmbeddingWindow, "memory-recall-embedding-window", cfg.MemoryRecallEmbeddingWindow, "number of recent messages compared by the embedding-drift trigger")
+	flags.BoolVar(&cfg.MemoryRecallIntentClassifierEnabled, "memory-recall-intent-classifier-enabled", cfg.MemoryRecallIntentClassifierEnabled, "enable L3 embedding-based zero-shot memory recall intent classifier")
+	flags.Float64Var(&cfg.MemoryRecallIntentClassifierThreshold, "memory-recall-intent-classifier-threshold", cfg.MemoryRecallIntentClassifierThreshold, "minimum classifier similarity score that can trigger L3 memory recall")
+	flags.IntVar(&cfg.MemoryRecallIntentClassifierContextTurns, "memory-recall-intent-classifier-context-turns", cfg.MemoryRecallIntentClassifierContextTurns, "number of recent messages included in the L3 intent classifier context")
+	flags.BoolVar(&cfg.EpisodicMemoryEnabled, "episodic-memory-enabled", cfg.EpisodicMemoryEnabled, "enable L2 episodic memory capture and recall")
+	flags.BoolVar(&cfg.EpisodicMemoryCaptureEnabled, "episodic-memory-capture-enabled", cfg.EpisodicMemoryCaptureEnabled, "enable after-turn L2 episodic memory capture")
+	flags.BoolVar(&cfg.EpisodicMemoryContextEnabled, "episodic-memory-context-enabled", cfg.EpisodicMemoryContextEnabled, "enable query-aware L2 episodic memory context injection")
+	flags.IntVar(&cfg.EpisodicMemoryMinMessages, "episodic-memory-min-messages", cfg.EpisodicMemoryMinMessages, "minimum visible user/assistant messages before capturing an episode")
+	flags.IntVar(&cfg.EpisodicMemoryMaxMessages, "episodic-memory-max-messages", cfg.EpisodicMemoryMaxMessages, "maximum recent visible messages included in an episode summary")
+	flags.IntVar(&cfg.EpisodicMemoryInjectLimit, "episodic-memory-inject-limit", cfg.EpisodicMemoryInjectLimit, "maximum L2 episodic memory abstracts injected per turn")
+	flags.DurationVar(&cfg.EpisodicMemoryTTL, "episodic-memory-ttl", cfg.EpisodicMemoryTTL, "default TTL for captured L2 episodic memories")
+	flags.DurationVar(&cfg.EpisodicMemorySummarizeTimeout, "episodic-memory-summarize-timeout", cfg.EpisodicMemorySummarizeTimeout, "timeout for LLM episodic memory summarization")
 	flags.StringVar(&cfg.Workspace, "workspace", cfg.Workspace, "default working directory")
 	flags.StringVar(&cfg.UserWorkspaceRoot, "user-workspace-root", cfg.UserWorkspaceRoot, "root directory for per-user sandboxed workspaces")
 	flags.BoolVar(&cfg.AllowCustomWorkingDir, "allow-custom-working-dir", cfg.AllowCustomWorkingDir, "allow request-provided working_dir when no user workspace root is configured")

@@ -40,3 +40,32 @@ CREATE TABLE agent_personalization_settings (
 	version BIGINT NOT NULL DEFAULT 1,
 	updated_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE TABLE agent_memory_episodes (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL,
+	session_id TEXT NOT NULL DEFAULT '',
+	title TEXT NOT NULL DEFAULT '',
+	summary TEXT NOT NULL,
+	l0_abstract TEXT NOT NULL DEFAULT '',
+	key_topics TEXT NOT NULL DEFAULT '',
+	source_type TEXT NOT NULL DEFAULT 'session',
+	source_id TEXT NOT NULL DEFAULT '',
+	source_refs TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'active',
+	visibility TEXT NOT NULL DEFAULT 'user',
+	turn_count BIGINT NOT NULL DEFAULT 0,
+	token_count BIGINT NOT NULL DEFAULT 0,
+	confidence DOUBLE PRECISION NOT NULL DEFAULT 0.7,
+	weight DOUBLE PRECISION NOT NULL DEFAULT 0.65,
+	recall_count BIGINT NOT NULL DEFAULT 0,
+	use_count BIGINT NOT NULL DEFAULT 0,
+	recall_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+	last_recalled_at TIMESTAMPTZ,
+	last_used_at TIMESTAMPTZ,
+	promoted_at TIMESTAMPTZ,
+	metadata TEXT NOT NULL DEFAULT '{}',
+	expires_at TIMESTAMPTZ,
+	created_at TIMESTAMPTZ NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL
+);

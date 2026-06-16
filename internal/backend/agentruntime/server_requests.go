@@ -63,6 +63,23 @@ func (req BrowserMemoryRequest) ValidateRequest() error {
 	return nil
 }
 
+type memoryEpisodeSearchRequest struct {
+	Query string `json:"query" validate:"notblank"`
+	Limit int    `json:"limit,omitempty" validate:"gte=0"`
+}
+
+func (req memoryEpisodeSearchRequest) ValidateRequest() error {
+	if strings.TrimSpace(req.Query) == "" {
+		return fmt.Errorf("query is required")
+	}
+	return nil
+}
+
+type memoryEpisodePromoteRequest struct {
+	EpisodeIDs []string `json:"episode_ids,omitempty"`
+	Limit      int      `json:"limit,omitempty" validate:"gte=0"`
+}
+
 func (req EvaluationRunRequest) ValidateRequest() error {
 	if strings.TrimSpace(req.Scope.UserID) == "" {
 		return fmt.Errorf("scope.user_id is required")

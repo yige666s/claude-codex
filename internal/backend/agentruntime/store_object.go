@@ -284,7 +284,7 @@ func (m *ObjectMemoryService) DeleteSession(ctx context.Context, userID, session
 			return err
 		}
 	}
-	return nil
+	return m.DeleteMemoryEpisodesForSession(ctx, userID, sessionID)
 }
 
 func (m *ObjectMemoryService) DeleteUser(ctx context.Context, userID string) error {
@@ -322,6 +322,15 @@ func (m *ObjectMemoryService) DeleteSavedMemory(ctx context.Context, userID stri
 			continue
 		}
 		if err := m.objects.Delete(ctx, m.memoryItemKey(userID, item.ID)); err != nil {
+			return err
+		}
+	}
+	episodeKeys, err := m.objects.List(ctx, m.memoryEpisodesPrefix(userID))
+	if err != nil {
+		return err
+	}
+	for _, key := range episodeKeys {
+		if err := m.objects.Delete(ctx, key); err != nil {
 			return err
 		}
 	}
@@ -429,6 +438,14 @@ func (m *ObjectMemoryService) memoryItemKey(userID, itemID string) string {
 	return joinObjectKey(m.memoryItemsPrefix(userID), filepath.Base(itemID)+".json")
 }
 
+func (m *ObjectMemoryService) memoryEpisodesPrefix(userID string) string {
+	return joinObjectKey(m.prefix, "users", userPathID(userID), "memory", "episodes")
+}
+
+func (m *ObjectMemoryService) memoryEpisodeKey(userID, episodeID string) string {
+	return joinObjectKey(m.memoryEpisodesPrefix(userID), filepath.Base(episodeID)+".json")
+}
+
 func (m *ObjectMemoryService) memorySettingsKey(userID string) string {
 	return joinObjectKey(m.prefix, "users", userPathID(userID), "memory", "settings.json")
 }
@@ -503,6 +520,179 @@ func (m *ObjectMemoryService) UpdateMemoryItem(ctx context.Context, userID strin
 
 func (m *ObjectMemoryService) DeleteMemoryItem(ctx context.Context, userID, itemID string) error {
 	return m.objects.Delete(ctx, m.memoryItemKey(userID, itemID))
+}
+
+func (m *ObjectMemoryService) UpsertMemoryEpisode(ctx context.Context, userID string, episode MemoryEpisode) (MemoryEpisode, error) {
+	episode.UserID = userID
+	episode = normalizeMemoryEpisode(episode)
+	data, err := json.MarshalIndent(episode, "", "  ")
+	if err != nil {
+		return MemoryEpisode{}, err
+	}
+	if err := m.objects.Put(ctx, m.memoryEpisodeKey(userID, episode.ID), data, "application/json; charset=utf-8"); err != nil {
+		return MemoryEpisode{}, err
+	}
+	return episode, nil
+}
+
+func (m *ObjectMemoryService) GetMemoryEpisode(ctx context.Context, userID, episodeID string) (MemoryEpisode, error) {
+	data, err := m.objects.Get(ctx, m.memoryEpisodeKey(userID, episodeID))
+	if err != nil {
+		return MemoryEpisode{}, err
+	}
+	var episode MemoryEpisode
+	if err := json.Unmarshal(data, &episode); err != nil {
+		return MemoryEpisode{}, err
+	}
+	if episode.UserID != "" && episode.UserID != userID {
+		return MemoryEpisode{}, fmt.Errorf("memory episode not found")
+	}
+	episode = normalizeMemoryEpisode(episode)
+	if episode.Status == MemoryEpisodeStatusDeleted {
+		return MemoryEpisode{}, fmt.Errorf("memory episode not found")
+	}
+	return episode, nil
+}
+
+func (m *ObjectMemoryService) UpdateMemoryEpisode(ctx context.Context, userID string, episode MemoryEpisode) (MemoryEpisode, error) {
+	return m.UpsertMemoryEpisode(ctx, userID, episode)
+}
+
+func (m *ObjectMemoryService) DeleteMemoryEpisode(ctx context.Context, userID, episodeID string) error {
+	episode, err := m.GetMemoryEpisode(ctx, userID, episodeID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	episode.Status = MemoryEpisodeStatusDeleted
+	episode.UpdatedAt = now
+	_, err = m.UpdateMemoryEpisode(ctx, userID, episode)
+	return err
+}
+
+func (m *ObjectMemoryService) ListMemoryEpisodes(ctx context.Context, userID string, filter MemoryEpisodeFilter) ([]MemoryEpisode, error) {
+	keys, err := m.objects.List(ctx, m.memoryEpisodesPrefix(userID))
+	if err != nil {
+		return nil, err
+	}
+	episodes := make([]MemoryEpisode, 0, len(keys))
+	for _, key := range keys {
+		if !strings.HasSuffix(key, ".json") {
+			continue
+		}
+		data, err := m.objects.Get(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		var episode MemoryEpisode
+		if err := json.Unmarshal(data, &episode); err != nil {
+			continue
+		}
+		if episode.UserID != "" && episode.UserID != userID {
+			continue
+		}
+		episode = normalizeMemoryEpisode(episode)
+		if memoryEpisodeMatches(episode, filter) {
+			episodes = append(episodes, episode)
+		}
+	}
+	sortMemoryEpisodes(episodes)
+	return limitMemoryEpisodes(episodes, filter.Limit, filter.Offset), nil
+}
+
+func (m *ObjectMemoryService) SearchMemoryEpisodes(ctx context.Context, userID, query string, opts MemoryEpisodeSearchOptions) ([]MemoryEpisodeSearchResult, error) {
+	limit := opts.Limit
+	if limit <= 0 || limit > 50 {
+		limit = defaultMemoryEpisodeInjectLimit
+	}
+	episodes, err := m.ListMemoryEpisodes(ctx, userID, MemoryEpisodeFilter{Status: MemoryEpisodeStatusActive})
+	if err != nil {
+		return nil, err
+	}
+	results := make([]MemoryEpisodeSearchResult, 0, len(episodes))
+	for _, episode := range episodes {
+		score := memoryEpisodeSearchScore(episode, query)
+		if score <= 0 || (opts.MinScore > 0 && score < opts.MinScore) {
+			continue
+		}
+		results = append(results, MemoryEpisodeSearchResult{Episode: episode, Score: score})
+	}
+	sortMemoryEpisodeSearchResults(results)
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+func (m *ObjectMemoryService) RecordMemoryEpisodeRecall(ctx context.Context, userID, episodeID string, score float64) error {
+	episode, err := m.GetMemoryEpisode(ctx, userID, episodeID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	episode.RecallCount++
+	episode.RecallScore = clamp01((episode.RecallScore + clamp01(score)) / 2)
+	episode.LastRecalledAt = &now
+	episode.UpdatedAt = now
+	_, err = m.UpsertMemoryEpisode(ctx, userID, episode)
+	return err
+}
+
+func (m *ObjectMemoryService) RecordMemoryEpisodeUse(ctx context.Context, userID, episodeID string) error {
+	episode, err := m.GetMemoryEpisode(ctx, userID, episodeID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	episode.UseCount++
+	episode.LastUsedAt = &now
+	episode.UpdatedAt = now
+	_, err = m.UpsertMemoryEpisode(ctx, userID, episode)
+	return err
+}
+
+func (m *ObjectMemoryService) ListUnpromotedMemoryEpisodes(ctx context.Context, userID string, limit int) ([]MemoryEpisode, error) {
+	episodes, err := m.ListMemoryEpisodes(ctx, userID, MemoryEpisodeFilter{Status: MemoryEpisodeStatusActive})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]MemoryEpisode, 0, len(episodes))
+	for _, episode := range episodes {
+		if episode.PromotedAt == nil {
+			out = append(out, episode)
+		}
+	}
+	sortMemoryEpisodes(out)
+	return limitMemoryEpisodes(out, limit, 0), nil
+}
+
+func (m *ObjectMemoryService) MarkMemoryEpisodesPromoted(ctx context.Context, userID string, episodeIDs []string) error {
+	now := time.Now().UTC()
+	for _, episodeID := range episodeIDs {
+		episode, err := m.GetMemoryEpisode(ctx, userID, episodeID)
+		if err != nil {
+			continue
+		}
+		episode.PromotedAt = &now
+		episode.UpdatedAt = now
+		if _, err := m.UpsertMemoryEpisode(ctx, userID, episode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *ObjectMemoryService) DeleteMemoryEpisodesForSession(ctx context.Context, userID, sessionID string) error {
+	episodes, err := m.ListMemoryEpisodes(ctx, userID, MemoryEpisodeFilter{SessionID: sessionID})
+	if err != nil {
+		return err
+	}
+	for _, episode := range episodes {
+		if err := m.objects.Delete(ctx, m.memoryEpisodeKey(userID, episode.ID)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func joinObjectKey(parts ...string) string {

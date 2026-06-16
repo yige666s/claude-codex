@@ -12,7 +12,10 @@ import (
 	"claude-codex/internal/harness/state"
 )
 
-const browserMemoryInjectedKey = "agentruntime.browser_memory_context_injected"
+const (
+	browserMemoryInjectedKey   = "agentruntime.browser_memory_context_injected"
+	browserMemoryContextMarker = "<browser-memory>"
+)
 
 func (r *Runtime) SaveBrowserMemory(ctx context.Context, userID string, req BrowserMemoryRequest) (MemoryItem, error) {
 	if r.memory == nil {
@@ -103,7 +106,7 @@ func (r *Runtime) browserMemoryContext(ctx context.Context, userID string, sessi
 			return "", err
 		}
 	}
-	return "<browser-memory>\n# Browser Memory\n\n" + formatMemoryItems(selected) + "\n</browser-memory>", nil
+	return browserMemoryContextMarker + "\n# Browser Memory\n\n" + formatMemoryItems(selected) + "\n</browser-memory>", nil
 }
 
 func browserMemoryItem(userID string, req BrowserMemoryRequest, now time.Time) (MemoryItem, error) {

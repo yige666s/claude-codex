@@ -188,7 +188,7 @@ test("opens a fresh chat after deleting the active session", async ({ page }) =>
   await expect(page.getByText("Echo: delete this active session")).toBeVisible();
 
   await page.locator(".session-list-item.active .session-delete").click();
-  await page.getByRole("dialog", { name: "Delete session?" }).getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog", { name: "Remove session?" }).getByRole("button", { name: "Remove" }).click();
 
   await expect(page.locator(".empty-state")).toBeVisible();
   await expect(page.locator(".message")).toHaveCount(0);
