@@ -46,6 +46,9 @@ func evaluateTraceFindings(trace EvaluationTrace, metrics EvaluationTraceMetrics
 			Message:  "no visible assistant output was found",
 		})
 	}
+	if trace.SubjectType == EvaluationSubjectDeepAgent {
+		findings = append(findings, evaluateDeepAgentTraceFindings(trace, metrics)...)
+	}
 	if metrics.ToolErrorCount > 0 {
 		findings = append(findings, EvaluationFinding{
 			Severity: "error",
@@ -117,6 +120,47 @@ func evaluateTraceFindings(trace EvaluationTrace, metrics EvaluationTraceMetrics
 		})
 	}
 	return normalizeEvaluationFindings(findings)
+}
+
+func evaluateDeepAgentTraceFindings(trace EvaluationTrace, metrics EvaluationTraceMetrics) []EvaluationFinding {
+	findings := make([]EvaluationFinding, 0)
+	switch metrics.DeepAgentFinalStatus {
+	case DeepAgentRunStatusSucceeded:
+	case DeepAgentRunStatusBlocked, DeepAgentRunStatusFailed, DeepAgentRunStatusBudgetExceeded, DeepAgentRunStatusReviewPending:
+		findings = append(findings, EvaluationFinding{
+			Severity: "error",
+			Code:     "deep_agent_not_succeeded",
+			Message:  firstNonEmptyString(metrics.DeepAgentBlockedReason, "DeepAgent run did not succeed"),
+			Metadata: map[string]any{
+				"final_status": metrics.DeepAgentFinalStatus,
+				"task_type":    metrics.DeepAgentTaskType,
+			},
+		})
+	}
+	if metrics.DeepAgentVerifierFailed > 0 {
+		findings = append(findings, EvaluationFinding{
+			Severity: "error",
+			Code:     "deep_agent_verifier_failed",
+			Message:  fmt.Sprintf("%d DeepAgent verifier check(s) failed", metrics.DeepAgentVerifierFailed),
+			Metadata: map[string]any{"count": metrics.DeepAgentVerifierFailed},
+		})
+	}
+	if metrics.DeepAgentNoProgressCount > 0 {
+		findings = append(findings, EvaluationFinding{
+			Severity: "warning",
+			Code:     "deep_agent_no_progress",
+			Message:  fmt.Sprintf("DeepAgent no-progress count reached %d", metrics.DeepAgentNoProgressCount),
+			Metadata: map[string]any{"count": metrics.DeepAgentNoProgressCount},
+		})
+	}
+	if trace.DeepAgent != nil && trace.DeepAgent.Governance.PolicyBlocked {
+		findings = append(findings, EvaluationFinding{
+			Severity: "error",
+			Code:     "deep_agent_policy_blocked",
+			Message:  firstNonEmptyString(trace.DeepAgent.Governance.PolicyBlockReason, "DeepAgent governance policy blocked the action"),
+		})
+	}
+	return findings
 }
 
 func evaluationStatusFromFindings(findings []EvaluationFinding) string {

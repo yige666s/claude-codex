@@ -527,11 +527,13 @@ export type RiskReviewSummary = {
 export type EvaluationScope = {
   from?: string;
   to?: string;
-  subject_type?: "job" | "session" | "skill_execution" | string;
+  subject_type?: "job" | "session" | "skill_execution" | "deep_agent" | string;
   user_id?: string;
   session_id?: string;
   job_id?: string;
   job_status?: string;
+  template_id?: string;
+  task_type?: string;
   skill_name?: string;
   provider?: string;
   model?: string;
@@ -579,7 +581,7 @@ export type EvaluationFinding = {
 export type EvaluationResult = {
   id: string;
   run_id: string;
-  subject_type: "job" | "session" | "skill_execution" | string;
+  subject_type: "job" | "session" | "skill_execution" | "deep_agent" | string;
   subject_id: string;
   user_id?: string;
   session_id?: string;
@@ -773,6 +775,7 @@ export type Job = {
   id: string;
   user_id?: string;
   session_id: string;
+  loop_goal_id?: string;
   type: string;
   status: JobStatus;
   content?: string;
@@ -783,6 +786,107 @@ export type Job = {
   updated_at: string;
   started_at?: string;
   finished_at?: string;
+};
+
+export type LoopRubric = {
+  acceptance_criteria?: string[];
+  required_evidence?: string[];
+  required_artifacts?: string[];
+  forbidden_actions?: string[];
+  quality_bar?: string;
+};
+
+export type LoopBudget = {
+  max_steps?: number;
+  max_actions?: number;
+  max_duration_ms?: number;
+  max_tokens?: number;
+  max_cost_cents?: number;
+  max_tool_calls?: number;
+};
+
+export type LoopTrigger = {
+  type?: string;
+  source?: string;
+  dedupe_key?: string;
+  payload?: Record<string, unknown>;
+  permission_hint?: string;
+};
+
+export type LoopStopPolicy = {
+  on_complete?: string;
+  on_blocked?: string;
+  on_budget_exceeded?: string;
+  on_review_pending?: string;
+};
+
+export type DeepAgentStepRoute = {
+  step_id?: string;
+  version?: string;
+  mode?: string;
+  executor?: string;
+  skill_name?: string;
+  requires_artifact?: boolean;
+  deliverable_type?: string;
+  filename_hint?: string;
+  allowed_tools?: string[];
+  search_scope?: string;
+  success_criteria?: string[];
+  reason?: string;
+  confidence?: string;
+  shadow_route?: Record<string, unknown>;
+  shadow_diff?: string[];
+};
+
+export type DeepAgentLoopTemplate = {
+  id: string;
+  name: string;
+  description?: string;
+  task_type?: string;
+  deliverable?: string;
+  rubric?: LoopRubric;
+  budget?: LoopBudget;
+  executor_hints?: DeepAgentStepRoute[];
+  steps?: Array<{
+    id: string;
+    title: string;
+    intent?: string;
+    depends_on?: string[];
+    status?: string;
+    done_condition?: string;
+    risk_level?: string;
+    metadata?: Record<string, unknown>;
+  }>;
+  eval_tags?: string[];
+};
+
+export type LoopGoal = {
+  id: string;
+  user_id?: string;
+  session_id?: string;
+  job_id?: string;
+  workflow_run_id?: string;
+  objective: string;
+  template_id?: string;
+  task_type?: string;
+  deliverable?: string;
+  rubric?: LoopRubric;
+  budget?: LoopBudget;
+  trigger?: LoopTrigger;
+  stop_policy?: LoopStopPolicy;
+  status: string;
+  metadata?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  started_at?: string;
+  finished_at?: string;
+};
+
+export type LoopGoalRunResult = {
+  goal?: LoopGoal;
+  job?: Job;
+  run?: WorkflowRun;
+  deep_agent?: DeepAgentWorkflowSummary;
 };
 
 export type RuntimeEvent = {
@@ -834,6 +938,11 @@ export type DeepAgentWorkflowSummary = {
   goal?: string;
   status?: string;
   blocker?: string;
+  recovery?: DeepAgentRecoveryState;
+  final_answer?: DeepAgentFinalAnswerEvidence;
+  metrics?: Record<string, unknown>;
+  timeline?: DeepAgentTimelineItem[];
+  governance?: DeepAgentGovernanceState;
   current_step_id?: string;
   current_step?: {
     id: string;
@@ -878,6 +987,17 @@ export type DeepAgentWorkflowSummary = {
     session_id?: string;
     run_id?: string;
     step_id?: string;
+    evidence_id?: string;
+    memory_item_id?: string;
+    risk_level?: string;
+    sensitivity?: string;
+    visibility?: string;
+    requires_user_confirmation?: boolean;
+    policy_reason?: string;
+    user_confirmed?: boolean;
+    reviewed_by?: string;
+    reviewed_at?: string;
+    expires_at?: string;
     metadata?: Record<string, unknown>;
     created_at: string;
   }>;
@@ -885,6 +1005,91 @@ export type DeepAgentWorkflowSummary = {
   failed_count: number;
   action_count: number;
   no_progress_count: number;
+};
+
+export type DeepAgentTimelineItem = {
+  kind: string;
+  step_id?: string;
+  title?: string;
+  status?: string;
+  tool?: string;
+  action_hash?: string;
+  summary?: string;
+  created_at?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type DeepAgentGovernanceState = {
+  kill_switch?: boolean;
+  allowed_high_risk_tools?: string[];
+  policy_blocked?: boolean;
+  policy_block_reason?: string;
+  high_risk_policy?: string;
+  side_effect_audit?: DeepAgentTimelineItem[];
+  user_data_access_audit?: DeepAgentTimelineItem[];
+};
+
+export type DeepAgentReplayReport = {
+  run_id: string;
+  goal?: string;
+  status?: string;
+  task_type?: string;
+  trigger_payload?: Record<string, unknown>;
+  planner_decisions?: DeepAgentTimelineItem[];
+  router_decisions?: Array<Record<string, unknown>>;
+  executor_decisions?: DeepAgentTimelineItem[];
+  verifier_checks?: Array<{ name: string; passed: boolean; reason?: string }>;
+  metrics?: Record<string, unknown>;
+  findings?: EvaluationFinding[];
+};
+
+export type DeepAgentResumeBudget = {
+  max_actions?: number;
+  max_duration_ms?: number;
+  max_steps?: number;
+};
+
+export type DeepAgentReviewDecision = {
+  action?: "approve" | "reject" | "edit" | string;
+  step_id?: string;
+  action_hash?: string;
+  args_patch?: Record<string, unknown>;
+  reason?: string;
+};
+
+export type DeepAgentResumeRequest = {
+  run_id?: string;
+  state_patch?: Record<string, unknown>;
+  additional_budget?: DeepAgentResumeBudget;
+  review_decision?: DeepAgentReviewDecision;
+};
+
+export type DeepAgentFinalAnswerEvidence = {
+  artifacts?: Array<Record<string, unknown>>;
+  sources?: Array<Record<string, unknown>>;
+  tests?: Array<Record<string, unknown>>;
+  known_gaps?: string[];
+};
+
+export type DeepAgentRecoveryState = {
+  blocked_reason?: string;
+  blocked_category?: string;
+  user_facing_reason?: string;
+  last_action?: {
+    id?: string;
+    step_id: string;
+    tool: string;
+    args?: Record<string, unknown>;
+    hash?: string;
+  };
+  missing_info?: string[];
+  recommended_next_action?: string;
+  resume_available: boolean;
+  review_pending?: boolean;
+  budget_exceeded?: boolean;
+  review_action_hash?: string;
+  review_step_id?: string;
+  additional_budget_hint?: DeepAgentResumeBudget;
 };
 
 export type WorkflowStepRun = {

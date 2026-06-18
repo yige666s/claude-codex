@@ -20,6 +20,7 @@ const (
 	EvaluationSubjectJob            = "job"
 	EvaluationSubjectSession        = "session"
 	EvaluationSubjectSkillExecution = "skill_execution"
+	EvaluationSubjectDeepAgent      = "deep_agent"
 )
 
 type EvaluationScope struct {
@@ -30,6 +31,8 @@ type EvaluationScope struct {
 	SessionID     string     `json:"session_id,omitempty"`
 	JobID         string     `json:"job_id,omitempty"`
 	JobStatus     string     `json:"job_status,omitempty"`
+	TemplateID    string     `json:"template_id,omitempty"`
+	TaskType      string     `json:"task_type,omitempty"`
 	SkillName     string     `json:"skill_name,omitempty"`
 	Provider      string     `json:"provider,omitempty"`
 	Model         string     `json:"model,omitempty"`

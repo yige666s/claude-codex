@@ -345,6 +345,28 @@ func goldenJudgeMetricsMap(result GoldenJudgeResult, set GoldenSet, item GoldenC
 			values[key] = value
 		}
 	}
+	for _, key := range []string{
+		"template_id",
+		"template_name",
+		"scenario",
+		"expected_status",
+		"verifier_failure_reason",
+		"planner_version",
+		"router_version",
+		"executor_version",
+		"verifier_version",
+		"action_count",
+		"duration_ms",
+		"token_estimate",
+		"estimated_cost_usd",
+	} {
+		if value, ok := item.Metadata[key]; ok {
+			values[key] = value
+		}
+		if value, ok := candidate.Metadata[key]; ok {
+			values[key] = value
+		}
+	}
 	for key, value := range result.Metadata {
 		if strings.TrimSpace(key) == "" {
 			continue

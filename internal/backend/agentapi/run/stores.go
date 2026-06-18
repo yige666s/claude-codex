@@ -187,6 +187,23 @@ func buildWorkflowStore(cfg storeConfig) agentruntime.WorkflowStore {
 	return agentruntime.NewMemoryWorkflowStore()
 }
 
+func buildDeepAgentEvidenceRepository(cfg storeConfig) agentruntime.DeepAgentEvidenceRepository {
+	var repo agentruntime.DeepAgentEvidenceRepository
+	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		db := openSQLDB(cfg)
+		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+		repo = agentruntime.NewSQLDeepAgentEvidenceRepositoryWithDialect(db, dialect)
+	} else {
+		repo = agentruntime.NewMemoryDeepAgentEvidenceRepository()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := repo.Init(ctx); err != nil {
+		logFatalf("init deep agent evidence repository: %v", err)
+	}
+	return repo
+}
+
 func buildToolCallLedgerStore(cfg storeConfig) agentruntime.ToolCallLedgerStore {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -263,6 +280,40 @@ func buildJobStore(cfg storeConfig) agentruntime.JobStore {
 	defer cancel()
 	if err := store.Init(ctx); err != nil {
 		logFatalf("init job store: %v", err)
+	}
+	return store
+}
+
+func buildLoopGoalStore(cfg storeConfig) agentruntime.LoopGoalStore {
+	var store agentruntime.LoopGoalStore
+	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		db := openSQLDB(cfg)
+		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+		store = agentruntime.NewSQLLoopGoalStoreWithDialect(db, dialect)
+	} else {
+		store = agentruntime.NewMemoryLoopGoalStore()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := store.Init(ctx); err != nil {
+		logFatalf("init loop goal store: %v", err)
+	}
+	return store
+}
+
+func buildLoopTriggerStore(cfg storeConfig) agentruntime.LoopTriggerStore {
+	var store agentruntime.LoopTriggerStore
+	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		db := openSQLDB(cfg)
+		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+		store = agentruntime.NewSQLLoopTriggerStoreWithDialect(db, dialect)
+	} else {
+		store = agentruntime.NewMemoryLoopTriggerStore()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := store.Init(ctx); err != nil {
+		logFatalf("init loop trigger store: %v", err)
 	}
 	return store
 }

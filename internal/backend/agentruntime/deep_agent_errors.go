@@ -6,11 +6,17 @@ import (
 )
 
 func classifyDeepAgentError(err error, result DeepAgentActionResult) string {
-	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{
-		fmt.Sprint(err),
-		result.Error,
-		deepAgentWorkflowString(result.Metadata, "error_kind"),
-	}, "\n")))
+	var parts []string
+	if err != nil {
+		parts = append(parts, fmt.Sprint(err))
+	}
+	if strings.TrimSpace(result.Error) != "" {
+		parts = append(parts, result.Error)
+	}
+	if errorKind := deepAgentWorkflowString(result.Metadata, "error_kind"); errorKind != "" {
+		parts = append(parts, errorKind)
+	}
+	text := strings.ToLower(strings.TrimSpace(strings.Join(parts, "\n")))
 	if text == "" {
 		return ""
 	}

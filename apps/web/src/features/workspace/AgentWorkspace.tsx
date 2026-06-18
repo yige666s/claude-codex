@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { ApiClient, ApiError } from "../../api/client";
 import { userFacingErrorMessage } from "../../api/errorMessages";
-import type { Asset, AuthSession, Job, JobEvent, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill } from "../../types";
+import type { Asset, AuthSession, DeepAgentLoopTemplate, DeepAgentResumeRequest, Job, JobEvent, LoopGoal, LoopGoalRunResult, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill } from "../../types";
 import { readSSEStream } from "../../lib/sse";
 import { sessionTitle } from "../../lib/sessionTitle";
 import { AuthPage, type AuthMode } from "../auth/AuthPage";
@@ -37,6 +37,7 @@ import { WorkspaceFrame } from "./components/WorkspaceFrame";
 import { WorkspaceResourceDialog } from "./components/WorkspaceResourceDialog";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { SkillGlyph } from "./components/right-panel/SkillPanel";
+import { LoopPanel } from "./components/right-panel/LoopPanel";
 import { useLiveVoice } from "./hooks/useLiveVoice";
 import type { ComposerToolID, ConfirmDialog, JobStreamStatus, RightPanelSearch, RightPanelTab, ServiceStatus, Status } from "./workspaceTypes";
 
@@ -100,7 +101,7 @@ const adminTokenStorageKey = "agentapi.adminToken";
 const jobReconnectBaseMs = 1_000;
 const jobReconnectMaxMs = 10_000;
 const resourcePageSize = 10;
-const resourceTabs: RightPanelTab[] = ["skills", "jobs", "attachments", "artifacts"];
+const resourceTabs: RightPanelTab[] = ["skills", "jobs", "loops", "attachments", "artifacts"];
 
 function isAdminPath(): boolean {
   return typeof window !== "undefined" && window.location.pathname.replace(/\/+$/, "") === "/admin";
@@ -116,6 +117,7 @@ function emptyResourceNotices(): Record<RightPanelTab, boolean> {
   return {
     skills: false,
     jobs: false,
+    loops: false,
     attachments: false,
     artifacts: false
   };
@@ -125,6 +127,7 @@ function emptyResourceIdSets(): Record<RightPanelTab, Set<string>> {
   return {
     skills: new Set(),
     jobs: new Set(),
+    loops: new Set(),
     attachments: new Set(),
     artifacts: new Set()
   };
@@ -154,6 +157,14 @@ export function AgentWorkspace() {
   const [adminView, setAdminView] = useState(isAdminPath);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedJobId, setSelectedJobId] = useState("");
+  const [loopTemplates, setLoopTemplates] = useState<DeepAgentLoopTemplate[]>([]);
+  const [loopGoals, setLoopGoals] = useState<LoopGoal[]>([]);
+  const [selectedLoopGoalId, setSelectedLoopGoalId] = useState("");
+  const [selectedLoopRun, setSelectedLoopRun] = useState<LoopGoalRunResult | null>(null);
+  const [loopObjective, setLoopObjective] = useState("");
+  const [loopTemplateId, setLoopTemplateId] = useState("");
+  const [loopBusy, setLoopBusy] = useState("");
+  const [loopError, setLoopError] = useState("");
   const [autoExpandedJobId, setAutoExpandedJobId] = useState("");
   const [jobStreamStatus, setJobStreamStatus] = useState<JobStreamStatus>("idle");
   const [jobStreamNotice, setJobStreamNotice] = useState("");
@@ -197,12 +208,14 @@ export function AgentWorkspace() {
   const [resourceSearch, setResourceSearch] = useState<RightPanelSearch>({
     skills: "",
     jobs: "",
+    loops: "",
     attachments: "",
     artifacts: ""
   });
   const [resourceVisibleCount, setResourceVisibleCount] = useState<Record<RightPanelTab, number>>({
     skills: resourcePageSize,
     jobs: resourcePageSize,
+    loops: resourcePageSize,
     attachments: resourcePageSize,
     artifacts: resourcePageSize
   });
@@ -271,6 +284,10 @@ export function AgentWorkspace() {
     () => jobs.filter((job) => fuzzyMatch(resourceSearch.jobs, [job.id, job.content, job.status, job.type])),
     [jobs, resourceSearch.jobs]
   );
+  const filteredLoopGoals = useMemo(
+    () => loopGoals.filter((goal) => fuzzyMatch(resourceSearch.loops, [goal.id, goal.objective, goal.status, goal.task_type, goal.deliverable, String(goal.metadata?.template_id || "")])),
+    [loopGoals, resourceSearch.loops]
+  );
   const filteredAttachments = useMemo(
     () => attachments.filter((asset) => fuzzyMatch(resourceSearch.attachments, [asset.filename, asset.id, asset.content_type])),
     [attachments, resourceSearch.attachments]
@@ -281,11 +298,13 @@ export function AgentWorkspace() {
   );
   const visibleResourceSkills = filteredSkills.slice(0, resourceVisibleCount.skills);
   const visibleResourceJobs = filteredJobs.slice(0, resourceVisibleCount.jobs);
+  const visibleResourceLoopGoals = filteredLoopGoals.slice(0, resourceVisibleCount.loops);
   const visibleResourceAttachments = filteredAttachments.slice(0, resourceVisibleCount.attachments);
   const visibleResourceArtifacts = filteredArtifacts.slice(0, resourceVisibleCount.artifacts);
   const activeResourceTotalCount = resourceDialogTab ? resourceTotalCount(resourceDialogTab, {
     skills: filteredSkills.length,
     jobs: filteredJobs.length,
+    loops: filteredLoopGoals.length,
     attachments: filteredAttachments.length,
     artifacts: filteredArtifacts.length
   }) : 0;
@@ -323,6 +342,16 @@ export function AgentWorkspace() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  useEffect(() => {
+    if (!authSession || !sessionId) {
+      setLoopGoals([]);
+      setSelectedLoopGoalId("");
+      setSelectedLoopRun(null);
+      return;
+    }
+    void loadLoopResources(sessionId, { quiet: true });
+  }, [authSession?.access_token, sessionId]);
 
   useEffect(() => {
     if (forgotCooldownSeconds <= 0) return;
@@ -615,6 +644,106 @@ export function AgentWorkspace() {
     setResourceDialogTab(tab);
     setResourceVisibleCount((current) => ({ ...current, [tab]: resourcePageSize }));
     setMobileNav(false);
+  }
+
+  async function loadLoopResources(targetSessionId = sessionId, options: { quiet?: boolean } = {}) {
+    if (!targetSessionId) return;
+    if (!options.quiet) setLoopBusy("load-loops");
+    setLoopError("");
+    try {
+      const [templates, goals] = await Promise.all([
+        loopTemplates.length ? Promise.resolve(loopTemplates) : api.loopTemplates(),
+        api.loopGoals({ sessionId: targetSessionId, limit: 100 })
+      ]);
+      setLoopTemplates(templates);
+      setLoopGoals(goals);
+      if (!resourceBaselineReadyRef.current.loops) baselineResourceIds("loops", goals.map((goal) => goal.id));
+      if (selectedLoopGoalId && !goals.some((goal) => goal.id === selectedLoopGoalId)) {
+        setSelectedLoopGoalId("");
+        setSelectedLoopRun(null);
+      }
+    } catch (error) {
+      setLoopError(errorMessage(error));
+    } finally {
+      if (!options.quiet) setLoopBusy("");
+    }
+  }
+
+  async function createLoopGoalFromPanel() {
+    if (!sessionId || !loopObjective.trim() || !loopTemplateId) return;
+    setLoopBusy("create-loop-goal");
+    setLoopError("");
+    try {
+      const goal = await api.createLoopGoal({
+        session_id: sessionId,
+        objective: loopObjective.trim(),
+        template_id: loopTemplateId
+      });
+      setLoopGoals((current) => [goal, ...current.filter((item) => item.id !== goal.id)]);
+      setSelectedLoopGoalId(goal.id);
+      setSelectedLoopRun({ goal });
+      setLoopObjective("");
+      setStatus({ tone: "ok", text: "Loop goal created" });
+    } catch (error) {
+      setLoopError(errorMessage(error));
+    } finally {
+      setLoopBusy("");
+    }
+  }
+
+  async function selectLoopGoal(goalId: string) {
+    setSelectedLoopGoalId(goalId);
+    const goal = loopGoals.find((item) => item.id === goalId);
+    if (!goal?.workflow_run_id) {
+      setSelectedLoopRun(goal ? { goal } : null);
+      return;
+    }
+    setLoopBusy(`open-${goalId}`);
+    setLoopError("");
+    try {
+      setSelectedLoopRun(await api.loopRun(goal.workflow_run_id));
+    } catch (error) {
+      setLoopError(errorMessage(error));
+    } finally {
+      setLoopBusy("");
+    }
+  }
+
+  async function startLoopGoal(goalId: string) {
+    if (!goalId) return;
+    setLoopBusy(`start-${goalId}`);
+    setLoopError("");
+    try {
+      const result = await api.startLoopGoalRun(goalId);
+      setSelectedLoopGoalId(result.goal?.id || goalId);
+      setSelectedLoopRun(result);
+      await Promise.all([
+        loadLoopResources(sessionId, { quiet: true }),
+        api.jobs(sessionId || undefined).then(setJobs)
+      ]);
+      setStatus({ tone: "ok", text: "Loop run started" });
+    } catch (error) {
+      setLoopError(errorMessage(error));
+    } finally {
+      setLoopBusy("");
+    }
+  }
+
+  async function resumeLoopRunFromPanel(runId: string, request: DeepAgentResumeRequest = {}) {
+    if (!runId) return;
+    setLoopBusy(`resume-${runId}`);
+    setLoopError("");
+    try {
+      const result = await api.resumeLoopRun(runId, request);
+      setSelectedLoopRun(result);
+      if (result.goal?.id) setSelectedLoopGoalId(result.goal.id);
+      await loadLoopResources(sessionId, { quiet: true });
+      setStatus({ tone: "ok", text: "Loop run resumed" });
+    } catch (error) {
+      setLoopError(errorMessage(error));
+    } finally {
+      setLoopBusy("");
+    }
   }
 
   function openArtifactWorkspace(asset?: Asset) {
@@ -1681,6 +1810,7 @@ export function AgentWorkspace() {
           resourceCounts={{
             skills: skills.length,
             jobs: jobs.length,
+            loops: loopGoals.length,
             attachments: attachments.length,
             artifacts: artifacts.length
           }}
@@ -1782,12 +1912,21 @@ export function AgentWorkspace() {
           <WorkspaceResourceDialog
             open={Boolean(resourceDialogTab)}
             activeTab={activeResourceTab}
+            sessionId={sessionId}
             searchValue={activeResourceSearch}
             visibleCount={activeResourceVisibleCount}
             totalCount={activeResourceTotalCount}
             skills={visibleResourceSkills}
             recentSkillNames={recentSkillNames}
             jobs={visibleResourceJobs}
+            loopTemplates={loopTemplates}
+            loopGoals={visibleResourceLoopGoals}
+            selectedLoopGoalId={selectedLoopGoalId}
+            selectedLoopRun={selectedLoopRun}
+            loopObjective={loopObjective}
+            selectedLoopTemplateId={loopTemplateId}
+            loopBusy={loopBusy}
+            loopError={loopError}
             selectedJobId={selectedJobId}
             jobEvents={jobEvents}
             jobStreamNotice={jobStreamNotice}
@@ -1806,6 +1945,12 @@ export function AgentWorkspace() {
             onSkillDetails={setSkillDetail}
             onToggleJob={toggleJob}
             onCancelJob={cancelJob}
+            onLoopObjectiveChange={setLoopObjective}
+            onLoopTemplateChange={setLoopTemplateId}
+            onCreateLoopGoal={createLoopGoalFromPanel}
+            onSelectLoopGoal={selectLoopGoal}
+            onStartLoopGoal={startLoopGoal}
+            onResumeLoopRun={resumeLoopRunFromPanel}
             onPreviewAttachment={previewAttachment}
             onDownloadAttachment={(id) => { void downloadAttachment(id); }}
             onDeleteAttachment={(id) => deleteAsset("attachment", id)}

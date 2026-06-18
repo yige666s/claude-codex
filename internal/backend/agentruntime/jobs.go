@@ -216,7 +216,7 @@ func NewSQLJobStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLJobStore {
 
 func (s *SQLJobStore) Init(ctx context.Context) error {
 	if err := requireSQLColumns(ctx, s.db, "agent_jobs",
-		"job_id", "user_id", "session_id", "type", "status", "content", "attachments", "error",
+		"job_id", "user_id", "session_id", "loop_goal_id", "type", "status", "content", "attachments", "error",
 		"created_at", "updated_at", "started_at", "finished_at",
 	); err != nil {
 		return err
@@ -239,6 +239,7 @@ func (s *SQLJobStore) CreateJob(ctx context.Context, job *Job) error {
 			JobID:       job.ID,
 			UserID:      job.UserID,
 			SessionID:   job.SessionID,
+			LoopGoalID:  job.LoopGoalID,
 			Type:        job.Type,
 			Status:      job.Status,
 			Content:     sql.NullString{String: job.Content, Valid: true},
@@ -251,9 +252,9 @@ func (s *SQLJobStore) CreateJob(ctx context.Context, job *Job) error {
 		})
 	}
 	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
-INSERT INTO agent_jobs (job_id, user_id, session_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		job.ID, job.UserID, job.SessionID, job.Type, job.Status, job.Content, string(attachments), job.Error,
+INSERT INTO agent_jobs (job_id, user_id, session_id, loop_goal_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		job.ID, job.UserID, job.SessionID, job.LoopGoalID, job.Type, job.Status, job.Content, string(attachments), job.Error,
 		sqlTimeValue(job.CreatedAt, s.dialect), sqlTimeValue(job.UpdatedAt, s.dialect), nullableSQLTimeValue(job.StartedAt, s.dialect), nullableSQLTimeValue(job.FinishedAt, s.dialect))
 	return err
 }
@@ -267,7 +268,7 @@ func (s *SQLJobStore) GetJob(ctx context.Context, userID, jobID string) (*Job, e
 		return jobFromSQLC(job), nil
 	}
 	return s.scanJob(s.db.QueryRowContext(ctx, s.dialect.Bind(`
-SELECT job_id, user_id, session_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at
+SELECT job_id, user_id, session_id, loop_goal_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at
 FROM agent_jobs WHERE user_id = ? AND job_id = ?`), userID, jobID))
 }
 
@@ -279,7 +280,7 @@ func (s *SQLJobStore) ListJobs(ctx context.Context, userID, sessionID string) ([
 		}
 		return jobsFromSQLC(rows), nil
 	}
-	query := `SELECT job_id, user_id, session_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at FROM agent_jobs WHERE user_id = ?`
+	query := `SELECT job_id, user_id, session_id, loop_goal_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at FROM agent_jobs WHERE user_id = ?`
 	args := []any{userID}
 	if strings.TrimSpace(sessionID) != "" {
 		query += ` AND session_id = ?`
@@ -507,7 +508,7 @@ func scanJobRows(row jobScanner) (*Job, error) {
 	var job Job
 	var createdAt, updatedAt, startedAt, finishedAt any
 	var attachments string
-	if err := row.Scan(&job.ID, &job.UserID, &job.SessionID, &job.Type, &job.Status, &job.Content, &attachments, &job.Error, &createdAt, &updatedAt, &startedAt, &finishedAt); err != nil {
+	if err := row.Scan(&job.ID, &job.UserID, &job.SessionID, &job.LoopGoalID, &job.Type, &job.Status, &job.Content, &attachments, &job.Error, &createdAt, &updatedAt, &startedAt, &finishedAt); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(attachments) != "" {
@@ -538,6 +539,7 @@ func jobFromSQLC(row dbsqlc.AgentJob) *Job {
 		ID:         row.JobID,
 		UserID:     row.UserID,
 		SessionID:  row.SessionID,
+		LoopGoalID: row.LoopGoalID,
 		Type:       row.Type,
 		Status:     row.Status,
 		Content:    row.Content.String,

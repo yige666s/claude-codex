@@ -2,6 +2,7 @@ CREATE TABLE agent_jobs (
 	job_id TEXT PRIMARY KEY,
 	user_id TEXT NOT NULL,
 	session_id TEXT NOT NULL,
+	loop_goal_id TEXT NOT NULL DEFAULT '',
 	type TEXT NOT NULL,
 	status TEXT NOT NULL,
 	content TEXT,

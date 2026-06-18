@@ -205,6 +205,17 @@ type Config struct {
 	EvalJudgeEnabled                         bool
 	EvalJudgeModel                           string
 	EvalJudgePromptVersion                   string
+	LoopWebhookSecrets                       string
+	LoopAutomationEnabled                    bool
+	LoopAutomationInterval                   time.Duration
+	LoopScheduleTriggersEnabled              bool
+	LoopMonitorTriggersEnabled               bool
+	LoopEvalRepairTriggersEnabled            bool
+	LoopWebhookTriggersEnabled               bool
+	LoopReleaseGateCriticalTestsPassed       bool
+	LoopReleaseGateTemplateReplayPassCount   int
+	LoopReleaseGateKillSwitchPassed          bool
+	LoopReleaseGateQuotaGuardPassed          bool
 	TrustedUserHeader                        string
 	TrustedSecretHeader                      string
 	TrustedSecret                            string
@@ -480,6 +491,17 @@ func Default() Config {
 		EvalJudgeEnabled:                         EnvBool("AGENT_API_EVAL_JUDGE_ENABLED", strings.TrimSpace(os.Getenv("AGENT_API_EVAL_JUDGE_MODEL")) != ""),
 		EvalJudgeModel:                           os.Getenv("AGENT_API_EVAL_JUDGE_MODEL"),
 		EvalJudgePromptVersion:                   FirstNonEmpty(os.Getenv("AGENT_API_EVAL_JUDGE_PROMPT_VERSION"), agentruntime.DefaultGoldenJudgePromptVersion),
+		LoopWebhookSecrets:                       os.Getenv("AGENT_API_LOOP_WEBHOOK_SECRETS"),
+		LoopAutomationEnabled:                    EnvBool("AGENT_API_LOOP_AUTOMATION_ENABLED", false),
+		LoopAutomationInterval:                   EnvDuration("AGENT_API_LOOP_AUTOMATION_INTERVAL", time.Minute),
+		LoopScheduleTriggersEnabled:              EnvBool("AGENT_API_LOOP_SCHEDULE_TRIGGERS_ENABLED", false),
+		LoopMonitorTriggersEnabled:               EnvBool("AGENT_API_LOOP_MONITOR_TRIGGERS_ENABLED", false),
+		LoopEvalRepairTriggersEnabled:            EnvBool("AGENT_API_LOOP_EVAL_REPAIR_TRIGGERS_ENABLED", false),
+		LoopWebhookTriggersEnabled:               EnvBool("AGENT_API_LOOP_WEBHOOK_TRIGGERS_ENABLED", false),
+		LoopReleaseGateCriticalTestsPassed:       EnvBool("AGENT_API_LOOP_RELEASE_GATE_CRITICAL_TESTS_PASSED", false),
+		LoopReleaseGateTemplateReplayPassCount:   EnvInt("AGENT_API_LOOP_RELEASE_GATE_TEMPLATE_REPLAY_PASS_COUNT", 0),
+		LoopReleaseGateKillSwitchPassed:          EnvBool("AGENT_API_LOOP_RELEASE_GATE_KILL_SWITCH_PASSED", false),
+		LoopReleaseGateQuotaGuardPassed:          EnvBool("AGENT_API_LOOP_RELEASE_GATE_QUOTA_GUARD_PASSED", false),
 		TrustedUserHeader:                        FirstNonEmpty(os.Getenv("AGENT_API_TRUSTED_USER_HEADER"), "X-User-ID"),
 		TrustedSecretHeader:                      os.Getenv("AGENT_API_TRUSTED_SECRET_HEADER"),
 		TrustedSecret:                            os.Getenv("AGENT_API_TRUSTED_SECRET"),
@@ -756,6 +778,17 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.BoolVar(&cfg.EvalJudgeEnabled, "eval-judge-enabled", cfg.EvalJudgeEnabled, "enable LLM-as-Judge for golden set evaluation runs")
 	flags.StringVar(&cfg.EvalJudgeModel, "eval-judge-model", cfg.EvalJudgeModel, "model used by LLM-as-Judge; also supports AGENT_API_LLM_MODEL_ROUTES judge=<model>")
 	flags.StringVar(&cfg.EvalJudgePromptVersion, "eval-judge-prompt-version", cfg.EvalJudgePromptVersion, "prompt version label recorded by LLM-as-Judge evaluation results")
+	flags.StringVar(&cfg.LoopWebhookSecrets, "loop-webhook-secrets", cfg.LoopWebhookSecrets, "comma-separated signed loop webhook secrets source=secret")
+	flags.BoolVar(&cfg.LoopAutomationEnabled, "loop-automation-enabled", cfg.LoopAutomationEnabled, "run schedule and monitor loop trigger automation")
+	flags.DurationVar(&cfg.LoopAutomationInterval, "loop-automation-interval", cfg.LoopAutomationInterval, "poll interval for schedule and monitor loop automation")
+	flags.BoolVar(&cfg.LoopScheduleTriggersEnabled, "loop-schedule-triggers-enabled", cfg.LoopScheduleTriggersEnabled, "allow schedule loop triggers after release gate")
+	flags.BoolVar(&cfg.LoopMonitorTriggersEnabled, "loop-monitor-triggers-enabled", cfg.LoopMonitorTriggersEnabled, "allow monitor loop triggers after release gate")
+	flags.BoolVar(&cfg.LoopEvalRepairTriggersEnabled, "loop-eval-repair-triggers-enabled", cfg.LoopEvalRepairTriggersEnabled, "allow evaluation repair loop triggers after release gate")
+	flags.BoolVar(&cfg.LoopWebhookTriggersEnabled, "loop-webhook-triggers-enabled", cfg.LoopWebhookTriggersEnabled, "allow signed webhook loop triggers after release gate")
+	flags.BoolVar(&cfg.LoopReleaseGateCriticalTestsPassed, "loop-release-gate-critical-tests-passed", cfg.LoopReleaseGateCriticalTestsPassed, "mark critical loop tests as passing for automation release gate")
+	flags.IntVar(&cfg.LoopReleaseGateTemplateReplayPassCount, "loop-release-gate-template-replay-pass-count", cfg.LoopReleaseGateTemplateReplayPassCount, "number of template replay cases passing for automation release gate")
+	flags.BoolVar(&cfg.LoopReleaseGateKillSwitchPassed, "loop-release-gate-kill-switch-passed", cfg.LoopReleaseGateKillSwitchPassed, "mark governance kill switch test as passing for automation release gate")
+	flags.BoolVar(&cfg.LoopReleaseGateQuotaGuardPassed, "loop-release-gate-quota-guard-passed", cfg.LoopReleaseGateQuotaGuardPassed, "mark quota guard test as passing for automation release gate")
 	flags.StringVar(&cfg.TrustedUserHeader, "trusted-user-header", cfg.TrustedUserHeader, "trusted gateway user ID header")
 	flags.StringVar(&cfg.TrustedSecretHeader, "trusted-secret-header", cfg.TrustedSecretHeader, "header required for trusted-header auth")
 	flags.StringVar(&cfg.TrustedSecret, "trusted-secret", cfg.TrustedSecret, "secret value required for trusted-header auth")

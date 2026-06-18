@@ -1,0 +1,20 @@
+CREATE TABLE agent_loop_goals (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL,
+	session_id TEXT NOT NULL DEFAULT '',
+	job_id TEXT NOT NULL DEFAULT '',
+	workflow_run_id TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	objective TEXT NOT NULL,
+	task_type TEXT NOT NULL DEFAULT '',
+	deliverable TEXT NOT NULL DEFAULT '',
+	rubric_json JSONB NOT NULL DEFAULT '{}',
+	budget_json JSONB NOT NULL DEFAULT '{}',
+	trigger_json JSONB NOT NULL DEFAULT '{}',
+	stop_policy_json JSONB NOT NULL DEFAULT '{}',
+	metadata_json JSONB NOT NULL DEFAULT '{}',
+	created_at TIMESTAMPTZ NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL,
+	started_at TIMESTAMPTZ,
+	finished_at TIMESTAMPTZ
+);

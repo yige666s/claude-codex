@@ -91,6 +91,48 @@ func (s *Server) handleAdminOpsListGoldenSets(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"sets": sets})
 }
 
+func (s *Server) handleAdminOpsTemplateEvalCorpus(w http.ResponseWriter, r *http.Request) {
+	ids := normalizeTemplateReplayIDs(strings.Split(strings.TrimSpace(r.URL.Query().Get("template_ids")), ","))
+	sets := filterTemplateGoldenSets(DefaultDeepAgentTemplateGoldenSets(), ids)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sets":    sets,
+		"version": DeepAgentTemplateEvalSetVersion,
+	})
+}
+
+func (s *Server) handleAdminOpsTemplateEvalReplay(w http.ResponseWriter, r *http.Request, actor User) {
+	var req DeepAgentTemplateReplayRequest
+	if err := readJSON(r, &req); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	report, err := s.RunDeepAgentTemplateReplay(r.Context(), req)
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	s.auditEvent(r, "admin_eval_template_replay", actor, map[string]any{
+		"template_count": len(report.Dashboard.Templates),
+		"result_count":   report.Dashboard.Total,
+		"persisted":      req.Persist,
+		"versions":       report.Versions,
+	})
+	status := http.StatusOK
+	if req.Persist {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, report)
+}
+
+func (s *Server) handleAdminOpsTemplateEvalDashboard(w http.ResponseWriter, r *http.Request) {
+	dashboard, err := BuildDeepAgentTemplateEvalDashboard(r.Context(), s.evaluation)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"dashboard": dashboard})
+}
+
 func (s *Server) handleAdminOpsGetGoldenSet(w http.ResponseWriter, r *http.Request, setID string) {
 	version := strings.TrimSpace(r.URL.Query().Get("version"))
 	set, err := s.evaluation.GetGoldenSetVersion(r.Context(), setID, version)
@@ -371,12 +413,17 @@ func (s *Server) persistEvaluationRunReportContext(ctx context.Context, report E
 	if err != nil {
 		return EvaluationRunReport{}, err
 	}
-	return EvaluationRunReport{
+	persisted := EvaluationRunReport{
 		Run:     run,
 		Results: results,
 		Reviews: reviews,
 		Summary: summary,
-	}, nil
+	}
+	repairReport := s.TriggerEvalRepairLoops(ctx, persisted)
+	if repairReport.Failed > 0 {
+		logFields(s.logger, map[string]any{"event": "eval_repair_loop_trigger_partial_failure", "eval_run_id": run.ID, "failed": repairReport.Failed, "triggered": repairReport.Triggered})
+	}
+	return persisted, nil
 }
 
 func (s *Server) handleAdminOpsListEvaluationRuns(w http.ResponseWriter, r *http.Request) {

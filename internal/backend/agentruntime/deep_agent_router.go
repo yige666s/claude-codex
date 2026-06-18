@@ -10,11 +10,14 @@ import (
 )
 
 const (
-	deepAgentRouteExecutorModel    = "model"
-	deepAgentRouteExecutorArtifact = "artifact"
-	deepAgentRouteExecutorSkill    = "skill"
-	deepAgentRouteExecutorRAG      = "rag_search"
-	deepAgentRouteExecutorSubPlan  = "subplan"
+	deepAgentRouteExecutorModel     = "model"
+	deepAgentRouteExecutorArtifact  = "artifact"
+	deepAgentRouteExecutorSkill     = "skill"
+	deepAgentRouteExecutorRAG       = "rag_search"
+	deepAgentRouteExecutorTest      = "test"
+	deepAgentRouteExecutorWeb       = "web"
+	deepAgentRouteExecutorCodePatch = "code_patch"
+	deepAgentRouteExecutorSubPlan   = "subplan"
 
 	deepAgentDeliverableNone     = "none"
 	deepAgentDeliverableMarkdown = "markdown"
@@ -91,6 +94,41 @@ func (r *RuntimeDeepAgentStepRouter) deterministicRoute(step DeepAgentStep) (Dee
 	text := deepAgentRouteText(step)
 	if text == "" {
 		return DeepAgentStepRoute{}, false
+	}
+	if deepAgentContainsAny(text,
+		"运行测试", "执行测试", "单元测试", "集成测试", "静态检查", "类型检查", "构建验证", "go test", "npm test", "pnpm test",
+		"test", "lint", "typecheck", "build check",
+	) {
+		return DeepAgentStepRoute{
+			StepID:     step.ID,
+			Mode:       DeepAgentToolModeTest,
+			Executor:   deepAgentRouteExecutorTest,
+			Reason:     "deterministic test verification guard",
+			Confidence: "high",
+		}, true
+	}
+	if deepAgentContainsAny(text,
+		"修改代码", "修复代码", "应用补丁", "生成补丁", "代码补丁", "diff", "patch", "code edit", "code fix",
+	) {
+		return DeepAgentStepRoute{
+			StepID:     step.ID,
+			Mode:       DeepAgentToolModeCodePatch,
+			Executor:   deepAgentRouteExecutorCodePatch,
+			Reason:     "deterministic code patch guard",
+			Confidence: "high",
+		}, true
+	}
+	if deepAgentContainsAny(text,
+		"网页验证", "截图", "浏览器", "打开页面", "页面验证", "screenshot", "browser", "web page", "dom",
+	) {
+		return DeepAgentStepRoute{
+			StepID:      step.ID,
+			Mode:        DeepAgentToolModeWeb,
+			Executor:    deepAgentRouteExecutorWeb,
+			SearchScope: "web",
+			Reason:      "deterministic web verification guard",
+			Confidence:  "high",
+		}, true
 	}
 	if deepAgentContainsAny(text,
 		"获取历史", "历史消息", "上下文检索", "会话检索", "记忆检索", "previous conversation", "prior conversation",
@@ -329,6 +367,12 @@ func normalizeDeepAgentRouteMode(mode string) string {
 		return DeepAgentToolModeRAGSearch
 	case DeepAgentToolModeSkill:
 		return DeepAgentToolModeSkill
+	case "browser", "web_fetch", "web_search", DeepAgentToolModeWeb:
+		return DeepAgentToolModeWeb
+	case "tests", "lint", "typecheck", "build", DeepAgentToolModeTest:
+		return DeepAgentToolModeTest
+	case "patch", "edit", "diff", DeepAgentToolModeCodePatch:
+		return DeepAgentToolModeCodePatch
 	case "subplan", DeepAgentToolModeMulti:
 		return DeepAgentToolModeMulti
 	default:
@@ -344,6 +388,12 @@ func deepAgentExecutorForMode(mode string) string {
 		return deepAgentRouteExecutorSkill
 	case DeepAgentToolModeRAGSearch:
 		return deepAgentRouteExecutorRAG
+	case DeepAgentToolModeTest:
+		return deepAgentRouteExecutorTest
+	case DeepAgentToolModeWeb:
+		return deepAgentRouteExecutorWeb
+	case DeepAgentToolModeCodePatch:
+		return deepAgentRouteExecutorCodePatch
 	case DeepAgentToolModeMulti:
 		return deepAgentRouteExecutorSubPlan
 	default:
@@ -488,8 +538,8 @@ func deepAgentRouteStructuredSchema() StructuredSchema {
 			"required":             []any{"mode", "executor", "requires_artifact", "deliverable_type", "allowed_tools", "success_criteria", "reason", "confidence"},
 			"properties": map[string]any{
 				"step_id":           map[string]any{"type": "string"},
-				"mode":              map[string]any{"type": "string", "enum": []any{DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeMulti, "artifact"}},
-				"executor":          map[string]any{"type": "string", "enum": []any{deepAgentRouteExecutorModel, deepAgentRouteExecutorArtifact, deepAgentRouteExecutorSkill, deepAgentRouteExecutorRAG, deepAgentRouteExecutorSubPlan}},
+				"mode":              map[string]any{"type": "string", "enum": []any{DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeMulti, "artifact"}},
+				"executor":          map[string]any{"type": "string", "enum": []any{deepAgentRouteExecutorModel, deepAgentRouteExecutorArtifact, deepAgentRouteExecutorSkill, deepAgentRouteExecutorRAG, deepAgentRouteExecutorTest, deepAgentRouteExecutorWeb, deepAgentRouteExecutorCodePatch, deepAgentRouteExecutorSubPlan}},
 				"skill_name":        map[string]any{"type": "string"},
 				"requires_artifact": map[string]any{"type": "boolean"},
 				"deliverable_type":  map[string]any{"type": "string"},

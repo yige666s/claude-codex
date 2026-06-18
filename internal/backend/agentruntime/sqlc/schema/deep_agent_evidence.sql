@@ -1,0 +1,23 @@
+CREATE TABLE agent_deep_agent_evidence (
+	id TEXT PRIMARY KEY,
+	run_id TEXT NOT NULL,
+	user_id TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
+	job_id TEXT NOT NULL DEFAULT '',
+	loop_goal_id TEXT NOT NULL DEFAULT '',
+	step_id TEXT NOT NULL DEFAULT '',
+	action_id TEXT NOT NULL DEFAULT '',
+	template_id TEXT NOT NULL DEFAULT '',
+	task_type TEXT NOT NULL DEFAULT '',
+	trigger_type TEXT NOT NULL DEFAULT '',
+	route_json JSONB NOT NULL DEFAULT '{}',
+	evidence_json JSONB NOT NULL DEFAULT '{}',
+	artifact_count INTEGER NOT NULL DEFAULT 0,
+	source_count INTEGER NOT NULL DEFAULT 0,
+	tool_call_count INTEGER NOT NULL DEFAULT 0,
+	child_job_count INTEGER NOT NULL DEFAULT 0,
+	error_class TEXT NOT NULL DEFAULT '',
+	side_effect_level TEXT NOT NULL DEFAULT '',
+	created_at TIMESTAMPTZ NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL
+);

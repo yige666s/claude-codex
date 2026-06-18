@@ -3,6 +3,7 @@ INSERT INTO agent_jobs (
 	job_id,
 	user_id,
 	session_id,
+	loop_goal_id,
 	type,
 	status,
 	content,
@@ -24,7 +25,8 @@ INSERT INTO agent_jobs (
 	$9,
 	$10,
 	$11,
-	$12
+	$12,
+	$13
 );
 
 -- name: GetJob :one
@@ -32,6 +34,7 @@ SELECT
 	job_id,
 	user_id,
 	session_id,
+	loop_goal_id,
 	type,
 	status,
 	content,
@@ -50,6 +53,7 @@ SELECT
 	job_id,
 	user_id,
 	session_id,
+	loop_goal_id,
 	type,
 	status,
 	content,

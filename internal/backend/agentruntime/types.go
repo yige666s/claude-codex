@@ -396,6 +396,7 @@ type LiveClientStream interface {
 type ChatRequest struct {
 	UserID         string
 	SessionID      string
+	LoopGoalID     string
 	Content        string
 	AttachmentIDs  []string
 	AttachmentURLs []ChatAttachmentURL
@@ -439,6 +440,7 @@ type Job struct {
 	ID             string              `json:"id"`
 	UserID         string              `json:"user_id,omitempty"`
 	SessionID      string              `json:"session_id"`
+	LoopGoalID     string              `json:"loop_goal_id,omitempty"`
 	Type           string              `json:"type"`
 	Status         string              `json:"status"`
 	Content        string              `json:"content,omitempty"`

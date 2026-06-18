@@ -343,6 +343,19 @@ func deepAgentStateCurrentArtifactRefs(state *DeepAgentState) []DeepAgentArtifac
 	}
 	seen := map[string]struct{}{}
 	out := make([]DeepAgentArtifactRef, 0)
+	for _, evidence := range (StateDeepAgentEvidenceStore{}).ListStepEvidence(state) {
+		for _, ref := range evidence.Artifacts {
+			key := firstNonEmptyString(ref.ID, ref.Filename)
+			if key == "" {
+				continue
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, ref)
+		}
+	}
 	for stepID, raw := range store {
 		record, ok := raw.(map[string]any)
 		if !ok {
@@ -361,6 +374,532 @@ func deepAgentStateCurrentArtifactRefs(state *DeepAgentState) []DeepAgentArtifac
 		}
 	}
 	return out
+}
+
+func verifyDeepAgentRubric(state *DeepAgentState) []DeepAgentVerificationCheck {
+	if state == nil || deepAgentRubricEmpty(state.Rubric) {
+		return nil
+	}
+	rubric := normalizeDeepAgentRubric(state.Rubric)
+	checks := make([]DeepAgentVerificationCheck, 0)
+	artifacts := deepAgentStateCurrentArtifactRefs(state)
+	for _, required := range rubric.RequiredArtifacts {
+		deliverable := deepAgentDeliverableFromRubric(required)
+		matching := artifacts
+		if deliverable != deepAgentDeliverableNone {
+			matching = deepAgentArtifactRefsMatchFinalDeliverable(artifacts, deliverable)
+		}
+		if len(matching) == 0 {
+			checks = append(checks, DeepAgentVerificationCheck{Name: "rubric_artifact", Passed: false, Reason: "required artifact missing: " + required})
+			continue
+		}
+		checks = append(checks, DeepAgentVerificationCheck{Name: "rubric_artifact", Passed: true, Reason: "required artifact present: " + required})
+	}
+	evidence := deepAgentStateEvidenceSummary(state)
+	for _, required := range rubric.RequiredEvidence {
+		if !deepAgentEvidenceRequirementMet(required, evidence) {
+			checks = append(checks, DeepAgentVerificationCheck{Name: "rubric_evidence", Passed: false, Reason: "required evidence missing: " + required})
+			continue
+		}
+		checks = append(checks, DeepAgentVerificationCheck{Name: "rubric_evidence", Passed: true, Reason: "required evidence present: " + required})
+	}
+	for _, forbidden := range rubric.ForbiddenActions {
+		if deepAgentForbiddenActionSeen(forbidden, state) {
+			checks = append(checks, DeepAgentVerificationCheck{Name: "rubric_forbidden_action", Passed: false, Reason: "forbidden action was used: " + forbidden})
+			continue
+		}
+		checks = append(checks, DeepAgentVerificationCheck{Name: "rubric_forbidden_action", Passed: true, Reason: "forbidden action not used: " + forbidden})
+	}
+	return checks
+}
+
+type deepAgentEvidenceSummary struct {
+	sourceCount       int
+	artifactCount     int
+	toolCallCount     int
+	childJobCount     int
+	testsPassed       bool
+	testsRecorded     bool
+	notTestedReason   string
+	riskViolation     string
+	sideEffectWarning string
+}
+
+func deepAgentStateEvidenceSummary(state *DeepAgentState) deepAgentEvidenceSummary {
+	var summary deepAgentEvidenceSummary
+	summary.artifactCount = len(deepAgentStateCurrentArtifactRefs(state))
+	if state == nil || state.WorkingMemory == nil {
+		return summary
+	}
+	for _, evidence := range (StateDeepAgentEvidenceStore{}).ListStepEvidence(state) {
+		collectDeepAgentEvidenceSummary(map[string]any{"step_evidence": evidence}, &summary)
+	}
+	store, _ := state.WorkingMemory["step_context"].(map[string]any)
+	for _, raw := range store {
+		record, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		collectDeepAgentEvidenceSummary(record, &summary)
+		if metadata, _ := record["metadata"].(map[string]any); len(metadata) > 0 {
+			collectDeepAgentEvidenceSummary(metadata, &summary)
+		}
+	}
+	return summary
+}
+
+func collectDeepAgentEvidenceSummary(values map[string]any, summary *deepAgentEvidenceSummary) {
+	if summary == nil || len(values) == 0 {
+		return
+	}
+	summary.sourceCount += len(deepAgentSourceRefsFromAny(values["sources"]))
+	summary.toolCallCount += len(deepAgentToolCallRefsFromAny(values["tool_calls"]))
+	summary.childJobCount += len(deepAgentChildJobRefsFromAny(values["child_jobs"]))
+	if passed, ok := deepAgentMetadataBool(values, "tests_passed"); ok && passed {
+		summary.testsPassed = true
+		summary.testsRecorded = true
+	} else if ok {
+		summary.testsRecorded = true
+	}
+	if passed, ok := deepAgentMetadataBool(values, "test_passed"); ok {
+		summary.testsRecorded = true
+		if passed {
+			summary.testsPassed = true
+		}
+	}
+	if reason := firstNonEmptyString(
+		deepAgentWorkflowString(values, "not_tested_reason"),
+		deepAgentWorkflowString(values, "tests_not_run_reason"),
+		deepAgentWorkflowString(values, "not-tested"),
+	); reason != "" && summary.notTestedReason == "" {
+		summary.notTestedReason = reason
+	}
+	if violation := deepAgentWorkflowString(values, "risk_violation"); violation != "" && summary.riskViolation == "" {
+		summary.riskViolation = violation
+	}
+	if evidence, ok := deepAgentStepEvidenceFromAny(values["step_evidence"]); ok {
+		summary.sourceCount += len(evidence.Sources)
+		summary.toolCallCount += len(evidence.ToolCalls)
+		summary.childJobCount += len(evidence.ChildJobs)
+		if passed, ok := evidence.Diagnostics["tests_passed"].(bool); ok && passed {
+			summary.testsPassed = true
+			summary.testsRecorded = true
+		} else if ok {
+			summary.testsRecorded = true
+		}
+		if passed, ok := evidence.Diagnostics["test_passed"].(bool); ok {
+			summary.testsRecorded = true
+			if passed {
+				summary.testsPassed = true
+			}
+		}
+		if reason := firstNonEmptyString(
+			deepAgentWorkflowString(evidence.Diagnostics, "not_tested_reason"),
+			deepAgentWorkflowString(evidence.Diagnostics, "tests_not_run_reason"),
+			deepAgentWorkflowString(evidence.Diagnostics, "not-tested"),
+		); reason != "" && summary.notTestedReason == "" {
+			summary.notTestedReason = reason
+		}
+		if violation := deepAgentWorkflowString(evidence.Diagnostics, "risk_violation"); violation != "" && summary.riskViolation == "" {
+			summary.riskViolation = violation
+		}
+		if warning := strings.TrimSpace(evidence.SideEffectLevel); warning != "" && !deepAgentSafeSideEffectLevel(warning) && summary.sideEffectWarning == "" {
+			summary.sideEffectWarning = warning
+		}
+	}
+}
+
+func verifyDeepAgentFinalState(state *DeepAgentState) DeepAgentFinalVerification {
+	checks := []DeepAgentVerificationCheck{}
+	missing := []string{}
+	addCheck := func(name string, passed bool, reason string) {
+		checks = append(checks, DeepAgentVerificationCheck{Name: name, Passed: passed, Reason: reason})
+		if !passed && strings.TrimSpace(reason) != "" {
+			missing = append(missing, reason)
+		}
+	}
+	for _, step := range state.Plan.Steps {
+		if step.Status != DeepAgentStepStatusSucceeded && step.Status != DeepAgentStepStatusSkipped {
+			addCheck("steps_completed", false, "not all steps completed")
+			return DeepAgentFinalVerification{Done: false, Reason: "not all steps completed", Checks: checks, Missing: missing, Confidence: "high"}
+		}
+	}
+	addCheck("steps_completed", true, "all steps completed")
+	verifyDeepAgentFinalArtifact(state, addCheck)
+	verifyDeepAgentFinalSources(state, addCheck)
+	verifyDeepAgentFinalContent(state, addCheck)
+	verifyDeepAgentFinalTests(state, addCheck)
+	verifyDeepAgentFinalRisk(state, addCheck)
+	for _, check := range verifyDeepAgentRubric(state) {
+		checks = append(checks, check)
+		if !check.Passed && strings.TrimSpace(check.Reason) != "" {
+			missing = append(missing, check.Reason)
+		}
+	}
+	for _, check := range checks {
+		if !check.Passed && strings.TrimSpace(check.Reason) != "" && !deepAgentStringSliceContains(missing, check.Reason) {
+			missing = append(missing, check.Reason)
+		}
+	}
+	if len(missing) > 0 {
+		return DeepAgentFinalVerification{Done: false, Reason: strings.Join(missing, "; "), Checks: checks, Missing: missing, Confidence: "high"}
+	}
+	reason := "all final verification checks passed"
+	if refs := deepAgentArtifactRefsFromAny(state.WorkingMemory["final_artifact_refs"]); len(refs) > 0 {
+		reason = "all final verification checks passed and final artifact verified"
+	}
+	return DeepAgentFinalVerification{Done: true, Reason: reason, Checks: checks, Confidence: "high"}
+}
+
+func verifyDeepAgentFinalArtifact(state *DeepAgentState, addCheck func(string, bool, string)) {
+	if !deepAgentFinalRequiresArtifact(state) {
+		addCheck("artifact_verifier", true, "final artifact not required")
+		return
+	}
+	refs := deepAgentStateCurrentArtifactRefs(state)
+	if len(refs) == 0 {
+		addCheck("artifact_verifier", false, "required final artifact is missing")
+		return
+	}
+	deliverable := deepAgentFinalDeliverableType(state)
+	matching := deepAgentArtifactRefsMatchFinalDeliverable(refs, deliverable)
+	if len(matching) == 0 {
+		addCheck("artifact_verifier", false, fmt.Sprintf("final artifact does not match deliverable type %s", deliverable))
+		return
+	}
+	if state.WorkingMemory == nil {
+		state.WorkingMemory = map[string]any{}
+	}
+	state.WorkingMemory["final_artifact_refs"] = matching
+	addCheck("artifact_verifier", true, "final artifact verified")
+}
+
+func verifyDeepAgentFinalSources(state *DeepAgentState, addCheck func(string, bool, string)) {
+	if !deepAgentFinalRequiresSources(state) {
+		addCheck("source_verifier", true, "source evidence not required")
+		return
+	}
+	evidence := deepAgentStateEvidenceSummary(state)
+	if evidence.sourceCount == 0 {
+		addCheck("source_verifier", false, "required source evidence is missing")
+		return
+	}
+	addCheck("source_verifier", true, "source evidence verified")
+}
+
+func verifyDeepAgentFinalContent(state *DeepAgentState, addCheck func(string, bool, string)) {
+	rubric := normalizeDeepAgentRubric(state.Rubric)
+	if len(rubric.AcceptanceCriteria) == 0 && strings.TrimSpace(rubric.QualityBar) == "" {
+		addCheck("content_verifier", true, "rubric content checks not required")
+		return
+	}
+	corpus := deepAgentFinalEvidenceCorpus(state)
+	for _, criterion := range rubric.AcceptanceCriteria {
+		if !deepAgentCriterionCovered(criterion, corpus) {
+			addCheck("content_verifier", false, "acceptance criterion not covered: "+criterion)
+			return
+		}
+	}
+	if quality := strings.TrimSpace(rubric.QualityBar); quality != "" && !deepAgentCriterionCovered(quality, corpus) {
+		addCheck("content_verifier", false, "quality bar not covered: "+quality)
+		return
+	}
+	addCheck("content_verifier", true, "rubric content checks covered")
+}
+
+func verifyDeepAgentFinalTests(state *DeepAgentState, addCheck func(string, bool, string)) {
+	if !deepAgentFinalRequiresTests(state) {
+		addCheck("test_verifier", true, "test evidence not required")
+		return
+	}
+	evidence := deepAgentStateEvidenceSummary(state)
+	if evidence.testsPassed {
+		addCheck("test_verifier", true, "test evidence verified")
+		return
+	}
+	if strings.TrimSpace(evidence.notTestedReason) != "" {
+		addCheck("test_verifier", true, "tests not run: "+evidence.notTestedReason)
+		return
+	}
+	if evidence.testsRecorded {
+		addCheck("test_verifier", false, "tests were recorded but did not pass")
+		return
+	}
+	addCheck("test_verifier", false, "code fix requires passing tests or an explicit not-tested reason")
+}
+
+func verifyDeepAgentFinalRisk(state *DeepAgentState, addCheck func(string, bool, string)) {
+	evidence := deepAgentStateEvidenceSummary(state)
+	if strings.TrimSpace(evidence.riskViolation) != "" {
+		addCheck("risk_verifier", false, "risk violation: "+evidence.riskViolation)
+		return
+	}
+	if strings.TrimSpace(evidence.sideEffectWarning) != "" {
+		addCheck("risk_verifier", false, "unreviewed side effect level: "+evidence.sideEffectWarning)
+		return
+	}
+	for _, forbidden := range normalizeDeepAgentRubric(state.Rubric).ForbiddenActions {
+		if deepAgentForbiddenActionSeen(forbidden, state) {
+			addCheck("risk_verifier", false, "forbidden action was used: "+forbidden)
+			return
+		}
+	}
+	addCheck("risk_verifier", true, "no risk violations detected")
+}
+
+func deepAgentFinalRequiresArtifact(state *DeepAgentState) bool {
+	if state == nil {
+		return false
+	}
+	if deepAgentFinalDeliverableType(state) != deepAgentDeliverableNone {
+		return true
+	}
+	return deepAgentTextRequiresArtifact(firstNonEmptyString(state.Goal, state.Plan.Goal)) || len(normalizeDeepAgentRubric(state.Rubric).RequiredArtifacts) > 0
+}
+
+func deepAgentFinalDeliverableType(state *DeepAgentState) string {
+	if state == nil {
+		return deepAgentDeliverableNone
+	}
+	if deliverable := deepAgentStateLoopGoalString(state, "deliverable"); deliverable != "" && deliverable != "answer" {
+		switch strings.ToLower(deliverable) {
+		case "markdown", "md":
+			return deepAgentDeliverableMarkdown
+		case "docx", "word":
+			return deepAgentDeliverableDocx
+		case "image":
+			return deepAgentDeliverableImage
+		case "svg":
+			return deepAgentDeliverableSVG
+		case "json":
+			return "json"
+		default:
+			return deliverable
+		}
+	}
+	for _, required := range normalizeDeepAgentRubric(state.Rubric).RequiredArtifacts {
+		if deliverable := deepAgentDeliverableFromRubric(required); deliverable != deepAgentDeliverableNone {
+			return deliverable
+		}
+	}
+	return deepAgentGoalDeliverableType(firstNonEmptyString(state.Goal, state.Plan.Goal))
+}
+
+func deepAgentFinalRequiresSources(state *DeepAgentState) bool {
+	if state == nil {
+		return false
+	}
+	taskType := deepAgentStateLoopGoalString(state, "task_type")
+	if deepAgentContainsAny(strings.ToLower(taskType), "research", "monitoring", "monitor", "data_analysis") {
+		return true
+	}
+	for _, required := range normalizeDeepAgentRubric(state.Rubric).RequiredEvidence {
+		if deepAgentContainsAny(strings.ToLower(required), "source", "citation", "引用", "来源") {
+			return true
+		}
+	}
+	return false
+}
+
+func deepAgentFinalRequiresTests(state *DeepAgentState) bool {
+	if state == nil {
+		return false
+	}
+	taskType := deepAgentStateLoopGoalString(state, "task_type")
+	if deepAgentContainsAny(strings.ToLower(taskType), "code_fix", "bug_fix", "qa") {
+		return true
+	}
+	for _, required := range normalizeDeepAgentRubric(state.Rubric).RequiredEvidence {
+		if deepAgentContainsAny(strings.ToLower(required), "test", "lint", "build", "测试", "构建") {
+			return true
+		}
+	}
+	return false
+}
+
+func deepAgentStateLoopGoalString(state *DeepAgentState, key string) string {
+	if state == nil || state.WorkingMemory == nil {
+		return ""
+	}
+	if value := deepAgentWorkflowString(state.WorkingMemory, "loop_goal_"+key); value != "" {
+		return value
+	}
+	raw := state.WorkingMemory["loop_goal"]
+	switch goal := raw.(type) {
+	case *LoopGoal:
+		return deepAgentLoopGoalField(goal, key)
+	case LoopGoal:
+		return deepAgentLoopGoalField(&goal, key)
+	case map[string]any:
+		return deepAgentWorkflowString(goal, key)
+	}
+	return ""
+}
+
+func deepAgentLoopGoalField(goal *LoopGoal, key string) string {
+	if goal == nil {
+		return ""
+	}
+	switch key {
+	case "task_type":
+		return strings.TrimSpace(goal.TaskType)
+	case "deliverable":
+		return strings.TrimSpace(goal.Deliverable)
+	default:
+		return ""
+	}
+}
+
+func deepAgentFinalEvidenceCorpus(state *DeepAgentState) string {
+	if state == nil {
+		return ""
+	}
+	var b strings.Builder
+	appendText := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		b.WriteString("\n")
+		b.WriteString(value)
+	}
+	appendText(state.Goal)
+	appendText(state.Plan.Goal)
+	for _, step := range state.Plan.Steps {
+		appendText(step.Title)
+		appendText(step.Intent)
+		appendText(step.DoneCondition)
+	}
+	for _, action := range state.ActionHistory {
+		appendText(action.StepID)
+		appendText(action.Tool)
+		raw, _ := json.Marshal(action.Args)
+		appendText(string(raw))
+	}
+	if state.WorkingMemory != nil {
+		raw, _ := json.Marshal(state.WorkingMemory)
+		appendText(string(raw))
+	}
+	return strings.ToLower(b.String())
+}
+
+var deepAgentCriterionTokenPattern = regexp.MustCompile(`[\p{Han}]+|[a-zA-Z0-9_./-]+`)
+
+func deepAgentCriterionCovered(criterion, corpus string) bool {
+	criterion = strings.ToLower(strings.TrimSpace(criterion))
+	corpus = strings.ToLower(strings.TrimSpace(corpus))
+	if criterion == "" || corpus == "" {
+		return criterion == ""
+	}
+	if strings.Contains(corpus, criterion) {
+		return true
+	}
+	tokens := deepAgentMeaningfulCriterionTokens(criterion)
+	if len(tokens) == 0 {
+		return true
+	}
+	matches := 0
+	for _, token := range tokens {
+		if strings.Contains(corpus, token) {
+			matches++
+		}
+	}
+	needed := len(tokens)
+	if needed > 2 {
+		needed = (len(tokens) + 1) / 2
+	}
+	return matches >= needed
+}
+
+func deepAgentMeaningfulCriterionTokens(text string) []string {
+	raw := deepAgentCriterionTokenPattern.FindAllString(strings.ToLower(text), -1)
+	out := make([]string, 0, len(raw))
+	stop := map[string]struct{}{
+		"must": {}, "should": {}, "need": {}, "needs": {}, "include": {}, "includes": {}, "required": {},
+		"包含": {}, "需要": {}, "必须": {}, "应该": {}, "输出": {}, "生成": {},
+	}
+	for _, token := range raw {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		if _, skip := stop[token]; skip {
+			continue
+		}
+		out = append(out, token)
+	}
+	return out
+}
+
+func deepAgentSafeSideEffectLevel(level string) bool {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "", "none", "read", "read_only", "low":
+		return true
+	default:
+		return false
+	}
+}
+
+func deepAgentStringSliceContains(values []string, value string) bool {
+	for _, existing := range values {
+		if existing == value {
+			return true
+		}
+	}
+	return false
+}
+
+func deepAgentEvidenceRequirementMet(required string, summary deepAgentEvidenceSummary) bool {
+	text := strings.ToLower(strings.TrimSpace(required))
+	if text == "" {
+		return true
+	}
+	switch {
+	case deepAgentContainsAny(text, "source", "citation", "引用", "来源"):
+		return summary.sourceCount > 0
+	case deepAgentContainsAny(text, "artifact", "file", "文档", "文件", "交付物"):
+		return summary.artifactCount > 0
+	case deepAgentContainsAny(text, "test", "lint", "build", "测试", "构建"):
+		return summary.testsPassed
+	case deepAgentContainsAny(text, "tool", "工具"):
+		return summary.toolCallCount > 0
+	case deepAgentContainsAny(text, "child", "subagent", "job", "子任务"):
+		return summary.childJobCount > 0
+	default:
+		return summary.sourceCount+summary.artifactCount+summary.toolCallCount+summary.childJobCount > 0
+	}
+}
+
+func deepAgentDeliverableFromRubric(required string) string {
+	text := strings.ToLower(strings.TrimSpace(required))
+	switch {
+	case deepAgentContainsAny(text, "docx", "word"):
+		return deepAgentDeliverableDocx
+	case deepAgentContainsAny(text, "markdown", ".md"):
+		return deepAgentDeliverableMarkdown
+	case deepAgentContainsAny(text, "image", "图片", "图像"):
+		return deepAgentDeliverableImage
+	case deepAgentContainsAny(text, "svg"):
+		return deepAgentDeliverableSVG
+	case deepAgentContainsAny(text, "json"):
+		return "json"
+	default:
+		return deepAgentDeliverableNone
+	}
+}
+
+func deepAgentForbiddenActionSeen(forbidden string, state *DeepAgentState) bool {
+	forbidden = strings.ToLower(strings.TrimSpace(forbidden))
+	if forbidden == "" || state == nil {
+		return false
+	}
+	for _, action := range state.ActionHistory {
+		raw, _ := json.Marshal(action)
+		if strings.Contains(strings.ToLower(string(raw)), forbidden) {
+			return true
+		}
+	}
+	return false
 }
 
 func deepAgentArtifactRefsFromStepContextRecord(stepID string, record map[string]any) []DeepAgentArtifactRef {

@@ -189,6 +189,15 @@ func (p *RuntimeDeepAgentPlanner) actionForRoute(state *DeepAgentState, step Dee
 		args["limit"] = DeepAgentDefaultRAGSearchLimit
 	case DeepAgentToolModeModelArtifact:
 		args["prompt"] = p.modelPromptForStep(state, step)
+	case DeepAgentToolModeTest:
+		args["prompt"] = p.modelPromptForStep(state, step)
+		args["expected_evidence"] = "test results, exit status, and failure excerpt if any"
+	case DeepAgentToolModeWeb:
+		args["prompt"] = p.modelPromptForStep(state, step)
+		args["expected_evidence"] = "URL, screenshot or DOM assertion evidence, and source refs if applicable"
+	case DeepAgentToolModeCodePatch:
+		args["prompt"] = p.modelPromptForStep(state, step)
+		args["expected_evidence"] = "diff summary, changed files, and verification hints"
 	default:
 		mode = DeepAgentToolModeModel
 		args["prompt"] = p.modelPromptForStep(state, step)
@@ -287,21 +296,24 @@ func (p *RuntimeDeepAgentPlanner) llmRouteStep(ctx context.Context, agentState *
 	}
 	prompt := fmt.Sprintf(`Classify the next DeepAgent step execution mode.
 
-Return exactly one word: %s, %s, %s, %s, or %s.
+Return exactly one word: %s, %s, %s, %s, %s, %s, %s, or %s.
 
 Definitions:
 - %s: general step execution. The model may use provider tools such as WebSearch, WebFetch, Artifact, and Skill when needed.
 - %s: generate a final deliverable and ensure a downloadable artifact/file is produced for this step.
 - %s: force a published skill only when the step explicitly requires a specific specialized skill.
 - %s: search prior conversation/session context only. Do not use this for external web/product research.
+- %s: run or inspect tests, lint, typecheck, build, or static checks and return executable evidence.
+- %s: controlled web/page verification with URL, screenshot, DOM, or assertion evidence.
+- %s: code patch/edit work with diff summary, changed files, and verification hints.
 - %s: broad step that should be decomposed; choose %s if unsure.
 
 Step intent: %s
 Success criteria: %s
 Prior step context:
 %s`,
-		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeMulti,
-		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeMulti, DeepAgentToolModeModel,
+		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeMulti,
+		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeMulti, DeepAgentToolModeModel,
 		strings.TrimSpace(firstNonEmptyString(step.Intent, step.Title)), strings.TrimSpace(step.DoneCondition), p.stepContextSummary(agentState, step))
 	runner := p.runtime.runnerForScope(Scope{UserID: deepAgentWorkflowString(stateWorkingMemory(agentState), "user_id"), SessionID: deepAgentWorkflowString(stateWorkingMemory(agentState), "session_id"), Prompt: prompt})
 	result, err := runner.RunGeneratedPrompt(ctx, state.NewSession(""), prompt)
@@ -316,6 +328,12 @@ Prior step context:
 		return DeepAgentToolModeSkill
 	case strings.Contains(mode, DeepAgentToolModeRAGSearch) || strings.Contains(mode, "search"):
 		return DeepAgentToolModeRAGSearch
+	case strings.Contains(mode, DeepAgentToolModeTest) || strings.Contains(mode, "lint") || strings.Contains(mode, "typecheck"):
+		return DeepAgentToolModeTest
+	case strings.Contains(mode, DeepAgentToolModeWeb) || strings.Contains(mode, "browser") || strings.Contains(mode, "screenshot"):
+		return DeepAgentToolModeWeb
+	case strings.Contains(mode, DeepAgentToolModeCodePatch) || strings.Contains(mode, "patch") || strings.Contains(mode, "diff"):
+		return DeepAgentToolModeCodePatch
 	case strings.Contains(mode, DeepAgentToolModeMulti):
 		if deepAgentStepRequiresArtifact(step) {
 			return DeepAgentToolModeModelArtifact
@@ -1436,6 +1454,7 @@ func (e *RuntimeDeepAgentExecutor) executeRAGSearchAction(ctx context.Context, a
 		Metadata: map[string]any{
 			"tool":         DeepAgentToolModeRAGSearch,
 			"query":        query,
+			"top_k":        limit,
 			"result_count": len(results),
 			"sources":      deepAgentSourceRefsFromMessageSearch(results),
 		},
@@ -1476,6 +1495,36 @@ func deepAgentPlannerPrompt(req DeepAgentTaskRequest) string {
 	return deepAgentPlannerPromptWithSkills(req, "(none)")
 }
 
+func deepAgentRubricPrompt(rubric DeepAgentRubric) string {
+	rubric = normalizeDeepAgentRubric(rubric)
+	if deepAgentRubricEmpty(rubric) {
+		return ""
+	}
+	var b strings.Builder
+	writeList := func(title string, values []string) {
+		if len(values) == 0 {
+			return
+		}
+		b.WriteString(title)
+		b.WriteString(":\n")
+		for _, value := range values {
+			b.WriteString("- ")
+			b.WriteString(value)
+			b.WriteString("\n")
+		}
+	}
+	writeList("Acceptance criteria", rubric.AcceptanceCriteria)
+	writeList("Required evidence", rubric.RequiredEvidence)
+	writeList("Required artifacts", rubric.RequiredArtifacts)
+	writeList("Forbidden actions", rubric.ForbiddenActions)
+	if strings.TrimSpace(rubric.QualityBar) != "" {
+		b.WriteString("Quality bar: ")
+		b.WriteString(strings.TrimSpace(rubric.QualityBar))
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
 func deepAgentPlannerPromptWithSkills(req DeepAgentTaskRequest, skillCatalog string) string {
 	if strings.TrimSpace(skillCatalog) == "" {
 		skillCatalog = "(none)"
@@ -1484,6 +1533,10 @@ func deepAgentPlannerPromptWithSkills(req DeepAgentTaskRequest, skillCatalog str
 	loadedContext := deepAgentLoadedContextPrompt(req.State)
 	if loadedContext == "" {
 		loadedContext = "(none)"
+	}
+	rubric := deepAgentRubricPrompt(req.Rubric)
+	if rubric == "" {
+		rubric = "(none)"
 	}
 	return fmt.Sprintf(`You are the planner for a production DeepAgent controller.
 
@@ -1498,6 +1551,9 @@ Rules:
 - Use depends_on to express required prior step outputs by step id.
 - Each done_condition is the success_criteria and must be concrete and verifiable.
 - Do not include risky external side effects unless the goal explicitly requires them.
+
+Task rubric. Turn these acceptance criteria into concrete step done_condition values, but do not add hidden requirements that are not implied by the goal:
+%s
 
 Published skills are available later to the Step Router. Use this only to phrase deliverable intents clearly, not to select a skill in the plan:
 %s
@@ -1521,7 +1577,7 @@ JSON shape:
 }
 
 User goal:
-%s`, maxSteps, skillCatalog, loadedContext, strings.TrimSpace(req.Goal))
+%s`, maxSteps, rubric, skillCatalog, loadedContext, strings.TrimSpace(req.Goal))
 }
 
 func deepAgentPlanRepairContext(req DeepAgentTaskRequest) string {

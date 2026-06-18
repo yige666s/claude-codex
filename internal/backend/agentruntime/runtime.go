@@ -87,18 +87,23 @@ type Runtime struct {
 	artifacts         *ArtifactService
 	assetInsights     AssetInsightStore
 	jobs              JobStore
+	loopGoals         LoopGoalStore
+	loopTriggers      LoopTriggerStore
 	jobQueue          JobQueue
 	jobEventFanout    JobEventPublisher
 	jobEvents         JobEventBus
 	skills            SkillCatalog
 	skillExecutions   SkillExecutionStore
 	workflowStore     WorkflowStore
+	deepAgentEvidence DeepAgentEvidenceRepository
 	toolCallLedger    ToolCallLedgerStore
 	promptStore       PromptStore
 	promptResolver    PromptResolver
 	engineFactory     EngineFactory
 	riskScanner       RiskScanner
 	riskRecorder      func(context.Context, RiskEvent)
+	triggerQuotaCheck func(context.Context, LoopTriggerRequest) error
+	loopTriggerPolicy LoopTriggerPolicy
 	logger            *slog.Logger
 	clock             Clock
 
@@ -108,6 +113,7 @@ type Runtime struct {
 	runningJobTurns       map[string]bool
 	runningJobs           map[string]context.CancelFunc
 	hiddenJobUserMessages map[string]bool
+	loopTriggersByJob     map[string]LoopTriggerRecord
 	shuttingDown          bool
 }
 
@@ -117,6 +123,40 @@ func (r *Runtime) SetArtifactService(artifacts *ArtifactService) {
 
 func (r *Runtime) SetJobStore(jobs JobStore) {
 	r.jobs = jobs
+}
+
+func (r *Runtime) SetLoopGoalStore(store LoopGoalStore) {
+	if r == nil {
+		return
+	}
+	if store == nil {
+		store = NewMemoryLoopGoalStore()
+	}
+	r.loopGoals = store
+}
+
+func (r *Runtime) SetLoopTriggerStore(store LoopTriggerStore) {
+	if r == nil {
+		return
+	}
+	if store == nil {
+		store = NewMemoryLoopTriggerStore()
+	}
+	r.loopTriggers = store
+}
+
+func (r *Runtime) SetLoopTriggerQuotaChecker(check func(context.Context, LoopTriggerRequest) error) {
+	if r == nil {
+		return
+	}
+	r.triggerQuotaCheck = check
+}
+
+func (r *Runtime) LoopTriggerLedgerStats(ctx context.Context, since time.Time) (LoopTriggerLedgerStats, error) {
+	if r == nil || r.loopTriggers == nil {
+		return LoopTriggerLedgerStats{}, nil
+	}
+	return r.loopTriggers.LoopTriggerLedgerStats(ctx, since)
 }
 
 func (r *Runtime) SetJobQueue(queue JobQueue) {
@@ -145,6 +185,13 @@ func (r *Runtime) SetWorkflowStore(store WorkflowStore) {
 	if r.messageSearch != nil {
 		r.messageSearch.SetWorkflowStore(store, ContextWorkflowEventSink{})
 	}
+}
+
+func (r *Runtime) SetDeepAgentEvidenceRepository(repo DeepAgentEvidenceRepository) {
+	if r == nil {
+		return
+	}
+	r.deepAgentEvidence = repo
 }
 
 func (r *Runtime) SetToolCallLedgerStore(store ToolCallLedgerStore) {
@@ -210,6 +257,8 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		memoryRecall:          NewMemoryRecallDecider(config.MemoryRecall, memoryRecallEmbedderFromConfig(config), componentLogger(logger, "memory_recall"), engineFactory),
 		episodeSummarizer:     RuleMemoryEpisodeSummarizer{},
 		skills:                skills,
+		loopGoals:             NewMemoryLoopGoalStore(),
+		loopTriggers:          NewMemoryLoopTriggerStore(),
 		workflowStore:         NewMemoryWorkflowStore(),
 		toolCallLedger:        NewMemoryToolCallLedgerStore(),
 		promptResolver:        NewPromptResolver(nil, nil),
@@ -220,6 +269,7 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		runningJobTurns:       make(map[string]bool),
 		runningJobs:           make(map[string]context.CancelFunc),
 		hiddenJobUserMessages: make(map[string]bool),
+		loopTriggersByJob:     make(map[string]LoopTriggerRecord),
 		jobEvents:             NewLocalJobEventBus(128),
 		localVectorIndex:      true,
 	}
@@ -1045,6 +1095,50 @@ func (r *Runtime) ResolveMemoryConflict(ctx context.Context, userID, itemID, act
 		item.Metadata["conflict_resolution"] = "kept_both"
 	default:
 		return MemoryItem{}, fmt.Errorf("unsupported memory conflict action")
+	}
+	item.UpdatedAt = now
+	return r.UpdateMemoryItem(ctx, userID, item)
+}
+
+func (r *Runtime) ReviewDeepAgentLearningCandidate(ctx context.Context, userID, candidateID, action, reviewerID, reason string) (MemoryItem, error) {
+	itemID := deepAgentLearningMemoryItemID(candidateID)
+	item, err := r.GetMemoryItem(ctx, userID, itemID)
+	if err != nil {
+		item, err = r.GetMemoryItem(ctx, userID, strings.TrimSpace(candidateID))
+		if err != nil {
+			return MemoryItem{}, err
+		}
+	}
+	if item.Metadata == nil || item.Metadata["deep_agent_learning"] != true {
+		return MemoryItem{}, fmt.Errorf("memory item is not a deep agent learning candidate")
+	}
+	now := time.Now().UTC()
+	action = strings.ToLower(strings.TrimSpace(action))
+	if item.Metadata == nil {
+		item.Metadata = map[string]any{}
+	}
+	switch action {
+	case "accept":
+		item.Status = MemoryStatusActive
+		item.Metadata["review_status"] = deepAgentLearningStatusAccepted
+		item.Metadata["user_confirmed"] = true
+		item.Metadata["user_confirmation_required"] = false
+	case "reject":
+		item.Status = MemoryStatusArchived
+		item.Metadata["review_status"] = deepAgentLearningStatusRejected
+		item.Metadata["user_confirmed"] = false
+	case "rollback":
+		item.Status = MemoryStatusDeleted
+		item.Metadata["review_status"] = deepAgentLearningStatusRollback
+		item.Metadata["user_confirmed"] = false
+	default:
+		return MemoryItem{}, fmt.Errorf("unsupported deep agent learning review action")
+	}
+	item.Metadata["review_action"] = action
+	item.Metadata["reviewed_by"] = strings.TrimSpace(reviewerID)
+	item.Metadata["reviewed_at"] = now.Format(time.RFC3339Nano)
+	if strings.TrimSpace(reason) != "" {
+		item.Metadata["review_reason"] = strings.TrimSpace(reason)
 	}
 	item.UpdatedAt = now
 	return r.UpdateMemoryItem(ctx, userID, item)
@@ -3329,11 +3423,43 @@ func (r *Runtime) CreateJob(ctx context.Context, req ChatRequest, jobType string
 		return nil, err
 	}
 	now := time.Now().UTC()
+	normalizedJobType := firstNonEmptyString(jobType, JobTypeChat)
+	loopGoalID := strings.TrimSpace(req.LoopGoalID)
+	if normalizedJobType == JobTypeDeepAgent && r.loopGoals != nil {
+		goalText := strings.TrimSpace(req.Content)
+		if goalText == "" {
+			goalText = "Please analyze the attached file(s)."
+		}
+		if loopGoalID == "" {
+			goal := normalizeLoopGoal(&LoopGoal{
+				UserID:      req.UserID,
+				SessionID:   req.SessionID,
+				Objective:   goalText,
+				TaskType:    "deep_agent",
+				Deliverable: "answer",
+				Budget:      loopBudgetFromDeepAgentPolicy(defaultDeepAgentJobPolicy()),
+				Trigger: LoopTrigger{
+					Type:   LoopTriggerManual,
+					Source: "agent_mode:plan_execute",
+				},
+				Status:    LoopGoalStatusPending,
+				CreatedAt: now,
+				UpdatedAt: now,
+			})
+			if err := r.loopGoals.UpsertLoopGoal(ctx, goal); err != nil {
+				return nil, err
+			}
+			loopGoalID = goal.ID
+		} else if _, err := r.loopGoals.GetLoopGoal(ctx, req.UserID, loopGoalID); err != nil {
+			return nil, err
+		}
+	}
 	job := &Job{
 		ID:             NewJobID(),
 		UserID:         req.UserID,
 		SessionID:      req.SessionID,
-		Type:           firstNonEmptyString(jobType, JobTypeChat),
+		LoopGoalID:     loopGoalID,
+		Type:           normalizedJobType,
 		Status:         JobStatusQueued,
 		Content:        req.Content,
 		AttachmentIDs:  append([]string(nil), req.AttachmentIDs...),
@@ -3344,7 +3470,22 @@ func (r *Runtime) CreateJob(ctx context.Context, req ChatRequest, jobType string
 	if err := r.jobs.CreateJob(ctx, job); err != nil {
 		return nil, err
 	}
+	if normalizedJobType == JobTypeDeepAgent && r.loopGoals != nil && loopGoalID != "" {
+		if err := r.loopGoals.UpdateLoopGoalRun(ctx, req.UserID, loopGoalID, job.ID, "", LoopGoalStatusPending, now); err != nil {
+			return nil, err
+		}
+	}
 	return job, nil
+}
+
+func defaultDeepAgentJobPolicy() DeepAgentPolicy {
+	return DeepAgentPolicy{
+		MaxSteps:        6,
+		MaxActions:      12,
+		MaxDuration:     10 * time.Minute,
+		StepTimeout:     5 * time.Minute,
+		NoProgressLimit: 2,
+	}
 }
 
 func (r *Runtime) StartJob(ctx context.Context, job *Job) error {
@@ -3494,6 +3635,10 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 	if goal == "" {
 		goal = "Please analyze the attached file(s)."
 	}
+	loopGoal := r.loadJobLoopGoal(ctx, job)
+	if loopGoal != nil && strings.TrimSpace(loopGoal.Objective) != "" {
+		goal = strings.TrimSpace(loopGoal.Objective)
+	}
 	session, err := r.GetSession(ctx, job.UserID, job.SessionID)
 	if err != nil {
 		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
@@ -3515,23 +3660,41 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 		return err
 	}
 	_ = sink.Send(ctx, Event{Type: "deep_agent_started", SessionID: job.SessionID, JobID: job.ID, Role: "workflow", Content: "Plan-and-execute task started"})
+	policy := defaultDeepAgentJobPolicy()
+	if loopGoal != nil {
+		policy = deepAgentPolicyFromLoopBudget(loopGoal.Budget, policy)
+		_ = r.loopGoals.UpdateLoopGoalRun(ctx, job.UserID, loopGoal.ID, job.ID, "", LoopGoalStatusRunning, time.Now().UTC())
+	}
+	state := map[string]any{
+		"attachment_ids":  append([]string(nil), job.AttachmentIDs...),
+		"attachment_urls": append([]ChatAttachmentURL(nil), job.AttachmentURLs...),
+	}
+	if loopGoal != nil {
+		state["loop_goal_id"] = loopGoal.ID
+		state["loop_goal"] = loopGoal
+		state["loop_goal_rubric"] = loopGoal.Rubric
+		state["loop_goal_trigger"] = loopGoal.Trigger
+		state["loop_goal_budget"] = loopGoal.Budget
+	}
+	if trigger, ok := r.loopTriggerForJob(job.ID); ok {
+		state["loop_trigger"] = trigger
+		state["loop_trigger_type"] = trigger.Type
+		state["loop_trigger_source"] = trigger.Source
+		state["loop_trigger_dedupe_key"] = trigger.DedupeKey
+		_ = sink.Send(ctx, Event{Type: "loop_trigger_started", SessionID: job.SessionID, JobID: job.ID, Role: "workflow", Content: trigger.Type, Data: deepAgentEventData(map[string]any{"loop_trigger": trigger})})
+	}
 	result, err := r.ExecuteDeepAgentTask(turnCtx, DeepAgentTaskRequest{
-		UserID:    job.UserID,
-		SessionID: job.SessionID,
-		JobID:     job.ID,
-		Goal:      goal,
-		Policy: DeepAgentPolicy{
-			MaxSteps:        6,
-			MaxActions:      12,
-			MaxDuration:     10 * time.Minute,
-			StepTimeout:     5 * time.Minute,
-			NoProgressLimit: 2,
-		},
-		State: map[string]any{
-			"attachment_ids":  append([]string(nil), job.AttachmentIDs...),
-			"attachment_urls": append([]ChatAttachmentURL(nil), job.AttachmentURLs...),
-		},
+		UserID:     job.UserID,
+		SessionID:  job.SessionID,
+		JobID:      job.ID,
+		LoopGoalID: job.LoopGoalID,
+		Goal:       goal,
+		Policy:     policy,
+		Rubric:     deepAgentRubricFromLoopRubric(loopGoalRubric(loopGoal)),
+		LoopGoal:   loopGoal,
+		State:      state,
 	}, nil, nil, nil)
+	r.updateLoopGoalFromDeepAgentResult(ctx, job, loopGoal, result, err)
 	if err != nil {
 		messageErr := r.appendDeepAgentResultMessage(ctx, job.UserID, job.SessionID, result, err)
 		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
@@ -3546,6 +3709,52 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 	}
 	_ = sink.Send(ctx, Event{Type: "deep_agent_completed", SessionID: job.SessionID, JobID: job.ID, Role: "workflow", Content: "Plan-and-execute task completed"})
 	return sink.Send(ctx, Event{Type: "done", SessionID: job.SessionID, JobID: job.ID})
+}
+
+func (r *Runtime) loadJobLoopGoal(ctx context.Context, job *Job) *LoopGoal {
+	if r == nil || r.loopGoals == nil || job == nil || strings.TrimSpace(job.LoopGoalID) == "" {
+		return nil
+	}
+	goal, err := r.loopGoals.GetLoopGoal(ctx, job.UserID, job.LoopGoalID)
+	if err != nil {
+		return nil
+	}
+	return goal
+}
+
+func (r *Runtime) updateLoopGoalFromDeepAgentResult(ctx context.Context, job *Job, goal *LoopGoal, result *DeepAgentTaskResult, runErr error) {
+	if r == nil || r.loopGoals == nil || job == nil || goal == nil {
+		return
+	}
+	status := LoopGoalStatusSucceeded
+	if result != nil && result.State != nil && strings.TrimSpace(result.State.Status) != "" {
+		status = loopGoalStatusFromDeepAgent(result.State.Status)
+	}
+	if runErr != nil && status == LoopGoalStatusSucceeded {
+		status = LoopGoalStatusFailed
+	}
+	runID := ""
+	if result != nil && result.Run != nil {
+		runID = result.Run.ID
+	}
+	_ = r.loopGoals.UpdateLoopGoalRun(ctx, job.UserID, goal.ID, job.ID, runID, status, time.Now().UTC())
+}
+
+func loopGoalRubric(goal *LoopGoal) LoopRubric {
+	if goal == nil {
+		return LoopRubric{}
+	}
+	return goal.Rubric
+}
+
+func deepAgentRubricFromLoopRubric(rubric LoopRubric) DeepAgentRubric {
+	return DeepAgentRubric{
+		AcceptanceCriteria: append([]string(nil), rubric.AcceptanceCriteria...),
+		RequiredEvidence:   append([]string(nil), rubric.RequiredEvidence...),
+		RequiredArtifacts:  append([]string(nil), rubric.RequiredArtifacts...),
+		ForbiddenActions:   append([]string(nil), rubric.ForbiddenActions...),
+		QualityBar:         rubric.QualityBar,
+	}
 }
 
 func (r *Runtime) appendDeepAgentResultMessage(ctx context.Context, userID, sessionID string, result *DeepAgentTaskResult, runErr error) error {
@@ -3637,6 +3846,46 @@ func formatDeepAgentResultMessage(result *DeepAgentTaskResult, runErr error) str
 				}
 			}
 		}
+		finalEvidence := deepAgentFinalAnswerEvidenceForSummary(state)
+		if len(finalEvidence.Sources) > 0 {
+			b.WriteString("\n\nSources：")
+			for _, source := range finalEvidence.Sources {
+				label := firstNonEmptyString(source.Title, source.URL, source.Snippet)
+				if strings.TrimSpace(label) == "" {
+					continue
+				}
+				b.WriteString("\n- ")
+				b.WriteString(strings.TrimSpace(label))
+				if strings.TrimSpace(source.URL) != "" && source.URL != label {
+					b.WriteString("（")
+					b.WriteString(strings.TrimSpace(source.URL))
+					b.WriteString("）")
+				}
+			}
+		}
+		if len(finalEvidence.Tests) > 0 {
+			b.WriteString("\n\nTest results：")
+			for _, test := range finalEvidence.Tests {
+				label := firstNonEmptyString(deepAgentWorkflowString(test, "command"), deepAgentWorkflowString(test, "step_id"), "test")
+				status := firstNonEmptyString(deepAgentWorkflowString(test, "status"), fmt.Sprint(test["exit_code"]))
+				b.WriteString("\n- ")
+				b.WriteString(label)
+				if strings.TrimSpace(status) != "" {
+					b.WriteString("：")
+					b.WriteString(status)
+				}
+			}
+		}
+		if len(finalEvidence.KnownGaps) > 0 {
+			b.WriteString("\n\nKnown gaps：")
+			for _, gap := range finalEvidence.KnownGaps {
+				if strings.TrimSpace(gap) == "" {
+					continue
+				}
+				b.WriteString("\n- ")
+				b.WriteString(strings.TrimSpace(gap))
+			}
+		}
 		b.WriteString(fmt.Sprintf("\n\n动作次数：%d", state.ActionCount))
 	}
 	if result != nil && result.Run != nil && strings.TrimSpace(result.Run.ID) != "" {
@@ -3724,8 +3973,16 @@ type WorkflowRecoveryResult struct {
 }
 
 func (r *Runtime) ResumeWorkflowRun(ctx context.Context, runID string) (*WorkflowRun, error) {
+	return r.ResumeWorkflowRunWithRequest(ctx, DeepAgentResumeRequest{RunID: runID})
+}
+
+func (r *Runtime) ResumeWorkflowRunWithRequest(ctx context.Context, req DeepAgentResumeRequest) (*WorkflowRun, error) {
 	if r == nil || r.workflowStore == nil {
 		return nil, fmt.Errorf("workflow store is not configured")
+	}
+	runID := strings.TrimSpace(req.RunID)
+	if runID == "" {
+		return nil, fmt.Errorf("workflow run id is required")
 	}
 	run, err := r.workflowStore.GetWorkflowRun(ctx, runID)
 	if err != nil {
@@ -3733,7 +3990,8 @@ func (r *Runtime) ResumeWorkflowRun(ctx context.Context, runID string) (*Workflo
 	}
 	switch run.Name {
 	case deepAgentTaskWorkflowName:
-		result, err := r.ResumeDeepAgentTask(ctx, DeepAgentResumeRequest{RunID: run.ID}, nil, nil, nil)
+		req.RunID = run.ID
+		result, err := r.ResumeDeepAgentTask(ctx, req, nil, nil, nil)
 		if result != nil && result.Run != nil {
 			return result.Run, err
 		}
@@ -3820,6 +4078,7 @@ func (r *Runtime) ExecuteDeepAgentTask(ctx context.Context, req DeepAgentTaskReq
 	}
 	controller := NewDeepAgentController(store, ContextWorkflowEventSink{}, planner, executor, verifier)
 	controller.SetContextLoader(r)
+	controller.SetEvidenceRepository(r.deepAgentEvidence)
 	controller.SetRiskGate(NewRuntimeDeepAgentRiskGate(r))
 	controller.SetLearningSink(NewRuntimeDeepAgentLearningSink(r))
 	return controller.Execute(ctx, req)
@@ -3841,6 +4100,7 @@ func (r *Runtime) ResumeDeepAgentTask(ctx context.Context, req DeepAgentResumeRe
 	}
 	controller := NewDeepAgentController(store, ContextWorkflowEventSink{}, planner, executor, verifier)
 	controller.SetContextLoader(r)
+	controller.SetEvidenceRepository(r.deepAgentEvidence)
 	controller.SetRiskGate(NewRuntimeDeepAgentRiskGate(r))
 	controller.SetLearningSink(NewRuntimeDeepAgentLearningSink(r))
 	return controller.Resume(ctx, req)

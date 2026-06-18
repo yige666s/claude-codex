@@ -1,5 +1,5 @@
 import { ReactNode, Ref, RefObject } from "react";
-import { Briefcase, Database, FileUp, Image, LogOut, MessageSquarePlus, PanelLeft, Search, Settings, Sparkles, X } from "lucide-react";
+import { Briefcase, Database, FileUp, Image, LogOut, MessageSquarePlus, PanelLeft, Repeat2, Search, Settings, Sparkles, X } from "lucide-react";
 import { BrandLogo } from "../../../components/brand/BrandLogo";
 import { Button } from "../../../components/ui/button";
 import {
@@ -106,6 +106,7 @@ export function WorkspaceSidebar({
       <nav className="sidebar-resource-nav" aria-label="Workspace resources">
         <ResourceButton tab="skills" label="Skills" count={resourceCounts.skills} hasNew={resourceNotices.skills} icon={<Sparkles size={17} />} onOpen={onOpenResource} />
         <ResourceButton tab="jobs" label="Jobs" count={resourceCounts.jobs} hasNew={resourceNotices.jobs} icon={<Briefcase size={17} />} onOpen={onOpenResource} />
+        <ResourceButton tab="loops" label="Loops" count={resourceCounts.loops} hasNew={resourceNotices.loops} icon={<Repeat2 size={17} />} onOpen={onOpenResource} />
         <ResourceButton tab="attachments" label="Attachments" count={resourceCounts.attachments} hasNew={resourceNotices.attachments} icon={<FileUp size={17} />} onOpen={onOpenResource} />
         <ResourceButton tab="artifacts" label="Artifacts" count={resourceCounts.artifacts} hasNew={resourceNotices.artifacts} icon={<Image size={17} />} onOpen={onOpenResource} />
       </nav>

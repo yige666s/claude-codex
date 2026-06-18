@@ -320,3 +320,58 @@ func TestAdminOpsGoldenCasesFromRuntimeTraceCreatesVersionedSet(t *testing.T) {
 		t.Fatalf("get v1 status = %d body=%s", getRec.Code, getRec.Body.String())
 	}
 }
+
+func TestAdminOpsTemplateReplayCorpusDashboardAndRoutes(t *testing.T) {
+	server := NewServer(testRuntime(t), HeaderAuthenticator{UserHeader: "X-User-ID"}, NoopRateLimiter{}, nil)
+	server.SetAdminToken("secret")
+	server.SetEvaluationStore(NewMemoryEvaluationStore())
+
+	corpusReq := httptest.NewRequest(http.MethodGet, "/v1/admin/ops/eval/template-corpus", nil)
+	corpusReq.Header.Set("X-User-ID", "admin")
+	corpusReq.Header.Set("X-Admin-Token", "secret")
+	corpusRec := httptest.NewRecorder()
+	server.ServeHTTP(corpusRec, corpusReq)
+	if corpusRec.Code != http.StatusOK {
+		t.Fatalf("corpus status = %d body=%s", corpusRec.Code, corpusRec.Body.String())
+	}
+	if body := corpusRec.Body.String(); !strings.Contains(body, LoopTemplateResearchReport) || !strings.Contains(body, LoopTemplateCodeFix) || !strings.Contains(body, LoopTemplateDocGeneration) {
+		t.Fatalf("corpus response missing template sets: %s", body)
+	}
+
+	replayBody := `{"persist":true,"planner_version":"planner-v2","router_version":"router-v2","executor_version":"executor-v2","verifier_version":"verifier-v2","experiment_id":"phase11","variant_id":"candidate"}`
+	replayReq := httptest.NewRequest(http.MethodPost, "/v1/admin/ops/eval/template-replay", bytes.NewBufferString(replayBody))
+	replayReq.Header.Set("X-User-ID", "admin")
+	replayReq.Header.Set("X-Admin-Token", "secret")
+	replayRec := httptest.NewRecorder()
+	server.ServeHTTP(replayRec, replayReq)
+	if replayRec.Code != http.StatusCreated {
+		t.Fatalf("replay status = %d body=%s", replayRec.Code, replayRec.Body.String())
+	}
+	var replay DeepAgentTemplateReplayReport
+	if err := json.Unmarshal(replayRec.Body.Bytes(), &replay); err != nil {
+		t.Fatalf("decode replay: %v", err)
+	}
+	if len(replay.Runs) != 3 || replay.Dashboard.Total != 9 {
+		t.Fatalf("unexpected replay shape: runs=%d dashboard=%+v", len(replay.Runs), replay.Dashboard)
+	}
+	for _, row := range replay.Dashboard.Templates {
+		if row.Total != 3 || row.SuccessRate <= 0 || row.BlockedRate == 0 || row.EstimatedCostUSD == 0 || row.TokenEstimate == 0 || len(row.VerifierFailureReasons) == 0 {
+			t.Fatalf("template row missing phase11 metrics: %+v", row)
+		}
+		if row.Versions["planner"] != "planner-v2" || row.Versions["router"] != "router-v2" || row.Versions["executor"] != "executor-v2" || row.Versions["verifier"] != "verifier-v2" {
+			t.Fatalf("template row missing component versions: %+v", row)
+		}
+	}
+
+	dashboardReq := httptest.NewRequest(http.MethodGet, "/v1/admin/ops/eval/template-dashboard", nil)
+	dashboardReq.Header.Set("X-User-ID", "admin")
+	dashboardReq.Header.Set("X-Admin-Token", "secret")
+	dashboardRec := httptest.NewRecorder()
+	server.ServeHTTP(dashboardRec, dashboardReq)
+	if dashboardRec.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d body=%s", dashboardRec.Code, dashboardRec.Body.String())
+	}
+	if body := dashboardRec.Body.String(); !strings.Contains(body, `"total":9`) || !strings.Contains(body, `"blocked_rate"`) || !strings.Contains(body, `"estimated_cost_usd"`) {
+		t.Fatalf("dashboard response missing metrics: %s", body)
+	}
+}

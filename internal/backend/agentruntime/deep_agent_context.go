@@ -13,12 +13,14 @@ import (
 )
 
 const (
-	deepAgentLoadedContextKey       = "loaded_context"
-	deepAgentLoadedContextMaxItems  = 12
-	deepAgentLoadedContextMsgLimit  = 8
-	deepAgentLoadedContextTextLimit = 600
-	deepAgentLoadedMemoryTextLimit  = 2000
-	deepAgentLoadedCatalogTextLimit = 240
+	deepAgentLoadedContextKey        = "loaded_context"
+	deepAgentEvidencePackKey         = "evidence_pack"
+	deepAgentLoadedContextMaxItems   = 12
+	deepAgentLoadedContextMsgLimit   = 8
+	deepAgentLoadedContextTextLimit  = 600
+	deepAgentLoadedMemoryTextLimit   = 2000
+	deepAgentLoadedCatalogTextLimit  = 240
+	deepAgentEvidencePackTokenBudget = 6000
 )
 
 type noopDeepAgentContextLoader struct{}
@@ -65,6 +67,7 @@ func (r *Runtime) LoadDeepAgentContext(ctx context.Context, req DeepAgentTaskReq
 	loaded.SkillCatalog = r.deepAgentSkillRefs()
 	loaded.ToolCatalog = r.deepAgentToolRefs(ctx, userID, sessionID)
 	loaded.MemorySummary = r.deepAgentMemorySummary(ctx, userID, session)
+	loaded.EvidencePack = buildDeepAgentEvidencePack(loaded, agentState, deepAgentEvidencePackTokenBudget)
 	return loaded, nil
 }
 
@@ -359,7 +362,32 @@ func deepAgentLoadedContextFromMap(values map[string]any) (DeepAgentLoadedContex
 	return loaded, true
 }
 
+func deepAgentEvidencePackFromMap(values map[string]any) (DeepAgentEvidencePack, bool) {
+	if values == nil {
+		return DeepAgentEvidencePack{}, false
+	}
+	raw := values[deepAgentEvidencePackKey]
+	if raw == nil {
+		if loaded, ok := deepAgentLoadedContextFromMap(values); ok && loaded.EvidencePack.TokenEstimate > 0 {
+			return loaded.EvidencePack, true
+		}
+		return DeepAgentEvidencePack{}, false
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return DeepAgentEvidencePack{}, false
+	}
+	var pack DeepAgentEvidencePack
+	if err := json.Unmarshal(data, &pack); err != nil {
+		return DeepAgentEvidencePack{}, false
+	}
+	return pack, true
+}
+
 func deepAgentLoadedContextPrompt(values map[string]any) string {
+	if pack, ok := deepAgentEvidencePackFromMap(values); ok {
+		return deepAgentEvidencePackPrompt(pack)
+	}
 	loaded, ok := deepAgentLoadedContextFromMap(values)
 	if !ok {
 		return ""
@@ -426,4 +454,225 @@ func deepAgentLoadedContextPrompt(values map[string]any) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(sections, "\n\n"))
+}
+
+func buildDeepAgentEvidencePack(loaded DeepAgentLoadedContext, agentState *DeepAgentState, tokenBudget int) DeepAgentEvidencePack {
+	pack := DeepAgentEvidencePack{
+		UserID:      loaded.UserID,
+		SessionID:   loaded.SessionID,
+		TokenBudget: tokenBudget,
+		Issues:      append([]string(nil), loaded.Issues...),
+	}
+	if agentState != nil {
+		pack.RunID = deepAgentWorkflowString(agentState.WorkingMemory, "workflow_run_id")
+	}
+	add := func(dst *[]DeepAgentEvidencePackItem, item DeepAgentEvidencePackItem) {
+		item.Summary = truncateDeepAgentDiagnosticText(item.Summary, deepAgentLoadedContextTextLimit)
+		item.TokenEstimate = estimateDeepAgentContextTokens(item.Summary)
+		if item.TokenEstimate == 0 {
+			item.TokenEstimate = estimateDeepAgentContextTokens(item.Title)
+		}
+		*dst = append(*dst, item)
+		pack.TokenEstimate += item.TokenEstimate
+	}
+	for _, message := range loaded.RecentMessages {
+		add(&pack.RecentMessages, DeepAgentEvidencePackItem{
+			ID:         message.ID,
+			Kind:       "message",
+			Title:      firstNonEmptyString(message.Role, "message"),
+			Summary:    firstNonEmptyString(message.Snippet, message.Content),
+			Source:     "recent_messages",
+			Visibility: "planner",
+			PhaseScope: []string{"planner", "executor"},
+			Metadata:   map[string]any{"created_at": message.CreatedAt},
+		})
+	}
+	for _, attachment := range loaded.Attachments {
+		add(&pack.Attachments, DeepAgentEvidencePackItem{
+			ID:         firstNonEmptyString(attachment.ID, attachment.URL),
+			Kind:       "attachment",
+			Title:      firstNonEmptyString(attachment.Filename, attachment.ID, attachment.URL),
+			Summary:    firstNonEmptyString(attachment.ContentType, "attachment"),
+			Source:     firstNonEmptyString(attachment.Source, "attachment"),
+			Visibility: "executor",
+			PhaseScope: []string{"executor", "verifier"},
+			Metadata:   map[string]any{"content_type": attachment.ContentType, "size_bytes": attachment.SizeBytes},
+		})
+	}
+	for _, artifact := range loaded.ExistingArtifacts {
+		add(&pack.ExistingArtifacts, DeepAgentEvidencePackItem{
+			ID:         artifact.ID,
+			Kind:       "artifact",
+			Title:      firstNonEmptyString(artifact.Filename, artifact.ID),
+			Summary:    firstNonEmptyString(artifact.ContentType, "artifact"),
+			Source:     firstNonEmptyString(artifact.Source, "session_artifact"),
+			Visibility: "executor",
+			PhaseScope: []string{"executor", "verifier"},
+			CurrentRun: false,
+			Metadata:   map[string]any{"content_type": artifact.ContentType, "size_bytes": artifact.SizeBytes, "job_id": artifact.JobID, "run_id": artifact.RunID},
+		})
+	}
+	for _, artifact := range deepAgentStateCurrentArtifactRefs(agentState) {
+		add(&pack.CurrentArtifacts, DeepAgentEvidencePackItem{
+			ID:         artifact.ID,
+			Kind:       "artifact",
+			Title:      firstNonEmptyString(artifact.Filename, artifact.ID),
+			Summary:    firstNonEmptyString(artifact.ContentType, "artifact"),
+			Source:     "current_run_evidence",
+			Visibility: "verifier",
+			PhaseScope: []string{"verifier"},
+			CurrentRun: true,
+			Metadata:   map[string]any{"content_type": artifact.ContentType, "size_bytes": artifact.SizeBytes, "job_id": artifact.JobID, "run_id": artifact.RunID},
+		})
+	}
+	if agentState != nil {
+		for _, evidence := range (StateDeepAgentEvidenceStore{}).ListStepEvidence(agentState) {
+			add(&pack.WorkingContext, DeepAgentEvidencePackItem{
+				ID:         firstNonEmptyString(evidence.ActionID, evidence.StepID),
+				Kind:       "step_evidence",
+				Title:      firstNonEmptyString(evidence.StepID, evidence.Route.StepID),
+				Summary:    firstNonEmptyString(evidence.Summary, evidence.Output),
+				Source:     "evidence_store",
+				Visibility: "verifier",
+				PhaseScope: []string{"executor", "verifier"},
+				CurrentRun: true,
+				Metadata:   map[string]any{"source_count": len(evidence.Sources), "artifact_count": len(evidence.Artifacts), "tool_call_count": len(evidence.ToolCalls)},
+			})
+		}
+	}
+	if strings.TrimSpace(loaded.MemorySummary) != "" {
+		add(&pack.Memory, DeepAgentEvidencePackItem{
+			ID:         "memory_summary",
+			Kind:       "memory_summary",
+			Title:      "Memory summary",
+			Summary:    sanitizeDeepAgentMemorySummary(loaded.MemorySummary),
+			Source:     "memory",
+			Visibility: "planner",
+			PhaseScope: []string{"planner"},
+		})
+	}
+	for _, skill := range loaded.SkillCatalog {
+		add(&pack.SkillCatalog, DeepAgentEvidencePackItem{
+			ID:         skill.Name,
+			Kind:       "skill",
+			Title:      skill.Name,
+			Summary:    firstNonEmptyString(skill.WhenToUse, skill.Description),
+			Source:     "skill_catalog",
+			Visibility: "planner",
+			PhaseScope: []string{"planner", "executor"},
+			Metadata:   map[string]any{"produces_artifacts": skill.ProducesArtifacts, "run_as_job": skill.RunAsJob},
+		})
+	}
+	for _, tool := range loaded.ToolCatalog {
+		add(&pack.ToolCatalog, DeepAgentEvidencePackItem{
+			ID:         tool.Name,
+			Kind:       "tool",
+			Title:      tool.Name,
+			Summary:    tool.Description,
+			Source:     "tool_catalog",
+			Visibility: "planner",
+			PhaseScope: []string{"planner", "executor"},
+			Metadata:   map[string]any{"permission": tool.Permission},
+		})
+	}
+	return trimDeepAgentEvidencePack(pack)
+}
+
+func trimDeepAgentEvidencePack(pack DeepAgentEvidencePack) DeepAgentEvidencePack {
+	if pack.TokenBudget <= 0 || pack.TokenEstimate <= pack.TokenBudget {
+		return pack
+	}
+	pack.RecentMessages = trimDeepAgentEvidencePackItems(pack.RecentMessages, deepAgentLoadedContextMsgLimit/2)
+	pack.WorkingContext = trimDeepAgentEvidencePackItems(pack.WorkingContext, deepAgentLoadedContextMaxItems/2)
+	pack.TokenEstimate = 0
+	for _, group := range [][]DeepAgentEvidencePackItem{pack.RecentMessages, pack.Attachments, pack.ExistingArtifacts, pack.CurrentArtifacts, pack.WorkingContext, pack.Memory, pack.SearchCandidates, pack.SkillCatalog, pack.ToolCatalog} {
+		for _, item := range group {
+			pack.TokenEstimate += item.TokenEstimate
+		}
+	}
+	if pack.TokenEstimate > pack.TokenBudget {
+		pack.Issues = append(pack.Issues, "evidence pack was trimmed to fit token budget")
+	}
+	return pack
+}
+
+func trimDeepAgentEvidencePackItems(items []DeepAgentEvidencePackItem, limit int) []DeepAgentEvidencePackItem {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return append([]DeepAgentEvidencePackItem(nil), items[len(items)-limit:]...)
+}
+
+func deepAgentEvidencePackPrompt(pack DeepAgentEvidencePack) string {
+	var sections []string
+	appendItems := func(title string, items []DeepAgentEvidencePackItem, plannerOnly bool) {
+		var lines []string
+		for _, item := range items {
+			if plannerOnly && !deepAgentEvidencePackItemVisibleTo(item, "planner") {
+				continue
+			}
+			label := firstNonEmptyString(item.Title, item.ID, item.Kind)
+			if label == "" {
+				continue
+			}
+			summary := strings.TrimSpace(item.Summary)
+			if summary != "" {
+				lines = append(lines, fmt.Sprintf("- [%s/%s] %s: %s", item.Kind, item.Source, label, summary))
+			} else {
+				lines = append(lines, fmt.Sprintf("- [%s/%s] %s", item.Kind, item.Source, label))
+			}
+		}
+		if len(lines) > 0 {
+			sections = append(sections, title+":\n"+strings.Join(lines, "\n"))
+		}
+	}
+	appendItems("Recent session messages", pack.RecentMessages, true)
+	appendItems("Memory summary", pack.Memory, true)
+	appendItems("Attachments", pack.Attachments, false)
+	appendItems("Existing artifacts (historical, not final deliverables unless reused explicitly)", pack.ExistingArtifacts, false)
+	appendItems("Current run artifacts", pack.CurrentArtifacts, false)
+	appendItems("Working evidence", pack.WorkingContext, false)
+	appendItems("Available tools", pack.ToolCatalog, true)
+	appendItems("Available skills", pack.SkillCatalog, true)
+	if len(pack.Issues) > 0 {
+		sections = append(sections, "Context issues:\n- "+strings.Join(pack.Issues, "\n- "))
+	}
+	return strings.TrimSpace(strings.Join(sections, "\n\n"))
+}
+
+func deepAgentEvidencePackItemVisibleTo(item DeepAgentEvidencePackItem, phase string) bool {
+	if len(item.PhaseScope) == 0 {
+		return true
+	}
+	for _, scope := range item.PhaseScope {
+		if scope == phase {
+			return true
+		}
+	}
+	return false
+}
+
+func estimateDeepAgentContextTokens(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	return len([]rune(text))/4 + 1
+}
+
+func sanitizeDeepAgentMemorySummary(summary string) string {
+	lines := strings.Split(truncateDeepAgentDiagnosticText(summary, deepAgentLoadedMemoryTextLimit), "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		if strings.Contains(lower, "api key") || strings.Contains(lower, "token=") || strings.Contains(lower, "secret") || strings.Contains(lower, "password") {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return strings.Join(out, "\n")
 }

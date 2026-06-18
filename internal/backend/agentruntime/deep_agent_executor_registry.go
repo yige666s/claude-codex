@@ -73,6 +73,14 @@ func (r *RuntimeDeepAgentExecutorRegistry) ExecuteStep(ctx context.Context, rout
 		result, err = (&runtimeDeepAgentSkillExecutor{parent: r.legacy}).execute(ctx, route, action, state)
 	case deepAgentRouteExecutorRAG:
 		result, err = (&runtimeDeepAgentRAGSearchExecutor{parent: r.legacy}).execute(ctx, route, action, state)
+	case deepAgentRouteExecutorTest:
+		return (&runtimeDeepAgentTestExecutor{runtime: r.runtime}).ExecuteStep(ctx, route, action, state)
+	case deepAgentRouteExecutorWeb:
+		return (&runtimeDeepAgentWebExecutor{runtime: r.runtime}).ExecuteStep(ctx, route, action, state)
+	case deepAgentRouteExecutorCodePatch:
+		return (&runtimeDeepAgentCodePatchExecutor{runtime: r.runtime}).ExecuteStep(ctx, route, action, state)
+	case deepAgentRouteExecutorSubPlan:
+		return (&runtimeDeepAgentSubplanExecutor{runtime: r.runtime}).ExecuteStep(ctx, route, action, state)
 	case deepAgentRouteExecutorModel, "":
 		result, err = (&runtimeDeepAgentModelExecutor{parent: r.legacy}).execute(ctx, route, action, state)
 	default:
@@ -136,6 +144,20 @@ func (e *runtimeDeepAgentRAGSearchExecutor) ExecuteStep(ctx context.Context, rou
 func (e *runtimeDeepAgentRAGSearchExecutor) execute(ctx context.Context, route DeepAgentStepRoute, action DeepAgentAction, state *DeepAgentState) (DeepAgentActionResult, error) {
 	action = deepAgentActionWithRoute(action, route)
 	return e.parent.executeRAGSearchAction(ctx, action, state)
+}
+
+type runtimeDeepAgentEvidenceExecutor struct {
+	parent *RuntimeDeepAgentExecutor
+}
+
+func (e *runtimeDeepAgentEvidenceExecutor) ExecuteStep(ctx context.Context, route DeepAgentStepRoute, action DeepAgentAction, state *DeepAgentState) (DeepAgentStepEvidence, error) {
+	result, err := e.execute(ctx, route, action, state)
+	return deepAgentEvidenceFromActionResult(route, action, result, err), err
+}
+
+func (e *runtimeDeepAgentEvidenceExecutor) execute(ctx context.Context, route DeepAgentStepRoute, action DeepAgentAction, state *DeepAgentState) (DeepAgentActionResult, error) {
+	action = deepAgentActionWithRoute(action, route)
+	return e.parent.executeModelAction(ctx, action, state, false)
 }
 
 func finalizeDeepAgentActionRoute(route DeepAgentStepRoute, action DeepAgentAction) DeepAgentStepRoute {
@@ -289,6 +311,18 @@ func deepAgentSourceRefsFromAny(raw any) []DeepAgentSourceRef {
 		return nil
 	}
 	var refs []DeepAgentSourceRef
+	if err := json.Unmarshal(data, &refs); err != nil {
+		return nil
+	}
+	return refs
+}
+
+func deepAgentToolCallRefsFromAny(raw any) []DeepAgentToolCallRef {
+	data, err := json.Marshal(raw)
+	if err != nil || raw == nil {
+		return nil
+	}
+	var refs []DeepAgentToolCallRef
 	if err := json.Unmarshal(data, &refs); err != nil {
 		return nil
 	}

@@ -86,6 +86,9 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	artifactService := buildArtifactService(artifactConfigFromStartup(cfg, storeCfg))
 	assetInsightStore := buildAssetInsightStore(storeCfg)
 	workflowStore := buildWorkflowStore(storeCfg)
+	deepAgentEvidenceRepo := buildDeepAgentEvidenceRepository(storeCfg)
+	loopGoalStore := buildLoopGoalStore(storeCfg)
+	loopTriggerStore := buildLoopTriggerStore(storeCfg)
 	runtimeConfig := runtimeConfigFromStartup(cfg, skillShellSandboxConfig)
 	runtimeConfig.Logger = appLogger
 	runtimeConfig.CacheStore = cacheStore
@@ -100,6 +103,13 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		engineFactory,
 	)
 	runtime.SetWorkflowStore(workflowStore)
+	runtime.SetDeepAgentEvidenceRepository(deepAgentEvidenceRepo)
+	runtime.SetLoopGoalStore(loopGoalStore)
+	runtime.SetLoopTriggerStore(loopTriggerStore)
+	runtime.SetLoopTriggerQuotaChecker(func(ctx context.Context, req agentruntime.LoopTriggerRequest) error {
+		return agentruntime.CheckLoopTriggerQuota(ctx, llmUsageStore, llmConfigManager.Get(), req.UserID)
+	})
+	runtime.SetLoopTriggerPolicy(loopTriggerPolicyFromStartup(cfg))
 	runtime.SetToolCallLedgerStore(toolCallLedgerStore)
 	runtime.SetPromptStore(promptStore)
 	kafkaConfig := kafkaMessageEventConfigFromStartup(cfg)
@@ -334,9 +344,18 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	server.SetPromptStore(promptStore)
 	server.SetEvaluationJudge(evaluationJudgeFromStartup(cfg, llmCfg, llmConfigManager, llmUsageStore))
 	server.SetLLMGovernanceConfigManager(llmConfigManager)
+	server.SetLoopWebhookSecrets(parseLoopWebhookSecrets(cfg.LoopWebhookSecrets))
 	stopDailyEvaluation := server.StartDailyEvaluationScheduler(dailyEvaluationConfigFromStartup(cfg))
 	defer stopDailyEvaluation()
+	stopLoopAutomation := server.StartLoopTriggerAutomationScheduler(agentruntime.LoopTriggerAutomationConfig{
+		Enabled:      cfg.LoopAutomationEnabled,
+		PollInterval: cfg.LoopAutomationInterval,
+	})
+	defer stopLoopAutomation()
 	server.SetLLMStatusProvider(llmStatusFn)
+	if cfg.LoopAutomationEnabled {
+		server.AddReadinessCheck("loop_automation", server.LoopTriggerAutomationReadinessCheck())
+	}
 	server.AddReadinessCheck("llm_config", func(ctx context.Context) error {
 		return bootstrap.LLMConfigReadinessCheck(bootstrap.ApplyRuntimeLLMConfig(llmCfg, llmConfigManager.Get()))(ctx)
 	})
@@ -411,4 +430,22 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	if err := httpListenAndServe(cfg.Addr, server, cfg.ShutdownTimeout); err != nil {
 		logFatal(err)
 	}
+}
+
+func loopTriggerPolicyFromStartup(cfg startupconfig.Config) agentruntime.LoopTriggerPolicy {
+	policy := agentruntime.DefaultLoopTriggerPolicy()
+	policy.ScheduleEnabled = cfg.LoopScheduleTriggersEnabled
+	policy.MonitorEnabled = cfg.LoopMonitorTriggersEnabled
+	policy.EvalRepairEnabled = cfg.LoopEvalRepairTriggersEnabled
+	policy.WebhookEnabled = cfg.LoopWebhookTriggersEnabled
+	policy.ReleaseGate = agentruntime.LoopReleaseGateReport{
+		CriticalTestsPassed:        cfg.LoopReleaseGateCriticalTestsPassed,
+		TemplateReplayPassCount:    cfg.LoopReleaseGateTemplateReplayPassCount,
+		GovernanceKillSwitchPassed: cfg.LoopReleaseGateKillSwitchPassed,
+		QuotaGuardPassed:           cfg.LoopReleaseGateQuotaGuardPassed,
+	}
+	for source := range parseLoopWebhookSecrets(cfg.LoopWebhookSecrets) {
+		policy.WebhookAllowedSources = append(policy.WebhookAllowedSources, source)
+	}
+	return policy
 }

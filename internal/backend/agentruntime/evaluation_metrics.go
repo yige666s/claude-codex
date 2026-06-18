@@ -37,6 +37,16 @@ type EvaluationTraceMetrics struct {
 	RiskLowCount                       int            `json:"risk_low_count"`
 	ArtifactCount                      int            `json:"artifact_count"`
 	EmptyOutput                        bool           `json:"empty_output"`
+	DeepAgentActionCount               int            `json:"deep_agent_action_count,omitempty"`
+	DeepAgentNoProgressCount           int            `json:"deep_agent_no_progress_count,omitempty"`
+	DeepAgentVerifierChecks            int            `json:"deep_agent_verifier_checks,omitempty"`
+	DeepAgentVerifierFailed            int            `json:"deep_agent_verifier_failed,omitempty"`
+	DeepAgentEvidenceCount             int            `json:"deep_agent_evidence_count,omitempty"`
+	DeepAgentFinalStatus               string         `json:"deep_agent_final_status,omitempty"`
+	DeepAgentBlockedReason             string         `json:"deep_agent_blocked_reason,omitempty"`
+	DeepAgentTemplateID                string         `json:"deep_agent_template_id,omitempty"`
+	DeepAgentTaskType                  string         `json:"deep_agent_task_type,omitempty"`
+	DeepAgentTriggerType               string         `json:"deep_agent_trigger_type,omitempty"`
 }
 
 type EvaluationAggregateMetrics struct {
@@ -81,6 +91,12 @@ type EvaluationAggregateMetrics struct {
 	LowRiskCount                       int            `json:"low_risk_count"`
 	ArtifactCount                      int            `json:"artifact_count"`
 	EmptyOutputCount                   int            `json:"empty_output_count"`
+	DeepAgentActionCount               int            `json:"deep_agent_action_count,omitempty"`
+	DeepAgentNoProgressCount           int            `json:"deep_agent_no_progress_count,omitempty"`
+	DeepAgentVerifierChecks            int            `json:"deep_agent_verifier_checks,omitempty"`
+	DeepAgentVerifierFailed            int            `json:"deep_agent_verifier_failed,omitempty"`
+	DeepAgentEvidenceCount             int            `json:"deep_agent_evidence_count,omitempty"`
+	DeepAgentByTemplate                map[string]int `json:"deep_agent_by_template,omitempty"`
 }
 
 func calculateTraceMetrics(trace EvaluationTrace) EvaluationTraceMetrics {
@@ -169,6 +185,28 @@ func calculateTraceMetrics(trace EvaluationTrace) EvaluationTraceMetrics {
 			metrics.RiskLowCount++
 		}
 	}
+	if trace.DeepAgent != nil {
+		loop := trace.DeepAgent.Metrics
+		metrics.DeepAgentActionCount = loop.ActionCount
+		metrics.DeepAgentNoProgressCount = loop.NoProgressCount
+		metrics.DeepAgentVerifierChecks = loop.VerifierChecks
+		metrics.DeepAgentVerifierFailed = loop.VerifierFailed
+		metrics.DeepAgentEvidenceCount = loop.EvidenceCount
+		metrics.DeepAgentFinalStatus = loop.FinalStatus
+		metrics.DeepAgentBlockedReason = loop.BlockedReason
+		metrics.DeepAgentTemplateID = loop.TemplateID
+		metrics.DeepAgentTaskType = loop.TaskType
+		metrics.DeepAgentTriggerType = loop.TriggerType
+		if metrics.DurationMS == 0 {
+			metrics.DurationMS = loop.DurationMS
+		}
+		if metrics.ArtifactCount == 0 {
+			metrics.ArtifactCount = loop.ArtifactCount
+		}
+		if metrics.TotalTokens == 0 {
+			metrics.TotalTokens = loop.TokenEstimate
+		}
+	}
 	return metrics
 }
 
@@ -226,6 +264,17 @@ func aggregateEvaluationMetrics(results []EvaluationResult) EvaluationAggregateM
 		aggregate.MediumRiskCount += metrics.RiskMediumCount
 		aggregate.LowRiskCount += metrics.RiskLowCount
 		aggregate.ArtifactCount += metrics.ArtifactCount
+		aggregate.DeepAgentActionCount += metrics.DeepAgentActionCount
+		aggregate.DeepAgentNoProgressCount += metrics.DeepAgentNoProgressCount
+		aggregate.DeepAgentVerifierChecks += metrics.DeepAgentVerifierChecks
+		aggregate.DeepAgentVerifierFailed += metrics.DeepAgentVerifierFailed
+		aggregate.DeepAgentEvidenceCount += metrics.DeepAgentEvidenceCount
+		if metrics.DeepAgentTemplateID != "" {
+			if aggregate.DeepAgentByTemplate == nil {
+				aggregate.DeepAgentByTemplate = map[string]int{}
+			}
+			aggregate.DeepAgentByTemplate[metrics.DeepAgentTemplateID]++
+		}
 		if metrics.EmptyOutput {
 			aggregate.EmptyOutputCount++
 		}
@@ -304,6 +353,16 @@ func evaluationTraceMetricsFromMap(values map[string]any) EvaluationTraceMetrics
 	metrics.RiskLowCount = mapInt(values, "risk_low_count")
 	metrics.ArtifactCount = mapInt(values, "artifact_count")
 	metrics.EmptyOutput, _ = values["empty_output"].(bool)
+	metrics.DeepAgentActionCount = mapInt(values, "deep_agent_action_count")
+	metrics.DeepAgentNoProgressCount = mapInt(values, "deep_agent_no_progress_count")
+	metrics.DeepAgentVerifierChecks = mapInt(values, "deep_agent_verifier_checks")
+	metrics.DeepAgentVerifierFailed = mapInt(values, "deep_agent_verifier_failed")
+	metrics.DeepAgentEvidenceCount = mapInt(values, "deep_agent_evidence_count")
+	metrics.DeepAgentFinalStatus = metricEventDataString(values, "deep_agent_final_status")
+	metrics.DeepAgentBlockedReason = metricEventDataString(values, "deep_agent_blocked_reason")
+	metrics.DeepAgentTemplateID = metricEventDataString(values, "deep_agent_template_id")
+	metrics.DeepAgentTaskType = metricEventDataString(values, "deep_agent_task_type")
+	metrics.DeepAgentTriggerType = metricEventDataString(values, "deep_agent_trigger_type")
 	return metrics
 }
 
@@ -336,6 +395,16 @@ func evaluationTraceMetricsMap(metrics EvaluationTraceMetrics) map[string]any {
 		"risk_low_count":                         metrics.RiskLowCount,
 		"artifact_count":                         metrics.ArtifactCount,
 		"empty_output":                           metrics.EmptyOutput,
+		"deep_agent_action_count":                metrics.DeepAgentActionCount,
+		"deep_agent_no_progress_count":           metrics.DeepAgentNoProgressCount,
+		"deep_agent_verifier_checks":             metrics.DeepAgentVerifierChecks,
+		"deep_agent_verifier_failed":             metrics.DeepAgentVerifierFailed,
+		"deep_agent_evidence_count":              metrics.DeepAgentEvidenceCount,
+		"deep_agent_final_status":                metrics.DeepAgentFinalStatus,
+		"deep_agent_blocked_reason":              metrics.DeepAgentBlockedReason,
+		"deep_agent_template_id":                 metrics.DeepAgentTemplateID,
+		"deep_agent_task_type":                   metrics.DeepAgentTaskType,
+		"deep_agent_trigger_type":                metrics.DeepAgentTriggerType,
 	}
 }
 
@@ -382,6 +451,12 @@ func evaluationAggregateMetricsMap(metrics EvaluationAggregateMetrics) map[strin
 		"low_risk_count":                         metrics.LowRiskCount,
 		"artifact_count":                         metrics.ArtifactCount,
 		"empty_output_count":                     metrics.EmptyOutputCount,
+		"deep_agent_action_count":                metrics.DeepAgentActionCount,
+		"deep_agent_no_progress_count":           metrics.DeepAgentNoProgressCount,
+		"deep_agent_verifier_checks":             metrics.DeepAgentVerifierChecks,
+		"deep_agent_verifier_failed":             metrics.DeepAgentVerifierFailed,
+		"deep_agent_evidence_count":              metrics.DeepAgentEvidenceCount,
+		"deep_agent_by_template":                 metrics.DeepAgentByTemplate,
 	}
 }
 

@@ -48,9 +48,13 @@ func TestRunPostgresGooseMigrationsFreshSchema(t *testing.T) {
 		"agent_workflow_runs",
 		"agent_workflow_steps",
 		"agent_tool_call_ledger",
+		"agent_loop_goals",
+		"agent_loop_triggers",
+		"agent_deep_agent_evidence",
 	} {
 		assertPostgresTableExists(t, db, table)
 	}
+	assertPostgresColumnExists(t, db, "agent_jobs", "loop_goal_id")
 	assertPostgresGooseAtLatest(t, db)
 }
 
@@ -242,6 +246,24 @@ func assertPostgresTableExists(t *testing.T, db *sql.DB, table string) {
 	}
 	if !exists {
 		t.Fatalf("expected table %s to exist", table)
+	}
+}
+
+func assertPostgresColumnExists(t *testing.T, db *sql.DB, table, column string) {
+	t.Helper()
+	var exists bool
+	if err := db.QueryRow(`
+SELECT EXISTS (
+	SELECT 1
+	FROM information_schema.columns
+	WHERE table_schema = 'public'
+	  AND table_name = $1
+	  AND column_name = $2
+)`, table, column).Scan(&exists); err != nil {
+		t.Fatalf("check column %s.%s: %v", table, column, err)
+	}
+	if !exists {
+		t.Fatalf("expected column %s.%s to exist", table, column)
 	}
 }
 

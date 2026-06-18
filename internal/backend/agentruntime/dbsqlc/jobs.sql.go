@@ -42,6 +42,7 @@ SELECT
 	job_id,
 	user_id,
 	session_id,
+	loop_goal_id,
 	type,
 	status,
 	content,
@@ -68,6 +69,7 @@ func (q *Queries) GetJob(ctx context.Context, arg GetJobParams) (AgentJob, error
 		&i.JobID,
 		&i.UserID,
 		&i.SessionID,
+		&i.LoopGoalID,
 		&i.Type,
 		&i.Status,
 		&i.Content,
@@ -86,6 +88,7 @@ INSERT INTO agent_jobs (
 	job_id,
 	user_id,
 	session_id,
+	loop_goal_id,
 	type,
 	status,
 	content,
@@ -107,7 +110,8 @@ INSERT INTO agent_jobs (
 	$9,
 	$10,
 	$11,
-	$12
+	$12,
+	$13
 )
 `
 
@@ -115,6 +119,7 @@ type InsertJobParams struct {
 	JobID       string         `json:"job_id"`
 	UserID      string         `json:"user_id"`
 	SessionID   string         `json:"session_id"`
+	LoopGoalID  string         `json:"loop_goal_id"`
 	Type        string         `json:"type"`
 	Status      string         `json:"status"`
 	Content     sql.NullString `json:"content"`
@@ -131,6 +136,7 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) error {
 		arg.JobID,
 		arg.UserID,
 		arg.SessionID,
+		arg.LoopGoalID,
 		arg.Type,
 		arg.Status,
 		arg.Content,
@@ -252,6 +258,7 @@ SELECT
 	job_id,
 	user_id,
 	session_id,
+	loop_goal_id,
 	type,
 	status,
 	content,
@@ -285,6 +292,7 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]AgentJob,
 			&i.JobID,
 			&i.UserID,
 			&i.SessionID,
+			&i.LoopGoalID,
 			&i.Type,
 			&i.Status,
 			&i.Content,

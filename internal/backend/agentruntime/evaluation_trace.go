@@ -32,6 +32,10 @@ type EvaluationTrace struct {
 	LLMUsage        []LLMUsageRecord
 	RiskEvents      []RiskEvent
 	Artifacts       []*Artifact
+	WorkflowRun     *WorkflowRun
+	WorkflowSteps   []*WorkflowStepRun
+	DeepAgent       *DeepAgentWorkflowSummary
+	DeepAgentReplay DeepAgentReplayReport
 	CreatedAt       time.Time
 	CompletedAt     *time.Time
 }
@@ -56,6 +60,8 @@ func (s RuntimeEvaluationTraceSource) ListEvaluationTraces(ctx context.Context, 
 		return s.listSessionTraces(ctx, scope)
 	case EvaluationSubjectSkillExecution:
 		return s.listSkillExecutionTraces(ctx, scope)
+	case EvaluationSubjectDeepAgent:
+		return s.listDeepAgentTraces(ctx, scope)
 	default:
 		return nil, fmt.Errorf("unsupported evaluation subject type %q", scope.SubjectType)
 	}
@@ -214,6 +220,69 @@ func (s RuntimeEvaluationTraceSource) listSkillExecutionTraces(ctx context.Conte
 	return out, nil
 }
 
+func (s RuntimeEvaluationTraceSource) listDeepAgentTraces(ctx context.Context, scope EvaluationScope) ([]EvaluationTrace, error) {
+	if strings.TrimSpace(scope.UserID) == "" {
+		return nil, fmt.Errorf("user_id is required for DeepAgent evaluation")
+	}
+	runs, err := s.Runtime.ListWorkflowRuns(ctx, WorkflowRunFilter{
+		UserID:    scope.UserID,
+		SessionID: scope.SessionID,
+		JobID:     scope.JobID,
+		Name:      deepAgentTaskWorkflowName,
+		Status:    scope.JobStatus,
+		Limit:     1000,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EvaluationTrace, 0, len(runs))
+	for _, run := range runs {
+		if run == nil || !deepAgentRunMatchesEvaluationScope(run, scope) {
+			continue
+		}
+		trace, err := s.traceForDeepAgentRun(ctx, scope, run)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, trace)
+	}
+	return out, nil
+}
+
+func (s RuntimeEvaluationTraceSource) traceForDeepAgentRun(ctx context.Context, scope EvaluationScope, run *WorkflowRun) (EvaluationTrace, error) {
+	state, err := deepAgentStateFromWorkflowRun(run)
+	if err != nil {
+		return EvaluationTrace{}, err
+	}
+	steps, _ := s.Runtime.ListWorkflowSteps(ctx, run.ID)
+	artifacts, _ := s.Runtime.ListArtifacts(ctx, run.UserID, run.SessionID)
+	summary, _ := DeepAgentSummaryFromWorkflowRun(run)
+	replay := deepAgentReplayReportFromRun(run, state)
+	trace := EvaluationTrace{
+		SubjectType:     EvaluationSubjectDeepAgent,
+		SubjectID:       run.ID,
+		UserID:          run.UserID,
+		SessionID:       run.SessionID,
+		JobID:           run.JobID,
+		Input:           state.Goal,
+		Output:          firstNonEmptyString(state.Blocker, state.Status),
+		WorkflowRun:     cloneWorkflowRun(run),
+		WorkflowSteps:   cloneWorkflowSteps(steps),
+		DeepAgent:       summary,
+		DeepAgentReplay: replay,
+		LLMUsage:        s.llmUsageRecords(ctx, scope, run.UserID, run.SessionID),
+		RiskEvents:      s.riskEvents(ctx, scope, run.UserID, run.SessionID, run.JobID),
+		Artifacts:       filterArtifactsForEvaluation(artifacts, run.JobID),
+		CreatedAt:       run.CreatedAt,
+		CompletedAt:     cloneTimePtrValue(run.FinishedAt),
+	}
+	if len(replay.VerifierChecks) > 0 {
+		trace.Output = replay.Status
+	}
+	trace.Provider, trace.Model = providerModelFromTrace(trace)
+	return trace, nil
+}
+
 func (s RuntimeEvaluationTraceSource) jobEvents(ctx context.Context, userID, jobID string) []*JobEvent {
 	events, err := s.Runtime.ListJobEvents(ctx, userID, jobID, "", s.maxJobEvents())
 	if err != nil {
@@ -306,6 +375,37 @@ func jobMatchesEvaluationScope(job *Job, scope EvaluationScope) bool {
 	}
 	if scope.To != nil && !job.UpdatedAt.Before(*scope.To) {
 		return false
+	}
+	return true
+}
+
+func deepAgentRunMatchesEvaluationScope(run *WorkflowRun, scope EvaluationScope) bool {
+	if run == nil || run.Name != deepAgentTaskWorkflowName {
+		return false
+	}
+	if scope.JobID != "" && run.JobID != scope.JobID {
+		return false
+	}
+	if scope.JobStatus != "" && run.Status != scope.JobStatus {
+		return false
+	}
+	if scope.From != nil && run.UpdatedAt.Before(*scope.From) {
+		return false
+	}
+	if scope.To != nil && !run.UpdatedAt.Before(*scope.To) {
+		return false
+	}
+	if strings.TrimSpace(scope.TaskType) != "" {
+		state, err := deepAgentStateFromWorkflowRun(run)
+		if err != nil || !strings.EqualFold(deepAgentTaskType(state), scope.TaskType) {
+			return false
+		}
+	}
+	if strings.TrimSpace(scope.TemplateID) != "" {
+		state, err := deepAgentStateFromWorkflowRun(run)
+		if err != nil || !strings.EqualFold(deepAgentTemplateID(state), scope.TemplateID) {
+			return false
+		}
 	}
 	return true
 }
@@ -445,6 +545,22 @@ func cloneTimePtr(value time.Time) *time.Time {
 	}
 	cloned := value
 	return &cloned
+}
+
+func cloneTimePtrValue(value *time.Time) *time.Time {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	cloned := value.UTC()
+	return &cloned
+}
+
+func cloneWorkflowSteps(steps []*WorkflowStepRun) []*WorkflowStepRun {
+	out := make([]*WorkflowStepRun, 0, len(steps))
+	for _, step := range steps {
+		out = append(out, cloneWorkflowStepRun(step))
+	}
+	return out
 }
 
 func cloneJobEvents(events []*JobEvent) []*JobEvent {

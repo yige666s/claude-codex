@@ -33,7 +33,7 @@ import {
   type AdminTabOption
 } from "../shared";
 import { sessionTitle } from "../../lib/sessionTitle";
-import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, RiskReviewSummary, RiskSummary, Session, WorkflowRun, WorkflowStepRun } from "../../types";
+import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, RiskReviewSummary, RiskSummary, Session, WorkflowRun, WorkflowStepRun } from "../../types";
 
 export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string }) {
   const [userID, setUserID] = useState("");
@@ -47,11 +47,16 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStepRun[]>([]);
   const [deepAgentSummary, setDeepAgentSummary] = useState<DeepAgentWorkflowSummary | null>(null);
+  const [deepAgentReplay, setDeepAgentReplay] = useState<DeepAgentReplayReport | null>(null);
   const [selectedSessionID, setSelectedSessionID] = useState("");
   const [selectedJobID, setSelectedJobID] = useState("");
   const [selectedWorkflowID, setSelectedWorkflowID] = useState("");
   const [loading, setLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState("");
+  const [resumeStatePatch, setResumeStatePatch] = useState("");
+  const [resumeBudgetActions, setResumeBudgetActions] = useState("");
+  const [resumeBudgetDuration, setResumeBudgetDuration] = useState("");
+  const [reviewEditPatch, setReviewEditPatch] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [opsTab, setOpsTab] = useState<"session" | "jobs" | "events" | "workflows" | "assets">("jobs");
@@ -102,9 +107,11 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
         const detail = await api.adminOpsWorkflow(token, cleanUserID, nextWorkflowID);
         setWorkflowSteps(detail.steps);
         setDeepAgentSummary(detail.deepAgent || null);
+        setDeepAgentReplay(null);
       } else {
         setWorkflowSteps([]);
         setDeepAgentSummary(null);
+        setDeepAgentReplay(null);
       }
       setNotice(`Loaded ${nextSessions.length} sessions, ${nextJobs.length} jobs, ${nextWorkflows.length} workflows, ${nextAssets.length} assets`);
     } catch (err) {
@@ -121,6 +128,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
     setEvents([]);
     setWorkflowSteps([]);
     setDeepAgentSummary(null);
+    setDeepAgentReplay(null);
     await loadOps(sessionID, "");
   };
 
@@ -141,9 +149,11 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
         const detail = await api.adminOpsWorkflow(token, cleanUserID, nextWorkflowID);
         setWorkflowSteps(detail.steps);
         setDeepAgentSummary(detail.deepAgent || null);
+        setDeepAgentReplay(null);
       } else {
         setWorkflowSteps([]);
         setDeepAgentSummary(null);
+        setDeepAgentReplay(null);
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -158,6 +168,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
       const detail = await api.adminOpsWorkflow(token, cleanUserID, runID);
       setWorkflowSteps(detail.steps);
       setDeepAgentSummary(detail.deepAgent || null);
+      setDeepAgentReplay(null);
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -171,6 +182,120 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
       await api.adminOpsCancelJob(token, cleanUserID, selectedJob.id);
       setNotice(`Cancelled ${selectedJob.id}`);
       await loadOps(selectedSessionID, selectedJob.id);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setActionBusy("");
+    }
+  };
+
+  const resumeWorkflow = async (request: DeepAgentResumeRequest = {}) => {
+    if (!selectedWorkflow || !token || !cleanUserID) return;
+    setActionBusy(request.review_decision?.action ? `resume-${request.review_decision.action}` : "resume-workflow");
+    setError("");
+    try {
+      const hint = deepAgentSummary?.recovery?.additional_budget_hint || {};
+      await api.adminOpsResumeWorkflow(token, cleanUserID, selectedWorkflow.id, {
+        ...request,
+        additional_budget: {
+          max_actions: hint.max_actions || 10,
+          max_duration_ms: hint.max_duration_ms || 5 * 60 * 1000,
+          ...request.additional_budget
+        }
+      });
+      setNotice(`Resumed ${selectedWorkflow.id}`);
+      await openWorkflow(selectedWorkflow.id);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setActionBusy("");
+    }
+  };
+
+  const resumeWithForm = async () => {
+    const statePatch = parseJSONPatch(resumeStatePatch, "state patch");
+    if (statePatch === null) return;
+    const request: DeepAgentResumeRequest = {};
+    if (statePatch) request.state_patch = statePatch;
+    const maxActions = Number(resumeBudgetActions);
+    const maxDuration = Number(resumeBudgetDuration);
+    if ((Number.isFinite(maxActions) && maxActions > 0) || (Number.isFinite(maxDuration) && maxDuration > 0)) {
+      request.additional_budget = {};
+      if (Number.isFinite(maxActions) && maxActions > 0) request.additional_budget.max_actions = maxActions;
+      if (Number.isFinite(maxDuration) && maxDuration > 0) request.additional_budget.max_duration_ms = maxDuration * 60 * 1000;
+    }
+    await resumeWorkflow(request);
+  };
+
+  const reviewLearning = async (candidateID: string, action: "accept" | "reject" | "rollback") => {
+    if (!token || !cleanUserID || !candidateID) return;
+    setActionBusy(`learning-${candidateID}-${action}`);
+    setError("");
+    try {
+      const updated = await api.adminOpsReviewDeepAgentLearning(token, cleanUserID, candidateID, action, "admin ops review");
+      setNotice(`Learning ${action}: ${candidateID}`);
+      setDeepAgentSummary((summary) => {
+        if (!summary?.learnings?.length) return summary;
+        const reviewStatus = typeof updated.metadata?.review_status === "string" ? updated.metadata.review_status : action === "rollback" ? "rolled_back" : action === "accept" ? "accepted" : "rejected";
+        return {
+          ...summary,
+          learnings: summary.learnings.map((learning) => learning.id === candidateID
+            ? {
+                ...learning,
+                status: reviewStatus,
+                memory_item_id: updated.id,
+                reviewed_by: typeof updated.metadata?.reviewed_by === "string" ? updated.metadata.reviewed_by : learning.reviewed_by,
+                reviewed_at: typeof updated.metadata?.reviewed_at === "string" ? updated.metadata.reviewed_at : learning.reviewed_at,
+                user_confirmed: updated.metadata?.user_confirmed === true
+              }
+            : learning)
+        };
+      });
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setActionBusy("");
+    }
+  };
+
+  const editReviewAction = async () => {
+    const argsPatch = parseJSONPatch(reviewEditPatch, "review edit patch");
+    if (argsPatch === null || !deepAgentSummary?.recovery?.review_pending) return;
+    await resumeWorkflow({
+      review_decision: {
+        action: "edit",
+        step_id: deepAgentSummary.recovery.review_step_id,
+        action_hash: deepAgentSummary.recovery.review_action_hash,
+        args_patch: argsPatch || {},
+        reason: "edited from Admin Ops"
+      }
+    });
+  };
+
+  const parseJSONPatch = (value: string, label: string): Record<string, unknown> | undefined | null => {
+    const text = value.trim();
+    if (!text) return undefined;
+    try {
+      const parsed = JSON.parse(text);
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+        setError(`${label} must be a JSON object.`);
+        return null;
+      }
+      return parsed as Record<string, unknown>;
+    } catch {
+      setError(`${label} is not valid JSON.`);
+      return null;
+    }
+  };
+
+  const loadDeepAgentReplay = async () => {
+    if (!selectedWorkflow || !token || !cleanUserID) return;
+    setActionBusy("replay");
+    setError("");
+    try {
+      const replay = await api.adminOpsDeepAgentReplay(token, cleanUserID, selectedWorkflow.id);
+      setDeepAgentReplay(replay);
+      setNotice(`Loaded replay for ${selectedWorkflow.id}`);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -337,16 +462,36 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
                 </div>
                 {selectedWorkflow && (
                   <>
-                    <div className="admin-facts">
-                      <SkillFact label="Run ID" value={selectedWorkflow.id} />
-                      <SkillFact label="Session ID" value={selectedWorkflow.session_id || "None"} />
-                      <SkillFact label="Job ID" value={selectedWorkflow.job_id || "None"} />
-                      <SkillFact label="Started" value={formatTime(selectedWorkflow.started_at || selectedWorkflow.created_at)} />
-                      <SkillFact label="Finished" value={formatTime(selectedWorkflow.finished_at || "")} />
-                      <SkillFact label="Error" value={selectedWorkflow.error || "None"} />
-                    </div>
-                    {deepAgentSummary?.present && (
-                      <div className="admin-deep-agent-panel">
+	                    <div className="admin-facts">
+	                      <SkillFact label="Run ID" value={selectedWorkflow.id} />
+	                      <SkillFact label="Session ID" value={selectedWorkflow.session_id || "None"} />
+	                      <SkillFact label="Job ID" value={selectedWorkflow.job_id || "None"} />
+	                      <SkillFact label="Started" value={formatTime(selectedWorkflow.started_at || selectedWorkflow.created_at)} />
+	                      <SkillFact label="Finished" value={formatTime(selectedWorkflow.finished_at || "")} />
+	                      <SkillFact label="Error" value={selectedWorkflow.error || "None"} />
+	                    </div>
+	                    {deepAgentSummary?.recovery?.resume_available && (
+	                      <div className="admin-action-row">
+	                        <Button className="skill-action" onClick={() => resumeWorkflow()} disabled={Boolean(actionBusy)}>
+	                          <PlayCircle size={15} />
+	                          <span>{actionBusy === "resume-workflow" ? "Resuming" : "Resume DeepAgent"}</span>
+	                        </Button>
+	                        {deepAgentSummary.recovery.review_pending && (
+	                          <>
+	                            <Button className="skill-action" onClick={() => resumeWorkflow({ review_decision: { action: "approve", step_id: deepAgentSummary.recovery?.review_step_id, action_hash: deepAgentSummary.recovery?.review_action_hash } })} disabled={Boolean(actionBusy)}>
+	                              <ShieldCheck size={15} />
+	                              <span>{actionBusy === "resume-approve" ? "Approving" : "Approve action"}</span>
+	                            </Button>
+	                            <Button className="skill-action danger-outline" onClick={() => resumeWorkflow({ review_decision: { action: "reject", step_id: deepAgentSummary.recovery?.review_step_id, action_hash: deepAgentSummary.recovery?.review_action_hash, reason: "rejected from Admin Ops" } })} disabled={Boolean(actionBusy)}>
+	                              <Square size={15} />
+	                              <span>{actionBusy === "resume-reject" ? "Rejecting" : "Reject action"}</span>
+	                            </Button>
+	                          </>
+	                        )}
+	                      </div>
+	                    )}
+	                    {deepAgentSummary?.present && (
+	                      <div className="admin-deep-agent-panel">
                         <div className="admin-card-head">
                           <h3>DeepAgent</h3>
                           <StatusBadge value={deepAgentSummary.status || "unknown"} />
@@ -354,11 +499,93 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
                         <div className="admin-facts">
                           <SkillFact label="Goal" value={deepAgentSummary.goal || "None"} />
                           <SkillFact label="Current step" value={deepAgentSummary.current_step?.title || deepAgentSummary.current_step_id || "None"} />
-                          <SkillFact label="Actions" value={String(deepAgentSummary.action_count || 0)} />
-                          <SkillFact label="Completed / failed" value={`${deepAgentSummary.completed_count || 0} / ${deepAgentSummary.failed_count || 0}`} />
-                          <SkillFact label="Blocker" value={deepAgentSummary.blocker || "None"} />
-                          <SkillFact label="Final verifier" value={formatRecordSummary(deepAgentSummary.final_verifier)} />
-                        </div>
+	                          <SkillFact label="Actions" value={String(deepAgentSummary.action_count || 0)} />
+	                          <SkillFact label="Completed / failed" value={`${deepAgentSummary.completed_count || 0} / ${deepAgentSummary.failed_count || 0}`} />
+	                          <SkillFact label="Blocker" value={deepAgentSummary.blocker || "None"} />
+	                          <SkillFact label="Final verifier" value={formatRecordSummary(deepAgentSummary.final_verifier)} />
+	                        </div>
+	                        <div className="admin-facts">
+	                          <SkillFact label="Task type" value={String(deepAgentSummary.metrics?.task_type || "unknown")} />
+	                          <SkillFact label="Trigger" value={String(deepAgentSummary.metrics?.trigger_type || "manual")} />
+	                          <SkillFact label="Duration" value={String(deepAgentSummary.metrics?.duration_ms || 0) + "ms"} />
+	                          <SkillFact label="Evidence / artifacts" value={`${String(deepAgentSummary.metrics?.evidence_count || 0)} / ${String(deepAgentSummary.metrics?.artifact_count || 0)}`} />
+	                          <SkillFact label="Verifier checks" value={`${String(deepAgentSummary.metrics?.verifier_checks || 0)} checks, ${String(deepAgentSummary.metrics?.verifier_failed || 0)} failed`} />
+	                          <SkillFact label="Governance" value={deepAgentSummary.governance?.policy_blocked ? deepAgentSummary.governance.policy_block_reason || "Policy blocked" : deepAgentSummary.governance?.kill_switch ? "Kill switch enabled" : "Active"} />
+	                        </div>
+	                        <div className="admin-action-row">
+	                          <Button className="skill-action" onClick={loadDeepAgentReplay} disabled={Boolean(actionBusy)}>
+	                            <RefreshCw size={15} />
+	                            <span>{actionBusy === "replay" ? "Loading replay" : "Replay decisions"}</span>
+	                          </Button>
+	                        </div>
+	                        {deepAgentSummary.recovery && (
+	                          <>
+	                            <div className="admin-facts">
+	                              <SkillFact label="Recovery" value={deepAgentSummary.recovery.user_facing_reason || deepAgentSummary.recovery.recommended_next_action || "None"} />
+	                              <SkillFact label="Blocked category" value={deepAgentSummary.recovery.blocked_category || "None"} />
+	                              <SkillFact label="Missing info" value={(deepAgentSummary.recovery.missing_info || []).join(", ") || "None"} />
+	                              <SkillFact label="Review action" value={deepAgentSummary.recovery.review_action_hash || "None"} />
+	                              <SkillFact label="Last action" value={deepAgentSummary.recovery.last_action?.hash || deepAgentSummary.recovery.last_action?.step_id || "None"} />
+	                            </div>
+	                            {deepAgentSummary.recovery.resume_available && (
+	                              <div className="admin-recovery-editor">
+	                                <label className="admin-field">
+	                                  <span>补充信息 / state patch</span>
+	                                  <Textarea value={resumeStatePatch} onChange={(event) => setResumeStatePatch(event.currentTarget.value)} placeholder='{"missing_context":"..."}' rows={3} />
+	                                </label>
+	                                <div className="admin-filter-row">
+	                                  <label className="admin-field">
+	                                    <span>追加 actions</span>
+	                                    <Input value={resumeBudgetActions} onChange={(event) => setResumeBudgetActions(event.currentTarget.value)} inputMode="numeric" placeholder="10" />
+	                                  </label>
+	                                  <label className="admin-field">
+	                                    <span>追加分钟</span>
+	                                    <Input value={resumeBudgetDuration} onChange={(event) => setResumeBudgetDuration(event.currentTarget.value)} inputMode="numeric" placeholder="5" />
+	                                  </label>
+	                                </div>
+	                                <Button className="skill-action" onClick={resumeWithForm} disabled={Boolean(actionBusy)}>
+	                                  <PlayCircle size={15} />
+	                                  <span>{actionBusy === "resume-workflow" ? "Resuming" : "Resume with patch"}</span>
+	                                </Button>
+	                                {deepAgentSummary.recovery.review_pending && (
+	                                  <>
+	                                    <label className="admin-field">
+	                                      <span>Edit high-risk action args</span>
+	                                      <Textarea value={reviewEditPatch} onChange={(event) => setReviewEditPatch(event.currentTarget.value)} placeholder='{"query":"safer query"}' rows={3} />
+	                                    </label>
+	                                    <Button className="skill-action" onClick={editReviewAction} disabled={Boolean(actionBusy)}>
+	                                      <Settings size={15} />
+	                                      <span>{actionBusy === "resume-edit" ? "Editing" : "Edit and resume"}</span>
+	                                    </Button>
+	                                  </>
+	                                )}
+	                              </div>
+	                            )}
+	                          </>
+	                        )}
+	                        {!!deepAgentSummary.timeline?.length && (
+	                          <div className="admin-table compact">
+	                            {deepAgentSummary.timeline.slice(-8).map((item, index) => (
+	                              <div key={`${item.kind}-${item.step_id || item.action_hash || index}`} className="admin-table-row">
+	                                <StatusBadge value={item.kind} />
+	                                <span>{item.title || item.step_id || item.tool || "timeline"}<small>{item.summary || ""}</small></span>
+	                                <small>{item.status || item.action_hash || ""}</small>
+	                              </div>
+	                            ))}
+	                          </div>
+	                        )}
+	                        {deepAgentReplay && (
+	                          <div className="admin-table compact">
+	                            <details className="admin-table-row" open>
+	                              <summary>
+	                                <StatusBadge value={deepAgentReplay.status || "replay"} />
+	                                <span>Replay decisions<small>{(deepAgentReplay.findings || []).map((finding) => finding.code).join(", ") || "no findings"}</small></span>
+	                                <small>{deepAgentReplay.run_id}</small>
+	                              </summary>
+	                              <pre>{JSON.stringify(deepAgentReplay, null, 2)}</pre>
+	                            </details>
+	                          </div>
+	                        )}
                         <div className="admin-table">
                           {(deepAgentSummary.plan?.steps || []).slice(0, 8).map((step) => (
                             <div key={step.id} className="admin-table-row">
@@ -423,9 +650,52 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
                           <div className="admin-table compact">
                             {deepAgentSummary.learnings.slice(0, 4).map((learning) => (
                               <div key={learning.id} className="admin-table-row">
-                                <StatusBadge value={learning.type} />
-                                <span>{learning.content}</span>
-                                <small>{learning.status}</small>
+                                <StatusBadge value={learning.status || learning.type} />
+                                <span>
+                                  {learning.content}
+                                  <small>
+                                    {learning.type}
+                                    {learning.run_id ? ` · run ${learning.run_id}` : ""}
+                                    {learning.step_id ? ` · step ${learning.step_id}` : ""}
+                                    {learning.evidence_id ? ` · evidence ${learning.evidence_id}` : ""}
+                                  </small>
+                                  {learning.policy_reason && <small>{learning.policy_reason}</small>}
+                                </span>
+                                <div className="admin-inline-actions">
+                                  {(learning.status === "pending" || learning.status === "candidate") && (
+                                    <>
+                                      <Button
+                                        type="button"
+                                        size="xs"
+                                        variant="secondary"
+                                        disabled={actionBusy === `learning-${learning.id}-accept`}
+                                        onClick={() => void reviewLearning(learning.id, "accept")}
+                                      >
+                                        Accept
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        size="xs"
+                                        variant="outline"
+                                        disabled={actionBusy === `learning-${learning.id}-reject`}
+                                        onClick={() => void reviewLearning(learning.id, "reject")}
+                                      >
+                                        Reject
+                                      </Button>
+                                    </>
+                                  )}
+                                  {learning.status === "accepted" && (
+                                    <Button
+                                      type="button"
+                                      size="xs"
+                                      variant="destructive"
+                                      disabled={actionBusy === `learning-${learning.id}-rollback`}
+                                      onClick={() => void reviewLearning(learning.id, "rollback")}
+                                    >
+                                      Rollback
+                                    </Button>
+                                  )}
+                                </div>
                               </div>
                             ))}
                           </div>

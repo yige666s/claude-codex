@@ -71,4 +71,18 @@ func logStartup(cfg startupconfig.Config, llmCfg bootstrap.LLMConfig, llmConfigM
 	logInfof("cors allowed origins: %s", cfg.CORSAllowedOrigins)
 	logInfof("csrf enabled: %t", cfg.CSRFEnabled)
 	logInfof("daily evaluation: enabled=%t schedule=UTC+8 %02d:%02d batch_limit=%d explicit_users=%d", cfg.EvalDailyEnabled, cfg.EvalDailyHour, cfg.EvalDailyMinute, cfg.EvalDailyBatchLimit, len(startupconfig.SplitCSV(cfg.EvalDailyUserIDs)))
+	logInfof(
+		"loop automation: enabled=%t interval=%s schedule=%t monitor=%t eval_repair=%t webhook=%t signed_webhook_sources=%d release_gate_tests=%t release_gate_replays=%d release_gate_kill_switch=%t release_gate_quota=%t",
+		cfg.LoopAutomationEnabled,
+		cfg.LoopAutomationInterval,
+		cfg.LoopScheduleTriggersEnabled,
+		cfg.LoopMonitorTriggersEnabled,
+		cfg.LoopEvalRepairTriggersEnabled,
+		cfg.LoopWebhookTriggersEnabled,
+		len(parseLoopWebhookSecrets(cfg.LoopWebhookSecrets)),
+		cfg.LoopReleaseGateCriticalTestsPassed,
+		cfg.LoopReleaseGateTemplateReplayPassCount,
+		cfg.LoopReleaseGateKillSwitchPassed,
+		cfg.LoopReleaseGateQuotaGuardPassed,
+	)
 }

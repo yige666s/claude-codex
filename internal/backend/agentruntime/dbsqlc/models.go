@@ -153,6 +153,7 @@ type AgentJob struct {
 	JobID       string         `json:"job_id"`
 	UserID      string         `json:"user_id"`
 	SessionID   string         `json:"session_id"`
+	LoopGoalID  string         `json:"loop_goal_id"`
 	Type        string         `json:"type"`
 	Status      string         `json:"status"`
 	Content     sql.NullString `json:"content"`
@@ -210,6 +211,27 @@ type AgentLlmUsage struct {
 	LatencyMs        int64          `json:"latency_ms"`
 	TtftMs           int64          `json:"ttft_ms"`
 	CreatedAt        time.Time      `json:"created_at"`
+}
+
+type AgentLoopGoal struct {
+	ID             string          `json:"id"`
+	UserID         string          `json:"user_id"`
+	SessionID      string          `json:"session_id"`
+	JobID          string          `json:"job_id"`
+	WorkflowRunID  string          `json:"workflow_run_id"`
+	Status         string          `json:"status"`
+	Objective      string          `json:"objective"`
+	TaskType       string          `json:"task_type"`
+	Deliverable    string          `json:"deliverable"`
+	RubricJson     json.RawMessage `json:"rubric_json"`
+	BudgetJson     json.RawMessage `json:"budget_json"`
+	TriggerJson    json.RawMessage `json:"trigger_json"`
+	StopPolicyJson json.RawMessage `json:"stop_policy_json"`
+	MetadataJson   json.RawMessage `json:"metadata_json"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	StartedAt      sql.NullTime    `json:"started_at"`
+	FinishedAt     sql.NullTime    `json:"finished_at"`
 }
 
 type AgentMemory struct {

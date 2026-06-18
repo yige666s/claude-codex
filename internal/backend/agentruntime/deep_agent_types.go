@@ -20,6 +20,7 @@ const (
 
 	DeepAgentRunStatusRunning        = "running"
 	DeepAgentRunStatusSucceeded      = "succeeded"
+	DeepAgentRunStatusFailed         = "failed"
 	DeepAgentRunStatusBlocked        = "blocked"
 	DeepAgentRunStatusBudgetExceeded = "budget_exceeded"
 
@@ -28,6 +29,9 @@ const (
 	DeepAgentToolModeModelArtifact = "model_artifact"
 	DeepAgentToolModeSkill         = "skill"
 	DeepAgentToolModeRAGSearch     = "rag_search"
+	DeepAgentToolModeTest          = "test"
+	DeepAgentToolModeWeb           = "web"
+	DeepAgentToolModeCodePatch     = "code_patch"
 	DeepAgentToolModeMulti         = "multi"
 
 	DeepAgentErrorTransient     = "transient"
@@ -56,20 +60,47 @@ type DeepAgentPolicy struct {
 	NoProgressLimit int           `json:"no_progress_limit"`
 }
 
+type DeepAgentRubric struct {
+	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
+	RequiredEvidence   []string `json:"required_evidence,omitempty"`
+	RequiredArtifacts  []string `json:"required_artifacts,omitempty"`
+	ForbiddenActions   []string `json:"forbidden_actions,omitempty"`
+	QualityBar         string   `json:"quality_bar,omitempty"`
+}
+
 type DeepAgentTaskRequest struct {
-	UserID    string          `json:"user_id,omitempty"`
-	SessionID string          `json:"session_id,omitempty"`
-	JobID     string          `json:"job_id,omitempty"`
-	Goal      string          `json:"goal"`
-	Plan      DeepAgentPlan   `json:"plan,omitempty"`
-	Policy    DeepAgentPolicy `json:"policy,omitempty"`
-	State     map[string]any  `json:"state,omitempty"`
+	UserID     string          `json:"user_id,omitempty"`
+	SessionID  string          `json:"session_id,omitempty"`
+	JobID      string          `json:"job_id,omitempty"`
+	LoopGoalID string          `json:"loop_goal_id,omitempty"`
+	Goal       string          `json:"goal"`
+	Plan       DeepAgentPlan   `json:"plan,omitempty"`
+	Policy     DeepAgentPolicy `json:"policy,omitempty"`
+	Rubric     DeepAgentRubric `json:"rubric,omitempty"`
+	LoopGoal   *LoopGoal       `json:"loop_goal,omitempty"`
+	State      map[string]any  `json:"state,omitempty"`
 }
 
 type DeepAgentResumeRequest struct {
-	RunID      string          `json:"run_id"`
-	Policy     DeepAgentPolicy `json:"policy,omitempty"`
-	StatePatch map[string]any  `json:"state_patch,omitempty"`
+	RunID            string                  `json:"run_id"`
+	Policy           DeepAgentPolicy         `json:"policy,omitempty"`
+	StatePatch       map[string]any          `json:"state_patch,omitempty"`
+	AdditionalBudget DeepAgentResumeBudget   `json:"additional_budget,omitempty"`
+	ReviewDecision   DeepAgentReviewDecision `json:"review_decision,omitempty"`
+}
+
+type DeepAgentResumeBudget struct {
+	MaxActions    int   `json:"max_actions,omitempty"`
+	MaxDurationMS int64 `json:"max_duration_ms,omitempty"`
+	MaxSteps      int   `json:"max_steps,omitempty"`
+}
+
+type DeepAgentReviewDecision struct {
+	Action     string         `json:"action,omitempty"`
+	StepID     string         `json:"step_id,omitempty"`
+	ActionHash string         `json:"action_hash,omitempty"`
+	ArgsPatch  map[string]any `json:"args_patch,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
 }
 
 type DeepAgentTaskResult struct {
@@ -80,17 +111,28 @@ type DeepAgentTaskResult struct {
 }
 
 type DeepAgentLearningCandidate struct {
-	ID        string         `json:"id"`
-	Type      string         `json:"type"`
-	Content   string         `json:"content"`
-	Status    string         `json:"status"`
-	Source    string         `json:"source,omitempty"`
-	UserID    string         `json:"user_id,omitempty"`
-	SessionID string         `json:"session_id,omitempty"`
-	RunID     string         `json:"run_id,omitempty"`
-	StepID    string         `json:"step_id,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
+	ID                       string         `json:"id"`
+	Type                     string         `json:"type"`
+	Content                  string         `json:"content"`
+	Status                   string         `json:"status"`
+	Source                   string         `json:"source,omitempty"`
+	UserID                   string         `json:"user_id,omitempty"`
+	SessionID                string         `json:"session_id,omitempty"`
+	RunID                    string         `json:"run_id,omitempty"`
+	StepID                   string         `json:"step_id,omitempty"`
+	EvidenceID               string         `json:"evidence_id,omitempty"`
+	MemoryItemID             string         `json:"memory_item_id,omitempty"`
+	RiskLevel                string         `json:"risk_level,omitempty"`
+	Sensitivity              string         `json:"sensitivity,omitempty"`
+	Visibility               string         `json:"visibility,omitempty"`
+	RequiresUserConfirmation bool           `json:"requires_user_confirmation,omitempty"`
+	PolicyReason             string         `json:"policy_reason,omitempty"`
+	UserConfirmed            bool           `json:"user_confirmed,omitempty"`
+	ReviewedBy               string         `json:"reviewed_by,omitempty"`
+	ReviewedAt               *time.Time     `json:"reviewed_at,omitempty"`
+	ExpiresAt                *time.Time     `json:"expires_at,omitempty"`
+	Metadata                 map[string]any `json:"metadata,omitempty"`
+	CreatedAt                time.Time      `json:"created_at"`
 }
 
 type DeepAgentLoadedContext struct {
@@ -100,10 +142,42 @@ type DeepAgentLoadedContext struct {
 	RecentMessages    []DeepAgentMessageRef    `json:"recent_messages,omitempty"`
 	Attachments       []DeepAgentAttachmentRef `json:"attachments,omitempty"`
 	ExistingArtifacts []DeepAgentArtifactRef   `json:"existing_artifacts,omitempty"`
+	EvidencePack      DeepAgentEvidencePack    `json:"evidence_pack,omitempty"`
 	SkillCatalog      []DeepAgentSkillRef      `json:"skill_catalog,omitempty"`
 	ToolCatalog       []DeepAgentToolRef       `json:"tool_catalog,omitempty"`
 	MemorySummary     string                   `json:"memory_summary,omitempty"`
 	Issues            []string                 `json:"issues,omitempty"`
+}
+
+type DeepAgentEvidencePack struct {
+	RunID             string                      `json:"run_id,omitempty"`
+	UserID            string                      `json:"user_id,omitempty"`
+	SessionID         string                      `json:"session_id,omitempty"`
+	TokenBudget       int                         `json:"token_budget,omitempty"`
+	TokenEstimate     int                         `json:"token_estimate,omitempty"`
+	RecentMessages    []DeepAgentEvidencePackItem `json:"recent_messages,omitempty"`
+	Attachments       []DeepAgentEvidencePackItem `json:"attachments,omitempty"`
+	ExistingArtifacts []DeepAgentEvidencePackItem `json:"existing_artifacts,omitempty"`
+	CurrentArtifacts  []DeepAgentEvidencePackItem `json:"current_artifacts,omitempty"`
+	WorkingContext    []DeepAgentEvidencePackItem `json:"working_context,omitempty"`
+	Memory            []DeepAgentEvidencePackItem `json:"memory,omitempty"`
+	SearchCandidates  []DeepAgentEvidencePackItem `json:"search_candidates,omitempty"`
+	SkillCatalog      []DeepAgentEvidencePackItem `json:"skill_catalog,omitempty"`
+	ToolCatalog       []DeepAgentEvidencePackItem `json:"tool_catalog,omitempty"`
+	Issues            []string                    `json:"issues,omitempty"`
+}
+
+type DeepAgentEvidencePackItem struct {
+	ID            string         `json:"id,omitempty"`
+	Kind          string         `json:"kind,omitempty"`
+	Title         string         `json:"title,omitempty"`
+	Summary       string         `json:"summary,omitempty"`
+	Source        string         `json:"source,omitempty"`
+	Visibility    string         `json:"visibility,omitempty"`
+	PhaseScope    []string       `json:"phase_scope,omitempty"`
+	TokenEstimate int            `json:"token_estimate,omitempty"`
+	CurrentRun    bool           `json:"current_run,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
 }
 
 type DeepAgentStepRoute struct {
@@ -125,17 +199,20 @@ type DeepAgentStepRoute struct {
 }
 
 type DeepAgentStepEvidence struct {
-	StepID      string                 `json:"step_id,omitempty"`
-	ActionID    string                 `json:"action_id,omitempty"`
-	Route       DeepAgentStepRoute     `json:"route,omitempty"`
-	Output      string                 `json:"output,omitempty"`
-	Summary     string                 `json:"summary,omitempty"`
-	Sources     []DeepAgentSourceRef   `json:"sources,omitempty"`
-	Artifacts   []DeepAgentArtifactRef `json:"artifacts,omitempty"`
-	ToolCalls   []DeepAgentToolCallRef `json:"tool_calls,omitempty"`
-	ChildJobs   []DeepAgentChildJobRef `json:"child_jobs,omitempty"`
-	Diagnostics map[string]any         `json:"diagnostics,omitempty"`
-	ErrorClass  string                 `json:"error_class,omitempty"`
+	StepID          string                 `json:"step_id,omitempty"`
+	ActionID        string                 `json:"action_id,omitempty"`
+	Route           DeepAgentStepRoute     `json:"route,omitempty"`
+	Output          string                 `json:"output,omitempty"`
+	Summary         string                 `json:"summary,omitempty"`
+	Sources         []DeepAgentSourceRef   `json:"sources,omitempty"`
+	Artifacts       []DeepAgentArtifactRef `json:"artifacts,omitempty"`
+	ToolCalls       []DeepAgentToolCallRef `json:"tool_calls,omitempty"`
+	ChildJobs       []DeepAgentChildJobRef `json:"child_jobs,omitempty"`
+	Diagnostics     map[string]any         `json:"diagnostics,omitempty"`
+	ErrorClass      string                 `json:"error_class,omitempty"`
+	SideEffectLevel string                 `json:"side_effect_level,omitempty"`
+	RollbackHint    string                 `json:"rollback_hint,omitempty"`
+	VerifiedBy      []string               `json:"verified_by,omitempty"`
 }
 
 type DeepAgentMessageRef struct {
@@ -242,12 +319,22 @@ type DeepAgentProgress struct {
 }
 
 type DeepAgentFinalVerification struct {
-	Done   bool   `json:"done"`
+	Done       bool                         `json:"done"`
+	Reason     string                       `json:"reason,omitempty"`
+	Checks     []DeepAgentVerificationCheck `json:"checks,omitempty"`
+	Missing    []string                     `json:"missing,omitempty"`
+	Confidence string                       `json:"confidence,omitempty"`
+}
+
+type DeepAgentVerificationCheck struct {
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
 	Reason string `json:"reason,omitempty"`
 }
 
 type DeepAgentState struct {
 	Goal             string                       `json:"goal"`
+	Rubric           DeepAgentRubric              `json:"rubric,omitempty"`
 	Plan             DeepAgentPlan                `json:"plan"`
 	CurrentStepIndex int                          `json:"current_step_index"`
 	CompletedSteps   []string                     `json:"completed_steps"`
