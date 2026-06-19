@@ -234,6 +234,21 @@ type AgentLoopGoal struct {
 	FinishedAt     sql.NullTime    `json:"finished_at"`
 }
 
+type AgentLoopTrigger struct {
+	ID          string          `json:"id"`
+	UserID      string          `json:"user_id"`
+	SessionID   string          `json:"session_id"`
+	DedupeKey   string          `json:"dedupe_key"`
+	TriggerType string          `json:"trigger_type"`
+	Source      string          `json:"source"`
+	PayloadJson json.RawMessage `json:"payload_json"`
+	JobID       string          `json:"job_id"`
+	LoopGoalID  string          `json:"loop_goal_id"`
+	Status      string          `json:"status"`
+	CreatedAt   time.Time       `json:"created_at"`
+	ExpiresAt   time.Time       `json:"expires_at"`
+}
+
 type AgentMemory struct {
 	ID             string         `json:"id"`
 	UserID         string         `json:"user_id"`
