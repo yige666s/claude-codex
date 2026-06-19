@@ -271,10 +271,11 @@ func verifyDeepAgentArtifactEvidence(step DeepAgentStep, result DeepAgentActionR
 	expectedRunID := deepAgentWorkflowString(result.Metadata, "run_id")
 	expectedJobID := deepAgentWorkflowString(result.Metadata, "job_id")
 	expectedStepID := firstNonEmptyString(step.ID, deepAgentWorkflowString(result.Metadata, "step_id"), evidence.StepID)
+	allowUpstreamStepArtifact := deepAgentEvidenceAllowsUpstreamArtifact(evidence)
 	deliverable := firstNonEmptyString(evidence.Route.DeliverableType, deepAgentDeliverableTypeForStep(step))
 	hasSizedArtifact := false
 	for _, ref := range refs {
-		if expectedStepID != "" && ref.StepID != "" && ref.StepID != expectedStepID {
+		if !allowUpstreamStepArtifact && expectedStepID != "" && ref.StepID != "" && ref.StepID != expectedStepID {
 			return false, fmt.Sprintf("artifact %s belongs to step %s, want %s", firstNonEmptyString(ref.ID, ref.Filename), ref.StepID, expectedStepID)
 		}
 		if expectedRunID != "" && ref.RunID != "" && ref.RunID != expectedRunID {
@@ -294,6 +295,14 @@ func verifyDeepAgentArtifactEvidence(step DeepAgentStep, result DeepAgentActionR
 		return false, "artifact size is missing or zero"
 	}
 	return true, ""
+}
+
+func deepAgentEvidenceAllowsUpstreamArtifact(evidence DeepAgentStepEvidence) bool {
+	if strings.EqualFold(deepAgentWorkflowString(evidence.Diagnostics, "verification_source"), "deep_agent_state") {
+		return true
+	}
+	metadata, _ := evidence.Diagnostics["metadata"].(map[string]any)
+	return strings.EqualFold(deepAgentWorkflowString(metadata, "verification_source"), "deep_agent_state")
 }
 
 func deepAgentRouteLooksLikeResearch(route DeepAgentStepRoute, step DeepAgentStep) bool {
@@ -833,7 +842,7 @@ func deepAgentMeaningfulCriterionTokens(text string) []string {
 
 func deepAgentSafeSideEffectLevel(level string) bool {
 	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "", "none", "read", "read_only", "low":
+	case "", "none", "read", "readonly", "read_only", "read-only", "low":
 		return true
 	default:
 		return false
@@ -856,6 +865,9 @@ func deepAgentEvidenceRequirementMet(required string, summary deepAgentEvidenceS
 	}
 	switch {
 	case deepAgentContainsAny(text, "source", "citation", "引用", "来源"):
+		if deepAgentContainsAny(text, "multiple", "multi", "independent", "多个", "多条", "多来源", "独立") {
+			return summary.sourceCount >= 2
+		}
 		return summary.sourceCount > 0
 	case deepAgentContainsAny(text, "artifact", "file", "文档", "文件", "交付物"):
 		return summary.artifactCount > 0

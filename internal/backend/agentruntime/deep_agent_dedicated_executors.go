@@ -24,8 +24,11 @@ type runtimeDeepAgentTestExecutor struct {
 	runtime *Runtime
 }
 
-func (e *runtimeDeepAgentTestExecutor) ExecuteStep(ctx context.Context, route DeepAgentStepRoute, action DeepAgentAction, _ *DeepAgentState) (DeepAgentStepEvidence, error) {
+func (e *runtimeDeepAgentTestExecutor) ExecuteStep(ctx context.Context, route DeepAgentStepRoute, action DeepAgentAction, agentState *DeepAgentState) (DeepAgentStepEvidence, error) {
 	route = finalizeDeepAgentActionRoute(route, action)
+	if deepAgentBool(action.Args, "state_verification", false) || deepAgentBool(action.Args, "verify_state", false) {
+		return deepAgentStateVerificationEvidence(route, action, agentState)
+	}
 	command, args, display, err := deepAgentCommandFromAction(action)
 	if err != nil {
 		return deepAgentDedicatedEvidence(route, action, DeepAgentActionStatusFailed, err.Error(), map[string]any{
@@ -106,6 +109,88 @@ func (e *runtimeDeepAgentTestExecutor) ExecuteStep(ctx context.Context, route De
 		"tool_result_valid":   runErr == nil,
 		"verification_source": "process_exit",
 	}), runErr
+}
+
+func deepAgentStateVerificationEvidence(route DeepAgentStepRoute, action DeepAgentAction, agentState *DeepAgentState) (DeepAgentStepEvidence, error) {
+	if agentState == nil {
+		err := fmt.Errorf("state verification requires deep agent state")
+		return deepAgentDedicatedEvidence(route, action, DeepAgentActionStatusFailed, err.Error(), map[string]any{
+			"error_class":       DeepAgentErrorValidation,
+			"side_effect_level": deepAgentSideEffectReadonly,
+		}), err
+	}
+	verifyState := cloneDeepAgentStateForVerification(agentState, firstNonEmptyString(route.StepID, action.StepID))
+	final := verifyDeepAgentFinalState(verifyState)
+	output := deepAgentFinalVerificationOutput(final)
+	status := DeepAgentActionStatusSucceeded
+	var execErr error
+	errorClass := ""
+	if !final.Done {
+		status = DeepAgentActionStatusFailed
+		errorClass = DeepAgentErrorValidation
+		execErr = fmt.Errorf("%s", firstNonEmptyString(final.Reason, "deep agent state verification failed"))
+	}
+	evidence := deepAgentDedicatedEvidence(route, action, status, output, map[string]any{
+		"completed":               final.Done,
+		"error_class":             errorClass,
+		"side_effect_level":       deepAgentSideEffectReadonly,
+		"dedicated_executor":      deepAgentRouteExecutorTest,
+		"tool_result_valid":       final.Done,
+		"verification_source":     "deep_agent_state",
+		"verification_checks":     final.Checks,
+		"verification_missing":    final.Missing,
+		"verification_reason":     final.Reason,
+		"verification_confidence": final.Confidence,
+	})
+	evidence.Artifacts = deepAgentStateCurrentArtifactRefs(agentState)
+	for _, item := range (StateDeepAgentEvidenceStore{}).ListStepEvidence(agentState) {
+		evidence.Sources = append(evidence.Sources, item.Sources...)
+	}
+	return evidence, execErr
+}
+
+func cloneDeepAgentStateForVerification(state *DeepAgentState, currentStepID string) *DeepAgentState {
+	if state == nil {
+		return nil
+	}
+	clone := *state
+	clone.Plan = state.Plan
+	if len(state.Plan.Steps) > 0 {
+		clone.Plan.Steps = append([]DeepAgentStep(nil), state.Plan.Steps...)
+		for i := range clone.Plan.Steps {
+			if clone.Plan.Steps[i].ID == currentStepID {
+				clone.Plan.Steps[i].Status = DeepAgentStepStatusSucceeded
+			}
+		}
+	}
+	return &clone
+}
+
+func deepAgentFinalVerificationOutput(final DeepAgentFinalVerification) string {
+	var b strings.Builder
+	if final.Done {
+		b.WriteString("DeepAgent state verification passed.")
+	} else {
+		b.WriteString("DeepAgent state verification failed.")
+	}
+	if strings.TrimSpace(final.Reason) != "" {
+		b.WriteString("\nReason: ")
+		b.WriteString(final.Reason)
+	}
+	for _, check := range final.Checks {
+		b.WriteString("\n- ")
+		if check.Passed {
+			b.WriteString("PASS ")
+		} else {
+			b.WriteString("FAIL ")
+		}
+		b.WriteString(check.Name)
+		if strings.TrimSpace(check.Reason) != "" {
+			b.WriteString(": ")
+			b.WriteString(check.Reason)
+		}
+	}
+	return b.String()
 }
 
 type runtimeDeepAgentWebExecutor struct {

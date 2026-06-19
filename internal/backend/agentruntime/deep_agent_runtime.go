@@ -168,6 +168,9 @@ func (p *RuntimeDeepAgentPlanner) routeStepAction(ctx context.Context, state *De
 func (p *RuntimeDeepAgentPlanner) actionForRoute(state *DeepAgentState, step DeepAgentStep, route DeepAgentStepRoute) (DeepAgentAction, error) {
 	mode := normalizeDeepAgentRouteMode(route.Mode)
 	args := map[string]any{}
+	if rawArgs, ok := step.Metadata["args"].(map[string]any); ok {
+		args = cloneWorkflowMap(rawArgs)
+	}
 	switch mode {
 	case DeepAgentToolModeSkill:
 		skillName := strings.TrimPrefix(strings.TrimSpace(route.SkillName), "/")
@@ -1013,11 +1016,16 @@ func (e *RuntimeDeepAgentExecutor) deepAgentPriorArtifactRefs(ctx context.Contex
 	if e != nil {
 		refs = append(refs, e.deepAgentNewArtifactRefs(ctx, userID, sessionID, map[string]struct{}{}, action, "prior")...)
 	}
+	expectedJobID := deepAgentActionString(action, "job_id")
+	expectedRunID := deepAgentActionString(action, "run_id")
 	seen := map[string]struct{}{}
 	out := make([]DeepAgentArtifactRef, 0, len(refs))
 	for _, ref := range refs {
 		key := firstNonEmptyString(ref.ID, ref.Filename)
 		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		if !deepAgentPriorArtifactRefMatchesScope(ref, expectedJobID, expectedRunID) {
 			continue
 		}
 		if _, ok := seen[key]; ok {
@@ -1027,6 +1035,18 @@ func (e *RuntimeDeepAgentExecutor) deepAgentPriorArtifactRefs(ctx context.Contex
 		out = append(out, ref)
 	}
 	return out
+}
+
+func deepAgentPriorArtifactRefMatchesScope(ref DeepAgentArtifactRef, expectedJobID, expectedRunID string) bool {
+	expectedJobID = strings.TrimSpace(expectedJobID)
+	expectedRunID = strings.TrimSpace(expectedRunID)
+	if expectedJobID != "" && strings.TrimSpace(ref.JobID) != "" && strings.TrimSpace(ref.JobID) != expectedJobID {
+		return false
+	}
+	if expectedRunID != "" && strings.TrimSpace(ref.RunID) != "" && strings.TrimSpace(ref.RunID) != expectedRunID {
+		return false
+	}
+	return true
 }
 
 func deepAgentPriorArtifactSatisfiesGenericDocument(agentState *DeepAgentState, requiresArtifact bool, refs []DeepAgentArtifactRef) bool {

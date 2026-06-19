@@ -28,7 +28,8 @@ test.describe("real environment E2E", () => {
     await sendMessage(page, "Please acknowledge the uploaded text file briefly.");
     await expectAssistantReply(page);
 
-    await page.getByRole("button", { name: "Attachments" }).click();
+    await page.getByRole("button", { name: "资源" }).click();
+    await page.getByRole("tab", { name: "Attachments" }).click();
     await page.getByRole("button", { name: "Preview real-e2e-notes.txt" }).click();
     await expect(page.getByRole("dialog", { name: "real-e2e-notes.txt" })).toBeVisible();
     await expect(page.getByText("real object storage upload")).toBeVisible();
@@ -53,10 +54,11 @@ test.describe("real environment E2E", () => {
     await page.getByRole("button", { name: "Use image generation" }).click();
     await sendMessage(page, process.env.E2E_ARTIFACT_PROMPT || "Create a simple blue square test image with no text.");
 
-    await expect(page.getByRole("button", { name: "Artifacts, new item available" }).or(page.getByRole("button", { name: "Artifacts" }))).toBeVisible({ timeout: 180_000 });
-    await page.getByRole("button", { name: /Artifacts/ }).click();
-    await expect(page.getByRole("complementary", { name: "Artifact workspace" })).toBeVisible();
-    await expect(page.locator(".artifact-workspace-item").first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole("button", { name: "资源, new item available" }).or(page.getByRole("button", { name: "资源" }))).toBeVisible({ timeout: 180_000 });
+    await page.getByRole("button", { name: /资源/ }).click();
+    await page.getByRole("tab", { name: "Artifacts" }).click();
+    await expect(page.getByRole("dialog", { name: "Artifacts" })).toBeVisible();
+    await expect(page.locator(".asset-row").first()).toBeVisible({ timeout: 60_000 });
   });
 
   test("real Live websocket reaches a user-safe terminal state", async ({ page }) => {
@@ -131,7 +133,8 @@ async function uploadTextAttachment(page: Page, filename: string, content: strin
   ]);
   const pendingAttachment = page.getByLabel("Pending attachments").getByText(filename);
   if (await pendingAttachment.isVisible().catch(() => false)) return;
-  await page.getByRole("button", { name: /Attachments/ }).click();
+  await page.getByRole("button", { name: /资源/ }).click();
+  await page.getByRole("tab", { name: "Attachments" }).click();
   await page.getByRole("button", { name: `Add ${filename} to message` }).click();
   await page.getByRole("dialog", { name: "Attachments" }).getByLabel("Close resources").click();
   await expect(pendingAttachment).toBeVisible();

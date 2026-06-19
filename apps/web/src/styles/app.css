@@ -542,7 +542,7 @@ label.composer-upload {
   z-index: 7;
   overflow: hidden;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   box-shadow: none;
 }
 .right-panel {
@@ -682,6 +682,14 @@ label.composer-upload {
   background: rgba(255, 255, 255, 0.76);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), var(--surface-shadow-soft);
 }
+.toolbar .sidebar-resource-nav {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
 .sidebar-action-button,
 .sidebar-resource-button {
   width: 100%;
@@ -739,23 +747,6 @@ label.composer-upload {
   padding: 0 10px;
   font-size: 13px;
   font-weight: 700;
-}
-.sidebar-resource-count {
-  min-width: 22px;
-  height: 22px;
-  padding: 0 7px;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(231, 239, 241, 0.92);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
-}
-.sidebar-resource-button.has-new .sidebar-resource-count {
-  background: #fff1f2;
-  color: #b42318;
 }
 .resource-new-indicator {
   width: 10px;
@@ -913,7 +904,7 @@ label.composer-upload {
 .resource-modal-tabs {
   padding: 0 16px 12px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
 }
 .resource-modal-tab {
@@ -1022,10 +1013,14 @@ label.composer-upload {
 .session-list {
   overflow: auto;
   min-height: 0;
-  padding: 12px 13px 10px;
-  background: transparent;
+  margin: 10px 13px 12px;
+  padding: 10px 9px;
+  border: 1px solid rgba(215, 226, 231, 0.82);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), var(--surface-shadow-soft);
   overscroll-behavior: contain;
-  scroll-padding-top: 14px;
+  scroll-padding-top: 10px;
 }
 .session-list-item,
 .job-summary {
@@ -2466,13 +2461,23 @@ label.composer-upload {
   display: grid;
   gap: 7px;
 }
-.timeline-event-group h4 {
+.timeline-event-group-head {
   margin: 7px 2px 0;
+  display: grid;
+  gap: 2px;
+}
+.timeline-event-group h4 {
+  margin: 0;
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0;
   text-transform: uppercase;
+}
+.timeline-event-group-head span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
 }
 .timeline-row {
   border: 1px solid #e3e8ec;
@@ -2607,7 +2612,7 @@ label.composer-upload {
 }
 .asset-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 8px;
   align-items: center;
   padding: 10px 10px;
@@ -2617,21 +2622,48 @@ label.composer-upload {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
   transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
+.asset-row.clickable {
+  cursor: pointer;
+}
+.asset-row.clickable:focus-visible {
+  outline: 2px solid rgba(16, 141, 126, 0.34);
+  outline-offset: 2px;
+}
 .asset-row.with-add {
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
 }
 .asset-row.with-memory {
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
 }
 .asset-row.with-add.with-memory {
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
 }
 .asset-row:hover {
   border-color: #cbd5dc;
   background: #fbfdfc;
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.055);
 }
-.asset-row > svg:first-child {
+.asset-row-main {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.asset-row.clickable .asset-row-main {
+  cursor: pointer;
+}
+.asset-row-main:focus-visible {
+  outline: 2px solid rgba(16, 141, 126, 0.34);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+.asset-row-main > svg:first-child {
   width: 30px;
   height: 30px;
   padding: 6px;
@@ -2667,7 +2699,7 @@ label.composer-upload {
   min-height: 0;
   border-left: 1px solid rgba(220, 228, 235, 0.92);
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   background: rgba(248, 251, 252, 0.96);
   box-shadow: -20px 0 70px rgba(35, 43, 61, 0.055);
   overflow: hidden;
@@ -2706,8 +2738,7 @@ label.composer-upload {
 .artifact-workspace-head small,
 .artifact-workspace-preview-head strong,
 .artifact-workspace-preview-head small,
-.artifact-workspace-item strong,
-.artifact-workspace-item small {
+.artifact-workspace-metadata dd {
   min-width: 0;
   display: block;
   overflow: hidden;
@@ -2716,76 +2747,20 @@ label.composer-upload {
 }
 .artifact-workspace-head small,
 .artifact-workspace-preview-head small,
-.artifact-workspace-item small {
+.artifact-workspace-metadata dt {
   color: var(--muted);
-}
-.artifact-workspace-search {
-  min-height: 52px;
-  padding: 8px 12px;
-  border-bottom: 1px solid rgba(224, 231, 238, 0.86);
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 9px;
-  color: var(--muted);
-}
-.artifact-workspace-search input {
-  min-height: 36px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-.artifact-workspace-search input:focus {
-  box-shadow: none;
 }
 .artifact-workspace-body {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(164px, 34%) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
-}
-.artifact-workspace-list {
-  min-width: 0;
-  min-height: 0;
-  padding: 10px;
-  border-right: 1px solid rgba(224, 231, 238, 0.86);
-  display: grid;
-  align-content: start;
-  gap: 7px;
-  overflow: auto;
-}
-.artifact-workspace-item {
-  width: 100%;
-  min-height: 58px;
-  padding: 8px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 9px;
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-}
-.artifact-workspace-item svg {
-  width: 30px;
-  height: 30px;
-  padding: 6px;
-  border-radius: 8px;
-  background: var(--panel-soft);
-  color: var(--muted);
-}
-.artifact-workspace-item.active,
-.artifact-workspace-item:hover {
-  border-color: rgba(16, 141, 126, 0.22);
-  background: var(--active-bg);
 }
 .artifact-workspace-preview {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
 }
 .artifact-workspace-preview-head {
@@ -2806,6 +2781,32 @@ label.composer-upload {
   width: 32px;
   min-height: 32px;
   border-radius: 8px;
+}
+.artifact-workspace-metadata {
+  margin: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(224, 231, 238, 0.86);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+  background: rgba(255, 255, 255, 0.55);
+}
+.artifact-workspace-metadata div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.artifact-workspace-metadata dt {
+  font-size: 11px;
+  font-weight: 740;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.artifact-workspace-metadata dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 680;
 }
 .artifact-preview-surface {
   min-width: 0;
@@ -4565,7 +4566,7 @@ label.composer-upload {
     padding: 10px;
     align-items: stretch;
   }
-  .left-collapsed .sidebar-resource-nav {
+  .left-collapsed .toolbar .sidebar-resource-nav {
     display: grid;
   }
   .left-collapsed .sidebar-action-button {
@@ -4577,9 +4578,11 @@ label.composer-upload {
   .left-collapsed .toolbar .sidebar-action-label {
     display: inline;
   }
-  .app-shell:not(.left-collapsed) .brand-toggle,
+  .app-shell:not(.left-collapsed) .brand-toggle {
+    display: none;
+  }
   .app-shell.left-collapsed .sidebar-collapse-button {
-    display: inline-grid;
+    display: none;
   }
   .left-collapsed .account {
     width: auto;
@@ -4610,9 +4613,6 @@ label.composer-upload {
     border: 1px solid rgba(220, 228, 235, 0.94);
     border-radius: 14px;
     box-shadow: 0 28px 90px rgba(35, 43, 61, 0.2);
-  }
-  .artifact-workspace-body {
-    grid-template-columns: minmax(150px, 32%) minmax(0, 1fr);
   }
 }
 
@@ -4715,20 +4715,14 @@ label.composer-upload {
     inset: 0;
     border-radius: 0;
   }
-  .artifact-workspace-body {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-  .artifact-workspace-list {
-    max-height: 154px;
-    border-right: 0;
-    border-bottom: 1px solid rgba(224, 231, 238, 0.86);
-  }
   .artifact-workspace-preview-head {
     grid-template-columns: minmax(0, 1fr);
   }
   .artifact-workspace-actions {
     justify-content: flex-end;
+  }
+  .artifact-workspace-metadata {
+    grid-template-columns: minmax(0, 1fr);
   }
   .composer {
     gap: 8px;

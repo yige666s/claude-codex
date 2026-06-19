@@ -38,17 +38,17 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 			Deliverable: "research_report",
 			Rubric: LoopRubric{
 				AcceptanceCriteria: []string{"sources are gathered before synthesis", "final report states findings, caveats, and next steps"},
-				RequiredEvidence:   []string{"source URLs or citations", "synthesis notes", "final artifact reference"},
+				RequiredEvidence:   []string{"multiple source URLs or citations", "synthesis notes", "final artifact reference"},
 				RequiredArtifacts:  []string{"research report"},
 				QualityBar:         "Evidence-backed, clearly structured, and explicit about uncertainty.",
 			},
 			Budget:        LoopBudget{MaxSteps: 5, MaxActions: 12, MaxDuration: 45 * time.Minute, MaxToolCalls: 12},
-			ExecutorHints: templateRoutes([]templateRouteSpec{{"gather", DeepAgentToolModeWeb, deepAgentRouteExecutorWeb, false, "source_pack"}, {"synthesize", DeepAgentToolModeModel, deepAgentRouteExecutorModel, false, "analysis"}, {"artifact", DeepAgentToolModeModelArtifact, deepAgentRouteExecutorArtifact, true, "markdown_report"}, {"verify", DeepAgentToolModeTest, deepAgentRouteExecutorTest, false, "verification"}}),
+			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "gather", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "source_pack", allowedTools: webResearchAllowedTools(), searchScope: "web"}, {stepID: "synthesize", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "analysis"}, {stepID: "artifact", mode: DeepAgentToolModeModelArtifact, executor: deepAgentRouteExecutorArtifact, artifact: true, deliverable: "markdown_report"}, {stepID: "verify", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "verification"}}),
 			Steps: []DeepAgentStep{
-				templateStep("gather", "收集来源和关键事实", "Collect source material, URLs, and factual notes relevant to the goal.", nil, "已收集可追溯来源和关键事实", DeepAgentToolModeWeb),
+				researchGatherTemplateStep(),
 				templateStep("synthesize", "综合分析并形成报告结构", "Synthesize evidence into findings, caveats, and report outline.", []string{"gather"}, "已形成清晰结论、大纲和风险说明", DeepAgentToolModeModel),
 				templateStep("artifact", "生成调研报告 artifact", "Create the final research report artifact for the requested goal.", []string{"gather", "synthesize"}, "最终报告 artifact 已生成", DeepAgentToolModeModelArtifact),
-				templateStep("verify", "校验来源、结论和交付物", "Verify source coverage, report completeness, and artifact availability.", []string{"artifact"}, "来源、结论和 artifact 均通过校验", DeepAgentToolModeTest),
+				researchVerifyTemplateStep(),
 			},
 			EvalTags: []string{"research", "artifact", "source_quality"},
 		},
@@ -64,7 +64,7 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 				QualityBar:         "Minimal, reversible, and verified against the reproduced behavior.",
 			},
 			Budget:        LoopBudget{MaxSteps: 5, MaxActions: 14, MaxDuration: 60 * time.Minute, MaxToolCalls: 16},
-			ExecutorHints: templateRoutes([]templateRouteSpec{{"reproduce", DeepAgentToolModeTest, deepAgentRouteExecutorTest, false, "failure_evidence"}, {"diagnose", DeepAgentToolModeModel, deepAgentRouteExecutorModel, false, "root_cause"}, {"patch", DeepAgentToolModeCodePatch, deepAgentRouteExecutorCodePatch, false, "code_patch"}, {"test", DeepAgentToolModeTest, deepAgentRouteExecutorTest, false, "verification"}}),
+			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "reproduce", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "failure_evidence"}, {stepID: "diagnose", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "root_cause"}, {stepID: "patch", mode: DeepAgentToolModeCodePatch, executor: deepAgentRouteExecutorCodePatch, deliverable: "code_patch"}, {stepID: "test", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "verification"}}),
 			Steps: []DeepAgentStep{
 				templateStep("reproduce", "复现或确认问题", "Run the narrowest available reproduction, diagnostic, or failing test.", nil, "已确认故障表现或当前诊断入口", DeepAgentToolModeTest),
 				templateStep("diagnose", "定位根因和影响范围", "Trace the failure to code paths and constraints before editing.", []string{"reproduce"}, "已记录根因和影响范围", DeepAgentToolModeModel),
@@ -85,7 +85,7 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 				QualityBar:         "Fix the failing check without broad unrelated refactors.",
 			},
 			Budget:        LoopBudget{MaxSteps: 4, MaxActions: 12, MaxDuration: 45 * time.Minute, MaxToolCalls: 14},
-			ExecutorHints: templateRoutes([]templateRouteSpec{{"logs", DeepAgentToolModeRAGSearch, deepAgentRouteExecutorRAG, false, "ci_logs"}, {"fix", DeepAgentToolModeCodePatch, deepAgentRouteExecutorCodePatch, false, "code_patch"}, {"rerun", DeepAgentToolModeTest, deepAgentRouteExecutorTest, false, "verification"}}),
+			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "logs", mode: DeepAgentToolModeRAGSearch, executor: deepAgentRouteExecutorRAG, deliverable: "ci_logs"}, {stepID: "fix", mode: DeepAgentToolModeCodePatch, executor: deepAgentRouteExecutorCodePatch, deliverable: "code_patch"}, {stepID: "rerun", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "verification"}}),
 			Steps: []DeepAgentStep{
 				templateStep("logs", "读取失败日志", "Collect the failing check, error excerpt, and relevant environment details.", nil, "已提取失败日志和失败目标", DeepAgentToolModeRAGSearch),
 				templateStep("fix", "定位并修复失败原因", "Patch the code, config, or test data causing the CI failure.", []string{"logs"}, "失败原因已被针对性修复", DeepAgentToolModeCodePatch),
@@ -106,7 +106,7 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 				QualityBar:         "Readable, structured, and faithful to the supplied context.",
 			},
 			Budget:        LoopBudget{MaxSteps: 4, MaxActions: 10, MaxDuration: 40 * time.Minute, MaxToolCalls: 10},
-			ExecutorHints: templateRoutes([]templateRouteSpec{{"context", DeepAgentToolModeRAGSearch, deepAgentRouteExecutorRAG, false, "context_pack"}, {"draft", DeepAgentToolModeModelArtifact, deepAgentRouteExecutorArtifact, true, "document"}, {"format", DeepAgentToolModeTest, deepAgentRouteExecutorTest, false, "format_check"}}),
+			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "context", mode: DeepAgentToolModeRAGSearch, executor: deepAgentRouteExecutorRAG, deliverable: "context_pack"}, {stepID: "draft", mode: DeepAgentToolModeModelArtifact, executor: deepAgentRouteExecutorArtifact, artifact: true, deliverable: "document"}, {stepID: "format", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "format_check"}}),
 			Steps: []DeepAgentStep{
 				templateStep("context", "收集文档上下文", "Collect relevant source material, constraints, and existing structure.", nil, "上下文和格式约束已明确", DeepAgentToolModeRAGSearch),
 				templateStep("draft", "生成文档 artifact", "Generate the requested document artifact using the collected context.", []string{"context"}, "文档 artifact 已生成", DeepAgentToolModeModelArtifact),
@@ -126,7 +126,7 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 				QualityBar:         "Concise, timestamped, and actionable.",
 			},
 			Budget:        LoopBudget{MaxSteps: 3, MaxActions: 8, MaxDuration: 20 * time.Minute, MaxToolCalls: 8},
-			ExecutorHints: templateRoutes([]templateRouteSpec{{"observe", DeepAgentToolModeWeb, deepAgentRouteExecutorWeb, false, "observation"}, {"judge", DeepAgentToolModeModel, deepAgentRouteExecutorModel, false, "change_decision"}, {"summarize", DeepAgentToolModeModel, deepAgentRouteExecutorModel, false, "monitor_summary"}}),
+			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "observe", mode: DeepAgentToolModeWeb, executor: deepAgentRouteExecutorWeb, deliverable: "observation"}, {stepID: "judge", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "change_decision"}, {stepID: "summarize", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "monitor_summary"}}),
 			Steps: []DeepAgentStep{
 				templateStep("observe", "观察目标页面或数据源", "Fetch or inspect the configured web target and capture current state.", nil, "已记录观察结果和时间", DeepAgentToolModeWeb),
 				templateStep("judge", "判断是否发生关键变化", "Compare current observation with trigger payload or prior state.", []string{"observe"}, "已给出变化判断和依据", DeepAgentToolModeModel),
@@ -146,7 +146,7 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 				QualityBar:         "Specific, non-duplicative, and privacy-aware.",
 			},
 			Budget:        LoopBudget{MaxSteps: 3, MaxActions: 8, MaxDuration: 25 * time.Minute, MaxToolCalls: 8},
-			ExecutorHints: templateRoutes([]templateRouteSpec{{"extract", DeepAgentToolModeRAGSearch, deepAgentRouteExecutorRAG, false, "learning_candidates"}, {"classify", DeepAgentToolModeModel, deepAgentRouteExecutorModel, false, "classification"}, {"stage", DeepAgentToolModeModel, deepAgentRouteExecutorModel, false, "confirmation_queue"}}),
+			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "extract", mode: DeepAgentToolModeRAGSearch, executor: deepAgentRouteExecutorRAG, deliverable: "learning_candidates"}, {stepID: "classify", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "classification"}, {stepID: "stage", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "confirmation_queue"}}),
 			Steps: []DeepAgentStep{
 				templateStep("extract", "提取会话 learning 候选", "Extract candidate learnings from supplied session or workflow evidence.", nil, "已提取候选 learning 和来源", DeepAgentToolModeRAGSearch),
 				templateStep("classify", "分类并去重候选", "Classify candidates by category, sensitivity, and duplication risk.", []string{"extract"}, "候选已分类并去重", DeepAgentToolModeModel),
@@ -316,12 +316,45 @@ func templateStep(id, title, intent string, dependsOn []string, done, tool strin
 	}
 }
 
+func researchGatherTemplateStep() DeepAgentStep {
+	intent := "Use WebSearch first, then WebFetch for relevant source URLs when snippets are insufficient. Collect source material, URLs, and factual notes relevant to the user's goal."
+	step := templateStep("gather", "收集来源和关键事实", intent, nil, "已收集可追溯来源和关键事实", DeepAgentToolModeModel)
+	route := DeepAgentStepRoute{
+		StepID:          "gather",
+		Version:         "template:v1",
+		Mode:            DeepAgentToolModeModel,
+		Executor:        deepAgentRouteExecutorModel,
+		DeliverableType: "source_pack",
+		AllowedTools:    webResearchAllowedTools(),
+		SearchScope:     "web",
+		SuccessCriteria: []string{"已收集可追溯来源和关键事实"},
+		Reason:          "research report template source gathering route",
+		Confidence:      "high",
+	}
+	step.Metadata["step_route"] = deepAgentStepRouteMap(route)
+	if args, ok := step.Metadata["args"].(map[string]any); ok {
+		args["allowed_tools"] = webResearchAllowedTools()
+		args["search_scope"] = "web"
+	}
+	return step
+}
+
+func researchVerifyTemplateStep() DeepAgentStep {
+	step := templateStep("verify", "校验来源、结论和交付物", "Verify source coverage, report completeness, and artifact availability using accumulated DeepAgent evidence.", []string{"artifact"}, "来源、结论和 artifact 均通过校验", DeepAgentToolModeTest)
+	if args, ok := step.Metadata["args"].(map[string]any); ok {
+		args["state_verification"] = true
+	}
+	return step
+}
+
 type templateRouteSpec struct {
-	stepID      string
-	mode        string
-	executor    string
-	artifact    bool
-	deliverable string
+	stepID       string
+	mode         string
+	executor     string
+	artifact     bool
+	deliverable  string
+	allowedTools []string
+	searchScope  string
 }
 
 func templateRoutes(specs []templateRouteSpec) []DeepAgentStepRoute {
@@ -334,13 +367,27 @@ func templateRoutes(specs []templateRouteSpec) []DeepAgentStepRoute {
 			Executor:         spec.executor,
 			RequiresArtifact: spec.artifact,
 			DeliverableType:  spec.deliverable,
-			AllowedTools:     allowedToolsForTemplateMode(spec.mode),
+			AllowedTools:     firstNonEmptyStringSlice(spec.allowedTools, allowedToolsForTemplateMode(spec.mode)),
+			SearchScope:      spec.searchScope,
 			SuccessCriteria:  []string{fmt.Sprintf("complete %s step", spec.stepID)},
 			Reason:           "loop template executor hint",
 			Confidence:       "medium",
 		})
 	}
 	return out
+}
+
+func webResearchAllowedTools() []string {
+	return []string{"WebSearch", "WebFetch"}
+}
+
+func firstNonEmptyStringSlice(values ...[]string) []string {
+	for _, value := range values {
+		if len(value) > 0 {
+			return append([]string(nil), value...)
+		}
+	}
+	return nil
 }
 
 func routeExecutorForTool(tool string) string {

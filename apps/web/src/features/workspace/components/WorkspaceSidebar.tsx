@@ -1,5 +1,5 @@
 import { ReactNode, Ref, RefObject } from "react";
-import { Briefcase, Database, FileUp, Image, LogOut, MessageSquarePlus, PanelLeft, Repeat2, Search, Settings, Sparkles, X } from "lucide-react";
+import { Briefcase, Database, LogOut, MessageSquarePlus, PanelLeft, Search, Settings, X } from "lucide-react";
 import { BrandLogo } from "../../../components/brand/BrandLogo";
 import { Button } from "../../../components/ui/button";
 import {
@@ -47,7 +47,6 @@ export function WorkspaceSidebar({
   serviceStatus,
   settingsOpen,
   accountRef,
-  resourceCounts,
   resourceNotices,
   serviceStatusPill,
   onToggleLeft,
@@ -63,6 +62,8 @@ export function WorkspaceSidebar({
   onManageMemory,
   onLogout
 }: WorkspaceSidebarProps) {
+  const hasResourceNotice = Object.values(resourceNotices).some(Boolean);
+
   return (
     <aside className={`sidebar ${mobileOpen ? "open" : ""}`}>
       <div className="sidebar-head">
@@ -102,14 +103,10 @@ export function WorkspaceSidebar({
           <Search size={18} />
           <span className="sidebar-action-label">搜索聊天</span>
         </Button>
+        <nav className="sidebar-resource-nav" aria-label="Workspace resources">
+          <ResourceButton tab="jobs" label="资源" hasNew={hasResourceNotice} icon={<Briefcase size={17} />} onOpen={onOpenResource} />
+        </nav>
       </div>
-      <nav className="sidebar-resource-nav" aria-label="Workspace resources">
-        <ResourceButton tab="skills" label="Skills" count={resourceCounts.skills} hasNew={resourceNotices.skills} icon={<Sparkles size={17} />} onOpen={onOpenResource} />
-        <ResourceButton tab="jobs" label="Jobs" count={resourceCounts.jobs} hasNew={resourceNotices.jobs} icon={<Briefcase size={17} />} onOpen={onOpenResource} />
-        <ResourceButton tab="loops" label="Loops" count={resourceCounts.loops} hasNew={resourceNotices.loops} icon={<Repeat2 size={17} />} onOpen={onOpenResource} />
-        <ResourceButton tab="attachments" label="Attachments" count={resourceCounts.attachments} hasNew={resourceNotices.attachments} icon={<FileUp size={17} />} onOpen={onOpenResource} />
-        <ResourceButton tab="artifacts" label="Artifacts" count={resourceCounts.artifacts} hasNew={resourceNotices.artifacts} icon={<Image size={17} />} onOpen={onOpenResource} />
-      </nav>
       <SessionList
         sessions={sessions}
         sessionId={sessionId}
@@ -141,14 +138,12 @@ export function WorkspaceSidebar({
 function ResourceButton({
   tab,
   label,
-  count,
   hasNew,
   icon,
   onOpen
 }: {
   tab: RightPanelTab;
   label: string;
-  count: number;
   hasNew: boolean;
   icon: ReactNode;
   onOpen: (tab: RightPanelTab) => void;
@@ -157,7 +152,6 @@ function ResourceButton({
     <Button className={`sidebar-resource-button ${hasNew ? "has-new" : ""}`} variant="ghost" onClick={() => onOpen(tab)} title={label} aria-label={hasNew ? `${label}, new item available` : label}>
       {icon}
       <span className="sidebar-action-label">{label}</span>
-      <small className="sidebar-resource-count">{count}</small>
       {hasNew && <span className="resource-new-indicator" aria-hidden="true" />}
     </Button>
   );

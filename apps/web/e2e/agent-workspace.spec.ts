@@ -53,7 +53,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await expect(page.locator(".empty-state")).toBeVisible();
   await expect(page.getByRole("button", { name: "Use image generation" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Use web search" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Use model thinking" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use plan and execute mode" })).toBeVisible();
   await page.getByRole("textbox", { name: "Message" }).fill("d".repeat(56) + "\n" + "d".repeat(10));
   const emptyPromptBox = await page.locator(".empty-state").boundingBox();
   const emptyComposerBox = await page.locator(".composer").boundingBox();
@@ -65,14 +65,14 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByRole("button", { name: "新聊天" }).click();
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Use model thinking" }).click();
-  await expect(page.getByRole("button", { name: "Use model thinking" })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Use plan and execute mode" }).click();
+  await expect(page.getByRole("button", { name: "Use plan and execute mode" })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("textbox", { name: "Message" }).fill("hello from playwright");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Echo: hello from playwright")).toBeVisible();
   await expect(page.getByRole("button", { name: "Use image generation" })).toBeHidden();
   await expect(page.getByRole("button", { name: "Use web search" })).toBeHidden();
-  await expect(page.getByRole("button", { name: "Use model thinking" })).toBeHidden();
+  await expect(page.getByRole("button", { name: "Use plan and execute mode" })).toBeHidden();
 
   await page.locator("input[type=file]").setInputFiles({
     name: "notes.md",
@@ -84,10 +84,12 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Attachment received: notes.md")).toBeVisible();
 
-  await page.getByRole("button", { name: "Attachments" }).click();
+  await page.getByRole("button", { name: "资源" }).click();
+  await page.getByRole("tab", { name: "Attachments" }).click();
   await page.getByRole("button", { name: "Preview notes.md" }).click();
   await expect(page.getByRole("dialog", { name: "notes.md" })).toBeVisible();
-  await expect(page.getByText("# Notes")).toBeVisible();
+  await expect(page.getByRole("document", { name: "notes.md" }).getByRole("heading", { name: "Notes" })).toBeVisible();
+  await expect(page.getByRole("document", { name: "notes.md" }).getByText("hello attachment")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "notes.md" })).toBeHidden();
 
@@ -96,22 +98,31 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
 
   await expect(page.getByRole("button", { name: "Use image generation" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Use web search" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Use model thinking" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Use plan and execute mode" })).toBeVisible();
   await page.getByRole("button", { name: "Use image generation" }).click();
   await expect(page.getByRole("button", { name: "Use image generation" })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("textbox", { name: "Message" }).fill("draw a blue square");
   await page.getByRole("button", { name: "Send" }).click();
 
-  await page.getByRole("button", { name: "Artifacts" }).click();
-  const artifactWorkspace = page.getByRole("complementary", { name: "Artifact workspace" });
+  const artifactWorkspace = page.getByRole("complementary", { name: "Artifact preview" });
   await expect(artifactWorkspace).toBeVisible();
+  await expect(artifactWorkspace.getByText("job-1")).toBeVisible();
   await expect(artifactWorkspace.getByText("generated artifact body")).toBeVisible();
   await page.getByRole("button", { name: "Open preview for result.txt" }).click();
   const artifactPreview = page.getByRole("dialog", { name: "result.txt" });
   await expect(artifactPreview).toBeVisible();
   await expect(artifactPreview.getByText("generated artifact body")).toBeVisible();
   await page.getByRole("button", { name: "Close preview" }).click();
-  await page.getByLabel("Close artifact workspace").click();
+  await page.getByLabel("Close artifact preview").click();
+
+  await page.getByRole("button", { name: "资源" }).click();
+  await page.getByRole("tab", { name: "Artifacts" }).click();
+  const artifactsDialog = page.getByRole("dialog", { name: "Artifacts" });
+  await expect(artifactsDialog.locator(".asset-row", { hasText: "result.txt" })).toBeVisible();
+  await artifactsDialog.locator(".asset-row-main", { hasText: "result.txt" }).click();
+  await expect(page.getByRole("complementary", { name: "Artifact preview" })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Artifact preview" }).getByText("generated artifact body")).toBeVisible();
+  await page.getByLabel("Close artifact preview").click();
 
   await page.getByRole("button", { name: "搜索聊天" }).click();
   await page.getByRole("textbox", { name: "Search across all sessions" }).fill("playwright");
@@ -142,7 +153,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   expect(actionsBox!.y).toBeGreaterThanOrEqual(textareaBox!.y + textareaBox!.height - 2);
 
   expect(api.sessions.some((session) => session.messages.some((message) => message.content?.includes("hello from playwright")))).toBe(true);
-  expect(api.chatPayloads.some((payload) => payload.content === "hello from playwright" && payload.thinking_mode === true)).toBe(true);
+  expect(api.chatPayloads.some((payload) => payload.content === "hello from playwright" && payload.agent_mode === "plan_execute")).toBe(true);
   expect(api.chatPayloads.some((payload) => payload.content.startsWith("/vertex-image-artifact") && payload.thinking_mode !== true)).toBe(true);
 });
 
@@ -233,7 +244,7 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
     attachments: [] as Asset[],
     artifacts: [] as Asset[],
     jobs: [] as Job[],
-    chatPayloads: [] as Array<{ content: string; attachment_ids?: string[]; thinking_mode?: boolean }>
+    chatPayloads: [] as Array<{ content: string; attachment_ids?: string[]; thinking_mode?: boolean; agent_mode?: string }>
   };
 
   await page.route("**/readyz?**", (route) => json(route, { status: "ok", checks: [] }));
@@ -261,6 +272,8 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
       { name: "vertex-image-artifact", description: "Generate an artifact", run_as_job: true }
     ]
   }));
+  await page.route("**/v1/loop-templates", (route) => json(route, { templates: [] }));
+  await page.route("**/v1/loop-goals?**", (route) => json(route, { goals: [] }));
 
   await page.route("**/v1/sessions?**", async (route) => {
     return json(route, state.sessions);
@@ -301,7 +314,7 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
     if (options.failChat) return route.abort("failed");
     const sessionID = decodeURIComponent(route.request().url().split("/v1/sessions/")[1].split("/messages")[0]);
     const session = state.sessions.find((item) => item.id === sessionID) || state.sessions[0];
-    const payload = await route.request().postDataJSON() as { content: string; attachment_ids?: string[]; thinking_mode?: boolean };
+    const payload = await route.request().postDataJSON() as { content: string; attachment_ids?: string[]; thinking_mode?: boolean; agent_mode?: string };
     state.chatPayloads.push(payload);
     const userMessage = { role: "user", content: payload.content, created_at: now, message_index: session.messages.length };
     session.messages.push(userMessage);

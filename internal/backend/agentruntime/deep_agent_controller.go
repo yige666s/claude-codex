@@ -1639,6 +1639,9 @@ func (ruleDeepAgentPlanner) NextAction(_ context.Context, state *DeepAgentState,
 	if _, ok := args["query"]; !ok && (tool == DeepAgentToolModeRAGSearch || tool == "search" || tool == "message_search") {
 		args["query"] = firstNonEmptyString(step.Title, state.Goal)
 	}
+	if _, ok := args["query"]; !ok && tool == DeepAgentToolModeModel && strings.EqualFold(deepAgentWorkflowString(args, "search_scope"), "web") {
+		args["query"] = state.Goal
+	}
 	if state.WorkingMemory != nil {
 		if userID := deepAgentWorkflowString(state.WorkingMemory, "user_id"); userID != "" {
 			args["user_id"] = firstNonEmptyString(deepAgentWorkflowString(args, "user_id"), userID)
@@ -1656,15 +1659,23 @@ func (ruleDeepAgentPlanner) NextAction(_ context.Context, state *DeepAgentState,
 			args["prompt"] = strings.TrimSpace(currentPrompt + "\n\nRetry instruction: " + deepAgentWorkflowString(args, "retry_instruction"))
 		}
 	}
+	defaults := map[string]any{
+		"goal":           state.Goal,
+		"step_id":        step.ID,
+		"step_title":     step.Title,
+		"done_condition": step.DoneCondition,
+	}
+	if route, ok := deepAgentStepRouteFromMap(step.Metadata); ok {
+		route.Mode = normalizeDeepAgentRouteMode(firstNonEmptyString(route.Mode, tool))
+		route.Executor = firstNonEmptyString(route.Executor, deepAgentExecutorForMode(route.Mode))
+		route.Version = firstNonEmptyString(route.Version, "v1")
+		defaults["step_route"] = deepAgentStepRouteMap(route)
+		defaults["route_version"] = route.Version
+	}
 	return DeepAgentAction{
 		StepID: step.ID,
 		Tool:   tool,
-		Args: mergeDeepAgentActionArgs(args, map[string]any{
-			"goal":           state.Goal,
-			"step_id":        step.ID,
-			"step_title":     step.Title,
-			"done_condition": step.DoneCondition,
-		}),
+		Args:   mergeDeepAgentActionArgs(args, defaults),
 	}, nil
 }
 

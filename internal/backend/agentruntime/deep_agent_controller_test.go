@@ -1153,6 +1153,41 @@ func TestRuntimeDeepAgentModelArtifactUsesPriorArtifactInsteadOfSavingToolError(
 	}
 }
 
+func TestRuntimeDeepAgentPriorArtifactSkipsDifferentJob(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return &countingErrorRunner{err: context.DeadlineExceeded} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runtime.CreateArtifact(WithJobID(context.Background(), "job-old"), "alice", session.ID, "Chance_AI_调研报告.md", "text/markdown", []byte("# old")); err != nil {
+		t.Fatalf("create old job artifact: %v", err)
+	}
+
+	refs := NewRuntimeDeepAgentExecutor(runtime).deepAgentPriorArtifactRefs(context.Background(), "alice", session.ID, &DeepAgentState{
+		Goal: "帮我调研一下chance ai这款产品",
+		WorkingMemory: map[string]any{
+			"user_id":    "alice",
+			"session_id": session.ID,
+		},
+	}, DeepAgentAction{
+		StepID: "artifact",
+		Tool:   DeepAgentToolModeModelArtifact,
+		Args: map[string]any{
+			"job_id": "job-current",
+		},
+	})
+	if len(refs) != 0 {
+		t.Fatalf("old job artifact must not satisfy current job artifact step: %#v", refs)
+	}
+}
+
 func TestRuntimeDeepAgentPlannerPromptIncludesSkillCatalog(t *testing.T) {
 	runtime := NewRuntime(
 		RuntimeConfig{},
@@ -1741,6 +1776,261 @@ func TestDedicatedTestExecutorRunsAllowlistedCommand(t *testing.T) {
 	}
 	if got := deepAgentWorkflowString(evidence.Diagnostics, "dedicated_executor"); got != deepAgentRouteExecutorTest {
 		t.Fatalf("dedicated executor = %q", got)
+	}
+}
+
+func TestResearchReportVerifyTemplateUsesStateVerification(t *testing.T) {
+	req := applyDeepAgentLoopTemplateToTaskRequest(DeepAgentTaskRequest{
+		Goal:  "帮我调研一下chance ai这款产品",
+		State: map[string]any{"template_id": LoopTemplateResearchReport},
+	})
+	var verifyStep DeepAgentStep
+	for i := range req.Plan.Steps {
+		if req.Plan.Steps[i].ID == "verify" {
+			verifyStep = req.Plan.Steps[i]
+			break
+		}
+		req.Plan.Steps[i].Status = DeepAgentStepStatusSucceeded
+	}
+	if verifyStep.ID == "" {
+		t.Fatalf("research template missing verify step: %#v", req.Plan.Steps)
+	}
+	state := &DeepAgentState{
+		Goal:          req.Goal,
+		Plan:          req.Plan,
+		Rubric:        req.Rubric,
+		WorkingMemory: req.State,
+	}
+	state.WorkingMemory["step_context"] = map[string]any{
+		"artifact": map[string]any{
+			"artifact_refs": []DeepAgentArtifactRef{{
+				ID:          "artifact-1",
+				Filename:    "chance-ai-report.md",
+				ContentType: "text/markdown",
+				SizeBytes:   1024,
+				StepID:      "artifact",
+			}},
+		},
+	}
+	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
+		StepID:  "gather",
+		Summary: "Collected findings, caveats, and next steps from multiple sources.",
+		Sources: []DeepAgentSourceRef{
+			{URL: "https://example.com/chance-ai", Title: "Chance AI source", Provider: "WebSearch"},
+			{URL: "https://example.com/chance-ai-review", Title: "Chance AI review", Provider: "WebSearch"},
+		},
+	})
+	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
+		StepID:  "artifact",
+		Summary: "Final report artifact states findings, caveats, and next steps.",
+		Artifacts: []DeepAgentArtifactRef{{
+			ID:          "artifact-1",
+			Filename:    "chance-ai-report.md",
+			ContentType: "text/markdown",
+			SizeBytes:   1024,
+			StepID:      "artifact",
+		}},
+	})
+	action, err := ruleDeepAgentPlanner{}.NextAction(context.Background(), state, verifyStep)
+	if err != nil {
+		t.Fatalf("NextAction() error = %v", err)
+	}
+	if !deepAgentBool(action.Args, "state_verification", false) {
+		t.Fatalf("verify action missing state_verification arg: %#v", action.Args)
+	}
+	registry := NewRuntimeDeepAgentExecutorRegistry(testRuntime(t), nil)
+	evidence, err := registry.ExecuteStep(context.Background(), DeepAgentStepRoute{StepID: "verify", Mode: DeepAgentToolModeTest, Executor: deepAgentRouteExecutorTest}, action, state)
+	if err != nil {
+		t.Fatalf("state verification should pass without command args: %v evidence=%#v", err, evidence)
+	}
+	if got := deepAgentWorkflowString(evidence.Diagnostics, "verification_source"); got != "deep_agent_state" {
+		t.Fatalf("verification_source = %q, want deep_agent_state; evidence=%#v", got, evidence)
+	}
+}
+
+func TestRuntimePlannerPreservesResearchVerifyStateVerification(t *testing.T) {
+	req := applyDeepAgentLoopTemplateToTaskRequest(DeepAgentTaskRequest{
+		Goal:  "帮我调研一下chance ai这款产品",
+		State: map[string]any{"template_id": LoopTemplateResearchReport},
+	})
+	var verifyStep DeepAgentStep
+	for i := range req.Plan.Steps {
+		if req.Plan.Steps[i].ID == "verify" {
+			verifyStep = req.Plan.Steps[i]
+			break
+		}
+		req.Plan.Steps[i].Status = DeepAgentStepStatusSucceeded
+	}
+	if verifyStep.ID == "" {
+		t.Fatalf("research template missing verify step: %#v", req.Plan.Steps)
+	}
+	state := &DeepAgentState{
+		Goal:          req.Goal,
+		Plan:          req.Plan,
+		Rubric:        req.Rubric,
+		WorkingMemory: req.State,
+	}
+	state.WorkingMemory["step_context"] = map[string]any{
+		"artifact": map[string]any{
+			"artifact_refs": []DeepAgentArtifactRef{{
+				ID:          "artifact-1",
+				Filename:    "chance-ai-report.md",
+				ContentType: "text/markdown",
+				SizeBytes:   1024,
+				StepID:      "artifact",
+			}},
+		},
+	}
+	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
+		StepID:  "gather",
+		Summary: "Collected findings, caveats, and next steps from multiple sources.",
+		Sources: []DeepAgentSourceRef{
+			{URL: "https://example.com/chance-ai", Title: "Chance AI source", Provider: "WebSearch"},
+			{URL: "https://example.com/chance-ai-review", Title: "Chance AI review", Provider: "WebSearch"},
+		},
+	})
+	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
+		StepID:  "artifact",
+		Summary: "Final report artifact states findings, caveats, and next steps.",
+		Artifacts: []DeepAgentArtifactRef{{
+			ID:          "artifact-1",
+			Filename:    "chance-ai-report.md",
+			ContentType: "text/markdown",
+			SizeBytes:   1024,
+			StepID:      "artifact",
+		}},
+	})
+	runtime := testRuntime(t)
+	route, err := NewRuntimeDeepAgentStepRouter(runtime).RouteStep(context.Background(), state, verifyStep)
+	if err != nil {
+		t.Fatalf("RouteStep() error = %v", err)
+	}
+	action, err := NewRuntimeDeepAgentPlanner(runtime).actionForRoute(state, verifyStep, route)
+	if err != nil {
+		t.Fatalf("actionForRoute() error = %v", err)
+	}
+	if !deepAgentBool(action.Args, "state_verification", false) {
+		t.Fatalf("runtime planner dropped state_verification arg: %#v", action.Args)
+	}
+	registry := NewRuntimeDeepAgentExecutorRegistry(runtime, nil)
+	evidence, err := registry.ExecuteStep(context.Background(), route, action, state)
+	if err != nil {
+		t.Fatalf("runtime-planned state verification should pass without command args: %v evidence=%#v", err, evidence)
+	}
+	if got := deepAgentWorkflowString(evidence.Diagnostics, "verification_source"); got != "deep_agent_state" {
+		t.Fatalf("verification_source = %q, want deep_agent_state; evidence=%#v", got, evidence)
+	}
+}
+
+func TestResearchReportStateVerificationRequiresMultipleSources(t *testing.T) {
+	req := applyDeepAgentLoopTemplateToTaskRequest(DeepAgentTaskRequest{
+		Goal:  "帮我调研一下chance ai这款产品",
+		State: map[string]any{"template_id": LoopTemplateResearchReport},
+	})
+	var verifyStep DeepAgentStep
+	for i := range req.Plan.Steps {
+		if req.Plan.Steps[i].ID == "verify" {
+			verifyStep = req.Plan.Steps[i]
+			break
+		}
+		req.Plan.Steps[i].Status = DeepAgentStepStatusSucceeded
+	}
+	state := &DeepAgentState{
+		Goal:          req.Goal,
+		Plan:          req.Plan,
+		Rubric:        req.Rubric,
+		WorkingMemory: req.State,
+	}
+	state.WorkingMemory["step_context"] = map[string]any{
+		"artifact": map[string]any{
+			"artifact_refs": []DeepAgentArtifactRef{{
+				ID:          "artifact-1",
+				Filename:    "chance-ai-report.md",
+				ContentType: "text/markdown",
+				SizeBytes:   1024,
+				StepID:      "artifact",
+			}},
+		},
+	}
+	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
+		StepID:  "gather",
+		Summary: "Collected findings, caveats, and next steps from one source.",
+		Sources: []DeepAgentSourceRef{{URL: "https://example.com/chance-ai", Title: "Chance AI source", Provider: "WebSearch"}},
+	})
+	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
+		StepID:  "artifact",
+		Summary: "Final report artifact states findings, caveats, and next steps.",
+		Artifacts: []DeepAgentArtifactRef{{
+			ID:          "artifact-1",
+			Filename:    "chance-ai-report.md",
+			ContentType: "text/markdown",
+			SizeBytes:   1024,
+			StepID:      "artifact",
+		}},
+	})
+	action, err := ruleDeepAgentPlanner{}.NextAction(context.Background(), state, verifyStep)
+	if err != nil {
+		t.Fatalf("NextAction() error = %v", err)
+	}
+	registry := NewRuntimeDeepAgentExecutorRegistry(testRuntime(t), nil)
+	evidence, err := registry.ExecuteStep(context.Background(), DeepAgentStepRoute{StepID: "verify", Mode: DeepAgentToolModeTest, Executor: deepAgentRouteExecutorTest}, action, state)
+	if err == nil || !strings.Contains(evidence.Output, "multiple source URLs or citations") {
+		t.Fatalf("expected multiple-source verification failure, err=%v evidence=%#v", err, evidence)
+	}
+}
+
+func TestDeepAgentSafeSideEffectLevelAllowsReadonly(t *testing.T) {
+	for _, level := range []string{"", "none", "read", "readonly", "read_only", "read-only", "low"} {
+		if !deepAgentSafeSideEffectLevel(level) {
+			t.Fatalf("side effect level %q should be safe", level)
+		}
+	}
+	if deepAgentSafeSideEffectLevel(deepAgentSideEffectWrite) {
+		t.Fatalf("side effect level %q should require review", deepAgentSideEffectWrite)
+	}
+}
+
+func TestVerifyStepAcceptsStateVerifiedUpstreamArtifact(t *testing.T) {
+	step := DeepAgentStep{
+		ID:            "verify",
+		Title:         "校验来源、结论和交付物",
+		DoneCondition: "来源、结论和 artifact 均通过校验",
+	}
+	evidence := DeepAgentStepEvidence{
+		StepID: "verify",
+		Route: DeepAgentStepRoute{
+			StepID:           "verify",
+			Mode:             DeepAgentToolModeTest,
+			Executor:         deepAgentRouteExecutorTest,
+			RequiresArtifact: true,
+			DeliverableType:  deepAgentDeliverableMarkdown,
+		},
+		Output:  "DeepAgent state verification passed.",
+		Summary: "DeepAgent state verification passed.",
+		Artifacts: []DeepAgentArtifactRef{{
+			ID:          "artifact-1",
+			Filename:    "Chance_AI_调研报告.md",
+			ContentType: "text/markdown",
+			SizeBytes:   1024,
+			StepID:      "artifact",
+			RunID:       "run-1",
+			JobID:       "job-1",
+		}},
+		Diagnostics: map[string]any{
+			"verification_source": "deep_agent_state",
+		},
+	}
+	ok, reason := verifyDeepAgentStepEvidence(step, DeepAgentActionResult{
+		Status:    DeepAgentActionStatusSucceeded,
+		Completed: true,
+		Metadata: map[string]any{
+			"run_id":        "run-1",
+			"job_id":        "job-1",
+			"step_evidence": evidence,
+		},
+	}, evidence)
+	if !ok {
+		t.Fatalf("verify step should accept upstream artifact after state verification: %s", reason)
 	}
 }
 
@@ -2980,6 +3270,44 @@ func TestDeepAgentLoopTemplateAppliesPlanRubricAndBudget(t *testing.T) {
 	}
 	if action.Tool != DeepAgentToolModeRAGSearch || deepAgentWorkflowString(action.Args, "template_id") != LoopTemplateCIFailureFix {
 		t.Fatalf("unexpected template action: %#v", action)
+	}
+}
+
+func TestResearchReportTemplateGatherUsesWebResearchModelRoute(t *testing.T) {
+	goal := "帮我调研一下chance ai这款ai产品"
+	req := applyDeepAgentLoopTemplateToTaskRequest(DeepAgentTaskRequest{
+		Goal:  goal,
+		State: map[string]any{"template_id": LoopTemplateResearchReport},
+	})
+	if len(req.Plan.Steps) == 0 || req.Plan.Steps[0].ID != "gather" {
+		t.Fatalf("unexpected research template plan: %#v", req.Plan)
+	}
+	action, err := ruleDeepAgentPlanner{}.NextAction(context.Background(), &DeepAgentState{Goal: req.Goal, WorkingMemory: req.State}, req.Plan.Steps[0])
+	if err != nil {
+		t.Fatalf("NextAction() error = %v", err)
+	}
+	if action.Tool != DeepAgentToolModeModel {
+		t.Fatalf("research gather tool = %q, want %q; action=%#v", action.Tool, DeepAgentToolModeModel, action)
+	}
+	if got := deepAgentWorkflowString(action.Args, "query"); got != goal {
+		t.Fatalf("query = %q, want %q; action=%#v", got, goal, action)
+	}
+	if got := deepAgentWorkflowString(action.Args, "search_scope"); got != "web" {
+		t.Fatalf("search_scope = %q, want web; action=%#v", got, action)
+	}
+	wantTools := []string{"WebSearch", "WebFetch"}
+	if got := deepAgentStringSlice(action.Args["allowed_tools"]); strings.Join(got, ",") != strings.Join(wantTools, ",") {
+		t.Fatalf("allowed_tools = %#v, want %#v; action=%#v", got, wantTools, action)
+	}
+	route, ok := deepAgentStepRouteFromMap(action.Args)
+	if !ok {
+		t.Fatalf("missing step_route in action args: %#v", action.Args)
+	}
+	if route.Executor != deepAgentRouteExecutorModel || route.Mode != DeepAgentToolModeModel || route.SearchScope != "web" {
+		t.Fatalf("unexpected route: %#v", route)
+	}
+	if strings.Join(route.AllowedTools, ",") != strings.Join(wantTools, ",") {
+		t.Fatalf("route allowed tools = %#v, want %#v", route.AllowedTools, wantTools)
 	}
 }
 

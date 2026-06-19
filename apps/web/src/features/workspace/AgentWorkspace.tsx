@@ -248,7 +248,7 @@ export function AgentWorkspace() {
   const activeResourceTab = resourceDialogTab || "skills";
   const activeResourceSearch = resourceSearch[activeResourceTab];
   const activeResourceVisibleCount = resourceVisibleCount[activeResourceTab];
-  const selectedWorkspaceArtifact = artifacts.find((asset) => asset.id === artifactWorkspaceAssetId) || artifacts[0] || null;
+  const selectedWorkspaceArtifact = artifacts.find((asset) => asset.id === artifactWorkspaceAssetId) || null;
   const {
     liveStatus,
     liveUserDraft,
@@ -441,10 +441,11 @@ export function AgentWorkspace() {
   useEffect(() => {
     if (!artifacts.length) {
       setArtifactWorkspaceAssetId("");
+      setArtifactWorkspaceOpen(false);
       return;
     }
     if (artifactWorkspaceAssetId && artifacts.some((asset) => asset.id === artifactWorkspaceAssetId)) return;
-    if (artifactWorkspaceOpen) setArtifactWorkspaceAssetId(artifacts[0].id);
+    if (artifactWorkspaceOpen) setArtifactWorkspaceOpen(false);
   }, [artifactWorkspaceAssetId, artifactWorkspaceOpen, artifacts]);
 
   useEffect(() => {
@@ -636,10 +637,6 @@ export function AgentWorkspace() {
   }
 
   function openResourceDialog(tab: RightPanelTab) {
-    if (tab === "artifacts") {
-      openArtifactWorkspace();
-      return;
-    }
     markResourceViewed(tab);
     setResourceDialogTab(tab);
     setResourceVisibleCount((current) => ({ ...current, [tab]: resourcePageSize }));
@@ -749,7 +746,7 @@ export function AgentWorkspace() {
   function openArtifactWorkspace(asset?: Asset) {
     markResourceViewed("artifacts");
     setResourceDialogTab(null);
-    setArtifactWorkspaceAssetId(asset?.id || artifactWorkspaceAssetId || artifacts[0]?.id || "");
+    setArtifactWorkspaceAssetId(asset?.id || "");
     setArtifactWorkspaceOpen(true);
     setMobileNav(false);
   }
@@ -1694,10 +1691,6 @@ export function AgentWorkspace() {
   }
 
   function changeResourceTab(tab: RightPanelTab) {
-    if (tab === "artifacts") {
-      openArtifactWorkspace();
-      return;
-    }
     markResourceViewed(tab);
     setResourceDialogTab(tab);
     setResourceVisibleCount((current) => ({ ...current, [tab]: resourcePageSize }));
@@ -1889,11 +1882,9 @@ export function AgentWorkspace() {
           {artifactWorkspaceMounted && (
             <ArtifactWorkspace
               className={artifactWorkspaceVisible ? "visible" : ""}
-              artifacts={artifacts}
-              selectedArtifactId={selectedWorkspaceArtifact?.id || ""}
+              artifact={selectedWorkspaceArtifact}
               memoryBusy={assetMemoryBusy}
               memoryDisabled={!memorySettings.capture_enabled}
-              onSelectArtifact={setArtifactWorkspaceAssetId}
               onClose={() => setArtifactWorkspaceOpen(false)}
               onOpenPreview={previewArtifact}
               onDownload={(id) => { void downloadArtifact(id); }}
@@ -1956,6 +1947,7 @@ export function AgentWorkspace() {
             onDeleteAttachment={(id) => deleteAsset("attachment", id)}
             onAddAttachmentToMessage={addAttachmentToMessage}
             onPreviewArtifact={previewArtifact}
+            onOpenArtifact={openArtifactWorkspace}
             onDownloadArtifact={(id) => { void downloadArtifact(id); }}
             onDeleteArtifact={(id) => deleteAsset("artifact", id)}
             onExtractMemory={extractAssetMemory}

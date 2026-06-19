@@ -21,7 +21,8 @@ for (const viewport of viewports) {
     await assertNoHorizontalOverflow(page);
     await assertBoxWithinViewport(page, ".composer", viewport.width);
 
-    await domClickButton(page, "Attachments");
+    await domClickButton(page, "资源");
+    await page.getByRole("tab", { name: "Attachments" }).click();
     await expect(page.getByRole("dialog", { name: "Attachments" })).toBeVisible();
     await assertBoxWithinViewport(page, ".resource-modal", viewport.width);
     await page.getByRole("button", { name: "Preview notes.md" }).click();
@@ -30,14 +31,18 @@ for (const viewport of viewports) {
     await page.getByRole("button", { name: "Close preview" }).click();
     await page.getByRole("dialog", { name: "Attachments" }).getByLabel("Close resources").click();
 
-    await domClickButton(page, "Artifacts");
-    await expect(page.getByRole("complementary", { name: "Artifact workspace" })).toBeVisible();
+    await domClickButton(page, "资源");
+    await expect(page.getByRole("dialog", { name: "Jobs" })).toBeVisible();
+    await page.getByRole("tab", { name: "Artifacts" }).click();
+    await expect(page.getByRole("dialog", { name: "Artifacts" }).locator(".asset-row", { hasText: "artifact.md" })).toBeVisible();
+    await page.getByRole("dialog", { name: "Artifacts" }).locator(".asset-row-main", { hasText: "artifact.md" }).click();
+    await expect(page.getByRole("complementary", { name: "Artifact preview" })).toBeVisible();
     await assertBoxWithinViewport(page, ".artifact-workspace", viewport.width);
     await page.getByRole("button", { name: "Open preview for artifact.md" }).click();
     await expect(page.getByRole("dialog", { name: "artifact.md" })).toBeVisible();
     await assertBoxWithinViewport(page, ".preview-modal", viewport.width);
     await page.getByRole("button", { name: "Close preview" }).click();
-    await page.getByLabel("Close artifact workspace").click();
+    await page.getByLabel("Close artifact preview").click();
 
     await domClickButton(page, "搜索聊天");
     await expect(page.getByRole("dialog", { name: "Search across all sessions" })).toBeVisible();

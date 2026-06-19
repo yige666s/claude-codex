@@ -1,7 +1,6 @@
-import { ReactNode, useEffect, useMemo, useState } from "react";
-import { Brain, Download, ExternalLink, FileText, FileUp, Image, Search, Trash2, X } from "lucide-react";
+import { ReactNode, useEffect, useState } from "react";
+import { Brain, Download, ExternalLink, FileText, FileUp, Image, Trash2, X } from "lucide-react";
 import { Button } from "../../../components/ui/button";
-import { Input } from "../../../components/ui/input";
 import type { Asset } from "../../../types";
 import { DataPreview, isPreviewableTextAsset } from "./messages/DataPreview";
 
@@ -14,11 +13,9 @@ type BlobPreviewState = {
 
 type ArtifactWorkspaceProps = {
   className?: string;
-  artifacts: Asset[];
-  selectedArtifactId: string;
+  artifact: Asset | null;
   memoryBusy: Record<string, boolean>;
   memoryDisabled: boolean;
-  onSelectArtifact: (id: string) => void;
   onClose: () => void;
   onOpenPreview: (asset: Asset) => void;
   onDownload: (id: string) => void;
@@ -32,11 +29,9 @@ type ArtifactWorkspaceProps = {
 
 export function ArtifactWorkspace({
   className = "",
-  artifacts,
-  selectedArtifactId,
+  artifact,
   memoryBusy,
   memoryDisabled,
-  onSelectArtifact,
   onClose,
   onOpenPreview,
   onDownload,
@@ -47,80 +42,52 @@ export function ArtifactWorkspace({
   formatBytes,
   formatTime
 }: ArtifactWorkspaceProps) {
-  const [query, setQuery] = useState("");
-  const selectedArtifact = artifacts.find((asset) => asset.id === selectedArtifactId) || artifacts[0] || null;
-  const filteredArtifacts = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return artifacts;
-    return artifacts.filter((asset) => [asset.filename, asset.content_type, asset.job_id, asset.id].some((value) => value?.toLowerCase().includes(needle)));
-  }, [artifacts, query]);
-
   return (
-    <aside className={`artifact-workspace ${className}`.trim()} aria-label="Artifact workspace">
+    <aside className={`artifact-workspace ${className}`.trim()} aria-label="Artifact preview">
       <header className="artifact-workspace-head">
         <div>
-          <strong>Artifacts</strong>
-          <small>{artifacts.length ? `${artifacts.length} generated item${artifacts.length === 1 ? "" : "s"}` : "No generated items"}</small>
+          <strong>Artifact Preview</strong>
+          <small>{artifact ? artifact.filename : "No artifact selected"}</small>
         </div>
-        <Button className="icon ghost" onClick={onClose} title="Close artifact workspace" aria-label="Close artifact workspace">
+        <Button className="icon ghost" onClick={onClose} title="Close artifact preview" aria-label="Close artifact preview">
           <X size={18} />
         </Button>
       </header>
-      <div className="artifact-workspace-search">
-        <Search size={16} />
-        <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search artifacts" aria-label="Search artifacts" />
-      </div>
       <div className="artifact-workspace-body">
-        <div className="artifact-workspace-list" role="list" aria-label="Artifacts">
-          {!filteredArtifacts.length && <div className="empty-small">{query ? "No matching artifacts" : "No artifacts yet"}</div>}
-          {filteredArtifacts.map((asset) => (
-            <button
-              key={asset.id}
-              className={`artifact-workspace-item ${selectedArtifact?.id === asset.id ? "active" : ""}`}
-              onClick={() => onSelectArtifact(asset.id)}
-              type="button"
-            >
-              <ArtifactIcon asset={asset} />
-              <span>
-                <strong>{asset.filename}</strong>
-                <small>{formatBytes(asset.size_bytes)} · {formatTime(asset.created_at)}</small>
-              </span>
-            </button>
-          ))}
-        </div>
         <div className="artifact-workspace-preview">
-          {selectedArtifact ? (
+          {artifact ? (
             <>
               <div className="artifact-workspace-preview-head">
                 <div>
-                  <strong>{selectedArtifact.filename}</strong>
-                  <small>{selectedArtifact.content_type || "file"} · {formatBytes(selectedArtifact.size_bytes)}</small>
+                  <strong>{artifact.filename}</strong>
+                  <small>{artifact.content_type || "file"} · {formatBytes(artifact.size_bytes)}</small>
                 </div>
                 <div className="artifact-workspace-actions">
-                  <Button className="icon" onClick={() => onOpenPreview(selectedArtifact)} title={`Open preview for ${selectedArtifact.filename}`} aria-label={`Open preview for ${selectedArtifact.filename}`}>
+                  <Button className="icon" onClick={() => onOpenPreview(artifact)} title={`Open preview for ${artifact.filename}`} aria-label={`Open preview for ${artifact.filename}`}>
                     <ExternalLink size={16} />
                   </Button>
-                  <Button className="icon" onClick={() => onDownload(selectedArtifact.id)} title={`Download ${selectedArtifact.filename}`} aria-label={`Download ${selectedArtifact.filename}`}>
+                  <Button className="icon" onClick={() => onDownload(artifact.id)} title={`Download ${artifact.filename}`} aria-label={`Download ${artifact.filename}`}>
                     <Download size={16} />
                   </Button>
                   <Button
                     className="icon"
-                    disabled={memoryDisabled || Boolean(memoryBusy[selectedArtifact.id])}
-                    onClick={() => onExtractMemory(selectedArtifact)}
-                    title={memoryDisabled ? "Memory saving is disabled" : `Extract memory from ${selectedArtifact.filename}`}
-                    aria-label={memoryDisabled ? "Memory saving is disabled" : `Extract memory from ${selectedArtifact.filename}`}
+                    disabled={memoryDisabled || Boolean(memoryBusy[artifact.id])}
+                    onClick={() => onExtractMemory(artifact)}
+                    title={memoryDisabled ? "Memory saving is disabled" : `Extract memory from ${artifact.filename}`}
+                    aria-label={memoryDisabled ? "Memory saving is disabled" : `Extract memory from ${artifact.filename}`}
                   >
                     <Brain size={16} />
                   </Button>
-                  <Button className="icon danger" onClick={() => onDelete(selectedArtifact.id)} title={`Delete ${selectedArtifact.filename}`} aria-label={`Delete ${selectedArtifact.filename}`}>
+                  <Button className="icon danger" onClick={() => onDelete(artifact.id)} title={`Delete ${artifact.filename}`} aria-label={`Delete ${artifact.filename}`}>
                     <Trash2 size={16} />
                   </Button>
                 </div>
               </div>
+              <ArtifactMetadata asset={artifact} formatBytes={formatBytes} formatTime={formatTime} />
               <ArtifactPreviewSurface
-                asset={selectedArtifact}
-                loadArtifact={() => loadArtifact(selectedArtifact)}
-                loadPreview={() => loadPreview(selectedArtifact)}
+                asset={artifact}
+                loadArtifact={() => loadArtifact(artifact)}
+                loadPreview={() => loadPreview(artifact)}
               />
             </>
           ) : (
@@ -132,6 +99,34 @@ export function ArtifactWorkspace({
         </div>
       </div>
     </aside>
+  );
+}
+
+function ArtifactMetadata({
+  asset,
+  formatBytes,
+  formatTime
+}: {
+  asset: Asset;
+  formatBytes: (bytes: number) => string;
+  formatTime: (value?: string) => string;
+}) {
+  const metadata = [
+    ["Created", formatTime(asset.created_at)],
+    ["Size", formatBytes(asset.size_bytes)],
+    ["Type", asset.content_type || "file"],
+    ["Job", asset.job_id || ""],
+    ["Artifact ID", asset.id]
+  ].filter(([, value]) => value);
+  return (
+    <dl className="artifact-workspace-metadata" aria-label="Artifact metadata">
+      {metadata.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -229,12 +224,6 @@ function ArtifactPreviewSurface({
 
 function PreviewFallback({ children }: { children: ReactNode }) {
   return <div className="artifact-preview-fallback">{children}</div>;
-}
-
-function ArtifactIcon({ asset }: { asset: Asset }) {
-  if (isImageAsset(asset)) return <Image size={17} />;
-  if (isPreviewableTextAsset(asset) || isPDFAsset(asset)) return <FileText size={17} />;
-  return <FileUp size={17} />;
 }
 
 function isImageAsset(asset: Asset): boolean {

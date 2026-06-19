@@ -57,6 +57,7 @@ type WorkspaceResourceDialogProps = {
   onDeleteAttachment: (id: string) => void;
   onAddAttachmentToMessage: (asset: Asset) => void;
   onPreviewArtifact: (asset: Asset) => void;
+  onOpenArtifact: (asset: Asset) => void;
   onDownloadArtifact: (id: string) => void;
   onDeleteArtifact: (id: string) => void;
   onExtractMemory: (asset: Asset) => void;
@@ -119,6 +120,7 @@ export function WorkspaceResourceDialog({
   onDeleteAttachment,
   onAddAttachmentToMessage,
   onPreviewArtifact,
+  onOpenArtifact,
   onDownloadArtifact,
   onDeleteArtifact,
   onExtractMemory,
@@ -236,6 +238,7 @@ export function WorkspaceResourceDialog({
               assets={artifacts}
               icon="image"
               emptyLabel={searchValue ? "No results" : "No items"}
+              openAsset={onOpenArtifact}
               preview={onPreviewArtifact}
               download={onDownloadArtifact}
               remove={onDeleteArtifact}

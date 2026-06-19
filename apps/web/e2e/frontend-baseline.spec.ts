@@ -17,7 +17,7 @@ test.describe("frontend phase 0 visual baselines", () => {
     await page.screenshot({ path: `${baselineDir}/desktop-settings-menu.png`, fullPage: true });
     await page.keyboard.press("Escape");
 
-    await page.getByRole("button", { name: "Jobs" }).click();
+    await page.getByRole("button", { name: "资源" }).click();
     await expect(page.getByText("/docx baseline")).toBeVisible();
     await page.screenshot({ path: `${baselineDir}/desktop-resource-jobs.png`, fullPage: true });
     await page.getByLabel("Close resources").click();
@@ -103,6 +103,8 @@ async function mockBaselineAPI(page: Page) {
       { name: "vertex-image-artifact", description: "Generate images", icon: "IMG", run_as_job: true, produces_artifacts: true }
     ]
   }));
+  await page.route("**/v1/loop-templates", (route) => json(route, { templates: [] }));
+  await page.route("**/v1/loop-goals?**", (route) => json(route, { goals: [] }));
   await page.route("**/v1/jobs?**", (route) => json(route, { jobs: [job] }));
   await page.route("**/v1/jobs/job-baseline/events?stream=1**", (route) => sse(route, [
     { id: "evt-baseline-start", event: "start", data: { type: "start", session_id: session.id } },

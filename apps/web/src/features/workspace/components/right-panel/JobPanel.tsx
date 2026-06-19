@@ -57,7 +57,10 @@ export function JobPanel({
                 <div className="timeline">
                   {groupJobEvents(visibleJobEvents(jobEvents)).map((group) => (
                     <section key={group.id} className="timeline-event-group">
-                      <h4>{group.label}</h4>
+                      <div className="timeline-event-group-head">
+                        <h4>{group.label}</h4>
+                        <span>{group.description}</span>
+                      </div>
                       {group.events.map((event) => (
                         <JobEventDetail key={event.id} event={event} />
                       ))}
@@ -77,34 +80,45 @@ function visibleJobEvents(events: JobEvent[]): JobEvent[] {
   return events.filter((event) => !(event.type === "delta" && event.event?.role === "assistant"));
 }
 
-function groupJobEvents(events: JobEvent[]): Array<{ id: string; label: string; events: JobEvent[] }> {
-  const order = ["workflow_run", "workflow_step", "deep_agent_action", "child_skill_job", "artifact_output", "event"];
-  const labels: Record<string, string> = {
-    workflow_run: "Workflow run",
-    workflow_step: "Workflow steps",
-    deep_agent_action: "DeepAgent actions",
-    child_skill_job: "Child skill jobs",
-    artifact_output: "Artifacts",
-    event: "Other events"
+type JobEventGroup = {
+  id: string;
+  label: string;
+  description: string;
+  events: JobEvent[];
+};
+
+function groupJobEvents(events: JobEvent[]): JobEventGroup[] {
+  const order = ["run", "steps", "outputs"];
+  const labels: Record<string, { label: string; description: string }> = {
+    run: {
+      label: "Run",
+      description: "Workflow lifecycle, status changes, and blocking errors"
+    },
+    steps: {
+      label: "Steps",
+      description: "Planner steps, DeepAgent actions, and child jobs"
+    },
+    outputs: {
+      label: "Outputs",
+      description: "Artifacts, reports, and generated deliverables"
+    }
   };
   const grouped = new Map<string, JobEvent[]>();
   for (const event of events) {
     const data = eventData(event);
-    const group = stringValue(data?.event_group) || eventGroupForType(event.type);
+    const group = eventGroupForType(stringValue(data?.event_group) || event.type);
     grouped.set(group, [...(grouped.get(group) || []), event]);
   }
   return order
     .filter((id) => (grouped.get(id) || []).length > 0)
-    .map((id) => ({ id, label: labels[id] || id, events: grouped.get(id) || [] }));
+    .map((id) => ({ id, label: labels[id]?.label || id, description: labels[id]?.description || "", events: grouped.get(id) || [] }));
 }
 
 function eventGroupForType(type: string): string {
-  if (type.startsWith("workflow_run")) return "workflow_run";
-  if (type.startsWith("workflow_step")) return "workflow_step";
-  if (type === "deep_agent_child_job") return "child_skill_job";
-  if (type === "deep_agent_artifact_output") return "artifact_output";
-  if (type.startsWith("deep_agent_action")) return "deep_agent_action";
-  return "event";
+  if (type === "artifact_output" || type === "deep_agent_artifact_output" || type.startsWith("artifact")) return "outputs";
+  if (type === "workflow_step" || type === "deep_agent_action" || type === "child_skill_job") return "steps";
+  if (type.startsWith("workflow_step") || type.startsWith("deep_agent_action") || type === "deep_agent_child_job") return "steps";
+  return "run";
 }
 
 function JobEventDetail({ event }: { event: JobEvent }) {

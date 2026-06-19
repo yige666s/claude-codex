@@ -9,6 +9,7 @@ type AssetPanelProps = {
   icon: "file" | "image";
   emptyLabel: string;
   uploadProgress?: number;
+  openAsset?: (asset: Asset) => void;
   preview: (asset: Asset) => void;
   download: (id: string) => void;
   remove: (id: string) => void;
@@ -25,6 +26,7 @@ export function AssetPanel({
   icon,
   emptyLabel,
   uploadProgress = 0,
+  openAsset,
   preview,
   download,
   remove,
@@ -42,6 +44,7 @@ export function AssetPanel({
         assets={assets}
         icon={icon}
         emptyLabel={emptyLabel}
+        openAsset={openAsset}
         preview={preview}
         download={download}
         remove={remove}
@@ -64,6 +67,7 @@ function AssetList({
   assets,
   icon,
   emptyLabel,
+  openAsset,
   preview,
   download,
   remove,
@@ -73,18 +77,14 @@ function AssetList({
   addToMessage,
   formatBytes,
   formatTime
-}: Required<Pick<AssetPanelProps, "assets" | "icon" | "emptyLabel" | "preview" | "download" | "remove" | "memoryBusy" | "memoryDisabled" | "formatBytes" | "formatTime">> & Pick<AssetPanelProps, "extractMemory" | "addToMessage">) {
+}: Required<Pick<AssetPanelProps, "assets" | "icon" | "emptyLabel" | "preview" | "download" | "remove" | "memoryBusy" | "memoryDisabled" | "formatBytes" | "formatTime">> & Pick<AssetPanelProps, "openAsset" | "extractMemory" | "addToMessage">) {
   if (!assets.length) return <div className="empty-small">{emptyLabel}</div>;
   const Icon = icon === "image" ? Image : FileUp;
   return (
     <div className="asset-list">
       {assets.map((asset) => (
-        <div key={asset.id} className={`asset-row ${addToMessage ? "with-add" : ""} ${extractMemory ? "with-memory" : ""}`}>
-          <Icon size={18} />
-          <div>
-            <strong>{asset.filename}</strong>
-            <small>{formatBytes(asset.size_bytes)} · {formatTime(asset.created_at)}</small>
-          </div>
+        <div key={asset.id} className={`asset-row ${openAsset ? "clickable" : ""} ${addToMessage ? "with-add" : ""} ${extractMemory ? "with-memory" : ""}`}>
+          <AssetRowMain asset={asset} icon={<Icon size={18} />} openAsset={openAsset} formatBytes={formatBytes} formatTime={formatTime} />
           {addToMessage && (
             <IconAction label={`Add ${asset.filename} to message`} onClick={() => addToMessage(asset)}>
               <MessageSquarePlus size={16} />
@@ -114,6 +114,36 @@ function AssetList({
   );
 }
 
+function AssetRowMain({
+  asset,
+  icon,
+  openAsset,
+  formatBytes,
+  formatTime
+}: {
+  asset: Asset;
+  icon: ReactNode;
+  openAsset?: (asset: Asset) => void;
+  formatBytes: (bytes: number) => string;
+  formatTime: (value?: string) => string;
+}) {
+  const content = (
+    <>
+      {icon}
+      <span>
+        <strong>{asset.filename}</strong>
+        <small>{formatBytes(asset.size_bytes)} · {formatTime(asset.created_at)}</small>
+      </span>
+    </>
+  );
+  if (!openAsset) return <div className="asset-row-main">{content}</div>;
+  return (
+    <button className="asset-row-main" type="button" onClick={() => openAsset(asset)}>
+      {content}
+    </button>
+  );
+}
+
 function IconAction({
   label,
   onClick,
@@ -130,7 +160,15 @@ function IconAction({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button className={`icon ${danger ? "danger" : ""}`} onClick={onClick} disabled={disabled} aria-label={label}>
+        <Button
+          className={`icon ${danger ? "danger" : ""}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onClick();
+          }}
+          disabled={disabled}
+          aria-label={label}
+        >
           {children}
         </Button>
       </TooltipTrigger>
