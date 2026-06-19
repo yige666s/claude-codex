@@ -38,6 +38,29 @@ for (const viewport of viewports) {
     await page.getByRole("dialog", { name: "Artifacts" }).locator(".asset-row-main", { hasText: "artifact.md" }).click();
     await expect(page.getByRole("complementary", { name: "Artifact preview" })).toBeVisible();
     await assertBoxWithinViewport(page, ".artifact-workspace", viewport.width);
+    if (viewport.width >= 1081) {
+      await dragHorizontal(page, ".workspace-resizer-sidebar", -120);
+      await expect.poll(() => elementWidth(page, ".sidebar")).toBeGreaterThanOrEqual(312);
+      await assertElementsInside(page, ".sidebar", [
+        ".sidebar-head",
+        ".service-status",
+        ".sidebar-collapse-button",
+        ".toolbar",
+        ".session-list",
+        ".account"
+      ]);
+
+      const minSidebarWidth = await elementWidth(page, ".sidebar");
+      await dragHorizontal(page, ".workspace-resizer-sidebar", 72);
+      await expect.poll(() => elementWidth(page, ".sidebar")).toBeGreaterThan(minSidebarWidth + 40);
+      await expect.poll(() => elementWidth(page, ".sidebar")).toBeGreaterThanOrEqual(312);
+
+      const initialArtifactWidth = await elementWidth(page, ".artifact-workspace");
+      await dragHorizontal(page, ".workspace-resizer-artifact", 96);
+      await expect.poll(() => elementWidth(page, ".artifact-workspace")).toBeLessThan(initialArtifactWidth - 48);
+      await expect.poll(() => elementWidth(page, ".artifact-workspace")).toBeGreaterThanOrEqual(360);
+      await expect.poll(() => elementWidth(page, ".workspace")).toBeGreaterThanOrEqual(520);
+    }
     await page.getByRole("button", { name: "Open preview for artifact.md" }).click();
     await expect(page.getByRole("dialog", { name: "artifact.md" })).toBeVisible();
     await assertBoxWithinViewport(page, ".preview-modal", viewport.width);
@@ -67,6 +90,33 @@ async function assertBoxWithinViewport(page: Page, selector: string, viewportWid
     if (!box) return false;
     return box.x >= -1 && box.x + box.width <= viewportWidth + 1;
   }, { message: `${selector} should settle inside the viewport` }).toBe(true);
+}
+
+async function elementWidth(page: Page, selector: string): Promise<number> {
+  const box = await page.locator(selector).first().boundingBox();
+  return box?.width || 0;
+}
+
+async function assertElementsInside(page: Page, containerSelector: string, childSelectors: string[]) {
+  const container = await page.locator(containerSelector).first().boundingBox();
+  expect(container, `${containerSelector} should be visible`).not.toBeNull();
+  for (const childSelector of childSelectors) {
+    const child = await page.locator(childSelector).first().boundingBox();
+    expect(child, `${childSelector} should be visible`).not.toBeNull();
+    expect(child!.x, `${childSelector} should not overflow left`).toBeGreaterThanOrEqual(container!.x - 1);
+    expect(child!.x + child!.width, `${childSelector} should not overflow right`).toBeLessThanOrEqual(container!.x + container!.width + 1);
+  }
+}
+
+async function dragHorizontal(page: Page, selector: string, deltaX: number) {
+  const box = await page.locator(selector).first().boundingBox();
+  if (!box) throw new Error(`${selector} is not visible`);
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + deltaX, startY, { steps: 8 });
+  await page.mouse.up();
 }
 
 async function domClickButton(page: Page, name: string) {

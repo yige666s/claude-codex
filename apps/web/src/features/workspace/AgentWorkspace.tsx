@@ -1,4 +1,4 @@
-import { FormEvent, lazy, ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, lazy, PointerEvent as ReactPointerEvent, ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Database,
@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { ApiClient, ApiError } from "../../api/client";
 import { userFacingErrorMessage } from "../../api/errorMessages";
-import type { Asset, AuthSession, DeepAgentLoopTemplate, DeepAgentResumeRequest, Job, JobEvent, LoopGoal, LoopGoalRunResult, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill } from "../../types";
+import type { AgentActivity, AgentActivityItem, Asset, AuthSession, DeepAgentLoopTemplate, DeepAgentResumeRequest, Job, JobEvent, LoopGoal, LoopGoalRunResult, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill } from "../../types";
 import { readSSEStream } from "../../lib/sse";
 import { sessionTitle } from "../../lib/sessionTitle";
 import { AuthPage, type AuthMode } from "../auth/AuthPage";
@@ -102,6 +102,18 @@ const jobReconnectBaseMs = 1_000;
 const jobReconnectMaxMs = 10_000;
 const resourcePageSize = 10;
 const resourceTabs: RightPanelTab[] = ["skills", "jobs", "loops", "attachments", "artifacts"];
+const layoutSidebarDefaultWidth = 312;
+const layoutSidebarCollapsedWidth = 72;
+const layoutSidebarMinWidth = layoutSidebarDefaultWidth;
+const layoutConversationMinWidth = 520;
+const layoutArtifactDefaultWidth = 560;
+const layoutArtifactMinWidth = 360;
+
+function clampLayoutWidth(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  if (max < min) return min;
+  return Math.min(max, Math.max(min, value));
+}
 
 function isAdminPath(): boolean {
   return typeof window !== "undefined" && window.location.pathname.replace(/\/+$/, "") === "/admin";
@@ -147,6 +159,7 @@ export function AgentWorkspace() {
   const [online, setOnline] = useState(() => typeof navigator === "undefined" ? true : navigator.onLine);
   const [draft, setDraft] = useState("");
   const [assistantDraft, setAssistantDraft] = useState("");
+  const [agentActivity, setAgentActivity] = useState<AgentActivity | null>(null);
   const [responseTiming, setResponseTiming] = useState<{ sessionId: string; ttftMs?: number; totalMs?: number } | null>(null);
   const [runtimeError, setRuntimeError] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -204,6 +217,10 @@ export function AgentWorkspace() {
   const [personalizationSettings, setPersonalizationSettings] = useState<PersonalizationSettings>(defaultPersonalizationSettings);
   const [personalizationSaving, setPersonalizationSaving] = useState(false);
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(layoutSidebarDefaultWidth);
+  const [artifactWorkspaceWidth, setArtifactWorkspaceWidth] = useState(layoutArtifactDefaultWidth);
+  const [resizingPane, setResizingPane] = useState<"" | "sidebar" | "artifact">("");
+  const workspaceStageRef = useRef<HTMLDivElement | null>(null);
   const [resourceDialogTab, setResourceDialogTab] = useState<RightPanelTab | null>(null);
   const [resourceSearch, setResourceSearch] = useState<RightPanelSearch>({
     skills: "",
@@ -313,6 +330,10 @@ export function AgentWorkspace() {
     : selectedJobId && (jobStreamStatus === "reconnecting" || jobStreamStatus === "failed")
       ? { tone: jobStreamStatus === "failed" ? "error" : "busy", text: jobStreamNotice || "Restoring live job updates..." }
       : null;
+
+  useEffect(() => () => {
+    document.body.classList.remove("workspace-pane-resizing");
+  }, []);
 
   useEffect(() => {
     api.start();
@@ -749,6 +770,63 @@ export function AgentWorkspace() {
     setArtifactWorkspaceAssetId(asset?.id || "");
     setArtifactWorkspaceOpen(true);
     setMobileNav(false);
+  }
+
+  function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const shell = event.currentTarget.closest(".app-shell");
+    if (!(shell instanceof HTMLElement)) return;
+    const shellRect = shell.getBoundingClientRect();
+    setResizingPane("sidebar");
+    document.body.classList.add("workspace-pane-resizing");
+
+    const resize = (pointerEvent: PointerEvent) => {
+      const workspaceMinWidth = artifactWorkspaceMounted
+        ? layoutConversationMinWidth + layoutArtifactMinWidth
+        : layoutConversationMinWidth;
+      const maxWidth = shellRect.width - workspaceMinWidth;
+      const nextWidth = Math.round(pointerEvent.clientX - shellRect.left);
+      setSidebarWidth(clampLayoutWidth(nextWidth, layoutSidebarMinWidth, maxWidth));
+    };
+    const stop = () => {
+      setResizingPane("");
+      document.body.classList.remove("workspace-pane-resizing");
+      window.removeEventListener("pointermove", resize);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+
+    resize(event.nativeEvent);
+    window.addEventListener("pointermove", resize);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  }
+
+  function startArtifactResize(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const stage = workspaceStageRef.current;
+    if (!stage) return;
+    const stageRect = stage.getBoundingClientRect();
+    setResizingPane("artifact");
+    document.body.classList.add("workspace-pane-resizing");
+
+    const resize = (pointerEvent: PointerEvent) => {
+      const maxWidth = stageRect.width - layoutConversationMinWidth;
+      const nextWidth = Math.round(stageRect.right - pointerEvent.clientX);
+      setArtifactWorkspaceWidth(clampLayoutWidth(nextWidth, layoutArtifactMinWidth, maxWidth));
+    };
+    const stop = () => {
+      setResizingPane("");
+      document.body.classList.remove("workspace-pane-resizing");
+      window.removeEventListener("pointermove", resize);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+
+    resize(event.nativeEvent);
+    window.addEventListener("pointermove", resize);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
   }
 
   function closeResourceDialog(open: boolean) {
@@ -1190,6 +1268,7 @@ export function AgentWorkspace() {
     const content = draft.trim();
     if ((!content && pendingAttachments.length === 0) || !sessionId || busyChat) return;
     const requestSessionId = sessionId;
+    selectedSessionIdRef.current = requestSessionId;
     const requestTurn = chatTurnRef.current + 1;
     chatTurnRef.current = requestTurn;
     const attachmentIds = pendingAttachments.map((asset) => asset.id);
@@ -1223,6 +1302,7 @@ export function AgentWorkspace() {
     }));
     setBusyChat(true);
     setStatus({ tone: "busy", text: "Generating" });
+    startAgentActivity(requestSessionId);
     try {
       const response = await api.chatResponse(requestSessionId, requestContent, attachmentIds, abort.signal, { agentMode });
       const timingElapsed = (now: number) => Math.max(0, Math.round(now - streamStartedAt));
@@ -1276,9 +1356,11 @@ export function AgentWorkspace() {
           updateVisibleTiming(performance.now(), true);
         }
         if (selectedSessionIdRef.current === requestSessionId) {
+          recordAgentActivity(data, requestSessionId);
           handleRuntimeEvent(data);
         }
       });
+      finishAgentActivity(requestSessionId);
       if (selectedSessionIdRef.current === requestSessionId && lastVisibleAssistantAt !== null) {
         setResponseTiming((current) => current?.sessionId === requestSessionId ? { ...current, totalMs: timingElapsed(lastVisibleAssistantAt as number) } : current);
       }
@@ -1565,6 +1647,60 @@ export function AgentWorkspace() {
     }
   }
 
+  function startAgentActivity(targetSessionId: string) {
+    setAgentActivity({
+      session_id: targetSessionId,
+      running: true,
+      items: [{
+        id: `activity-${Date.now()}-start`,
+        type: "start",
+        title: "Preparing response",
+        detail: "Waiting for the model and available tools.",
+        status: "running",
+        created_at: new Date().toISOString()
+      }]
+    });
+  }
+
+  function recordAgentActivity(event: RuntimeEvent, fallbackSessionId = sessionId, eventId = "") {
+    const item = agentActivityItemFromRuntimeEvent(event, eventId);
+    if (!item) return;
+    const targetSessionId = event.session_id || fallbackSessionId;
+    if (!targetSessionId) return;
+    const terminal = terminalRuntimeEvents.has(event.type);
+    setAgentActivity((current) => {
+      const sameActivity = current && current.session_id === targetSessionId;
+      const items = sameActivity ? current.items : [];
+      if (items.some((existing) => existing.id === item.id)) {
+        return current;
+      }
+      return {
+        session_id: targetSessionId,
+        job_id: event.job_id || current?.job_id,
+        running: terminal ? false : (current?.running ?? true),
+        items: [...items, item].slice(-32)
+      };
+    });
+  }
+
+  function finishAgentActivity(targetSessionId: string) {
+    setAgentActivity((current) => {
+      if (!current || current.session_id !== targetSessionId || !current.running) return current;
+      const completeItem: AgentActivityItem = {
+        id: `activity-${Date.now()}-stream-complete`,
+        type: "done",
+        title: "Response completed",
+        status: "succeeded",
+        created_at: new Date().toISOString()
+      };
+      return {
+        ...current,
+        running: false,
+        items: [...current.items, completeItem].slice(-32)
+      };
+    });
+  }
+
   function appendSessionMessage(targetSessionId: string, message: Message) {
     if (!targetSessionId || deletedSessionIdsRef.current.has(targetSessionId)) return;
     setSessions((current) => current.map((item) => {
@@ -1587,6 +1723,7 @@ export function AgentWorkspace() {
       const events = await api.jobEvents(jobId);
       if (activeJobStreamIdRef.current !== jobId || jobStreamClosedRef.current) return;
       setJobEvents(events);
+      events.forEach((event) => recordAgentActivity(event.event, event.session_id || sessionId, event.id));
       lastJobEventRef.current = events[events.length - 1]?.id || "";
       const terminal = events.find((event) => terminalRuntimeEvents.has(event.type));
       if (terminal) {
@@ -1612,6 +1749,7 @@ export function AgentWorkspace() {
         if (activeJobStreamIdRef.current !== jobId || jobStreamClosedRef.current) return;
         if (id) lastJobEventRef.current = id;
         setJobEvents((current) => appendJobEvent(current, { id: id || `${Date.now()}`, job_id: jobId, type: event.type, event, created_at: new Date().toISOString() }));
+        recordAgentActivity(event, event.session_id || sessionId, id);
         if (terminalRuntimeEvents.has(event.type)) {
           finishJobStream(jobId, event);
         }
@@ -1787,9 +1925,22 @@ export function AgentWorkspace() {
     );
   }
 
+  const workspaceFrameStyle = {
+    "--left-sidebar-width": `${leftSidebarOpen ? sidebarWidth : layoutSidebarCollapsedWidth}px`
+  } as CSSProperties;
+  const workspaceStageStyle = {
+    "--workspace-main-min-width": `${layoutConversationMinWidth}px`,
+    "--artifact-workspace-width": `${artifactWorkspaceWidth}px`,
+    "--artifact-workspace-min-width": `${layoutArtifactMinWidth}px`
+  } as CSSProperties;
+  const visibleAgentActivity = agentActivity?.session_id === sessionId ? agentActivity : null;
+
   return (
     <WorkspaceFrame
       leftCollapsed={!leftSidebarOpen}
+      resizingPane={resizingPane}
+      style={workspaceFrameStyle}
+      onSidebarResizeStart={startSidebarResize}
       sidebar={(
         <WorkspaceSidebar
           authSession={authSession}
@@ -1833,7 +1984,11 @@ export function AgentWorkspace() {
         />
       )}
       workspace={(
-        <div className={`workspace-stage ${artifactWorkspaceMounted ? "with-artifact-workspace" : ""}`}>
+        <div
+          ref={workspaceStageRef}
+          className={`workspace-stage ${artifactWorkspaceMounted ? "with-artifact-workspace" : ""}`}
+          style={workspaceStageStyle}
+        >
           <ConversationPane
             activeSession={activeSession}
             status={status}
@@ -1844,6 +1999,7 @@ export function AgentWorkspace() {
             messages={messages}
             liveUserDraft={liveUserDraft}
             assistantDraft={assistantDraft}
+            agentActivity={visibleAgentActivity}
             highlightedMessageIndex={highlightedMessageIndex}
             messagesRef={messagesRef}
             statusLine={(nextStatus) => <StatusLine status={nextStatus} />}
@@ -1880,21 +2036,31 @@ export function AgentWorkspace() {
             )}
           />
           {artifactWorkspaceMounted && (
-            <ArtifactWorkspace
-              className={artifactWorkspaceVisible ? "visible" : ""}
-              artifact={selectedWorkspaceArtifact}
-              memoryBusy={assetMemoryBusy}
-              memoryDisabled={!memorySettings.capture_enabled}
-              onClose={() => setArtifactWorkspaceOpen(false)}
-              onOpenPreview={previewArtifact}
-              onDownload={(id) => { void downloadArtifact(id); }}
-              onDelete={(id) => deleteAsset("artifact", id)}
-              onExtractMemory={extractAssetMemory}
-              loadArtifact={(asset) => api.artifactBlob(asset.id)}
-              loadPreview={(asset) => api.artifactPreviewBlob(asset.id)}
-              formatBytes={formatBytes}
-              formatTime={formatTime}
-            />
+            <>
+              <div
+                className={`workspace-resizer workspace-resizer-artifact ${resizingPane === "artifact" ? "dragging" : ""}`}
+                role="separator"
+                aria-label="Resize artifact preview"
+                aria-orientation="vertical"
+                tabIndex={0}
+                onPointerDown={startArtifactResize}
+              />
+              <ArtifactWorkspace
+                className={artifactWorkspaceVisible ? "visible" : ""}
+                artifact={selectedWorkspaceArtifact}
+                memoryBusy={assetMemoryBusy}
+                memoryDisabled={!memorySettings.capture_enabled}
+                onClose={() => setArtifactWorkspaceOpen(false)}
+                onOpenPreview={previewArtifact}
+                onDownload={(id) => { void downloadArtifact(id); }}
+                onDelete={(id) => deleteAsset("artifact", id)}
+                onExtractMemory={extractAssetMemory}
+                loadArtifact={(asset) => api.artifactBlob(asset.id)}
+                loadPreview={(asset) => api.artifactPreviewBlob(asset.id)}
+                formatBytes={formatBytes}
+                formatTime={formatTime}
+              />
+            </>
           )}
         </div>
       )}
@@ -2154,6 +2320,126 @@ function runtimeEventMessage(event: RuntimeEvent, role: "user" | "assistant"): M
     content: event.content || "",
     created_at: new Date().toISOString()
   };
+}
+
+function agentActivityItemFromRuntimeEvent(event: RuntimeEvent, eventId = ""): AgentActivityItem | null {
+  if (event.type === "delta" || event.type === "message") return null;
+  const data = recordFromUnknown(event.data);
+  const title = agentActivityTitle(event, data);
+  if (!title) return null;
+  const detail = agentActivityDetail(event, data);
+  return {
+    id: activityEventID(event, data, eventId),
+    type: event.type,
+    title,
+    detail,
+    status: agentActivityStatus(event, data),
+    created_at: new Date().toISOString()
+  };
+}
+
+function activityEventID(event: RuntimeEvent, data: Record<string, unknown> | null, eventId: string): string {
+  return [
+    eventId,
+    event.type,
+    event.job_id,
+    stringFromUnknown(data?.action_id),
+    stringFromUnknown(data?.action_hash),
+    stringFromUnknown(data?.step_id),
+    stringFromUnknown(data?.workflow_run_id),
+    event.error,
+    event.content
+  ].filter(Boolean).join(":") || `${event.type}-${Date.now()}`;
+}
+
+function agentActivityTitle(event: RuntimeEvent, data: Record<string, unknown> | null): string {
+  if (event.type === "start") return "Generating response";
+  if (event.type === "done") return "Response completed";
+  if (event.type === "cancelled") return "Request cancelled";
+  if (event.type === "error") return "Stopped with an error";
+  if (event.type === "job") return "Started background job";
+  if (event.type === "deep_agent_started") return "Started plan-and-execute";
+  if (event.type === "deep_agent_completed") return "Plan-and-execute completed";
+  if (event.type === "loop_trigger_started") return "Loop trigger started";
+  if (event.type === "deep_agent_artifact_output") {
+    const artifact = recordFromUnknown(data?.artifact);
+    return ["Created artifact", stringFromUnknown(artifact?.filename || artifact?.id)].filter(Boolean).join(" · ");
+  }
+  if (event.type === "deep_agent_child_job") {
+    const child = recordFromUnknown(data?.child_job);
+    return ["Started child job", stringFromUnknown(child?.id || data?.child_job_id)].filter(Boolean).join(" · ");
+  }
+  if (event.type.startsWith("deep_agent_action_")) {
+    const step = stringFromUnknown(data?.step_title || data?.step_id) || "Action";
+    const tool = stringFromUnknown(data?.skill_name || data?.tool);
+    return [step, tool].filter(Boolean).join(" · ");
+  }
+  if (event.type.startsWith("workflow_step_")) {
+    return ["Workflow step", stringFromUnknown(data?.step_title || data?.step_name || data?.step_id)].filter(Boolean).join(" · ");
+  }
+  if (event.type.startsWith("workflow_run_")) {
+    return ["Workflow", event.type.replace(/^workflow_run_/, "").replace(/_/g, " ")].join(" · ");
+  }
+  if (event.type === "live_tool_start") return ["Using tool", stringFromUnknown(data?.tool || event.content)].filter(Boolean).join(" · ");
+  if (event.type === "live_tool_result") return ["Tool finished", stringFromUnknown(data?.tool)].filter(Boolean).join(" · ");
+  if (event.type === "live_tool_error") return ["Tool failed", stringFromUnknown(data?.tool)].filter(Boolean).join(" · ");
+  if (event.type === "live_skill_start") return "Running skill";
+  if (event.type === "live_skill_result") return "Skill finished";
+  if (event.type === "sandbox_metric") return "Sandbox reported progress";
+  if (event.type === "artifact_metric") return "Artifact tool reported progress";
+  if (/tool|skill|workflow|deep_agent|artifact|sandbox|loop/i.test(event.type)) {
+    return event.type.replace(/_/g, " ");
+  }
+  return "";
+}
+
+function agentActivityDetail(event: RuntimeEvent, data: Record<string, unknown> | null): string | undefined {
+  const route = recordFromUnknown(data?.route);
+  const result = recordFromUnknown(data?.result);
+  const artifact = recordFromUnknown(data?.artifact);
+  const child = recordFromUnknown(data?.child_job);
+  const detail = firstText(
+    event.error,
+    event.job_reason,
+    event.content,
+    stringFromUnknown(data?.summary),
+    stringFromUnknown(data?.status),
+    stringFromUnknown(data?.result_status),
+    stringFromUnknown(data?.tool),
+    stringFromUnknown(data?.skill_name),
+    stringFromUnknown(route?.mode),
+    stringFromUnknown(result?.status),
+    stringFromUnknown(artifact?.content_type),
+    stringFromUnknown(child?.status)
+  );
+  return detail ? truncateText(detail, 180) : undefined;
+}
+
+function agentActivityStatus(event: RuntimeEvent, data: Record<string, unknown> | null): AgentActivityItem["status"] {
+  const status = firstText(stringFromUnknown(data?.result_status), stringFromUnknown(data?.status)).toLowerCase();
+  if (event.type === "error" || event.type.endsWith("_failed") || event.type.endsWith("_error") || status === "failed" || status === "error") return "failed";
+  if (event.type === "done" || event.type.endsWith("_succeeded") || event.type.endsWith("_completed") || status === "succeeded" || status === "completed") return "succeeded";
+  if (event.type === "start" || event.type.endsWith("_started") || status === "running" || status === "queued") return "running";
+  return "default";
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function stringFromUnknown(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function firstText(...values: Array<string | undefined>): string {
+  return values.map((value) => (value || "").trim()).find(Boolean) || "";
+}
+
+function truncateText(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 }
 
 function isConvertedSkillCommandMessage(messages: Message[], message: Message): boolean {

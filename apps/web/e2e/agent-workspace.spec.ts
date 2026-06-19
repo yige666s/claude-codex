@@ -172,6 +172,30 @@ test("keeps sent chat text visible when the stream fails", async ({ page }) => {
   await expect(page.getByText(/Message delivery failed/).first()).toBeVisible();
 });
 
+test("shows streamed agent activity as a collapsible timeline", async ({ page }) => {
+  await mockAgentAPI(page);
+
+  await page.goto("/");
+  await page.getByLabel("Email").fill("e2e@example.com");
+  await page.getByLabel("Password").fill("password123");
+  await page.getByRole("button", { name: "Login" }).last().click();
+
+  await page.getByRole("textbox", { name: "Message" }).fill("show agent activity timeline");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const activity = page.locator(".agent-activity");
+  await expect(activity).toBeVisible();
+  await expect(activity).toHaveClass(/complete/);
+  await expect(activity.locator("summary")).toContainText("Agent activity");
+  await expect(activity.locator("summary")).toContainText("Completed");
+  await expect(activity.locator(".agent-activity-list")).toBeHidden();
+
+  await activity.locator("summary").click();
+  await expect(page.getByText("Started plan-and-execute")).toBeVisible();
+  await expect(page.getByText("Gather facts · WebSearch").first()).toBeVisible();
+  await expect(page.getByText("Web search returned source notes")).toBeVisible();
+});
+
 test("opens a fresh chat after deleting the active session", async ({ page }) => {
   await mockAgentAPI(page, {
     initialSessions: [{
@@ -351,6 +375,41 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
       .map((attachment) => attachment.filename);
     const response = attachmentNames.length ? `Attachment received: ${attachmentNames.join(", ")}` : `Echo: ${payload.content}`;
     session.messages.push({ role: "assistant", content: response, created_at: now, message_index: session.messages.length });
+    if (payload.content === "show agent activity timeline") {
+      return sse(route, [
+        { event: "start", data: { type: "start", session_id: session.id } },
+        { event: "deep_agent_started", data: { type: "deep_agent_started", session_id: session.id, content: "Plan-and-execute task started" } },
+        {
+          event: "deep_agent_action_started",
+          data: {
+            type: "deep_agent_action_started",
+            session_id: session.id,
+            data: {
+              step_id: "gather",
+              step_title: "Gather facts",
+              skill_name: "WebSearch",
+              status: "running"
+            }
+          }
+        },
+        {
+          event: "deep_agent_action_succeeded",
+          data: {
+            type: "deep_agent_action_succeeded",
+            session_id: session.id,
+            data: {
+              step_id: "gather",
+              step_title: "Gather facts",
+              skill_name: "WebSearch",
+              result_status: "succeeded",
+              summary: "Web search returned source notes"
+            }
+          }
+        },
+        { event: "message", data: { type: "message", role: "assistant", content: response, session_id: session.id } },
+        { event: "done", data: { type: "done", session_id: session.id } }
+      ]);
+    }
     return sse(route, [
       { event: "message", data: { type: "message", role: "assistant", content: response, session_id: session.id } },
       { event: "done", data: { type: "done", session_id: session.id } }
@@ -522,9 +581,8 @@ function sse(route: Route, events: Array<{ id?: string; event: string; data: unk
   const body = events.map((item) => [
     item.id ? `id: ${item.id}` : "",
     `event: ${item.event}`,
-    `data: ${JSON.stringify(item.data)}`,
-    ""
-  ].filter(Boolean).join("\n")).join("\n");
+    `data: ${JSON.stringify(item.data)}`
+  ].filter(Boolean).join("\n")).join("\n\n");
   return route.fulfill({
     status: 200,
     headers: {

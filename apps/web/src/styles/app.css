@@ -505,6 +505,7 @@ label.composer-upload {
 
 .app-shell {
   --left-sidebar-width: 312px;
+  --workspace-resizer-hit-width: 14px;
   width: 100vw;
   height: 100vh;
   height: 100dvh;
@@ -525,6 +526,52 @@ label.composer-upload {
 .app-shell.left-collapsed {
   --left-sidebar-width: 72px;
 }
+.app-shell.resizing,
+.app-shell.resizing *,
+body.workspace-pane-resizing,
+body.workspace-pane-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+.app-shell.resizing,
+body.workspace-pane-resizing .workspace-stage {
+  transition: none;
+}
+.workspace-resizer {
+  position: absolute;
+  z-index: 20;
+  width: var(--workspace-resizer-hit-width);
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.workspace-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: rgba(205, 216, 224, 0.72);
+  transform: translateX(-50%);
+  transition:
+    background 140ms ease,
+    box-shadow 140ms ease,
+    width 140ms ease;
+}
+.workspace-resizer:hover::after,
+.workspace-resizer:focus-visible::after,
+.workspace-resizer.dragging::after {
+  width: 2px;
+  background: rgba(13, 148, 136, 0.82);
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.12);
+}
+.workspace-resizer-sidebar {
+  top: 0;
+  bottom: 0;
+  left: var(--left-sidebar-width);
+  transform: translateX(-50%);
+}
 .sidebar, .right-panel {
   height: 100%;
   min-height: 0;
@@ -539,6 +586,7 @@ label.composer-upload {
   border-right: 1px solid rgba(210, 222, 227, 0.84);
   border-radius: 0;
   position: relative;
+  container-type: inline-size;
   z-index: 7;
   overflow: hidden;
   display: grid;
@@ -576,6 +624,7 @@ label.composer-upload {
   background: rgba(251, 253, 253, 0.72);
 }
 .sidebar-head strong {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1420,6 +1469,71 @@ label.composer-upload {
   justify-content: flex-start;
 }
 
+@container (max-width: 324px) {
+  .sidebar-head {
+    padding: 13px 12px;
+    gap: 8px;
+  }
+  .sidebar-logo {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+  }
+  .sidebar-head strong {
+    font-size: 18px;
+  }
+  .service-status {
+    width: 34px;
+    min-width: 34px;
+    padding: 0;
+    justify-content: center;
+    flex: 0 0 34px;
+    overflow: hidden;
+  }
+  .service-status span {
+    display: none;
+  }
+  .sidebar-collapse-button {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    min-height: 34px;
+  }
+  .toolbar {
+    margin: 14px 10px 10px;
+    padding: 8px;
+  }
+  .sidebar-action-button,
+  .sidebar-resource-button {
+    gap: 8px;
+    padding-inline: 10px;
+  }
+  .session-list {
+    margin: 10px 10px 12px;
+    padding: 10px 8px;
+  }
+  .session-list-item {
+    grid-template-columns: minmax(0, 1fr) 34px;
+    padding: 0 6px 0 10px;
+  }
+  .session-delete {
+    width: 30px;
+    height: 30px;
+    min-height: 30px;
+  }
+  .account {
+    margin: 10px 10px 12px;
+    padding: 8px;
+    gap: 8px;
+  }
+  .account > .icon {
+    width: 38px;
+    height: 38px;
+    min-width: 38px;
+    min-height: 38px;
+  }
+}
+
 .workspace {
   height: 100%;
   min-height: 0;
@@ -1432,6 +1546,9 @@ label.composer-upload {
     linear-gradient(180deg, #f8faf9 0%, #eef4f3 100%);
 }
 .workspace-stage {
+  --workspace-main-min-width: 520px;
+  --artifact-workspace-width: 560px;
+  --artifact-workspace-min-width: 360px;
   height: 100%;
   min-height: 0;
   position: relative;
@@ -1441,7 +1558,15 @@ label.composer-upload {
   transition: grid-template-columns 260ms cubic-bezier(.2,.85,.25,1);
 }
 .workspace-stage.with-artifact-workspace {
-  grid-template-columns: minmax(420px, 1fr) minmax(420px, 42vw);
+  grid-template-columns:
+    minmax(var(--workspace-main-min-width), 1fr)
+    minmax(var(--artifact-workspace-min-width), var(--artifact-workspace-width));
+}
+.workspace-resizer-artifact {
+  top: 0;
+  bottom: 0;
+  right: var(--artifact-workspace-width);
+  transform: translateX(50%);
 }
 .topbar {
   grid-row: 1;
@@ -1578,6 +1703,118 @@ label.composer-upload {
 .message.highlighted {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--focus);
+}
+.agent-activity {
+  align-self: flex-start;
+  width: min(720px, 88%);
+  border: 1px solid rgba(205, 219, 226, 0.92);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 12px 32px rgba(38, 49, 59, 0.055);
+  overflow: hidden;
+  animation: messageIn 220ms cubic-bezier(.2,.85,.25,1) both;
+}
+.agent-activity summary {
+  min-height: 48px;
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.agent-activity summary::-webkit-details-marker {
+  display: none;
+}
+.agent-activity-icon,
+.agent-activity-item-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--muted);
+}
+.agent-activity-icon {
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(191, 209, 216, 0.82);
+  border-radius: 9px;
+  background: rgba(246, 250, 249, 0.88);
+}
+.agent-activity.running .agent-activity-icon {
+  color: #2563eb;
+}
+.agent-activity.running .agent-activity-icon svg {
+  animation: agentActivitySpin 1.05s linear infinite;
+}
+.agent-activity.complete .agent-activity-icon {
+  color: var(--accent);
+}
+.agent-activity-title {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 780;
+  letter-spacing: 0;
+}
+.agent-activity-title small,
+.agent-activity-item small {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.agent-activity-title small {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-activity-summary {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.agent-activity-chevron {
+  color: var(--muted);
+  transition: transform 160ms ease;
+}
+.agent-activity[open] .agent-activity-chevron {
+  transform: rotate(180deg);
+}
+.agent-activity-list {
+  margin: 0;
+  padding: 7px 12px 12px;
+  border-top: 1px solid rgba(218, 228, 233, 0.9);
+  display: grid;
+  gap: 8px;
+  list-style: none;
+}
+.agent-activity-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+.agent-activity-item strong {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 720;
+  overflow-wrap: anywhere;
+}
+.agent-activity-item.running .agent-activity-item-icon {
+  color: #2563eb;
+}
+.agent-activity-item.succeeded .agent-activity-item-icon {
+  color: var(--accent);
+}
+.agent-activity-item.failed .agent-activity-item-icon {
+  color: var(--danger);
 }
 .message-role {
   color: var(--muted);
@@ -1735,6 +1972,9 @@ label.composer-upload {
 @keyframes messageIn {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
+}
+@keyframes agentActivitySpin {
+  to { transform: rotate(360deg); }
 }
 .markdown-content table {
   width: 100%;
@@ -4496,6 +4736,9 @@ label.composer-upload {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
   }
+  .workspace-resizer {
+    display: none;
+  }
   .sidebar {
     position: fixed;
     inset: 0 auto 0 0;
@@ -4603,6 +4846,7 @@ label.composer-upload {
     width: min(720px, calc(100% - 36px));
   }
   .message { max-width: 96%; }
+  .agent-activity { width: 96%; }
   .workspace-stage.with-artifact-workspace {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -4697,6 +4941,15 @@ label.composer-upload {
     grid-template-columns: 1fr;
   }
   .messages { padding: 14px; }
+  .agent-activity {
+    width: 100%;
+  }
+  .agent-activity summary {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .agent-activity-summary {
+    display: none;
+  }
   .empty-state {
     margin: 22px auto 220px;
   }

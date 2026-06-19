@@ -1,7 +1,7 @@
 import { ReactNode, RefObject } from "react";
 import { AlertCircle, Menu } from "lucide-react";
 import { Button } from "../../../components/ui/button";
-import type { Message, Session } from "../../../types";
+import type { AgentActivity, Message, Session } from "../../../types";
 import { sessionTitle } from "../../../lib/sessionTitle";
 import type { Status } from "../workspaceTypes";
 import { MessageList } from "./messages/MessageList";
@@ -21,6 +21,7 @@ type ConversationPaneProps = {
   messages: Message[];
   liveUserDraft: string;
   assistantDraft: string;
+  agentActivity: AgentActivity | null;
   highlightedMessageIndex: number | null;
   messagesRef: RefObject<HTMLDivElement | null>;
   composer: ReactNode;
@@ -40,6 +41,7 @@ export function ConversationPane({
   messages,
   liveUserDraft,
   assistantDraft,
+  agentActivity,
   highlightedMessageIndex,
   messagesRef,
   composer,
@@ -48,7 +50,7 @@ export function ConversationPane({
   onOpenMobileNav,
   onReconnectJob
 }: ConversationPaneProps) {
-  const empty = !messages.length && !liveUserDraft && !assistantDraft;
+  const empty = !messages.length && !liveUserDraft && !assistantDraft && !agentActivity;
   const title = activeSession ? sessionTitle(activeSession.messages?.length ? activeSession : { ...activeSession, messages }) : "";
   return (
     <section className={`workspace ${empty ? "empty-workspace" : ""}`}>
@@ -73,6 +75,7 @@ export function ConversationPane({
         userLabel={userLabel}
         liveUserDraft={liveUserDraft}
         assistantDraft={assistantDraft}
+        agentActivity={agentActivity}
         highlightedMessageIndex={highlightedMessageIndex}
         messagesRef={messagesRef}
         renderMessage={messageBubble}

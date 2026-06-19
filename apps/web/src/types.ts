@@ -39,6 +39,22 @@ export type Message = {
   hidden?: boolean;
 };
 
+export type AgentActivityItem = {
+  id: string;
+  type: string;
+  title: string;
+  detail?: string;
+  status: "running" | "succeeded" | "failed" | "default";
+  created_at: string;
+};
+
+export type AgentActivity = {
+  session_id: string;
+  job_id?: string;
+  running: boolean;
+  items: AgentActivityItem[];
+};
+
 export type MessageAttachment = {
   id: string;
   file_type?: string;
