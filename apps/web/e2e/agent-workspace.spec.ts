@@ -196,7 +196,8 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await expect(jobWorkspace.getByLabel("Job metadata").getByText("job-1")).toBeVisible();
   await expect(jobWorkspace.getByText("Events", { exact: true })).toBeVisible();
   await expect(jobWorkspace.locator(".timeline-row", { hasText: "done" })).toBeVisible();
-  await page.getByLabel("Close job details").click();
+  await page.getByRole("button", { name: "新聊天" }).click();
+  await expect(jobWorkspace).toBeHidden();
 
   await page.getByRole("button", { name: "搜索聊天" }).click();
   await page.getByRole("textbox", { name: "Search across all sessions" }).fill("playwright");
@@ -293,14 +294,21 @@ test("opens a fresh chat after deleting the active session", async ({ page }) =>
 
   await page.getByRole("button", { name: "新聊天" }).click();
   await expect(page.locator(".empty-state")).toBeVisible();
+  await page.getByRole("button", { name: "Use image generation" }).click();
   await page.getByRole("textbox", { name: "Message" }).fill("delete this active session");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Echo: delete this active session")).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Artifact preview" })).toBeVisible();
+  await page.getByLabel("Close artifact preview").click();
+  await page.getByRole("button", { name: "资源" }).click();
+  await page.getByRole("tab", { name: "Jobs" }).click();
+  await page.getByRole("dialog", { name: "Jobs" }).locator(".job-summary", { hasText: "delete this active session" }).click();
+  await expect(page.getByRole("complementary", { name: "Job details" })).toBeVisible();
 
   await page.locator(".session-list-item.active .session-delete").click();
   await page.getByRole("dialog", { name: "Remove session?" }).getByRole("button", { name: "Remove" }).click();
 
   await expect(page.locator(".empty-state")).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Job details" })).toBeHidden();
   await expect(page.locator(".message")).toHaveCount(0);
   await expect(page.locator(".session-list-item.active", { hasText: "old history should not become active" })).toHaveCount(0);
 });

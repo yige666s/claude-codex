@@ -686,9 +686,11 @@ export function AgentWorkspace() {
   }
 
   function selectSession(id: string) {
+    const switchingSession = id !== sessionId;
     selectedSessionIdRef.current = id;
     setSessionId(id);
     setMobileNav(false);
+    if (switchingSession) closeSessionScopedWorkspaces();
     resetSessionScopedFeedback();
     if (id === sessionId) {
       refreshSessionData(id).catch((error) => showError(error));
@@ -899,6 +901,7 @@ export function AgentWorkspace() {
 
   async function openSearchResult(result: MessageSearchResult) {
     setGlobalSearchTarget({ sessionID: result.session_id, messageIndex: result.message_index });
+    if (result.session_id !== sessionId) closeSessionScopedWorkspaces();
     setSessionId(result.session_id);
     setMobileNav(false);
     setGlobalSearchOpen(false);
@@ -995,6 +998,7 @@ export function AgentWorkspace() {
       selectedSessionIdRef.current = session.id;
       setSessionId(session.id);
       setMessages([]);
+      closeSessionScopedWorkspaces();
       resetSessionScopedFeedback({ clearDraft: true });
     } catch (error) {
       showError(error);
@@ -1023,6 +1027,7 @@ export function AgentWorkspace() {
         closeJobStream();
         setSelectedJobId("");
         setJobEvents([]);
+        closeSessionScopedWorkspaces();
         selectedSessionIdRef.current = "";
         setSessionId("");
         setMessages([]);
@@ -1471,6 +1476,18 @@ export function AgentWorkspace() {
     if (options.clearDraft) {
       setDraft("");
     }
+  }
+
+  function closeSessionScopedWorkspaces() {
+    setArtifactWorkspaceOpen(false);
+    setArtifactWorkspaceAssetId("");
+    setJobWorkspaceOpen(false);
+    setJobWorkspaceJobId("");
+    setSelectedJobId("");
+    setJobEvents([]);
+    setJobStreamStatus("idle");
+    setJobStreamNotice("");
+    closeJobStream();
   }
 
   async function uploadAttachment(fileList: FileList | null) {
