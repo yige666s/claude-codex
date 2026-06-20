@@ -3865,9 +3865,9 @@ func formatDeepAgentResultMessage(result *DeepAgentTaskResult, runErr error) str
 		}
 		if len(finalEvidence.Tests) > 0 {
 			b.WriteString("\n\nTest results：")
-			for _, test := range finalEvidence.Tests {
-				label := firstNonEmptyString(deepAgentWorkflowString(test, "command"), deepAgentWorkflowString(test, "step_id"), "test")
-				status := firstNonEmptyString(deepAgentWorkflowString(test, "status"), fmt.Sprint(test["exit_code"]))
+			for idx, test := range finalEvidence.Tests {
+				label := deepAgentResultTestLabel(state, test, idx)
+				status := deepAgentResultTestStatus(test)
 				b.WriteString("\n- ")
 				b.WriteString(label)
 				if strings.TrimSpace(status) != "" {
@@ -3893,6 +3893,41 @@ func formatDeepAgentResultMessage(result *DeepAgentTaskResult, runErr error) str
 		b.WriteString(result.Run.ID)
 	}
 	return b.String()
+}
+
+func deepAgentResultTestLabel(state *DeepAgentState, test map[string]any, idx int) string {
+	if command := strings.TrimSpace(deepAgentWorkflowString(test, "command")); command != "" {
+		return command
+	}
+	stepID := strings.TrimSpace(deepAgentWorkflowString(test, "step_id"))
+	if state != nil && idx >= 0 && idx < len(state.ActionHistory) {
+		action := state.ActionHistory[idx]
+		actionStepID := strings.TrimSpace(action.StepID)
+		if stepID == "" || actionStepID == "" || stepID == actionStepID {
+			parts := []string{fmt.Sprintf("action-%d", idx+1)}
+			if actionStepID != "" {
+				parts = append(parts, actionStepID)
+			} else if stepID != "" {
+				parts = append(parts, stepID)
+			}
+			if tool := strings.TrimSpace(action.Tool); tool != "" {
+				parts = append(parts, tool)
+			}
+			return strings.Join(parts, " · ")
+		}
+	}
+	return firstNonEmptyString(stepID, "test")
+}
+
+func deepAgentResultTestStatus(test map[string]any) string {
+	status := strings.TrimSpace(deepAgentWorkflowString(test, "status"))
+	if status != "" {
+		return status
+	}
+	if test != nil && test["exit_code"] != nil {
+		return fmt.Sprint(test["exit_code"])
+	}
+	return ""
 }
 
 func (r *Runtime) GetJob(ctx context.Context, userID, jobID string) (*Job, error) {

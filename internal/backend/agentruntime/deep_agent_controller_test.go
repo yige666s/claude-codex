@@ -3567,6 +3567,50 @@ func TestFormatDeepAgentResultMessageIncludesArtifactRefs(t *testing.T) {
 	}
 }
 
+func TestFormatDeepAgentResultMessageLabelsRepeatedStepActions(t *testing.T) {
+	state := &DeepAgentState{
+		Goal: "调研 Chance AI",
+		Plan: DeepAgentPlan{Steps: []DeepAgentStep{
+			{ID: "step-1", Title: "收集资料", Status: DeepAgentStepStatusSucceeded},
+			{ID: "step-2", Title: "分析产品", Status: DeepAgentStepStatusSucceeded},
+			{ID: "step-3", Title: "生成文档", Status: DeepAgentStepStatusSucceeded},
+		}},
+		ActionCount: 4,
+		ActionHistory: []DeepAgentAction{
+			{StepID: "step-1", Tool: DeepAgentToolModeModel},
+			{StepID: "step-2", Tool: DeepAgentToolModeModel},
+			{StepID: "step-2", Tool: DeepAgentToolModeModel},
+			{StepID: "step-3", Tool: DeepAgentToolModeModelArtifact},
+		},
+		WorkingMemory: map[string]any{},
+	}
+	store := StateDeepAgentEvidenceStore{}
+	for idx, action := range state.ActionHistory {
+		store.PutStepEvidence(state, DeepAgentStepEvidence{
+			ActionID: fmt.Sprintf("action-%d", idx+1),
+			StepID:   action.StepID,
+			Diagnostics: map[string]any{
+				"status": "succeeded",
+			},
+		})
+	}
+
+	message := formatDeepAgentResultMessage(&DeepAgentTaskResult{State: state, Run: &WorkflowRun{ID: "run-1"}}, nil)
+	for _, want := range []string{
+		"action-1 · step-1 · model：succeeded",
+		"action-2 · step-2 · model：succeeded",
+		"action-3 · step-2 · model：succeeded",
+		"action-4 · step-3 · model_artifact：succeeded",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("final message missing %q, got:\n%s", want, message)
+		}
+	}
+	if strings.Contains(message, "\n- step-2：succeeded") {
+		t.Fatalf("repeated step result should be action-labeled, got:\n%s", message)
+	}
+}
+
 func TestDeepAgentControllerResumeContinuesCheckpointedRun(t *testing.T) {
 	store := NewMemoryWorkflowStore()
 	initial := NewDeepAgentController(
