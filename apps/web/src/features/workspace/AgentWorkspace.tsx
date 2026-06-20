@@ -27,6 +27,7 @@ import { Input } from "../../components/ui/input";
 import { Textarea } from "../../components/ui/textarea";
 import { ConversationPane } from "./components/ConversationPane";
 import { ArtifactWorkspace } from "./components/ArtifactWorkspace";
+import { JobWorkspace } from "./components/JobWorkspace";
 import { MemoryModal } from "./components/MemoryModal";
 import { MessageBubble } from "./components/MessageBubble";
 import { PreviewModal } from "./components/PreviewModal";
@@ -188,6 +189,10 @@ export function AgentWorkspace() {
   const [artifactWorkspaceMounted, setArtifactWorkspaceMounted] = useState(false);
   const [artifactWorkspaceVisible, setArtifactWorkspaceVisible] = useState(false);
   const [artifactWorkspaceAssetId, setArtifactWorkspaceAssetId] = useState("");
+  const [jobWorkspaceOpen, setJobWorkspaceOpen] = useState(false);
+  const [jobWorkspaceMounted, setJobWorkspaceMounted] = useState(false);
+  const [jobWorkspaceVisible, setJobWorkspaceVisible] = useState(false);
+  const [jobWorkspaceJobId, setJobWorkspaceJobId] = useState("");
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
   const [globalSearchResults, setGlobalSearchResults] = useState<MessageSearchResult[]>([]);
@@ -250,6 +255,7 @@ export function AgentWorkspace() {
   const deletedSessionIdsRef = useRef<Set<string>>(new Set());
   const resourceDialogTabRef = useRef<RightPanelTab | null>(null);
   const artifactWorkspaceOpenRef = useRef(false);
+  const jobWorkspaceOpenRef = useRef(false);
   const resourceIdsRef = useRef<Record<RightPanelTab, Set<string>>>(emptyResourceIdSets());
   const resourceBaselineReadyRef = useRef<Record<RightPanelTab, boolean>>(emptyResourceNotices());
   const accountRef = useRef<HTMLDivElement | null>(null);
@@ -266,6 +272,15 @@ export function AgentWorkspace() {
   const activeResourceSearch = resourceSearch[activeResourceTab];
   const activeResourceVisibleCount = resourceVisibleCount[activeResourceTab];
   const selectedWorkspaceArtifact = artifacts.find((asset) => asset.id === artifactWorkspaceAssetId) || null;
+  const selectedWorkspaceJob = jobs.find((job) => job.id === jobWorkspaceJobId) || (jobWorkspaceJobId ? {
+    id: jobWorkspaceJobId,
+    session_id: sessionId,
+    type: "job",
+    status: "running" as const,
+    content: "",
+    created_at: "",
+    updated_at: ""
+  } : null);
   const {
     liveStatus,
     liveUserDraft,
@@ -449,6 +464,11 @@ export function AgentWorkspace() {
   }, [artifactWorkspaceOpen]);
 
   useEffect(() => {
+    jobWorkspaceOpenRef.current = jobWorkspaceOpen;
+    if (jobWorkspaceOpen) markResourceViewed("jobs");
+  }, [jobWorkspaceOpen]);
+
+  useEffect(() => {
     if (artifactWorkspaceOpen) {
       setArtifactWorkspaceMounted(true);
       const frame = window.requestAnimationFrame(() => setArtifactWorkspaceVisible(true));
@@ -468,6 +488,23 @@ export function AgentWorkspace() {
     if (artifactWorkspaceAssetId && artifacts.some((asset) => asset.id === artifactWorkspaceAssetId)) return;
     if (artifactWorkspaceOpen) setArtifactWorkspaceOpen(false);
   }, [artifactWorkspaceAssetId, artifactWorkspaceOpen, artifacts]);
+
+  useEffect(() => {
+    if (jobWorkspaceOpen) {
+      setJobWorkspaceMounted(true);
+      const frame = window.requestAnimationFrame(() => setJobWorkspaceVisible(true));
+      return () => window.cancelAnimationFrame(frame);
+    }
+    setJobWorkspaceVisible(false);
+    const timeout = window.setTimeout(() => setJobWorkspaceMounted(false), 380);
+    return () => window.clearTimeout(timeout);
+  }, [jobWorkspaceOpen]);
+
+  useEffect(() => {
+    if (!jobWorkspaceJobId || !jobs.length) return;
+    if (jobs.some((job) => job.id === jobWorkspaceJobId)) return;
+    if (jobWorkspaceOpen) setJobWorkspaceOpen(false);
+  }, [jobWorkspaceJobId, jobWorkspaceOpen, jobs]);
 
   useEffect(() => {
     resetSessionResourceNotices();
@@ -611,7 +648,7 @@ export function AgentWorkspace() {
       [session, jobList, attachmentList, artifactList] = await Promise.all([
         api.getSession(id),
         api.jobs(id),
-        api.attachments(id),
+        api.attachments(),
         api.artifacts(id)
       ]);
     } catch (error) {
@@ -637,6 +674,7 @@ export function AgentWorkspace() {
     setArtifacts(artifactList);
     const newArtifact = artifactList.find((asset) => !previousArtifactIds.has(asset.id));
     if (options.revealNewArtifacts && newArtifact) {
+      setJobWorkspaceOpen(false);
       setArtifactWorkspaceAssetId(newArtifact.id);
       setArtifactWorkspaceOpen(true);
       setResourceDialogTab(null);
@@ -735,6 +773,11 @@ export function AgentWorkspace() {
       const result = await api.startLoopGoalRun(goalId);
       setSelectedLoopGoalId(result.goal?.id || goalId);
       setSelectedLoopRun(result);
+      const resultJob = result.job;
+      if (resultJob) {
+        setJobs((current) => upsertJob(current, resultJob));
+        openJobWorkspace(resultJob.id);
+      }
       await Promise.all([
         loadLoopResources(sessionId, { quiet: true }),
         api.jobs(sessionId || undefined).then(setJobs)
@@ -755,6 +798,11 @@ export function AgentWorkspace() {
       const result = await api.resumeLoopRun(runId, request);
       setSelectedLoopRun(result);
       if (result.goal?.id) setSelectedLoopGoalId(result.goal.id);
+      const resultJob = result.job;
+      if (resultJob) {
+        setJobs((current) => upsertJob(current, resultJob));
+        openJobWorkspace(resultJob.id);
+      }
       await loadLoopResources(sessionId, { quiet: true });
       setStatus({ tone: "ok", text: "Loop run resumed" });
     } catch (error) {
@@ -767,8 +815,20 @@ export function AgentWorkspace() {
   function openArtifactWorkspace(asset?: Asset) {
     markResourceViewed("artifacts");
     setResourceDialogTab(null);
+    setJobWorkspaceOpen(false);
     setArtifactWorkspaceAssetId(asset?.id || "");
     setArtifactWorkspaceOpen(true);
+    setMobileNav(false);
+  }
+
+  function openJobWorkspace(jobId: string) {
+    if (!jobId) return;
+    markResourceViewed("jobs");
+    setResourceDialogTab(null);
+    setSelectedJobId(jobId);
+    setJobWorkspaceJobId(jobId);
+    setJobWorkspaceOpen(true);
+    setArtifactWorkspaceOpen(false);
     setMobileNav(false);
   }
 
@@ -781,7 +841,7 @@ export function AgentWorkspace() {
     document.body.classList.add("workspace-pane-resizing");
 
     const resize = (pointerEvent: PointerEvent) => {
-      const workspaceMinWidth = artifactWorkspaceMounted
+      const workspaceMinWidth = artifactWorkspaceMounted || jobWorkspaceMounted
         ? layoutConversationMinWidth + layoutArtifactMinWidth
         : layoutConversationMinWidth;
       const maxWidth = shellRect.width - workspaceMinWidth;
@@ -1423,7 +1483,7 @@ export function AgentWorkspace() {
     try {
       const uploaded = await api.uploadAttachment(file, sessionId || undefined, setUploadProgress);
       setPendingAttachments((current) => [...current, uploaded]);
-      setAttachments(await api.attachments(sessionId || undefined));
+      setAttachments(await api.attachments());
       setStatus({ tone: "ok", text: "Uploaded" });
     } catch (error) {
       setUploadError(errorMessage(error));
@@ -1539,7 +1599,7 @@ export function AgentWorkspace() {
     try {
       if (kind === "attachment") {
         await api.deleteAttachment(id);
-        setAttachments(await api.attachments(sessionId || undefined));
+        setAttachments(await api.attachments());
       } else {
         await api.deleteArtifact(id);
         setArtifacts(await api.artifacts(sessionId || undefined));
@@ -1605,7 +1665,7 @@ export function AgentWorkspace() {
   }
 
   function toggleJob(jobId: string) {
-    setSelectedJobId((current) => current === jobId ? "" : jobId);
+    openJobWorkspace(jobId);
   }
 
   function handleRuntimeEvent(event: RuntimeEvent) {
@@ -1624,7 +1684,8 @@ export function AgentWorkspace() {
       appendSessionMessage(event.session_id || sessionId, message);
     }
     if (event.type === "job" && event.job_id) {
-      setSelectedJobId(event.job_id);
+      if (event.job) setJobs((current) => upsertJob(current, event.job as Job));
+      openJobWorkspace(event.job_id);
       setStatus({ tone: "busy", text: "Job started" });
       saveActiveJob(event.job_id, event.job?.session_id || event.session_id || sessionId);
       const submitted = event.job?.content || "";
@@ -1847,7 +1908,11 @@ export function AgentWorkspace() {
     resourceIdsRef.current[tab] = nextIds;
     resourceBaselineReadyRef.current[tab] = true;
     if (!hasNewItem) return;
-    if (resourceDialogTabRef.current === tab || (tab === "artifacts" && artifactWorkspaceOpenRef.current)) {
+    if (
+      resourceDialogTabRef.current === tab
+      || (tab === "artifacts" && artifactWorkspaceOpenRef.current)
+      || (tab === "jobs" && jobWorkspaceOpenRef.current)
+    ) {
       markResourceViewed(tab);
       return;
     }
@@ -1934,6 +1999,7 @@ export function AgentWorkspace() {
     "--artifact-workspace-min-width": `${layoutArtifactMinWidth}px`
   } as CSSProperties;
   const visibleAgentActivity = agentActivity?.session_id === sessionId ? agentActivity : null;
+  const sideWorkspaceMounted = artifactWorkspaceMounted || jobWorkspaceMounted;
 
   return (
     <WorkspaceFrame
@@ -1986,7 +2052,7 @@ export function AgentWorkspace() {
       workspace={(
         <div
           ref={workspaceStageRef}
-          className={`workspace-stage ${artifactWorkspaceMounted ? "with-artifact-workspace" : ""}`}
+          className={`workspace-stage ${sideWorkspaceMounted ? "with-artifact-workspace" : ""}`}
           style={workspaceStageStyle}
         >
           <ConversationPane
@@ -2011,7 +2077,9 @@ export function AgentWorkspace() {
                 runtimeError={runtimeError}
                 uploadError={uploadError}
                 responseTiming={responseTiming?.sessionId === sessionId ? responseTiming : null}
+                attachments={attachments}
                 pendingAttachments={pendingAttachments}
+                composerHasMessages={messages.length > 0}
                 selectedToolId={selectedComposerTool}
                 showToolChips={messages.length === 0 && !assistantDraft && !liveUserDraft}
                 attachmentInputRef={attachmentInputRef}
@@ -2025,6 +2093,7 @@ export function AgentWorkspace() {
                 onClearUploadError={() => setUploadError("")}
                 onRemovePendingAttachment={(id) => setPendingAttachments((current) => current.filter((item) => item.id !== id))}
                 onUploadAttachment={uploadAttachment}
+                onAddExistingAttachment={addAttachmentToMessage}
                 onDraftChange={setDraft}
                 onSendMessage={sendMessage}
                 onCancelChat={cancelChat}
@@ -2032,34 +2101,49 @@ export function AgentWorkspace() {
                 onToggleLive={toggleLiveVoice}
                 onPrewarmLive={prewarmLiveVoice}
                 formatNumber={formatNumber}
+                formatTime={formatTime}
               />
             )}
           />
-          {artifactWorkspaceMounted && (
+          {sideWorkspaceMounted && (
             <>
               <div
                 className={`workspace-resizer workspace-resizer-artifact ${resizingPane === "artifact" ? "dragging" : ""}`}
                 role="separator"
-                aria-label="Resize artifact preview"
+                aria-label="Resize right panel"
                 aria-orientation="vertical"
                 tabIndex={0}
                 onPointerDown={startArtifactResize}
               />
-              <ArtifactWorkspace
-                className={artifactWorkspaceVisible ? "visible" : ""}
-                artifact={selectedWorkspaceArtifact}
-                memoryBusy={assetMemoryBusy}
-                memoryDisabled={!memorySettings.capture_enabled}
-                onClose={() => setArtifactWorkspaceOpen(false)}
-                onOpenPreview={previewArtifact}
-                onDownload={(id) => { void downloadArtifact(id); }}
-                onDelete={(id) => deleteAsset("artifact", id)}
-                onExtractMemory={extractAssetMemory}
-                loadArtifact={(asset) => api.artifactBlob(asset.id)}
-                loadPreview={(asset) => api.artifactPreviewBlob(asset.id)}
-                formatBytes={formatBytes}
-                formatTime={formatTime}
-              />
+              {artifactWorkspaceMounted && (
+                <ArtifactWorkspace
+                  className={artifactWorkspaceVisible ? "visible" : ""}
+                  artifact={selectedWorkspaceArtifact}
+                  memoryBusy={assetMemoryBusy}
+                  memoryDisabled={!memorySettings.capture_enabled}
+                  onClose={() => setArtifactWorkspaceOpen(false)}
+                  onOpenPreview={previewArtifact}
+                  onDownload={(id) => { void downloadArtifact(id); }}
+                  onDelete={(id) => deleteAsset("artifact", id)}
+                  onExtractMemory={extractAssetMemory}
+                  loadArtifact={(asset) => api.artifactBlob(asset.id)}
+                  loadPreview={(asset) => api.artifactPreviewBlob(asset.id)}
+                  formatBytes={formatBytes}
+                  formatTime={formatTime}
+                />
+              )}
+              {!artifactWorkspaceMounted && jobWorkspaceMounted && (
+                <JobWorkspace
+                  className={jobWorkspaceVisible ? "visible" : ""}
+                  job={selectedWorkspaceJob}
+                  events={jobEvents}
+                  jobStreamNotice={jobStreamNotice}
+                  jobStreamStatus={jobStreamStatus}
+                  onClose={() => setJobWorkspaceOpen(false)}
+                  onCancel={cancelJob}
+                  formatTime={formatTime}
+                />
+              )}
             </>
           )}
         </div>
@@ -2242,7 +2326,7 @@ async function bootstrap(
     api.getSession(currentSummary.id),
     api.skills(),
     api.jobs(currentSummary.id),
-    api.attachments(currentSummary.id),
+    api.attachments(),
     api.artifacts(currentSummary.id)
   ]);
   baselineResources?.({ skills, jobs, attachments, artifacts });
@@ -2299,6 +2383,11 @@ function tagContent(content: string, tag: string): string {
 function upsertSession(items: Session[], session: Session): Session[] {
   const next = items.filter((item) => item.id !== session.id);
   return [session, ...next].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+}
+
+function upsertJob(items: Job[], job: Job): Job[] {
+  const next = items.filter((item) => item.id !== job.id);
+  return [job, ...next].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 }
 
 function appendRuntimeMessage(messages: Message[], message: Message): Message[] {

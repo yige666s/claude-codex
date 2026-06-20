@@ -4,7 +4,7 @@ import { MotionPanel } from "../../../../components/motion";
 import type { Job, JobEvent } from "../../../../types";
 import type { JobStreamStatus } from "../../workspaceTypes";
 
-const terminalJobs = new Set(["succeeded", "failed", "cancelled"]);
+export const terminalJobs = new Set(["succeeded", "failed", "cancelled"]);
 
 type JobPanelProps = {
   jobs: Job[];
@@ -54,24 +54,32 @@ export function JobPanel({
                   )}
                   <Button className="danger inline" disabled={terminalJobs.has(job.status)} onClick={onCancelJob}>Cancel job</Button>
                 </div>
-                <div className="timeline">
-                  {groupJobEvents(visibleJobEvents(jobEvents)).map((group) => (
-                    <section key={group.id} className="timeline-event-group">
-                      <div className="timeline-event-group-head">
-                        <h4>{group.label}</h4>
-                        <span>{group.description}</span>
-                      </div>
-                      {group.events.map((event) => (
-                        <JobEventDetail key={event.id} event={event} />
-                      ))}
-                    </section>
-                  ))}
-                </div>
+                <JobEventTimeline events={jobEvents} />
               </MotionPanel>
             )}
           </section>
         );
       })}
+    </div>
+  );
+}
+
+export function JobEventTimeline({ events }: { events: JobEvent[] }) {
+  const groups = groupJobEvents(visibleJobEvents(events));
+  if (!groups.length) return <div className="empty-small">No job events yet</div>;
+  return (
+    <div className="timeline">
+      {groups.map((group) => (
+        <section key={group.id} className="timeline-event-group">
+          <div className="timeline-event-group-head">
+            <h4>{group.label}</h4>
+            <span>{group.description}</span>
+          </div>
+          {group.events.map((event) => (
+            <JobEventDetail key={event.id} event={event} />
+          ))}
+        </section>
+      ))}
     </div>
   );
 }

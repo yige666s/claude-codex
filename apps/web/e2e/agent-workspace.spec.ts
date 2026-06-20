@@ -7,6 +7,13 @@ type Message = {
   content?: string;
   created_at?: string;
   message_index?: number;
+  attachments?: Array<{
+    id: string;
+    file_type?: string;
+    mime_type?: string;
+    file_name?: string;
+    file_size?: number;
+  }>;
 };
 
 type Session = {
@@ -60,6 +67,14 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   expect(emptyPromptBox).not.toBeNull();
   expect(emptyComposerBox).not.toBeNull();
   expect(emptyComposerBox!.y).toBeGreaterThan(emptyPromptBox!.y);
+  await page.getByRole("button", { name: "Add attachment" }).click();
+  await expect(page.locator(".composer-attachment-menu")).toBeVisible();
+  await expect.poll(async () => {
+    const trigger = await page.locator(".composer-upload").boundingBox();
+    const menu = await page.locator(".composer-attachment-menu").boundingBox();
+    return !!trigger && !!menu && menu.y >= trigger.y + trigger.height;
+  }, { message: "empty-session attachment menu should open below the composer trigger" }).toBe(true);
+  await page.keyboard.press("Escape");
   await page.getByRole("textbox", { name: "Message" }).fill("");
 
   await page.getByRole("button", { name: "新聊天" }).click();
@@ -73,6 +88,14 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await expect(page.getByRole("button", { name: "Use image generation" })).toBeHidden();
   await expect(page.getByRole("button", { name: "Use web search" })).toBeHidden();
   await expect(page.getByRole("button", { name: "Use plan and execute mode" })).toBeHidden();
+  await page.getByRole("button", { name: "Add attachment" }).click();
+  await expect(page.locator(".composer-attachment-menu")).toBeVisible();
+  await expect.poll(async () => {
+    const trigger = await page.locator(".composer-upload").boundingBox();
+    const menu = await page.locator(".composer-attachment-menu").boundingBox();
+    return !!trigger && !!menu && menu.y + menu.height <= trigger.y;
+  }, { message: "active-session attachment menu should open above the composer trigger" }).toBe(true);
+  await page.keyboard.press("Escape");
 
   await page.locator("input[type=file]").setInputFiles({
     name: "notes.md",
@@ -83,6 +106,45 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByRole("textbox", { name: "Message" }).fill("please inspect the attachment");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Attachment received: notes.md")).toBeVisible();
+
+  await page.getByRole("button", { name: "Add attachment" }).click();
+  await expect(page.getByText("从库中添加")).toBeVisible();
+  await expect(page.locator(".composer-attachment-recent-list .composer-attachment-file")).toHaveCount(5);
+  await expect(page.getByRole("menuitem", { name: /oldest\.txt/ })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: /notes\.md/ }).click();
+  await expect(page.getByLabel("Pending attachments").getByText("notes.md")).toBeVisible();
+  await page.getByRole("textbox", { name: "Message" }).fill("please inspect the existing attachment");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Attachment received: notes.md").last()).toBeVisible();
+
+  await page.getByRole("button", { name: "Add attachment" }).click();
+  await page.getByRole("menuitem", { name: "从库中添加" }).click();
+  await expect(page.getByRole("dialog", { name: "从库中添加" })).toBeVisible();
+  await expect.poll(async () => {
+    const viewport = page.viewportSize();
+    const backdrop = await page.locator(".composer-attachment-library-backdrop").boundingBox();
+    const dialog = await page.locator(".composer-attachment-library-dialog").boundingBox();
+    return !!viewport && !!backdrop && !!dialog
+      && backdrop.x <= 1
+      && backdrop.y <= 1
+      && backdrop.width >= viewport.width - 1
+      && backdrop.height >= viewport.height - 1
+      && dialog.y < viewport.height / 4;
+  }, { message: "library dialog should be viewport-centered instead of constrained by the composer" }).toBe(true);
+  await page.getByRole("option", { name: /diagram\.png/ }).click();
+  await page.getByRole("option", { name: /data\.csv/ }).click();
+  await expect(page.getByText("已选 2 个")).toBeVisible();
+  await page.getByRole("button", { name: "添加至聊天" }).click();
+  await expect(page.getByLabel("Pending attachments").getByText("diagram.png")).toBeVisible();
+  await expect(page.getByLabel("Pending attachments").getByText("data.csv")).toBeVisible();
+  await page.getByRole("textbox", { name: "Message" }).fill("please inspect two library attachments");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Attachment received: diagram.png, data.csv")).toBeVisible();
+  await expect.poll(async () => {
+    const userMessage = await page.locator(".message.user", { hasText: "please inspect two library attachments" }).boundingBox();
+    const imageCard = await page.locator(".message.user", { hasText: "please inspect two library attachments" }).locator(".message-asset-attachment.image").boundingBox();
+    return !!userMessage && !!imageCard && imageCard.width >= userMessage.width * 0.72;
+  }, { message: "image attachment card should fill the message bubble without leaving a large right gap" }).toBe(true);
 
   await page.getByRole("button", { name: "资源" }).click();
   await page.getByRole("tab", { name: "Attachments" }).click();
@@ -124,6 +186,18 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await expect(page.getByRole("complementary", { name: "Artifact preview" }).getByText("generated artifact body")).toBeVisible();
   await page.getByLabel("Close artifact preview").click();
 
+  await page.getByRole("button", { name: "资源" }).click();
+  await page.getByRole("tab", { name: "Jobs" }).click();
+  const jobsDialog = page.getByRole("dialog", { name: "Jobs" });
+  await expect(jobsDialog.locator(".job-summary", { hasText: "draw a blue square" })).toBeVisible();
+  await jobsDialog.locator(".job-summary", { hasText: "draw a blue square" }).click();
+  const jobWorkspace = page.getByRole("complementary", { name: "Job details" });
+  await expect(jobWorkspace).toBeVisible();
+  await expect(jobWorkspace.getByLabel("Job metadata").getByText("job-1")).toBeVisible();
+  await expect(jobWorkspace.getByText("Events", { exact: true })).toBeVisible();
+  await expect(jobWorkspace.locator(".timeline-row", { hasText: "done" })).toBeVisible();
+  await page.getByLabel("Close job details").click();
+
   await page.getByRole("button", { name: "搜索聊天" }).click();
   await page.getByRole("textbox", { name: "Search across all sessions" }).fill("playwright");
   await page.getByRole("dialog", { name: "Search across all sessions" }).locator(".global-search-result", { hasText: "hello from playwright" }).first().click();
@@ -154,6 +228,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
 
   expect(api.sessions.some((session) => session.messages.some((message) => message.content?.includes("hello from playwright")))).toBe(true);
   expect(api.chatPayloads.some((payload) => payload.content === "hello from playwright" && payload.agent_mode === "plan_execute")).toBe(true);
+  expect(api.chatPayloads.some((payload) => payload.content === "please inspect the existing attachment" && payload.attachment_ids?.includes("attachment-1"))).toBe(true);
   expect(api.chatPayloads.some((payload) => payload.content.startsWith("/vertex-image-artifact") && payload.thinking_mode !== true)).toBe(true);
 });
 
@@ -340,7 +415,22 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
     const session = state.sessions.find((item) => item.id === sessionID) || state.sessions[0];
     const payload = await route.request().postDataJSON() as { content: string; attachment_ids?: string[]; thinking_mode?: boolean; agent_mode?: string };
     state.chatPayloads.push(payload);
-    const userMessage = { role: "user", content: payload.content, created_at: now, message_index: session.messages.length };
+    const payloadAttachments = state.attachments
+      .filter((attachment) => payload.attachment_ids?.includes(attachment.id))
+      .map((attachment) => ({
+        id: attachment.id,
+        file_type: attachment.content_type.startsWith("image/") ? "image" : "file",
+        mime_type: attachment.content_type,
+        file_name: attachment.filename,
+        file_size: attachment.size_bytes
+      }));
+    const userMessage = {
+      role: "user",
+      content: payload.content,
+      created_at: now,
+      message_index: session.messages.length,
+      attachments: payloadAttachments
+    };
     session.messages.push(userMessage);
 
     if (payload.content.startsWith("/vertex-image-artifact")) {
@@ -427,7 +517,54 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
         size_bytes: 26,
         created_at: now
       };
-      state.attachments = [asset];
+      state.attachments = [
+        asset,
+        {
+          id: "attachment-2",
+          kind: "attachment",
+          session_id: state.sessions[0].id,
+          filename: "diagram.png",
+          content_type: "image/png",
+          size_bytes: 84,
+          created_at: "2026-05-09T11:59:00.000Z"
+        },
+        {
+          id: "attachment-3",
+          kind: "attachment",
+          session_id: state.sessions[0].id,
+          filename: "data.csv",
+          content_type: "text/csv",
+          size_bytes: 42,
+          created_at: "2026-05-09T11:58:00.000Z"
+        },
+        {
+          id: "attachment-4",
+          kind: "attachment",
+          session_id: state.sessions[0].id,
+          filename: "brief.pdf",
+          content_type: "application/pdf",
+          size_bytes: 1024,
+          created_at: "2026-05-09T11:57:00.000Z"
+        },
+        {
+          id: "attachment-5",
+          kind: "attachment",
+          session_id: state.sessions[0].id,
+          filename: "slides.pptx",
+          content_type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+          size_bytes: 2048,
+          created_at: "2026-05-09T11:56:00.000Z"
+        },
+        {
+          id: "attachment-6",
+          kind: "attachment",
+          session_id: state.sessions[0].id,
+          filename: "oldest.txt",
+          content_type: "text/plain",
+          size_bytes: 12,
+          created_at: "2026-05-09T11:55:00.000Z"
+        }
+      ];
       return json(route, asset, 201);
     }
     return json(route, { attachments: state.attachments });

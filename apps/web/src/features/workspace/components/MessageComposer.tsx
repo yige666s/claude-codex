@@ -15,7 +15,9 @@ type MessageComposerProps = {
   runtimeError: string;
   uploadError: string;
   responseTiming: { ttftMs?: number; totalMs?: number } | null;
+  attachments: Asset[];
   pendingAttachments: Asset[];
+  composerHasMessages: boolean;
   selectedToolId: ComposerToolID | "";
   showToolChips: boolean;
   attachmentInputRef: RefObject<HTMLInputElement | null>;
@@ -29,6 +31,7 @@ type MessageComposerProps = {
   onClearUploadError: () => void;
   onRemovePendingAttachment: (id: string) => void;
   onUploadAttachment: (files: FileList | null) => void;
+  onAddExistingAttachment: (asset: Asset) => void;
   onDraftChange: (value: string) => void;
   onSendMessage: () => void;
   onCancelChat: () => void;
@@ -36,6 +39,7 @@ type MessageComposerProps = {
   onToggleLive: () => void;
   onPrewarmLive: () => void;
   formatNumber: (value: number) => string;
+  formatTime: (value?: string) => string;
 };
 
 const acceptedAttachmentTypes = ".png,.jpg,.jpeg,.jfif,.webp,.gif,.avif,.bmp,.tif,.tiff,.heic,.heif,.pdf,.txt,.md,.csv,.json,.docx,.xlsx,.pptx,image/png,image/jpeg,image/pjpeg,image/webp,image/gif,image/avif,image/bmp,image/tiff,image/heic,image/heif,application/pdf,text/plain,text/markdown,text/csv,application/json";
@@ -44,7 +48,9 @@ export function MessageComposer({
   runtimeError,
   uploadError,
   responseTiming,
+  attachments,
   pendingAttachments,
+  composerHasMessages,
   selectedToolId,
   showToolChips,
   attachmentInputRef,
@@ -58,13 +64,15 @@ export function MessageComposer({
   onClearUploadError,
   onRemovePendingAttachment,
   onUploadAttachment,
+  onAddExistingAttachment,
   onDraftChange,
   onSendMessage,
   onCancelChat,
   onSelectTool,
   onToggleLive,
   onPrewarmLive,
-  formatNumber
+  formatNumber,
+  formatTime
 }: MessageComposerProps) {
   const canUseText = true;
   const canSend = canUseText && (!!draft.trim() || pendingAttachments.length > 0) && !!sessionId;
@@ -95,7 +103,11 @@ export function MessageComposer({
             uploading={uploading}
             disabled={!canUseText}
             accept={acceptedAttachmentTypes}
+            attachments={attachments}
+            placement={composerHasMessages ? "above" : "below"}
             onUpload={onUploadAttachment}
+            onAddExistingAttachment={onAddExistingAttachment}
+            formatTime={formatTime}
           />
           <Textarea
             ref={composerInputRef as Ref<HTMLTextAreaElement>}

@@ -150,6 +150,7 @@ async function mockVisualAPI(page: Page) {
   await page.route("**/v1/skills", (route) => json(route, { skills: [{ name: "vertex-image-artifact", description: "Generate an artifact", run_as_job: true }] }));
   await page.route("**/v1/sessions?**", (route) => json(route, [session]));
   await page.route(/.*\/v1\/sessions\/[^/]+$/, (route) => json(route, session));
+  await page.route("**/v1/attachments", (route) => json(route, { attachments: [attachment] }));
   await page.route("**/v1/attachments?**", (route) => json(route, { attachments: [attachment] }));
   await page.route("**/v1/artifacts?**", (route) => json(route, { artifacts: [artifact] }));
   await page.route("**/v1/jobs?**", (route) => json(route, { jobs: [{ id: "job-1", session_id: session.id, type: "skill", status: "succeeded", content: "visual artifact", created_at: now, updated_at: now }] }));
