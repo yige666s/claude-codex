@@ -270,6 +270,13 @@ test("shows streamed agent activity as a collapsible timeline", async ({ page })
   await expect(page.getByText("Started plan-and-execute")).toBeVisible();
   await expect(page.getByText("Gather facts · WebSearch").first()).toBeVisible();
   await expect(page.getByText("Web search returned source notes")).toBeVisible();
+  await expect(activity.locator(".agent-activity-item.running")).toHaveCount(0);
+  await expect(activity.locator(".agent-activity-item.default")).toHaveCount(0);
+  await expect(activity.locator(".agent-activity-item.succeeded").first()).toBeVisible();
+  await expect.poll(async () => activity.locator(".agent-activity-list").evaluate((node) => {
+    const style = window.getComputedStyle(node);
+    return style.overflowY === "auto" && node.scrollHeight > node.clientHeight;
+  }), { message: "expanded agent activity should scroll internally when the event list is long" }).toBe(true);
 });
 
 test("opens a fresh chat after deleting the active session", async ({ page }) => {
@@ -504,6 +511,18 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
             }
           }
         },
+        ...Array.from({ length: 26 }, (_, index) => ({
+          event: "workflow_step_succeeded",
+          data: {
+            type: "workflow_step_succeeded",
+            session_id: session.id,
+            data: {
+              step_id: `step-${index + 1}`,
+              step_title: `Verification step ${index + 1}`,
+              status: "succeeded"
+            }
+          }
+        })),
         { event: "message", data: { type: "message", role: "assistant", content: response, session_id: session.id } },
         { event: "done", data: { type: "done", session_id: session.id } }
       ]);

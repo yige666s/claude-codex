@@ -2463,6 +2463,8 @@ function agentActivityTitle(event: RuntimeEvent, data: Record<string, unknown> |
   if (event.type === "done") return "Response completed";
   if (event.type === "cancelled") return "Request cancelled";
   if (event.type === "error") return "Stopped with an error";
+  if (event.type === "job" && event.job?.status === "succeeded") return "Background job completed";
+  if (event.type === "job" && event.job?.status === "failed") return "Background job failed";
   if (event.type === "job") return "Started background job";
   if (event.type === "deep_agent_started") return "Started plan-and-execute";
   if (event.type === "deep_agent_completed") return "Plan-and-execute completed";
@@ -2522,7 +2524,7 @@ function agentActivityDetail(event: RuntimeEvent, data: Record<string, unknown> 
 }
 
 function agentActivityStatus(event: RuntimeEvent, data: Record<string, unknown> | null): AgentActivityItem["status"] {
-  const status = firstText(stringFromUnknown(data?.result_status), stringFromUnknown(data?.status)).toLowerCase();
+  const status = firstText(stringFromUnknown(data?.result_status), stringFromUnknown(data?.status), event.job?.status || "").toLowerCase();
   if (event.type === "error" || event.type.endsWith("_failed") || event.type.endsWith("_error") || status === "failed" || status === "error") return "failed";
   if (event.type === "done" || event.type.endsWith("_succeeded") || event.type.endsWith("_completed") || status === "succeeded" || status === "completed") return "succeeded";
   if (event.type === "start" || event.type.endsWith("_started") || status === "running" || status === "queued") return "running";

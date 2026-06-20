@@ -33,8 +33,8 @@ export function AgentActivity({ activity }: AgentActivityProps) {
       </summary>
       <ol className="agent-activity-list" aria-label="Agent activity timeline">
         {activity.items.map((item) => (
-          <li key={item.id} className={`agent-activity-item ${item.status}`}>
-            <span className="agent-activity-item-icon" aria-hidden="true">{iconForItem(item)}</span>
+          <li key={item.id} className={`agent-activity-item ${displayStatus(item, activity.running)}`}>
+            <span className="agent-activity-item-icon" aria-hidden="true">{iconForItem(item, activity.running)}</span>
             <span>
               <strong>{item.title}</strong>
               {item.detail && <small>{item.detail}</small>}
@@ -50,9 +50,16 @@ function isToolActivity(item: AgentActivityItem): boolean {
   return /tool|skill|artifact|sandbox|web|search|fetch/i.test(`${item.type} ${item.title} ${item.detail || ""}`);
 }
 
-function iconForItem(item: AgentActivityItem) {
-  if (item.status === "failed") return <AlertCircle size={14} />;
-  if (item.status === "succeeded") return <CheckCircle2 size={14} />;
+function displayStatus(item: AgentActivityItem, activityRunning: boolean): AgentActivityItem["status"] {
+  if (item.status === "failed") return "failed";
+  if (!activityRunning) return "succeeded";
+  return item.status;
+}
+
+function iconForItem(item: AgentActivityItem, activityRunning: boolean) {
+  const status = displayStatus(item, activityRunning);
+  if (status === "failed") return <AlertCircle size={14} />;
+  if (status === "succeeded") return <CheckCircle2 size={14} />;
   if (isToolActivity(item)) return <Wrench size={14} />;
   return <Circle size={10} />;
 }

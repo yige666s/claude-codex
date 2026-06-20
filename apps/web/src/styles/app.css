@@ -1786,12 +1786,15 @@ body.workspace-pane-resizing .workspace-stage {
   transform: rotate(180deg);
 }
 .agent-activity-list {
+  max-height: min(420px, 46vh);
   margin: 0;
   padding: 7px 12px 12px;
   border-top: 1px solid rgba(218, 228, 233, 0.9);
   display: grid;
   gap: 8px;
   list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .agent-activity-item {
   display: grid;
