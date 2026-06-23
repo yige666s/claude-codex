@@ -63,6 +63,37 @@ type AgentAuditLog struct {
 	CreatedAt time.Time      `json:"created_at"`
 }
 
+type AgentConnectorConnection struct {
+	ConnectionID         string          `json:"connection_id"`
+	UserID               string          `json:"user_id"`
+	WorkspaceID          string          `json:"workspace_id"`
+	Provider             string          `json:"provider"`
+	Status               string          `json:"status"`
+	PermissionPolicy     string          `json:"permission_policy"`
+	ScopesJson           json.RawMessage `json:"scopes_json"`
+	TokenRef             string          `json:"token_ref"`
+	ExternalAccountID    string          `json:"external_account_id"`
+	ExternalAccountLabel string          `json:"external_account_label"`
+	MetadataJson         json.RawMessage `json:"metadata_json"`
+	ConnectedAt          sql.NullTime    `json:"connected_at"`
+	LastSyncAt           sql.NullTime    `json:"last_sync_at"`
+	ExpiresAt            sql.NullTime    `json:"expires_at"`
+	CreatedAt            time.Time       `json:"created_at"`
+	UpdatedAt            time.Time       `json:"updated_at"`
+	DisconnectedAt       sql.NullTime    `json:"disconnected_at"`
+}
+
+type AgentConnectorOauthState struct {
+	State       string          `json:"state"`
+	UserID      string          `json:"user_id"`
+	Provider    string          `json:"provider"`
+	ScopesJson  json.RawMessage `json:"scopes_json"`
+	RedirectUri string          `json:"redirect_uri"`
+	CreatedAt   time.Time       `json:"created_at"`
+	ExpiresAt   time.Time       `json:"expires_at"`
+	UsedAt      sql.NullTime    `json:"used_at"`
+}
+
 type AgentEmailVerificationToken struct {
 	TokenHash string       `json:"token_hash"`
 	UserID    string       `json:"user_id"`

@@ -1,6 +1,6 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
 import { userFacingErrorMessage } from "./errorMessages";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, DeepAgentLoopTemplate, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, LoopBudget, LoopGoal, LoopGoalRunResult, LoopRubric, LoopStopPolicy, LoopTrigger, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, ConnectorAuthStart, ConnectorConnection, ConnectorPolicy, ConnectorStatus, DeepAgentLoopTemplate, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, LoopBudget, LoopGoal, LoopGoalRunResult, LoopRubric, LoopStopPolicy, LoopTrigger, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -166,6 +166,42 @@ export class ApiClient {
     return this.fetchJSON<MemoryItem>("/v1/personalization/browser-memory", {
       method: "POST",
       body: JSON.stringify(request)
+    });
+  }
+
+  async connectors(): Promise<ConnectorStatus[]> {
+    const payload = await this.fetchJSON<{ connectors: ConnectorStatus[] }>("/v1/connectors");
+    return payload.connectors || [];
+  }
+
+  async startConnectorAuth(provider: string, redirectUri?: string): Promise<ConnectorAuthStart> {
+    const payload = await this.fetchJSON<{ auth: ConnectorAuthStart }>(`/v1/connectors/${encodeURIComponent(provider)}/connect`, {
+      method: "POST",
+      body: JSON.stringify({ redirect_uri: redirectUri || window.location.origin })
+    });
+    return payload.auth;
+  }
+
+  async completeConnectorAuth(provider: string, request: { state: string; code: string; external_account_label?: string; scopes?: string[] }): Promise<ConnectorConnection> {
+    const payload = await this.fetchJSON<{ connection: ConnectorConnection }>(`/v1/connectors/${encodeURIComponent(provider)}/callback`, {
+      method: "POST",
+      body: JSON.stringify(request)
+    });
+    return payload.connection;
+  }
+
+  async updateConnectorPolicy(provider: string, policy: ConnectorPolicy): Promise<ConnectorConnection> {
+    const payload = await this.fetchJSON<{ connection: ConnectorConnection }>(`/v1/connectors/${encodeURIComponent(provider)}/policy`, {
+      method: "PATCH",
+      body: JSON.stringify({ policy })
+    });
+    return payload.connection;
+  }
+
+  async disconnectConnector(provider: string): Promise<void> {
+    await this.fetchJSON(`/v1/connectors/${encodeURIComponent(provider)}/disconnect`, {
+      method: "POST",
+      body: JSON.stringify({})
     });
   }
 
@@ -1092,7 +1128,7 @@ export class ApiClient {
     content: string,
     attachmentIds: string[] = [],
     signal?: AbortSignal,
-    options: { thinkingMode?: boolean; agentMode?: "chat" | "plan_execute" | "web_search" } = {},
+    options: { thinkingMode?: boolean; agentMode?: "chat" | "plan_execute" | "web_search"; connectorContext?: string[] } = {},
     retry = true
   ): Promise<Response> {
     await this.ensureFreshAccess();
@@ -1105,7 +1141,8 @@ export class ApiClient {
         content,
         attachment_ids: attachmentIds,
         thinking_mode: options.thinkingMode || undefined,
-        agent_mode: options.agentMode || undefined
+        agent_mode: options.agentMode || undefined,
+        connector_context: options.connectorContext?.length ? options.connectorContext : undefined
       })
     });
     if (response.status === 401 && retry && await this.refresh({ clearOnFailure: true })) {

@@ -2187,7 +2187,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, user Us
 		SessionID: body.SessionID,
 		Content:   body.Content,
 	})
-	job, err := s.runtime.CreateJob(r.Context(), ChatRequest{UserID: user.ID, SessionID: body.SessionID, LoopGoalID: body.LoopGoalID, Content: body.Content, AttachmentIDs: body.AttachmentIDs, AttachmentURLs: body.AttachmentURLs}, body.Type)
+	job, err := s.runtime.CreateJob(r.Context(), ChatRequest{UserID: user.ID, SessionID: body.SessionID, LoopGoalID: body.LoopGoalID, Content: body.Content, AttachmentIDs: body.AttachmentIDs, AttachmentURLs: body.AttachmentURLs, ConnectorContext: body.ConnectorContext}, body.Type)
 	if err != nil {
 		writeJSONError(w, err)
 		return
@@ -2656,12 +2656,13 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, user Us
 
 	for {
 		var msg struct {
-			Type           string              `json:"type"`
-			Content        string              `json:"content,omitempty"`
-			AttachmentIDs  []string            `json:"attachment_ids,omitempty"`
-			AttachmentURLs []ChatAttachmentURL `json:"attachment_urls,omitempty"`
-			ThinkingMode   bool                `json:"thinking_mode,omitempty"`
-			AgentMode      string              `json:"agent_mode,omitempty"`
+			Type             string              `json:"type"`
+			Content          string              `json:"content,omitempty"`
+			AttachmentIDs    []string            `json:"attachment_ids,omitempty"`
+			AttachmentURLs   []ChatAttachmentURL `json:"attachment_urls,omitempty"`
+			ThinkingMode     bool                `json:"thinking_mode,omitempty"`
+			AgentMode        string              `json:"agent_mode,omitempty"`
+			ConnectorContext []string            `json:"connector_context,omitempty"`
 		}
 		if err := conn.ReadJSON(&msg); err != nil {
 			cancel()
@@ -2677,7 +2678,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, user Us
 			}
 			running = true
 			chatMu.Unlock()
-			req := ChatRequest{UserID: user.ID, SessionID: sessionID, Content: msg.Content, AttachmentIDs: msg.AttachmentIDs, AttachmentURLs: msg.AttachmentURLs, ThinkingMode: msg.ThinkingMode, AgentMode: msg.AgentMode}
+			req := ChatRequest{UserID: user.ID, SessionID: sessionID, Content: msg.Content, AttachmentIDs: msg.AttachmentIDs, AttachmentURLs: msg.AttachmentURLs, ThinkingMode: msg.ThinkingMode, AgentMode: msg.AgentMode, ConnectorContext: msg.ConnectorContext}
 			decision := s.runtime.RouteChat(req)
 			if decision.RunAsJob {
 				if _, err := s.startRoutedJob(r, ctx, user, req, decision, sink); err != nil {
@@ -3720,7 +3721,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request, user User
 		return
 	}
 	s.logEvent("chat_start", map[string]any{"user_id": user.ID, "session_id": sessionID, "chars": len(body.Content), "request_id": requestIDFromContext(r.Context())})
-	req := ChatRequest{UserID: user.ID, SessionID: sessionID, Content: body.Content, AttachmentIDs: body.AttachmentIDs, AttachmentURLs: body.AttachmentURLs, ThinkingMode: body.ThinkingMode, AgentMode: body.AgentMode}
+	req := ChatRequest{UserID: user.ID, SessionID: sessionID, Content: body.Content, AttachmentIDs: body.AttachmentIDs, AttachmentURLs: body.AttachmentURLs, ThinkingMode: body.ThinkingMode, AgentMode: body.AgentMode, ConnectorContext: body.ConnectorContext}
 	decision := s.runtime.RouteChat(req)
 	if decision.RunAsJob {
 		if _, err := s.startRoutedJob(r, r.Context(), user, req, decision, sink); err != nil && !errors.Is(err, context.Canceled) {

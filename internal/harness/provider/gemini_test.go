@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -58,5 +59,45 @@ func TestGeminiUnifiedResponseRejectsEmptyCandidate(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("error %q does not contain %q", text, want)
 		}
+	}
+}
+
+func TestGeminiCompatibleToolSchemaDropsNonStringEnumValues(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"rules": map[string]interface{}{
+				"type": "array",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"required": map[string]interface{}{
+							"type": "boolean",
+							"enum": []interface{}{true},
+						},
+						"mode": map[string]interface{}{
+							"type": "string",
+							"enum": []interface{}{"auto", true, 1},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	clean := geminiCompatibleToolSchema(schema)
+	raw, _ := json.Marshal(clean)
+	text := string(raw)
+	if strings.Contains(text, `"enum":[true]`) || strings.Contains(text, `"enum":[1]`) {
+		t.Fatalf("non-string enum values should be removed: %s", text)
+	}
+	if strings.Contains(text, `"required":{"enum"`) {
+		t.Fatalf("boolean-only enum should be removed: %s", text)
+	}
+	if !strings.Contains(text, `"mode":{"enum":["auto"],"type":"string"}`) {
+		t.Fatalf("string enum values should be preserved: %s", text)
+	}
+	if !strings.Contains(text, `"required":{"type":"boolean"}`) {
+		t.Fatalf("schema type should be preserved after enum removal: %s", text)
 	}
 }

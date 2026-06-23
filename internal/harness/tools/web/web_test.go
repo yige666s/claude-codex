@@ -211,6 +211,73 @@ func TestFetchToolFallsBackWhenCloudflareCrawlFails(t *testing.T) {
 	}
 }
 
+func TestFetchToolFallsBackToBrowserlessWhenDirectFetchLooksBlocked(t *testing.T) {
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_ACCOUNT_ID", "")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_API_TOKEN", "")
+	t.Setenv("AGENT_API_WEBFETCH_BROWSERLESS_API_TOKEN", "bl-token")
+	t.Setenv("AGENT_API_WEBFETCH_BROWSERLESS_BASE_URL", "https://browserless.test")
+
+	var sawBrowserless bool
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Host {
+		case "example.com":
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Status:     "403 Forbidden",
+				Header:     http.Header{"content-type": []string{"text/html"}},
+				Body:       io.NopCloser(strings.NewReader("<html><body>Access denied by Cloudflare</body></html>")),
+				Request:    r,
+			}, nil
+		case "browserless.test":
+			sawBrowserless = true
+			if r.URL.Path != "/smart-scrape" {
+				t.Fatalf("unexpected browserless path: %s", r.URL.Path)
+			}
+			if r.URL.Query().Get("token") != "bl-token" {
+				t.Fatalf("unexpected browserless token query: %s", r.URL.RawQuery)
+			}
+			if r.Header.Get("authorization") != "" {
+				t.Fatalf("unexpected browserless authorization header: %q", r.Header.Get("authorization"))
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode browserless request: %v", err)
+			}
+			if body["url"] != "https://example.com/page" {
+				t.Fatalf("unexpected browserless body: %#v", body)
+			}
+			if _, ok := body["prompt"]; ok {
+				t.Fatalf("unexpected browserless body: %#v", body)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"content-type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"url":"https://example.com/page","title":"Rendered","status":200,"markdown":"# Rendered Browserless content"}`)),
+				Request:    r,
+			}, nil
+		default:
+			t.Fatalf("unexpected host: %s", r.URL.Host)
+		}
+		return nil, nil
+	})}
+
+	tool := NewFetchTool(client)
+	input, _ := json.Marshal(map[string]any{"url": "https://example.com/page", "prompt": "extract content"})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("fetch execute: %v", err)
+	}
+	if !sawBrowserless {
+		t.Fatal("expected browserless fallback request")
+	}
+	if !strings.Contains(result.Output, "fallback: browserless_smart_scrape") ||
+		!strings.Contains(result.Output, "source: browserless_smart_scrape") ||
+		!strings.Contains(result.Output, "Rendered Browserless content") {
+		t.Fatalf("unexpected browserless fallback output: %q", result.Output)
+	}
+}
+
 func serverURL(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil {

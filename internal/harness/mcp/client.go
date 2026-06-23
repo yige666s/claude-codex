@@ -20,6 +20,7 @@ type Client struct {
 	httpClient   *http.Client
 	mu           sync.Mutex
 	nextID       int64
+	sessionID    string
 	cmd          *exec.Cmd
 	stdin        io.WriteCloser
 	decoder      *json.Decoder
@@ -120,6 +121,7 @@ func (c *Client) Initialize(ctx context.Context) (*Client, error) {
 	var result InitializeResult
 	params := map[string]any{
 		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "claude-codex", "version": "0.1.0"},
 	}
 	if err := c.call(ctx, "initialize", params, &result); err != nil {
@@ -259,6 +261,8 @@ func (c *Client) call(ctx context.Context, method string, params any, target any
 	switch transport(c.cfg) {
 	case "sse":
 		return c.callHTTP(ctx, method, params, target)
+	case "http", "streamable_http":
+		return c.callStreamableHTTP(ctx, method, params, target)
 	default:
 		return c.callStdio(ctx, method, params, target)
 	}
@@ -465,6 +469,163 @@ func (c *Client) callHTTP(ctx context.Context, method string, params any, target
 	default:
 		return fmt.Errorf("unsupported http method %s", method)
 	}
+}
+
+func (c *Client) callStreamableHTTP(ctx context.Context, method string, params any, target any) error {
+	c.mu.Lock()
+	c.nextID++
+	request := Request{JSONRPC: "2.0", ID: c.nextID, Method: streamableHTTPMethod(method)}
+	sessionID := c.sessionID
+	c.mu.Unlock()
+	if params != nil {
+		data, err := json.Marshal(streamableHTTPParams(method, params))
+		if err != nil {
+			return err
+		}
+		request.Params = data
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.cfg.URL, "/"), bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("content-type", "application/json")
+	httpReq.Header.Set("accept", "application/json, text/event-stream")
+	httpReq.Header.Set("mcp-protocol-version", "2024-11-05")
+	if sessionID != "" {
+		httpReq.Header.Set("mcp-session-id", sessionID)
+	}
+	for key, value := range c.cfg.Headers {
+		httpReq.Header.Set(key, value)
+	}
+	response, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 8*1024*1024))
+	if err != nil {
+		return err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("mcp http %s failed (%d): %s", request.Method, response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if value := strings.TrimSpace(response.Header.Get("mcp-session-id")); value != "" {
+		c.mu.Lock()
+		c.sessionID = value
+		c.mu.Unlock()
+	}
+	body = firstStreamableHTTPJSONPayload(body)
+	var rpc Response
+	if err := json.Unmarshal(body, &rpc); err != nil {
+		return err
+	}
+	if rpc.Error != nil {
+		return fmt.Errorf("mcp error: %s", rpc.Error.Message)
+	}
+	if target == nil || len(rpc.Result) == 0 {
+		return nil
+	}
+	if method == "call_tool" {
+		output, err := streamableHTTPToolOutput(rpc.Result)
+		if err != nil {
+			return err
+		}
+		data, _ := json.Marshal(CallToolResult{Output: output})
+		return json.Unmarshal(data, target)
+	}
+	return json.Unmarshal(rpc.Result, target)
+}
+
+func streamableHTTPMethod(method string) string {
+	switch method {
+	case "list_tools":
+		return "tools/list"
+	case "call_tool":
+		return "tools/call"
+	case "list_resources":
+		return "resources/list"
+	case "read_resource":
+		return "resources/read"
+	default:
+		return method
+	}
+}
+
+func streamableHTTPParams(method string, params any) any {
+	switch method {
+	case "call_tool":
+		if typed, ok := params.(CallToolParams); ok {
+			return map[string]any{"name": typed.Name, "arguments": json.RawMessage(typed.Input)}
+		}
+	case "read_resource":
+		return params
+	}
+	return params
+}
+
+func firstStreamableHTTPJSONPayload(body []byte) []byte {
+	trimmed := bytes.TrimSpace(body)
+	if !bytes.HasPrefix(trimmed, []byte("event:")) && !bytes.HasPrefix(trimmed, []byte("data:")) {
+		return trimmed
+	}
+	for _, line := range bytes.Split(trimmed, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if payload, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+			payload = bytes.TrimSpace(payload)
+			if len(payload) > 0 {
+				return payload
+			}
+		}
+	}
+	return trimmed
+}
+
+func streamableHTTPToolOutput(result json.RawMessage) (string, error) {
+	var payload struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		StructuredContent any    `json:"structuredContent"`
+		Output            string `json:"output"`
+		IsError           bool   `json:"isError"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		return "", err
+	}
+	if payload.IsError {
+		var parts []string
+		for _, item := range payload.Content {
+			if strings.EqualFold(item.Type, "text") && strings.TrimSpace(item.Text) != "" {
+				parts = append(parts, item.Text)
+			}
+		}
+		if len(parts) > 0 {
+			return "", fmt.Errorf("mcp tool error: %s", strings.Join(parts, "\n"))
+		}
+		return "", fmt.Errorf("mcp tool error")
+	}
+	if strings.TrimSpace(payload.Output) != "" {
+		return payload.Output, nil
+	}
+	var parts []string
+	for _, item := range payload.Content {
+		if strings.EqualFold(item.Type, "text") && strings.TrimSpace(item.Text) != "" {
+			parts = append(parts, item.Text)
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n"), nil
+	}
+	if payload.StructuredContent != nil {
+		data, _ := json.Marshal(payload.StructuredContent)
+		return string(data), nil
+	}
+	return string(result), nil
 }
 
 func transport(cfg config.MCPServerConfig) string {

@@ -201,6 +201,9 @@ func (p *RuntimeDeepAgentPlanner) actionForRoute(state *DeepAgentState, step Dee
 	case DeepAgentToolModeCodePatch:
 		args["prompt"] = p.modelPromptForStep(state, step)
 		args["expected_evidence"] = "diff summary, changed files, and verification hints"
+	case DeepAgentToolModeConnector:
+		args["query"] = firstNonEmptyString(step.Intent, step.Title, stateGoal(state))
+		args["provider"] = firstNonEmptyString(deepAgentWorkflowString(args, "provider"), "github")
 	default:
 		mode = DeepAgentToolModeModel
 		args["prompt"] = p.modelPromptForStep(state, step)
@@ -299,7 +302,7 @@ func (p *RuntimeDeepAgentPlanner) llmRouteStep(ctx context.Context, agentState *
 	}
 	prompt := fmt.Sprintf(`Classify the next DeepAgent step execution mode.
 
-Return exactly one word: %s, %s, %s, %s, %s, %s, %s, or %s.
+Return exactly one word: %s, %s, %s, %s, %s, %s, %s, %s, or %s.
 
 Definitions:
 - %s: general step execution. The model may use provider tools such as WebSearch, WebFetch, Artifact, and Skill when needed.
@@ -309,14 +312,15 @@ Definitions:
 - %s: run or inspect tests, lint, typecheck, build, or static checks and return executable evidence.
 - %s: controlled web/page verification with URL, screenshot, DOM, or assertion evidence.
 - %s: code patch/edit work with diff summary, changed files, and verification hints.
+- %s: read an explicitly connected external connector such as GitHub repository or issue context.
 - %s: broad step that should be decomposed; choose %s if unsure.
 
 Step intent: %s
 Success criteria: %s
 Prior step context:
 %s`,
-		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeMulti,
-		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeMulti, DeepAgentToolModeModel,
+		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeConnector, DeepAgentToolModeMulti,
+		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeConnector, DeepAgentToolModeMulti, DeepAgentToolModeModel,
 		strings.TrimSpace(firstNonEmptyString(step.Intent, step.Title)), strings.TrimSpace(step.DoneCondition), p.stepContextSummary(agentState, step))
 	runner := p.runtime.runnerForScope(Scope{UserID: deepAgentWorkflowString(stateWorkingMemory(agentState), "user_id"), SessionID: deepAgentWorkflowString(stateWorkingMemory(agentState), "session_id"), Prompt: prompt})
 	result, err := runner.RunGeneratedPrompt(ctx, state.NewSession(""), prompt)
@@ -337,6 +341,8 @@ Prior step context:
 		return DeepAgentToolModeWeb
 	case strings.Contains(mode, DeepAgentToolModeCodePatch) || strings.Contains(mode, "patch") || strings.Contains(mode, "diff"):
 		return DeepAgentToolModeCodePatch
+	case strings.Contains(mode, DeepAgentToolModeConnector) || strings.Contains(mode, "github"):
+		return DeepAgentToolModeConnector
 	case strings.Contains(mode, DeepAgentToolModeMulti):
 		if deepAgentStepRequiresArtifact(step) {
 			return DeepAgentToolModeModelArtifact
@@ -1124,10 +1130,93 @@ func deepAgentUsableArtifactFallbackText(text string) string {
 	if text == "" {
 		return ""
 	}
+	text = deepAgentNormalizeArtifactFallbackMarkdown(text)
 	if idx := deepAgentFirstMarkdownHeadingIndex(text); idx > 0 {
 		return strings.TrimSpace(text[idx:])
 	}
 	return text
+}
+
+func deepAgentNormalizeArtifactFallbackMarkdown(text string) string {
+	text = strings.TrimSpace(deepAgentDecodeLiteralEscapes(text))
+	if text == "" {
+		return ""
+	}
+	text = deepAgentStripToolResultPreamble(text)
+	text = deepAgentStripPageTagEnvelope(text)
+	title, body := deepAgentExtractLeadingTitleJSON(text)
+	body = strings.TrimSpace(body)
+	if title != "" && !deepAgentMarkdownStartsWithTitle(body, title) {
+		body = "# " + title + "\n\n" + body
+	}
+	return body
+}
+
+func deepAgentMarkdownStartsWithTitle(text, title string) bool {
+	text = strings.TrimSpace(text)
+	title = strings.TrimSpace(title)
+	return title != "" && (text == "# "+title || strings.HasPrefix(text, "# "+title+"\n"))
+}
+
+func deepAgentDecodeLiteralEscapes(text string) string {
+	if strings.Count(text, `\n`) <= strings.Count(text, "\n") {
+		return text
+	}
+	replacer := strings.NewReplacer(
+		`\r\n`, "\n",
+		`\n`, "\n",
+		`\t`, "\t",
+		`\"`, `"`,
+		`\\`, `\`,
+	)
+	return replacer.Replace(text)
+}
+
+func deepAgentStripToolResultPreamble(text string) string {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "Here is the result of ") {
+		return text
+	}
+	for _, marker := range []string{":\n<", ":\n\n<", ":\r\n<"} {
+		if idx := strings.Index(text, marker); idx >= 0 {
+			return strings.TrimSpace(text[idx+2:])
+		}
+	}
+	return text
+}
+
+func deepAgentStripPageTagEnvelope(text string) string {
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "<page") {
+		if idx := strings.Index(text, ">"); idx >= 0 {
+			text = strings.TrimSpace(text[idx+1:])
+		}
+	}
+	text = strings.TrimSpace(text)
+	if idx := strings.LastIndex(text, "</page>"); idx >= 0 {
+		text = strings.TrimSpace(text[:idx] + text[idx+len("</page>"):])
+	}
+	return text
+}
+
+func deepAgentExtractLeadingTitleJSON(text string) (string, string) {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "{") {
+		return "", text
+	}
+	lines := strings.SplitN(text, "\n", 2)
+	firstLine := strings.TrimSpace(lines[0])
+	var payload struct {
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal([]byte(firstLine), &payload); err != nil || strings.TrimSpace(payload.Title) == "" {
+		return "", text
+	}
+	rest := ""
+	if len(lines) > 1 {
+		rest = lines[1]
+	}
+	return strings.TrimSpace(payload.Title), strings.TrimSpace(rest)
 }
 
 func deepAgentFirstMarkdownHeadingIndex(text string) int {

@@ -26,12 +26,13 @@ func (req adminOpsQuotaRefundRequest) ValidateRequest() error {
 }
 
 type createJobRequest struct {
-	SessionID      string              `json:"session_id" validate:"notblank"`
-	LoopGoalID     string              `json:"loop_goal_id,omitempty"`
-	Content        string              `json:"content"`
-	Type           string              `json:"type"`
-	AttachmentIDs  []string            `json:"attachment_ids"`
-	AttachmentURLs []ChatAttachmentURL `json:"attachment_urls"`
+	SessionID        string              `json:"session_id" validate:"notblank"`
+	LoopGoalID       string              `json:"loop_goal_id,omitempty"`
+	Content          string              `json:"content"`
+	Type             string              `json:"type"`
+	AttachmentIDs    []string            `json:"attachment_ids"`
+	AttachmentURLs   []ChatAttachmentURL `json:"attachment_urls"`
+	ConnectorContext []string            `json:"connector_context"`
 }
 
 func (req createJobRequest) ValidateRequest() error {
@@ -39,11 +40,12 @@ func (req createJobRequest) ValidateRequest() error {
 }
 
 type chatMessageRequest struct {
-	Content        string              `json:"content"`
-	AttachmentIDs  []string            `json:"attachment_ids"`
-	AttachmentURLs []ChatAttachmentURL `json:"attachment_urls"`
-	ThinkingMode   bool                `json:"thinking_mode,omitempty"`
-	AgentMode      string              `json:"agent_mode,omitempty"`
+	Content          string              `json:"content"`
+	AttachmentIDs    []string            `json:"attachment_ids"`
+	AttachmentURLs   []ChatAttachmentURL `json:"attachment_urls"`
+	ThinkingMode     bool                `json:"thinking_mode,omitempty"`
+	AgentMode        string              `json:"agent_mode,omitempty"`
+	ConnectorContext []string            `json:"connector_context,omitempty"`
 }
 
 func (req chatMessageRequest) ValidateRequest() error {

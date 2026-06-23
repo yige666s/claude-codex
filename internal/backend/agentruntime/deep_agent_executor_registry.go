@@ -81,6 +81,8 @@ func (r *RuntimeDeepAgentExecutorRegistry) ExecuteStep(ctx context.Context, rout
 		return (&runtimeDeepAgentCodePatchExecutor{runtime: r.runtime}).ExecuteStep(ctx, route, action, state)
 	case deepAgentRouteExecutorSubPlan:
 		return (&runtimeDeepAgentSubplanExecutor{runtime: r.runtime}).ExecuteStep(ctx, route, action, state)
+	case deepAgentRouteExecutorConnector:
+		return (&runtimeDeepAgentConnectorExecutor{runtime: r.runtime}).ExecuteStep(ctx, route, action, state)
 	case deepAgentRouteExecutorModel, "":
 		result, err = (&runtimeDeepAgentModelExecutor{parent: r.legacy}).execute(ctx, route, action, state)
 	default:

@@ -19,6 +19,7 @@ const (
 	workerMessageSearchIndex    = "message_search_index_manager"
 	workerJobEventFanout        = "job_event_fanout"
 	workerJobQueue              = "job_worker"
+	workerConnectorRefresh      = "connector_refresh_worker"
 	workerRetentionPrune        = "retention_prune"
 	workerLocalArtifactPrune    = "local_artifact_prune"
 	workerSkillSandboxImageWarm = "skill_sandbox_image_warm"
@@ -68,6 +69,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 			return nil
 		})
 	}
+	var runtime *agentruntime.Runtime
 	engineFactory, llmStatusFn := buildEngineFactory(engineFactoryConfig{
 		startupCfg:              cfg,
 		llmCfg:                  llmCfg,
@@ -77,6 +79,9 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		llmUsageStore:           llmUsageStore,
 		riskStore:               riskStore,
 		toolCallLedger:          toolCallLedgerStore,
+		runtimeProvider: func() *agentruntime.Runtime {
+			return runtime
+		},
 	})
 
 	sessionStore, memoryService := buildStores(storeCfg)
@@ -89,13 +94,16 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	deepAgentEvidenceRepo := buildDeepAgentEvidenceRepository(storeCfg)
 	loopGoalStore := buildLoopGoalStore(storeCfg)
 	loopTriggerStore := buildLoopTriggerStore(storeCfg)
+	connectorStore := buildConnectorStore(storeCfg)
+	connectorTokenVault := buildConnectorTokenVault(storeCfg)
+	mcpConnectorStore := buildMCPConnectorStore(storeCfg)
 	runtimeConfig := runtimeConfigFromStartup(cfg, skillShellSandboxConfig)
 	runtimeConfig.Logger = appLogger
 	runtimeConfig.CacheStore = cacheStore
 	runtimeConfig.CacheMetrics = cacheMetrics
 	runtimeConfig.CacheDefaultTTL = cfg.CacheDefaultTTL
 	runtimeConfig.CacheFailOpen = cfg.CacheFailOpen
-	runtime := agentruntime.NewRuntime(
+	runtime = agentruntime.NewRuntime(
 		runtimeConfig,
 		sessionStore,
 		memoryService,
@@ -106,6 +114,10 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	runtime.SetDeepAgentEvidenceRepository(deepAgentEvidenceRepo)
 	runtime.SetLoopGoalStore(loopGoalStore)
 	runtime.SetLoopTriggerStore(loopTriggerStore)
+	runtime.SetConnectorStore(connectorStore)
+	runtime.SetConnectorTokenVault(connectorTokenVault)
+	runtime.SetMCPConnectorStore(mcpConnectorStore)
+	workerGroup.Start(workerConnectorRefresh, agentruntime.NewConnectorRefreshWorker(runtime, 5*time.Minute).Run)
 	runtime.SetLoopTriggerQuotaChecker(func(ctx context.Context, req agentruntime.LoopTriggerRequest) error {
 		return agentruntime.CheckLoopTriggerQuota(ctx, llmUsageStore, llmConfigManager.Get(), req.UserID)
 	})

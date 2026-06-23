@@ -28,6 +28,17 @@ describe("DataPreview", () => {
     expect(html).not.toContain("<script>");
   });
 
+  it("normalizes raw Notion MCP view output before Markdown preview", () => {
+    const text = `Here is the result of "view" for the Page with URL https://app.notion.com/p/example as of 2026-06-22T11:19:37Z:\\n<page url=\\"https://app.notion.com/p/example\\">\\n\\n{"title":"Memory System 技术设计文档"}\\n\\n# 1. 背景\\n\\n系统 LLM 存在 Context Window 限制。\\n</page>`;
+    const html = renderToStaticMarkup(<DataPreview filename="Memory System 技术设计文档.md" contentType="text/markdown" text={text} />);
+
+    expect(html).toContain("Memory System 技术设计文档");
+    expect(html).toContain("1. 背景");
+    expect(html).not.toContain("Here is the result");
+    expect(html).not.toContain("&lt;page");
+    expect(html).not.toContain("\\n");
+  });
+
   it("detects text-previewable assets by content type and extension", () => {
     expect(isPreviewableTextAsset(asset("1", "data.json", "application/json"))).toBe(true);
     expect(isPreviewableTextAsset(asset("2", "table.tsv", ""))).toBe(true);

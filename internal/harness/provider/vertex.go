@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -172,14 +173,30 @@ func (p *VertexProvider) StreamMessage(ctx context.Context, request MessageReque
 		return nil, err
 	}
 	url := fmt.Sprintf("%s/%s:streamGenerateContent?alt=sse", p.endpointBaseURL(model.Location), strings.TrimLeft(model.Path, "/"))
-	parsed, statusCode, status, data, err := p.sendStreamGenerateContent(ctx, url, request.Model, body, onChunk)
+	chunkStarted := false
+	wrappedChunk := onChunk
+	if onChunk != nil {
+		wrappedChunk = func(chunk string) {
+			if chunk != "" {
+				chunkStarted = true
+			}
+			onChunk(chunk)
+		}
+	}
+	parsed, statusCode, status, data, err := p.sendStreamGenerateContent(ctx, url, request.Model, body, wrappedChunk)
 	if err != nil {
+		if !chunkStarted && vertexStreamShouldFallback(ctx, err) {
+			return p.generateContentStreamFallback(ctx, request.Model, model, body, onChunk)
+		}
 		return nil, err
 	}
 	if statusCode == http.StatusUnauthorized {
 		if refreshErr := p.refreshAccessToken(ctx); refreshErr == nil {
-			parsed, statusCode, status, data, err = p.sendStreamGenerateContent(ctx, url, request.Model, body, onChunk)
+			parsed, statusCode, status, data, err = p.sendStreamGenerateContent(ctx, url, request.Model, body, wrappedChunk)
 			if err != nil {
+				if !chunkStarted && vertexStreamShouldFallback(ctx, err) {
+					return p.generateContentStreamFallback(ctx, request.Model, model, body, onChunk)
+				}
 				return nil, err
 			}
 		}
@@ -188,6 +205,51 @@ func (p *VertexProvider) StreamMessage(ctx context.Context, request MessageReque
 		return nil, fmt.Errorf("vertex stream request failed: %s: %s", status, string(data))
 	}
 	return parsed, nil
+}
+
+func (p *VertexProvider) generateContentStreamFallback(ctx context.Context, requestModel string, model vertexModelResource, body []byte, onChunk func(string)) (*MessageResponse, error) {
+	url := fmt.Sprintf("%s/%s:generateContent", p.endpointBaseURL(model.Location), strings.TrimLeft(model.Path, "/"))
+	parsed, statusCode, status, data, err := p.sendGenerateContent(ctx, url, body)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode == http.StatusUnauthorized {
+		if refreshErr := p.refreshAccessToken(ctx); refreshErr == nil {
+			parsed, statusCode, status, data, err = p.sendGenerateContent(ctx, url, body)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if statusCode >= http.StatusBadRequest {
+		return nil, fmt.Errorf("vertex stream fallback request failed: %s: %s", status, string(data))
+	}
+	resp, err := geminiResponseToUnified(requestModel, *parsed)
+	if err != nil {
+		return nil, err
+	}
+	if onChunk != nil {
+		for _, block := range resp.Content {
+			if block.Type == "text" && block.Text != "" {
+				onChunk(block.Text)
+			}
+		}
+	}
+	return resp, nil
+}
+
+func vertexStreamShouldFallback(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "server closed") ||
+		strings.Contains(msg, "unexpected end of")
 }
 
 func (p *VertexProvider) sendGenerateContent(ctx context.Context, url string, body []byte) (*geminiResponse, int, string, []byte, error) {
@@ -367,7 +429,7 @@ func vertexGeminiRequest(request MessageRequest) geminiRequest {
 			functionDecls[i] = geminiFunctionDeclaration{
 				Name:        tool.Name,
 				Description: tool.Description,
-				Parameters:  tool.InputSchema,
+				Parameters:  geminiCompatibleToolSchema(tool.InputSchema),
 			}
 		}
 		req.Tools = []geminiTool{{FunctionDeclarations: functionDecls}}

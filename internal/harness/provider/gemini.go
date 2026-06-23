@@ -166,7 +166,7 @@ func (p *GeminiProvider) StreamMessage(ctx context.Context, request MessageReque
 			functionDecls[i] = geminiFunctionDeclaration{
 				Name:        tool.Name,
 				Description: tool.Description,
-				Parameters:  tool.InputSchema,
+				Parameters:  geminiCompatibleToolSchema(tool.InputSchema),
 			}
 		}
 		geminiReq.Tools = []geminiTool{{FunctionDeclarations: functionDecls}}
@@ -241,7 +241,7 @@ func (p *GeminiProvider) CreateMessage(ctx context.Context, request MessageReque
 			functionDecls[i] = geminiFunctionDeclaration{
 				Name:        tool.Name,
 				Description: tool.Description,
-				Parameters:  tool.InputSchema,
+				Parameters:  geminiCompatibleToolSchema(tool.InputSchema),
 			}
 		}
 		geminiReq.Tools = []geminiTool{

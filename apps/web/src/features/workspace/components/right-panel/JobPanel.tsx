@@ -244,6 +244,12 @@ function eventTitle(event: JobEvent, data: Record<string, unknown> | null): stri
     const child = recordValue(data?.child_job);
     return ["child job", stringValue(child?.id), stringValue(child?.status)].filter(Boolean).join(" · ");
   }
+  if (event.type === "deep_agent_connectors_planned") {
+    return ["connectors planned", connectorNames(data)].filter(Boolean).join(" · ");
+  }
+  if (event.type.startsWith("connector_tool_call_") || event.type.startsWith("mcp_connector_tool_call_")) {
+    return ["connector tool", stringValue(data?.tool_name || event.event?.content), stringValue(data?.provider)].filter(Boolean).join(" · ");
+  }
   if (event.type.startsWith("deep_agent_action_")) {
     const step = stringValue(data?.step_id || data?.step_title);
     const tool = stringValue(data?.tool);
@@ -254,6 +260,15 @@ function eventTitle(event: JobEvent, data: Record<string, unknown> | null): stri
   const step = stringValue(data?.step_name);
   if (workflow && step) return `${workflow}.${step}`;
   return event.type;
+}
+
+function connectorNames(data: Record<string, unknown> | null): string {
+  const raw = data?.connectors;
+  if (!Array.isArray(raw)) return "";
+  return raw.map((item) => {
+    const record = recordValue(item);
+    return stringValue(record?.provider || item);
+  }).filter(Boolean).join(", ");
 }
 
 function eventSubtitle(event: JobEvent, data: Record<string, unknown> | null): string {

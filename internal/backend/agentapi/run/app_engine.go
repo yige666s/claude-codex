@@ -8,6 +8,7 @@ import (
 	startupconfig "claude-codex/internal/backend/agentapi/config"
 	"claude-codex/internal/backend/agentruntime"
 	"claude-codex/internal/harness/engine"
+	"claude-codex/internal/harness/tools"
 )
 
 type engineFactoryConfig struct {
@@ -19,6 +20,7 @@ type engineFactoryConfig struct {
 	llmUsageStore           agentruntime.LLMUsageStore
 	riskStore               agentruntime.RiskStore
 	toolCallLedger          agentruntime.ToolCallLedgerStore
+	runtimeProvider         func() *agentruntime.Runtime
 }
 
 func buildEngineFactory(cfg engineFactoryConfig) (func(agentruntime.Scope) agentruntime.Runner, func() agentruntime.LLMGovernanceStatus) {
@@ -34,8 +36,24 @@ func buildEngineFactory(cfg engineFactoryConfig) (func(agentruntime.Scope) agent
 		}
 		publishedSkillManager := filteredSkillManager(cfg.skillCatalog)
 		effectiveAllowed := effectiveAllowedToolNames(globalAllowed, scope)
+		var connectorTools []tools.Tool
+		if cfg.runtimeProvider != nil {
+			if runtime := cfg.runtimeProvider(); runtime != nil {
+				connectorTools = runtime.ConnectorMCPTools(context.Background(), scope)
+				for _, tool := range connectorTools {
+					if tool != nil {
+						effectiveAllowed = append(effectiveAllowed, tool.Name())
+					}
+				}
+			}
+		}
 		sandboxBash := buildSandboxBashRuntime(cfg.skillShellSandboxConfig, root, scope)
 		registry := buildRegistry(root, publishedSkillManager, cfg.startupCfg.AllowDangerousTools, scope.Artifacts, scope.ArtifactMaxBytes, scopedNetworkAllowlist(globalNetworkAllowlist, scope.NetworkAllowlist), effectiveAllowed, sandboxBash)
+		for _, tool := range connectorTools {
+			if tool != nil {
+				registry.Register(tool)
+			}
+		}
 		safeWriteTools := []string{agentruntime.ArtifactToolName}
 		if sandboxBash != nil {
 			safeWriteTools = append(safeWriteTools, "Bash")

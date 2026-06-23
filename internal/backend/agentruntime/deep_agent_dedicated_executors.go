@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -374,6 +376,254 @@ func (e *runtimeDeepAgentSubplanExecutor) ExecuteStep(ctx context.Context, route
 	return evidence, nil
 }
 
+type runtimeDeepAgentConnectorExecutor struct {
+	runtime *Runtime
+}
+
+func (e *runtimeDeepAgentConnectorExecutor) ExecuteStep(ctx context.Context, route DeepAgentStepRoute, action DeepAgentAction, agentState *DeepAgentState) (DeepAgentStepEvidence, error) {
+	route = finalizeDeepAgentActionRoute(route, action)
+	if e == nil || e.runtime == nil {
+		err := fmt.Errorf("connector executor is not configured")
+		return deepAgentDedicatedEvidence(route, action, DeepAgentActionStatusFailed, err.Error(), map[string]any{
+			"error_class":       DeepAgentErrorValidation,
+			"side_effect_level": deepAgentSideEffectReadonly,
+		}), err
+	}
+	userID := firstNonEmptyString(deepAgentActionString(action, "user_id"), deepAgentWorkflowString(stateWorkingMemory(agentState), "user_id"))
+	workspaceID := deepAgentActionString(action, "workspace_id")
+	provider := deepAgentConnectorProvider(action, route, agentState)
+	toolName := deepAgentConnectorToolName(action, route)
+	if provider != "" && (provider != "github" || toolName != "") {
+		return e.executeGenericMCPConnectorTool(ctx, route, action, userID, workspaceID, provider, toolName, agentState)
+	}
+	owner := firstNonEmptyString(deepAgentActionString(action, "owner"), deepAgentActionString(action, "org"))
+	repo := deepAgentActionString(action, "repo")
+	if owner == "" || repo == "" {
+		owner, repo = githubOwnerRepoFromText(firstNonEmptyString(deepAgentActionString(action, "url"), deepAgentActionString(action, "query"), stateGoal(agentState)))
+	}
+	issueNumber := deepAgentActionInt(action, "issue_number", 0)
+	if issueNumber == 0 {
+		issueNumber = githubIssueNumberFromText(firstNonEmptyString(deepAgentActionString(action, "url"), deepAgentActionString(action, "query"), stateGoal(agentState)))
+	}
+	if owner == "" || repo == "" {
+		err := fmt.Errorf("connector executor requires github owner and repo")
+		return deepAgentDedicatedEvidence(route, action, DeepAgentActionStatusFailed, err.Error(), map[string]any{
+			"provider":           "github",
+			"error_class":        DeepAgentErrorValidation,
+			"side_effect_level":  deepAgentSideEffectReadonly,
+			"dedicated_executor": deepAgentRouteExecutorConnector,
+		}), err
+	}
+	metadata := map[string]any{
+		"provider":           "github",
+		"owner":              owner,
+		"repo":               repo,
+		"side_effect_level":  deepAgentSideEffectReadonly,
+		"dedicated_executor": deepAgentRouteExecutorConnector,
+		"tool_result_valid":  true,
+	}
+	var (
+		output  string
+		sources []DeepAgentSourceRef
+		err     error
+	)
+	if issueNumber > 0 {
+		toolName = MCPToolGitHubReadIssue
+		metadata["issue_number"] = issueNumber
+		args, _ := json.Marshal(map[string]any{"user_id": userID, "workspace_id": workspaceID, "owner": owner, "repo": repo, "issue_number": issueNumber})
+		result, _, policy, readErr := e.runtime.CallConnectorMCPTool(ctx, MCPConnectorToolCall{
+			UserID:      userID,
+			WorkspaceID: workspaceID,
+			Provider:    "github",
+			ToolName:    toolName,
+			Args:        args,
+		})
+		err = readErr
+		metadata["mcp_policy"] = policy.PermissionPolicy
+		if err == nil {
+			var issue GitHubIssueInfo
+			if unmarshalErr := json.Unmarshal([]byte(result.Output), &issue); unmarshalErr != nil {
+				err = unmarshalErr
+			} else {
+				output = fmt.Sprintf("GitHub issue %s/%s#%d: %s\nState: %s\nAuthor: %s\nLabels: %s\n\n%s", owner, repo, issue.Number, issue.Title, issue.State, issue.Author, strings.Join(issue.Labels, ", "), truncateDeepAgentDiagnosticText(issue.Body, 3000))
+				sources = []DeepAgentSourceRef{{URL: issue.HTMLURL, Title: issue.Title, Snippet: truncateDeepAgentDiagnosticText(issue.Body, 600), Provider: "github"}}
+			}
+		}
+	} else {
+		toolName = MCPToolGitHubReadRepository
+		args, _ := json.Marshal(map[string]any{"user_id": userID, "workspace_id": workspaceID, "owner": owner, "repo": repo})
+		result, _, policy, readErr := e.runtime.CallConnectorMCPTool(ctx, MCPConnectorToolCall{
+			UserID:      userID,
+			WorkspaceID: workspaceID,
+			Provider:    "github",
+			ToolName:    toolName,
+			Args:        args,
+		})
+		err = readErr
+		metadata["mcp_policy"] = policy.PermissionPolicy
+		if err == nil {
+			var repository GitHubRepositoryInfo
+			if unmarshalErr := json.Unmarshal([]byte(result.Output), &repository); unmarshalErr != nil {
+				err = unmarshalErr
+			} else {
+				output = fmt.Sprintf("GitHub repository %s\nDescription: %s\nDefault branch: %s\nOpen issues: %d\nStars: %d\nForks: %d", repository.FullName, repository.Description, repository.DefaultBranch, repository.OpenIssuesCount, repository.StargazersCount, repository.ForksCount)
+				sources = []DeepAgentSourceRef{{URL: repository.HTMLURL, Title: repository.FullName, Snippet: repository.Description, Provider: "github"}}
+			}
+		}
+	}
+	metadata["tool_name"] = toolName
+	status := DeepAgentActionStatusSucceeded
+	if err != nil {
+		status = DeepAgentActionStatusFailed
+		metadata["error_class"] = DeepAgentErrorTransient
+		metadata["tool_result_valid"] = false
+		output = err.Error()
+	}
+	evidence := deepAgentDedicatedEvidence(route, action, status, output, metadata)
+	evidence.Sources = sources
+	evidence.ToolCalls = []DeepAgentToolCallRef{{Name: toolName, Status: status}}
+	return evidence, err
+}
+
+func (e *runtimeDeepAgentConnectorExecutor) executeGenericMCPConnectorTool(ctx context.Context, route DeepAgentStepRoute, action DeepAgentAction, userID, workspaceID, provider, toolName string, agentState *DeepAgentState) (DeepAgentStepEvidence, error) {
+	if userID == "" {
+		err := fmt.Errorf("connector executor requires user_id")
+		return deepAgentDedicatedEvidence(route, action, DeepAgentActionStatusFailed, err.Error(), map[string]any{
+			"provider":           provider,
+			"tool_name":          toolName,
+			"error_class":        DeepAgentErrorValidation,
+			"side_effect_level":  deepAgentSideEffectReadonly,
+			"dedicated_executor": deepAgentRouteExecutorConnector,
+		}), err
+	}
+	if provider == "" || toolName == "" {
+		err := fmt.Errorf("connector executor requires provider and MCP tool_name")
+		return deepAgentDedicatedEvidence(route, action, DeepAgentActionStatusFailed, err.Error(), map[string]any{
+			"provider":           provider,
+			"tool_name":          toolName,
+			"error_class":        DeepAgentErrorValidation,
+			"side_effect_level":  deepAgentSideEffectReadonly,
+			"dedicated_executor": deepAgentRouteExecutorConnector,
+		}), err
+	}
+	args := deepAgentConnectorToolArgs(action, agentState)
+	result, server, policy, err := e.runtime.CallConnectorMCPTool(ctx, MCPConnectorToolCall{
+		UserID:      userID,
+		WorkspaceID: workspaceID,
+		Provider:    provider,
+		ToolName:    toolName,
+		Args:        args,
+	})
+	metadata := map[string]any{
+		"provider":           provider,
+		"tool_name":          toolName,
+		"mcp_policy":         policy.PermissionPolicy,
+		"mcp_server_id":      server.ID,
+		"mcp_server_status":  server.Status,
+		"side_effect_level":  deepAgentSideEffectReadonly,
+		"dedicated_executor": deepAgentRouteExecutorConnector,
+		"tool_result_valid":  err == nil,
+	}
+	output := result.Output
+	status := DeepAgentActionStatusSucceeded
+	if err != nil {
+		status = DeepAgentActionStatusFailed
+		metadata["error_class"] = DeepAgentErrorConfig
+		output = err.Error()
+	}
+	evidence := deepAgentDedicatedEvidence(route, action, status, output, metadata)
+	evidence.ToolCalls = []DeepAgentToolCallRef{{Name: toolName, Status: status}}
+	return evidence, err
+}
+
+func deepAgentConnectorProvider(action DeepAgentAction, route DeepAgentStepRoute, state *DeepAgentState) string {
+	provider := firstNonEmptyString(
+		deepAgentActionString(action, "provider"),
+		deepAgentActionString(action, "connector_provider"),
+		deepAgentActionString(action, "connector"),
+		route.SearchScope,
+	)
+	provider = normalizeConnectorProviderID(provider)
+	if provider != "" && provider != "github" {
+		return provider
+	}
+	if provider == "github" {
+		return provider
+	}
+	if selected := normalizeConnectorScopes(deepAgentStringSlice(stateWorkingMemory(state)["connector_context"])); len(selected) == 1 {
+		return selected[0]
+	}
+	return provider
+}
+
+func deepAgentConnectorToolName(action DeepAgentAction, route DeepAgentStepRoute) string {
+	toolName := firstNonEmptyString(
+		deepAgentActionString(action, "tool_name"),
+		deepAgentActionString(action, "mcp_tool"),
+		deepAgentActionString(action, "connector_tool"),
+		deepAgentActionString(action, "mcp_tool_name"),
+	)
+	if toolName != "" {
+		return toolName
+	}
+	if len(route.AllowedTools) == 1 {
+		return strings.TrimSpace(route.AllowedTools[0])
+	}
+	if tools := deepAgentStringSlice(action.Args["allowed_tools"]); len(tools) == 1 {
+		return strings.TrimSpace(tools[0])
+	}
+	return ""
+}
+
+func deepAgentConnectorToolArgs(action DeepAgentAction, state *DeepAgentState) json.RawMessage {
+	for _, key := range []string{"tool_args", "mcp_args", "arguments", "input"} {
+		if raw, ok := deepAgentRawJSONFromAny(action.Args[key]); ok {
+			return raw
+		}
+	}
+	args := map[string]any{}
+	for _, key := range []string{"query", "prompt", "task"} {
+		if value := deepAgentActionString(action, key); value != "" {
+			args[key] = value
+			break
+		}
+	}
+	if len(args) == 0 {
+		if goal := stateGoal(state); goal != "" {
+			args["query"] = goal
+		}
+	}
+	if len(args) == 0 {
+		args["query"] = ""
+	}
+	raw, _ := json.Marshal(args)
+	return raw
+}
+
+func deepAgentRawJSONFromAny(value any) (json.RawMessage, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, false
+	case json.RawMessage:
+		return typed, len(typed) > 0
+	case []byte:
+		return json.RawMessage(typed), len(typed) > 0
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return nil, false
+		}
+		if json.Valid([]byte(trimmed)) {
+			return json.RawMessage(trimmed), true
+		}
+		raw, _ := json.Marshal(map[string]any{"query": trimmed})
+		return raw, true
+	default:
+		raw, err := json.Marshal(typed)
+		return raw, err == nil && len(raw) > 0 && string(raw) != "null"
+	}
+}
+
 func deepAgentDedicatedEvidence(route DeepAgentStepRoute, action DeepAgentAction, status, output string, metadata map[string]any) DeepAgentStepEvidence {
 	metadata = cloneWorkflowMap(metadata)
 	errorClass := firstNonEmptyString(deepAgentWorkflowString(metadata, "error_class"))
@@ -427,6 +677,74 @@ func deepAgentCommandFromAction(action DeepAgentAction) (string, []string, strin
 		return "", nil, raw, fmt.Errorf("test executor requires command")
 	}
 	return fields[0], fields[1:], strings.Join(fields, " "), nil
+}
+
+func githubOwnerRepoFromText(text string) (string, string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", ""
+	}
+	candidates := strings.FieldsFunc(text, func(r rune) bool {
+		return r == ' ' || r == '\n' || r == '\t' || r == ')' || r == '(' || r == ',' || r == ';'
+	})
+	for _, candidate := range candidates {
+		candidate = strings.Trim(candidate, ".,，。\"'")
+		if strings.Contains(candidate, "github.com/") {
+			if parsed, err := url.Parse(candidate); err == nil {
+				parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+				if len(parts) >= 2 {
+					return parts[0], strings.TrimSuffix(parts[1], ".git")
+				}
+			}
+			idx := strings.Index(candidate, "github.com/")
+			rest := strings.Trim(candidate[idx+len("github.com/"):], "/")
+			parts := strings.Split(rest, "/")
+			if len(parts) >= 2 {
+				return parts[0], strings.TrimSuffix(parts[1], ".git")
+			}
+		}
+		if strings.Count(candidate, "/") == 1 {
+			parts := strings.Split(candidate, "/")
+			if len(parts[0]) > 0 && len(parts[1]) > 0 && !strings.Contains(parts[0], ":") {
+				return parts[0], strings.TrimSuffix(parts[1], ".git")
+			}
+		}
+	}
+	return "", ""
+}
+
+func githubIssueNumberFromText(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	if idx := strings.Index(text, "/issues/"); idx >= 0 {
+		rest := text[idx+len("/issues/"):]
+		var digits strings.Builder
+		for _, r := range rest {
+			if r < '0' || r > '9' {
+				break
+			}
+			digits.WriteRune(r)
+		}
+		if n, err := strconv.Atoi(digits.String()); err == nil {
+			return n
+		}
+	}
+	if idx := strings.Index(text, "#"); idx >= 0 {
+		rest := text[idx+1:]
+		var digits strings.Builder
+		for _, r := range rest {
+			if r < '0' || r > '9' {
+				break
+			}
+			digits.WriteRune(r)
+		}
+		if n, err := strconv.Atoi(digits.String()); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 func deepAgentAllowedCommandPatterns(action DeepAgentAction, defaults []string) []string {

@@ -32,6 +32,26 @@ type ToolDefinition struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
+func (t *ToolDefinition) UnmarshalJSON(data []byte) error {
+	type wireToolDefinition struct {
+		Name             string          `json:"name"`
+		Description      string          `json:"description"`
+		InputSchema      json.RawMessage `json:"input_schema"`
+		CamelInputSchema json.RawMessage `json:"inputSchema"`
+	}
+	var wire wireToolDefinition
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	t.Name = wire.Name
+	t.Description = wire.Description
+	t.InputSchema = wire.InputSchema
+	if len(t.InputSchema) == 0 {
+		t.InputSchema = wire.CamelInputSchema
+	}
+	return nil
+}
+
 type ResourceDefinition struct {
 	URI         string `json:"uri"`
 	Name        string `json:"name,omitempty"`

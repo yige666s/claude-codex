@@ -49,6 +49,14 @@ data:
   AGENT_API_RETENTION_DAYS: "30"
   AGENT_API_SHUTDOWN_TIMEOUT: "30s"
   AGENT_API_OPERATION_RATE_LIMITS: "auth_login=20/m,auth_register=10/h,chat_message=60/m,job_create=20/m,attachment_upload=30/m,asset_download=120/m,memory_extract=30/h,data_export=5/h,account_delete=3/h,admin_action=120/m"
+  GMAIL_MCP_SERVER_URL: "https://gmail.example.com/mcp"
+  GOOGLE_DRIVE_MCP_SERVER_URL: "https://drive.example.com/mcp"
+  GOOGLE_MCP_SERVER_URL: "https://google.example.com/mcp"
+  LINEAR_MCP_SERVER_URL: "https://linear.example.com/mcp"
+  NOTION_MCP_SERVER_URL: "https://notion.example.com/mcp"
+  SLACK_MCP_SERVER_URL: "https://mcp.slack.com/mcp"
+  AGENT_API_WEBFETCH_BROWSERLESS_BASE_URL: "https://production-sfo.browserless.io"
+  AGENT_API_WEBFETCH_BROWSERLESS_TIMEOUT: "30s"
   # Same-origin deployments can leave CORS empty. Split-origin deployments must
   # set this to the exact frontend origin.
   AGENT_API_CORS_ALLOWED_ORIGINS: "https://app.example.com"

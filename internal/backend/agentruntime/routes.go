@@ -76,6 +76,12 @@ func (s *Server) mountCoreRoutes(r chi.Router) {
 	r.Post("/v1/personalization/reset", s.withUser(s.handleResetPersonalization))
 	r.Post("/v1/personalization/browser-memory", s.withUser(s.handleCreateBrowserMemory))
 
+	r.Get("/v1/connectors", s.withUser(s.handleListConnectors))
+	r.Post("/v1/connectors/{provider}/connect", s.withUserParam("provider", s.handleStartConnectorAuth))
+	r.Post("/v1/connectors/{provider}/callback", s.withUserParam("provider", s.handleCompleteConnectorAuth))
+	r.Patch("/v1/connectors/{provider}/policy", s.withUserParam("provider", s.handleUpdateConnectorPolicy))
+	r.Post("/v1/connectors/{provider}/disconnect", s.withUserParam("provider", s.handleDisconnectConnector))
+
 	r.Get("/v1/memory", s.withUser(s.handleListMemory))
 	r.Delete("/v1/memory", s.withUser(s.handleDeleteAllMemory))
 	r.Get("/v1/memory/settings", s.withUser(s.handleGetMemorySettings))

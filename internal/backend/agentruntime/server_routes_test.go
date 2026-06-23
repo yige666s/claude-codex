@@ -48,6 +48,7 @@ func TestServerRouteBehaviorSnapshot(t *testing.T) {
 		{name: "missing job stream", method: http.MethodGet, path: "/v1/jobs/missing-job/events?stream=1", userID: "alice", wantStatus: http.StatusNotFound, wantContains: "job not found"},
 		{name: "authenticated attachments list", method: http.MethodGet, path: "/v1/attachments", userID: "alice", wantStatus: http.StatusOK, wantContains: `"attachments":`},
 		{name: "authenticated artifacts list", method: http.MethodGet, path: "/v1/artifacts", userID: "alice", wantStatus: http.StatusOK, wantContains: `"artifacts":`},
+		{name: "authenticated connectors list", method: http.MethodGet, path: "/v1/connectors", userID: "alice", wantStatus: http.StatusOK, wantContains: `"connectors":`},
 		{name: "empty search route", method: http.MethodGet, path: "/v1/search/messages?q=", userID: "alice", wantStatus: http.StatusOK, wantContains: `"items":`},
 		{name: "skills route", method: http.MethodGet, path: "/v1/skills", userID: "alice", wantStatus: http.StatusOK, wantContains: `"skills":`},
 		{name: "llm status without provider", method: http.MethodGet, path: "/v1/llm/status", userID: "alice", wantStatus: http.StatusServiceUnavailable, wantContains: "llm governance is not configured"},
@@ -80,6 +81,81 @@ func TestServerRouteBehaviorSnapshot(t *testing.T) {
 				t.Fatal("missing X-Request-ID header")
 			}
 		})
+	}
+}
+
+func TestConnectorLifecycleRoutes(t *testing.T) {
+	runtime := testRuntime(t)
+	runtime.SetConnectorStore(NewMemoryConnectorStore())
+	server := NewServer(runtime, HeaderAuthenticator{}, NoopRateLimiter{}, nil)
+
+	startReq := httptest.NewRequest(http.MethodPost, "/v1/connectors/github/connect", strings.NewReader(`{"redirect_uri":"http://localhost/callback"}`))
+	startReq.Header.Set("Content-Type", "application/json")
+	startReq.Header.Set("X-User-ID", "alice")
+	startRec := httptest.NewRecorder()
+	server.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("start status = %d body=%s", startRec.Code, startRec.Body.String())
+	}
+	var started struct {
+		Auth ConnectorAuthStart `json:"auth"`
+	}
+	if err := json.Unmarshal(startRec.Body.Bytes(), &started); err != nil {
+		t.Fatalf("decode start: %v", err)
+	}
+	if started.Auth.Provider != "github" || started.Auth.State == "" || !strings.Contains(started.Auth.AuthURL, "state=") {
+		t.Fatalf("unexpected auth start: %#v", started.Auth)
+	}
+
+	callbackBody := `{"state":"` + started.Auth.State + `","code":"temporary-oauth-code","external_account_label":"alice/repo"}`
+	callbackReq := httptest.NewRequest(http.MethodPost, "/v1/connectors/github/callback", strings.NewReader(callbackBody))
+	callbackReq.Header.Set("Content-Type", "application/json")
+	callbackReq.Header.Set("X-User-ID", "alice")
+	callbackRec := httptest.NewRecorder()
+	server.ServeHTTP(callbackRec, callbackReq)
+	if callbackRec.Code != http.StatusOK {
+		t.Fatalf("callback status = %d body=%s", callbackRec.Code, callbackRec.Body.String())
+	}
+	var connected struct {
+		Connection ConnectorConnection `json:"connection"`
+	}
+	if err := json.Unmarshal(callbackRec.Body.Bytes(), &connected); err != nil {
+		t.Fatalf("decode callback: %v", err)
+	}
+	if connected.Connection.Status != ConnectorStatusConnected || connected.Connection.PermissionPolicy != ConnectorPolicyWriteWithReview || connected.Connection.TokenRef == "" {
+		t.Fatalf("unexpected connection: %#v", connected.Connection)
+	}
+
+	policyReq := httptest.NewRequest(http.MethodPatch, "/v1/connectors/github/policy", strings.NewReader(`{"policy":"read_only"}`))
+	policyReq.Header.Set("Content-Type", "application/json")
+	policyReq.Header.Set("X-User-ID", "alice")
+	policyRec := httptest.NewRecorder()
+	server.ServeHTTP(policyRec, policyReq)
+	if policyRec.Code != http.StatusOK {
+		t.Fatalf("policy status = %d body=%s", policyRec.Code, policyRec.Body.String())
+	}
+
+	disconnectReq := httptest.NewRequest(http.MethodPost, "/v1/connectors/github/disconnect", strings.NewReader(`{}`))
+	disconnectReq.Header.Set("Content-Type", "application/json")
+	disconnectReq.Header.Set("X-User-ID", "alice")
+	disconnectRec := httptest.NewRecorder()
+	server.ServeHTTP(disconnectRec, disconnectReq)
+	if disconnectRec.Code != http.StatusOK {
+		t.Fatalf("disconnect status = %d body=%s", disconnectRec.Code, disconnectRec.Body.String())
+	}
+	connection, err := runtime.connectorStore().GetConnection(context.Background(), "alice", "", "github")
+	if err != nil {
+		t.Fatalf("get connection: %v", err)
+	}
+	if connection == nil || connection.Status != ConnectorStatusDisconnected || connection.TokenRef != "" {
+		t.Fatalf("disconnect should clear token ref, got %#v", connection)
+	}
+	serverBinding, err := runtime.mcpConnectorStore().GetServer(context.Background(), "alice", "", "github")
+	if err != nil {
+		t.Fatalf("get mcp server binding: %v", err)
+	}
+	if serverBinding == nil || serverBinding.Status != MCPServerStatusDisabled {
+		t.Fatalf("disconnect should disable mcp server binding, got %#v", serverBinding)
 	}
 }
 

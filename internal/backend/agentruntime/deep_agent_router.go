@@ -18,6 +18,7 @@ const (
 	deepAgentRouteExecutorWeb       = "web"
 	deepAgentRouteExecutorCodePatch = "code_patch"
 	deepAgentRouteExecutorSubPlan   = "subplan"
+	deepAgentRouteExecutorConnector = "connector"
 
 	deepAgentDeliverableNone     = "none"
 	deepAgentDeliverableMarkdown = "markdown"
@@ -94,6 +95,20 @@ func (r *RuntimeDeepAgentStepRouter) deterministicRoute(step DeepAgentStep) (Dee
 	text := deepAgentRouteText(step)
 	if text == "" {
 		return DeepAgentStepRoute{}, false
+	}
+	if deepAgentContainsAny(text,
+		"github issue", "github repo", "github repository", "github pull request", "github pr",
+		"github issue", "github 仓库", "github 议题", "github issue", "github repo",
+	) {
+		return DeepAgentStepRoute{
+			StepID:       step.ID,
+			Mode:         DeepAgentToolModeConnector,
+			Executor:     deepAgentRouteExecutorConnector,
+			AllowedTools: []string{"github_repo_reader", "github_issue_reader"},
+			SearchScope:  "github",
+			Reason:       "deterministic connector guard",
+			Confidence:   "high",
+		}, true
 	}
 	if deepAgentContainsAny(text,
 		"运行测试", "执行测试", "单元测试", "集成测试", "静态检查", "类型检查", "构建验证", "go test", "npm test", "pnpm test",
@@ -375,6 +390,8 @@ func normalizeDeepAgentRouteMode(mode string) string {
 		return DeepAgentToolModeCodePatch
 	case "subplan", DeepAgentToolModeMulti:
 		return DeepAgentToolModeMulti
+	case "external_connector", "connector_tool", DeepAgentToolModeConnector:
+		return DeepAgentToolModeConnector
 	default:
 		return mode
 	}
@@ -396,6 +413,8 @@ func deepAgentExecutorForMode(mode string) string {
 		return deepAgentRouteExecutorCodePatch
 	case DeepAgentToolModeMulti:
 		return deepAgentRouteExecutorSubPlan
+	case DeepAgentToolModeConnector:
+		return deepAgentRouteExecutorConnector
 	default:
 		return deepAgentRouteExecutorModel
 	}
@@ -476,13 +495,14 @@ func deepAgentRoutePrompt(agentState *DeepAgentState, step DeepAgentStep) string
 
 Return JSON only. Do not explain.
 
-Allowed mode values: "model", "model_artifact", "skill", "rag_search", "multi".
+Allowed mode values: "model", "model_artifact", "skill", "rag_search", "multi", "connector".
 Rules:
 - Use "model" for research, analysis, outline, and normal reasoning. External web/product research should set search_scope="web" and allowed_tools=["WebSearch","WebFetch"].
 - Use "model_artifact" only when this exact step must create a downloadable deliverable/file/artifact.
 - Use "skill" only when a specific published skill is clearly required.
 - Use "rag_search" only for prior session/history/memory search, not public web research.
 - Use "multi" only if the step must be decomposed.
+- Use "connector" only when the step should read an explicitly connected external provider such as GitHub repository or issue context.
 
 JSON shape:
 {
@@ -538,8 +558,8 @@ func deepAgentRouteStructuredSchema() StructuredSchema {
 			"required":             []any{"mode", "executor", "requires_artifact", "deliverable_type", "allowed_tools", "success_criteria", "reason", "confidence"},
 			"properties": map[string]any{
 				"step_id":           map[string]any{"type": "string"},
-				"mode":              map[string]any{"type": "string", "enum": []any{DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeMulti, "artifact"}},
-				"executor":          map[string]any{"type": "string", "enum": []any{deepAgentRouteExecutorModel, deepAgentRouteExecutorArtifact, deepAgentRouteExecutorSkill, deepAgentRouteExecutorRAG, deepAgentRouteExecutorTest, deepAgentRouteExecutorWeb, deepAgentRouteExecutorCodePatch, deepAgentRouteExecutorSubPlan}},
+				"mode":              map[string]any{"type": "string", "enum": []any{DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeMulti, DeepAgentToolModeConnector, "artifact"}},
+				"executor":          map[string]any{"type": "string", "enum": []any{deepAgentRouteExecutorModel, deepAgentRouteExecutorArtifact, deepAgentRouteExecutorSkill, deepAgentRouteExecutorRAG, deepAgentRouteExecutorTest, deepAgentRouteExecutorWeb, deepAgentRouteExecutorCodePatch, deepAgentRouteExecutorSubPlan, deepAgentRouteExecutorConnector}},
 				"skill_name":        map[string]any{"type": "string"},
 				"requires_artifact": map[string]any{"type": "boolean"},
 				"deliverable_type":  map[string]any{"type": "string"},

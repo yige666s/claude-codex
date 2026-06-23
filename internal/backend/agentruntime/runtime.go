@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"claude-codex/internal/harness/engine"
+	mcpcore "claude-codex/internal/harness/mcp"
 	providerbackend "claude-codex/internal/harness/provider"
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
@@ -99,6 +100,10 @@ type Runtime struct {
 	toolCallLedger    ToolCallLedgerStore
 	promptStore       PromptStore
 	promptResolver    PromptResolver
+	connectors        ConnectorStore
+	connectorTokens   ConnectorTokenVault
+	mcpConnectors     MCPConnectorStore
+	mcpHost           mcpcore.Host
 	engineFactory     EngineFactory
 	riskScanner       RiskScanner
 	riskRecorder      func(context.Context, RiskEvent)
@@ -112,6 +117,7 @@ type Runtime struct {
 	running               map[string]context.CancelFunc
 	runningJobTurns       map[string]bool
 	runningJobs           map[string]context.CancelFunc
+	connectorRefreshLocks map[string]*sync.Mutex
 	hiddenJobUserMessages map[string]bool
 	loopTriggersByJob     map[string]LoopTriggerRecord
 	shuttingDown          bool
@@ -261,6 +267,10 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		loopTriggers:          NewMemoryLoopTriggerStore(),
 		workflowStore:         NewMemoryWorkflowStore(),
 		toolCallLedger:        NewMemoryToolCallLedgerStore(),
+		connectors:            NewMemoryConnectorStore(),
+		connectorTokens:       NewMemoryConnectorTokenVault(),
+		mcpConnectors:         NewMemoryMCPConnectorStore(),
+		mcpHost:               mcpcore.NewRuntimeHost(nil),
 		promptResolver:        NewPromptResolver(nil, nil),
 		engineFactory:         engineFactory,
 		logger:                logger,
@@ -268,6 +278,7 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		running:               make(map[string]context.CancelFunc),
 		runningJobTurns:       make(map[string]bool),
 		runningJobs:           make(map[string]context.CancelFunc),
+		connectorRefreshLocks: make(map[string]*sync.Mutex),
 		hiddenJobUserMessages: make(map[string]bool),
 		loopTriggersByJob:     make(map[string]LoopTriggerRecord),
 		jobEvents:             NewLocalJobEventBus(128),
@@ -296,6 +307,24 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		runtime.live = NewVertexLiveService(config.Live, runtime, nil)
 	}
 	return runtime
+}
+
+func (r *Runtime) connectorRefreshLock(key string) *sync.Mutex {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.connectorRefreshLocks == nil {
+		r.connectorRefreshLocks = make(map[string]*sync.Mutex)
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		key = "default"
+	}
+	lock := r.connectorRefreshLocks[key]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		r.connectorRefreshLocks[key] = lock
+	}
+	return lock
 }
 
 func (r *Runtime) SetLogger(logger *slog.Logger) {
@@ -1840,6 +1869,7 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 	if sink == nil {
 		return fmt.Errorf("event sink is required")
 	}
+	req.ConnectorContext = r.resolveConnectorContext(ctx, req)
 	session, err := r.GetSession(ctx, req.UserID, req.SessionID)
 	if err != nil {
 		return err
@@ -3350,6 +3380,10 @@ func webSearchPrompt(content string) string {
 }
 
 func normalizeWebSearchTurnMessages(session *state.Session, startIndex int, visibleContent, internalContent string, visibleBlocks []publictypes.ContentBlock) {
+	normalizeInternalUserPromptTurnMessages(session, startIndex, visibleContent, internalContent, visibleBlocks)
+}
+
+func normalizeInternalUserPromptTurnMessages(session *state.Session, startIndex int, visibleContent, internalContent string, visibleBlocks []publictypes.ContentBlock) {
 	if session == nil {
 		return
 	}
@@ -3419,6 +3453,7 @@ func (r *Runtime) CreateJob(ctx context.Context, req ChatRequest, jobType string
 	if strings.TrimSpace(req.Content) == "" && len(req.AttachmentIDs) == 0 && len(req.AttachmentURLs) == 0 {
 		return nil, fmt.Errorf("content or attachment is required")
 	}
+	req.ConnectorContext = r.resolveConnectorContext(ctx, req)
 	if _, err := r.GetSession(ctx, req.UserID, req.SessionID); err != nil {
 		return nil, err
 	}
@@ -3455,17 +3490,18 @@ func (r *Runtime) CreateJob(ctx context.Context, req ChatRequest, jobType string
 		}
 	}
 	job := &Job{
-		ID:             NewJobID(),
-		UserID:         req.UserID,
-		SessionID:      req.SessionID,
-		LoopGoalID:     loopGoalID,
-		Type:           normalizedJobType,
-		Status:         JobStatusQueued,
-		Content:        req.Content,
-		AttachmentIDs:  append([]string(nil), req.AttachmentIDs...),
-		AttachmentURLs: append([]ChatAttachmentURL(nil), req.AttachmentURLs...),
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:               NewJobID(),
+		UserID:           req.UserID,
+		SessionID:        req.SessionID,
+		LoopGoalID:       loopGoalID,
+		Type:             normalizedJobType,
+		Status:           JobStatusQueued,
+		Content:          req.Content,
+		AttachmentIDs:    append([]string(nil), req.AttachmentIDs...),
+		AttachmentURLs:   append([]ChatAttachmentURL(nil), req.AttachmentURLs...),
+		ConnectorContext: normalizeConnectorScopes(req.ConnectorContext),
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	if err := r.jobs.CreateJob(ctx, job); err != nil {
 		return nil, err
@@ -3599,7 +3635,7 @@ func (r *Runtime) runJob(ctx context.Context, job *Job) error {
 	case JobTypeDeepAgent:
 		err = r.runDeepAgentJob(ctx, job, sink)
 	default:
-		err = r.Chat(ctx, ChatRequest{UserID: job.UserID, SessionID: job.SessionID, Content: job.Content, AttachmentIDs: job.AttachmentIDs, AttachmentURLs: job.AttachmentURLs}, sink)
+		err = r.Chat(ctx, ChatRequest{UserID: job.UserID, SessionID: job.SessionID, Content: job.Content, AttachmentIDs: job.AttachmentIDs, AttachmentURLs: job.AttachmentURLs, ConnectorContext: job.ConnectorContext}, sink)
 	}
 	finishedAt := time.Now().UTC()
 	if current, loadErr := r.jobs.GetJob(context.Background(), job.UserID, job.ID); loadErr == nil && current.Status == JobStatusCancelled {
@@ -3666,8 +3702,9 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 		_ = r.loopGoals.UpdateLoopGoalRun(ctx, job.UserID, loopGoal.ID, job.ID, "", LoopGoalStatusRunning, time.Now().UTC())
 	}
 	state := map[string]any{
-		"attachment_ids":  append([]string(nil), job.AttachmentIDs...),
-		"attachment_urls": append([]ChatAttachmentURL(nil), job.AttachmentURLs...),
+		"attachment_ids":    append([]string(nil), job.AttachmentIDs...),
+		"attachment_urls":   append([]ChatAttachmentURL(nil), job.AttachmentURLs...),
+		"connector_context": normalizeConnectorScopes(job.ConnectorContext),
 	}
 	if loopGoal != nil {
 		state["loop_goal_id"] = loopGoal.ID
@@ -3684,15 +3721,16 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 		_ = sink.Send(ctx, Event{Type: "loop_trigger_started", SessionID: job.SessionID, JobID: job.ID, Role: "workflow", Content: trigger.Type, Data: deepAgentEventData(map[string]any{"loop_trigger": trigger})})
 	}
 	result, err := r.ExecuteDeepAgentTask(turnCtx, DeepAgentTaskRequest{
-		UserID:     job.UserID,
-		SessionID:  job.SessionID,
-		JobID:      job.ID,
-		LoopGoalID: job.LoopGoalID,
-		Goal:       goal,
-		Policy:     policy,
-		Rubric:     deepAgentRubricFromLoopRubric(loopGoalRubric(loopGoal)),
-		LoopGoal:   loopGoal,
-		State:      state,
+		UserID:           job.UserID,
+		SessionID:        job.SessionID,
+		JobID:            job.ID,
+		LoopGoalID:       job.LoopGoalID,
+		Goal:             goal,
+		Policy:           policy,
+		Rubric:           deepAgentRubricFromLoopRubric(loopGoalRubric(loopGoal)),
+		LoopGoal:         loopGoal,
+		State:            state,
+		ConnectorContext: normalizeConnectorScopes(job.ConnectorContext),
 	}, nil, nil, nil)
 	r.updateLoopGoalFromDeepAgentResult(ctx, job, loopGoal, result, err)
 	if err != nil {
@@ -4484,12 +4522,9 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	if err != nil {
 		return runnerResult{}, err
 	}
-	visiblePrompt := prompt
-	if webSearchMode {
-		visiblePrompt, err = r.chatPrompt(ctx, req, content)
-		if err != nil {
-			return runnerResult{}, err
-		}
+	visiblePrompt, err := r.visibleChatPrompt(ctx, req, content)
+	if err != nil {
+		return runnerResult{}, err
 	}
 	llmSession, err := r.materializedSessionForLLM(ctx, userID, session)
 	if err != nil {
@@ -4504,16 +4539,17 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 		return runnerResult{}, err
 	}
 	runner := r.runnerForScope(Scope{
-		UserID:     userID,
-		SessionID:  session.ID,
-		WorkingDir: session.WorkingDir,
-		Prompt:     content,
+		UserID:           userID,
+		SessionID:        session.ID,
+		WorkingDir:       session.WorkingDir,
+		Prompt:           content,
+		ConnectorContext: req.ConnectorContext,
 	})
 	startedAt := time.Now().UTC()
 	startMessageCount := len(llmSession.Messages)
 	result, err := runWithTokenStreamContent(ctx, runner, llmSession, llmPrompt, false, onToken)
-	if webSearchMode && result.Session != nil {
-		normalizeWebSearchTurnMessages(result.Session, startMessageCount, content, llmContent, visiblePrompt)
+	if result.Session != nil && (webSearchMode || len(normalizeConnectorScopes(req.ConnectorContext)) > 0) {
+		normalizeInternalUserPromptTurnMessages(result.Session, startMessageCount, content, promptContentText(prompt), visiblePrompt)
 	}
 	if errors.Is(err, skilltool.ErrRunAsJobRequired) {
 		selection, ok := selectedRunAsJobSkill(result.Session, startMessageCount)
@@ -4558,6 +4594,9 @@ const signedAttachmentURLTTL = 15 * time.Minute
 
 func (r *Runtime) chatPrompt(ctx context.Context, req ChatRequest, content string) ([]publictypes.ContentBlock, error) {
 	blocks := []publictypes.ContentBlock{{Type: "text", Text: content}}
+	if connectorPrompt := r.connectorContextPrompt(ctx, req); connectorPrompt != "" {
+		blocks = append(blocks, publictypes.ContentBlock{Type: "text", Text: connectorPrompt})
+	}
 	attachmentNames := make([]string, 0, len(req.AttachmentIDs)+len(req.AttachmentURLs))
 	for _, id := range req.AttachmentIDs {
 		id = strings.TrimSpace(id)
@@ -4621,6 +4660,12 @@ func (r *Runtime) chatPrompt(ctx context.Context, req ChatRequest, content strin
 		blocks[0].Text = content + "\n\nAttached files: " + strings.Join(attachmentNames, ", ")
 	}
 	return blocks, nil
+}
+
+func (r *Runtime) visibleChatPrompt(ctx context.Context, req ChatRequest, content string) ([]publictypes.ContentBlock, error) {
+	visibleReq := req
+	visibleReq.ConnectorContext = nil
+	return r.chatPrompt(ctx, visibleReq, content)
 }
 
 func attachmentReferenceBlock(artifact *Artifact) publictypes.ContentBlock {

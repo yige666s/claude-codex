@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { ApiClient, ApiError } from "../../api/client";
 import { userFacingErrorMessage } from "../../api/errorMessages";
-import type { AgentActivity, AgentActivityItem, Asset, AuthSession, DeepAgentLoopTemplate, DeepAgentResumeRequest, Job, JobEvent, LoopGoal, LoopGoalRunResult, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill } from "../../types";
+import type { AgentActivity, AgentActivityItem, Asset, AuthSession, ConnectorPolicy, ConnectorStatus, DeepAgentLoopTemplate, DeepAgentResumeRequest, Job, JobEvent, LoopGoal, LoopGoalRunResult, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill } from "../../types";
 import { readSSEStream } from "../../lib/sse";
 import { sessionTitle } from "../../lib/sessionTitle";
 import { AuthPage, type AuthMode } from "../auth/AuthPage";
@@ -109,6 +109,15 @@ const layoutSidebarMinWidth = layoutSidebarDefaultWidth;
 const layoutConversationMinWidth = 520;
 const layoutArtifactDefaultWidth = 560;
 const layoutArtifactMinWidth = 360;
+const connectorOAuthPendingKey = "agentapi.connectorOAuth.pending";
+
+type PendingConnectorOAuth = {
+  provider: string;
+  returnTo: string;
+  createdAt: number;
+};
+
+type SettingsSection = "personalization" | "connectors" | "data" | "account";
 
 function clampLayoutWidth(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
@@ -124,6 +133,88 @@ function passwordResetTokenFromLocation(): string {
   if (typeof window === "undefined") return "";
   if (window.location.pathname.replace(/\/+$/, "") !== "/reset-password") return "";
   return new URLSearchParams(window.location.search).get("token") || "";
+}
+
+function connectorOAuthRedirectURI(): string {
+  if (typeof window === "undefined") return "";
+  return `${window.location.origin}/oauth/connectors/callback`;
+}
+
+function currentConnectorOAuthReturnPath(): string {
+  if (typeof window === "undefined") return "/";
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+function safeConnectorOAuthReturnPath(value?: string): string {
+  if (typeof window === "undefined") return "/";
+  if (!value) return "/";
+  try {
+    const target = new URL(value, window.location.origin);
+    if (target.origin !== window.location.origin) return "/";
+    if (target.pathname.replace(/\/+$/, "") === "/oauth/connectors/callback") return "/";
+    return `${target.pathname}${target.search}${target.hash}` || "/";
+  } catch {
+    return "/";
+  }
+}
+
+function readPendingConnectorOAuth(): Record<string, PendingConnectorOAuth> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(connectorOAuthPendingKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, PendingConnectorOAuth>;
+    const cutoff = Date.now() - 30 * 60 * 1000;
+    const active: Record<string, PendingConnectorOAuth> = {};
+    for (const [state, item] of Object.entries(parsed)) {
+      if (item && item.provider && item.createdAt >= cutoff) active[state] = item;
+    }
+    if (Object.keys(active).length !== Object.keys(parsed).length) {
+      window.localStorage.setItem(connectorOAuthPendingKey, JSON.stringify(active));
+    }
+    return active;
+  } catch {
+    return {};
+  }
+}
+
+function rememberPendingConnectorOAuth(state: string, provider: string): void {
+  if (typeof window === "undefined" || !state || !provider) return;
+  const pending = readPendingConnectorOAuth();
+  pending[state] = {
+    provider,
+    returnTo: currentConnectorOAuthReturnPath(),
+    createdAt: Date.now()
+  };
+  window.localStorage.setItem(connectorOAuthPendingKey, JSON.stringify(pending));
+}
+
+function consumePendingConnectorOAuth(state: string): PendingConnectorOAuth | null {
+  if (typeof window === "undefined" || !state) return null;
+  const pending = readPendingConnectorOAuth();
+  const item = pending[state] || null;
+  delete pending[state];
+  window.localStorage.setItem(connectorOAuthPendingKey, JSON.stringify(pending));
+  return item;
+}
+
+function providerLabel(provider: string): string {
+  switch (provider) {
+    case "google_drive":
+      return "Google Drive";
+    case "gmail":
+      return "Gmail";
+    case "github":
+      return "GitHub";
+    case "notion":
+      return "Notion";
+    case "slack":
+      return "Slack";
+    case "linear":
+      return "Linear";
+    default:
+      return provider || "Connector";
+  }
 }
 
 function emptyResourceNotices(): Record<RightPanelTab, boolean> {
@@ -210,6 +301,7 @@ export function AgentWorkspace() {
   const [assetMemoryBusy, setAssetMemoryBusy] = useState<Record<string, boolean>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("personalization");
   const [memoryManagerOpen, setMemoryManagerOpen] = useState(false);
   const [memoryScope, setMemoryScope] = useState<"all" | "session">("all");
   const [memoryStatusFilter, setMemoryStatusFilter] = useState("active");
@@ -221,6 +313,9 @@ export function AgentWorkspace() {
   const [memorySettings, setMemorySettings] = useState<MemorySettings>(defaultMemorySettings);
   const [personalizationSettings, setPersonalizationSettings] = useState<PersonalizationSettings>(defaultPersonalizationSettings);
   const [personalizationSaving, setPersonalizationSaving] = useState(false);
+  const [connectors, setConnectors] = useState<ConnectorStatus[]>([]);
+  const [connectorBusy, setConnectorBusy] = useState("");
+  const [connectorNotice, setConnectorNotice] = useState("");
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(layoutSidebarDefaultWidth);
   const [artifactWorkspaceWidth, setArtifactWorkspaceWidth] = useState(layoutArtifactDefaultWidth);
@@ -365,6 +460,8 @@ export function AgentWorkspace() {
       });
       loadMemorySettings().catch(() => {});
       loadPersonalizationSettings().catch(() => {});
+      loadConnectors().catch(() => {});
+      completeConnectorOAuthReturn().catch(() => {});
     }
     return () => {
       closeJobStream();
@@ -569,8 +666,9 @@ export function AgentWorkspace() {
   useEffect(() => {
     const node = messagesRef.current;
     if (!node) return;
+    if (agentActivity && agentActivity.session_id !== sessionId) return;
     node.scrollTop = node.scrollHeight;
-  }, [messages, assistantDraft, liveUserDraft, sessionId]);
+  }, [messages, assistantDraft, liveUserDraft, agentActivity, sessionId]);
 
   useEffect(() => {
     if (!globalSearchOpen) return;
@@ -632,6 +730,7 @@ export function AgentWorkspace() {
     await bootstrap(api, setStatus, setSessions, setSessionId, setMessages, setSkills, setJobs, setAttachments, setArtifacts, baselineFetchedResources);
     await loadMemorySettings();
     await loadPersonalizationSettings();
+    await loadConnectors();
   }
 
   async function refreshSessionData(id: string, options: { revealNewArtifacts?: boolean; quiet?: boolean; shouldApply?: () => boolean } = {}) {
@@ -1110,6 +1209,104 @@ export function AgentWorkspace() {
   async function loadPersonalizationSettings() {
     if (!api.session()) return;
     setPersonalizationSettings(await api.personalization());
+  }
+
+  async function loadConnectors() {
+    if (!api.session()) return;
+    setConnectors(await api.connectors());
+  }
+
+  async function completeConnectorOAuthReturn() {
+    if (!api.session()) return;
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code") || "";
+    const state = params.get("state") || "";
+    const pending = readPendingConnectorOAuth()[state] || null;
+    const provider = params.get("connector_provider") || pending?.provider || "";
+    if (!provider || !code || !state) return;
+    setConnectorBusy(provider);
+    try {
+      await api.completeConnectorAuth(provider, { state, code, external_account_label: `${provider} account` });
+      await loadConnectors();
+      const completed = consumePendingConnectorOAuth(state);
+      window.history.replaceState({}, "", safeConnectorOAuthReturnPath(completed?.returnTo || pending?.returnTo));
+      setSettingsOpen(false);
+      setSettingsInitialSection("connectors");
+      setSettingsModalOpen(true);
+      setConnectorNotice(`${providerLabel(provider)} connected successfully`);
+      setStatus({ tone: "ok", text: "Connector linked" });
+    } catch (error) {
+      showError(error);
+    } finally {
+      setConnectorBusy("");
+    }
+  }
+
+  async function connectProvider(provider: string) {
+    setConnectorBusy(provider);
+    setStatus({ tone: "busy", text: "Connecting " + provider });
+    try {
+      const redirect = connectorOAuthRedirectURI();
+      const authStart = await api.startConnectorAuth(provider, redirect);
+      if (authStart.configured && authStart.auth_url.startsWith("http")) {
+        setConnectorNotice("");
+        rememberPendingConnectorOAuth(authStart.state, provider);
+        window.open(authStart.auth_url, "_blank", "noopener,noreferrer");
+        setStatus({ tone: "ok", text: "OAuth window opened" });
+      } else {
+        await api.completeConnectorAuth(provider, {
+          state: authStart.state,
+          code: "local-dev-" + authStart.state,
+          external_account_label: `${provider} local connection`,
+          scopes: authStart.scopes
+        });
+        setSettingsInitialSection("connectors");
+        setSettingsModalOpen(true);
+        setConnectorNotice(`${providerLabel(provider)} connected successfully`);
+        setStatus({ tone: "ok", text: "Connector linked for local development" });
+      }
+      await loadConnectors();
+    } catch (error) {
+      showError(error);
+    } finally {
+      setConnectorBusy("");
+    }
+  }
+
+  async function updateConnectorPolicy(provider: string, policy: ConnectorPolicy) {
+    setConnectorBusy(provider);
+    setStatus({ tone: "busy", text: "Updating connector policy" });
+    try {
+      await api.updateConnectorPolicy(provider, policy);
+      await loadConnectors();
+      setStatus({ tone: "ok", text: "Connector policy saved" });
+    } catch (error) {
+      showError(error);
+    } finally {
+      setConnectorBusy("");
+    }
+  }
+
+  async function disconnectProvider(provider: string) {
+    const confirmed = await requestConfirmation({
+      title: "Disconnect connector?",
+      message: "This will remove the connector token reference for this account.",
+      detail: "Existing jobs and artifacts remain stored.",
+      confirmLabel: "Disconnect",
+      danger: true
+    });
+    if (!confirmed) return;
+    setConnectorBusy(provider);
+    setStatus({ tone: "busy", text: "Disconnecting connector" });
+    try {
+      await api.disconnectConnector(provider);
+      await loadConnectors();
+      setStatus({ tone: "ok", text: "Connector disconnected" });
+    } catch (error) {
+      showError(error);
+    } finally {
+      setConnectorBusy("");
+    }
   }
 
   async function updateMemorySettings(patch: Partial<Pick<MemorySettings, "enabled" | "capture_enabled" | "context_enabled">>) {
@@ -2060,6 +2257,8 @@ export function AgentWorkspace() {
           onToggleSettings={setSettingsOpen}
           onOpenSettings={() => {
             setSettingsOpen(false);
+            setSettingsInitialSection("personalization");
+            setConnectorNotice("");
             setSettingsModalOpen(true);
           }}
           onManageMemory={() => openMemoryManager("all")}
@@ -2278,17 +2477,27 @@ export function AgentWorkspace() {
               memorySettings={memorySettings}
               personalizationSettings={personalizationSettings}
               personalizationSaving={personalizationSaving}
+              initialSection={settingsInitialSection}
+              connectors={connectors}
+              connectorBusy={connectorBusy}
+              connectorNotice={connectorNotice}
               hasSession={Boolean(sessionId)}
               onUpdateMemorySettings={updateMemorySettings}
               onUpdatePersonalization={updatePersonalizationSettings}
               onResetPersonalization={resetPersonalizationSettings}
+              onConnectProvider={connectProvider}
+              onUpdateConnectorPolicy={updateConnectorPolicy}
+              onDisconnectProvider={disconnectProvider}
               onManageMemory={() => openMemoryManager("all")}
               onDeleteSessionMemory={deleteSessionMemory}
               onDeleteAllMemory={deleteAllMemory}
               onExportData={exportData}
               onDeleteAccount={deleteAccount}
               onLogout={logout}
-              onClose={() => setSettingsModalOpen(false)}
+              onClose={() => {
+                setSettingsModalOpen(false);
+                setConnectorNotice("");
+              }}
             />
           )}
           {previewAsset && (
@@ -2469,6 +2678,12 @@ function agentActivityTitle(event: RuntimeEvent, data: Record<string, unknown> |
   if (event.type === "deep_agent_started") return "Started plan-and-execute";
   if (event.type === "deep_agent_completed") return "Plan-and-execute completed";
   if (event.type === "loop_trigger_started") return "Loop trigger started";
+  if (event.type === "deep_agent_connectors_planned") {
+    return ["Connector context planned", connectorNamesFromData(data)].filter(Boolean).join(" · ");
+  }
+  if (event.type.startsWith("connector_tool_call_") || event.type.startsWith("mcp_connector_tool_call_")) {
+    return ["MCP connector tool", stringFromUnknown(data?.tool_name || event.content), stringFromUnknown(data?.provider)].filter(Boolean).join(" · ");
+  }
   if (event.type === "deep_agent_artifact_output") {
     const artifact = recordFromUnknown(data?.artifact);
     return ["Created artifact", stringFromUnknown(artifact?.filename || artifact?.id)].filter(Boolean).join(" · ");
@@ -2506,9 +2721,11 @@ function agentActivityDetail(event: RuntimeEvent, data: Record<string, unknown> 
   const result = recordFromUnknown(data?.result);
   const artifact = recordFromUnknown(data?.artifact);
   const child = recordFromUnknown(data?.child_job);
+  const connectorDetail = event.type === "deep_agent_connectors_planned" ? connectorNamesFromData(data) : "";
   const detail = firstText(
     event.error,
     event.job_reason,
+    connectorDetail,
     event.content,
     stringFromUnknown(data?.summary),
     stringFromUnknown(data?.status),
@@ -2521,6 +2738,15 @@ function agentActivityDetail(event: RuntimeEvent, data: Record<string, unknown> 
     stringFromUnknown(child?.status)
   );
   return detail ? truncateText(detail, 180) : undefined;
+}
+
+function connectorNamesFromData(data: Record<string, unknown> | null): string {
+  const raw = data?.connectors;
+  if (!Array.isArray(raw)) return "";
+  return raw.map((item) => {
+    const record = recordFromUnknown(item);
+    return stringFromUnknown(record?.provider || item);
+  }).filter(Boolean).join(", ");
 }
 
 function agentActivityStatus(event: RuntimeEvent, data: Record<string, unknown> | null): AgentActivityItem["status"] {

@@ -228,8 +228,9 @@ func (s *SQLJobStore) Init(ctx context.Context) error {
 
 func (s *SQLJobStore) CreateJob(ctx context.Context, job *Job) error {
 	attachments, err := json.Marshal(jobAttachments{
-		IDs:  job.AttachmentIDs,
-		URLs: job.AttachmentURLs,
+		IDs:              job.AttachmentIDs,
+		URLs:             job.AttachmentURLs,
+		ConnectorContext: job.ConnectorContext,
 	})
 	if err != nil {
 		return err
@@ -500,8 +501,9 @@ type jobScanner interface {
 }
 
 type jobAttachments struct {
-	IDs  []string            `json:"ids,omitempty"`
-	URLs []ChatAttachmentURL `json:"urls,omitempty"`
+	IDs              []string            `json:"ids,omitempty"`
+	URLs             []ChatAttachmentURL `json:"urls,omitempty"`
+	ConnectorContext []string            `json:"connector_context,omitempty"`
 }
 
 func scanJobRows(row jobScanner) (*Job, error) {
@@ -516,6 +518,7 @@ func scanJobRows(row jobScanner) (*Job, error) {
 		if err := json.Unmarshal([]byte(attachments), &parsed); err == nil {
 			job.AttachmentIDs = parsed.IDs
 			job.AttachmentURLs = parsed.URLs
+			job.ConnectorContext = normalizeConnectorScopes(parsed.ConnectorContext)
 		}
 	}
 	var err error
@@ -554,6 +557,7 @@ func jobFromSQLC(row dbsqlc.AgentJob) *Job {
 		if err := json.Unmarshal([]byte(row.Attachments), &parsed); err == nil {
 			job.AttachmentIDs = parsed.IDs
 			job.AttachmentURLs = parsed.URLs
+			job.ConnectorContext = normalizeConnectorScopes(parsed.ConnectorContext)
 		}
 	}
 	return job

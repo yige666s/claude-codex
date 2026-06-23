@@ -43,7 +43,7 @@ const textExtensions = new Set([
 
 export function DataPreview({ text, filename = "", contentType = "" }: DataPreviewProps) {
   const format = detectDataFormat(filename, contentType);
-  if (format.kind === "markdown") return <MarkdownContent text={text} />;
+  if (format.kind === "markdown") return <MarkdownContent text={normalizeMarkdownPreviewText(text)} />;
   if (format.kind === "json") return <CodePreview text={formatJson(text)} language="json" />;
   if (format.kind === "table") return <DelimitedTablePreview text={text} delimiter={format.delimiter} />;
   if (format.kind === "code") return <CodePreview text={text} language={format.language} />;
@@ -130,6 +130,57 @@ function formatJson(text: string): string {
   } catch {
     return text;
   }
+}
+
+function normalizeMarkdownPreviewText(text: string): string {
+  let output = decodeLiteralMarkdownEscapes(text.trim());
+  if (output.startsWith("Here is the result of ")) {
+    const markers = [":\n<", ":\n\n<", ":\r\n<"];
+    const marker = markers.find((candidate) => output.includes(candidate));
+    if (marker) output = output.slice(output.indexOf(marker) + 2).trim();
+  }
+  if (output.startsWith("<page")) {
+    const close = output.indexOf(">");
+    if (close >= 0) output = output.slice(close + 1).trim();
+  }
+  const closingPage = output.lastIndexOf("</page>");
+  if (closingPage >= 0) output = `${output.slice(0, closingPage)}${output.slice(closingPage + "</page>".length)}`.trim();
+
+  const lines = output.split(/\r?\n/);
+  const firstContentIndex = lines.findIndex((line) => line.trim().length > 0);
+  if (firstContentIndex >= 0) {
+    const first = lines[firstContentIndex].trim();
+    try {
+      const parsed = JSON.parse(first) as { title?: unknown };
+      const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
+      if (title) {
+        lines.splice(firstContentIndex, 1);
+        output = lines.join("\n").trim();
+        if (!markdownStartsWithTitle(output, title)) output = `# ${title}\n\n${output}`;
+      }
+    } catch {
+      // Not a Notion title payload; keep the original Markdown text.
+    }
+  }
+  return output;
+}
+
+function markdownStartsWithTitle(text: string, title: string): boolean {
+  const normalized = text.trim();
+  const heading = `# ${title.trim()}`;
+  return normalized === heading || normalized.startsWith(`${heading}\n`);
+}
+
+function decodeLiteralMarkdownEscapes(text: string): string {
+  const literalNewlines = (text.match(/\\n/g) || []).length;
+  const realNewlines = (text.match(/\n/g) || []).length;
+  if (literalNewlines <= realNewlines) return text;
+  return text
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\");
 }
 
 function parseDelimitedRows(text: string, delimiter: "," | "\t"): string[][] {

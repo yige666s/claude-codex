@@ -118,6 +118,9 @@ func (c *DeepAgentController) Execute(ctx context.Context, req DeepAgentTaskRequ
 		state.WorkingMemory["user_id"] = firstNonEmptyString(deepAgentWorkflowString(state.WorkingMemory, "user_id"), req.UserID)
 		state.WorkingMemory["session_id"] = firstNonEmptyString(deepAgentWorkflowString(state.WorkingMemory, "session_id"), req.SessionID)
 		state.WorkingMemory["job_id"] = firstNonEmptyString(deepAgentWorkflowString(state.WorkingMemory, "job_id"), req.JobID, jobIDFromContext(ctx))
+		if connectors := normalizeConnectorScopes(req.ConnectorContext); len(connectors) > 0 {
+			state.WorkingMemory["connector_context"] = connectors
+		}
 		if strings.TrimSpace(req.LoopGoalID) != "" {
 			state.WorkingMemory["loop_goal_id"] = strings.TrimSpace(req.LoopGoalID)
 		}
@@ -197,10 +200,23 @@ func (c *DeepAgentController) Execute(ctx context.Context, req DeepAgentTaskRequ
 			return nil, fmt.Errorf("%w: %s", ErrDeepAgentBudgetExceeded, state.Blocker)
 		}
 		state.Plan = plan
+		plannedConnectors := deepAgentPlannedConnectors(req, state, plan)
+		if len(plannedConnectors) > 0 {
+			state.WorkingMemory["planned_connectors"] = plannedConnectors
+			emitJobEventFromContext(ctx, Event{
+				Type:      "deep_agent_connectors_planned",
+				SessionID: req.SessionID,
+				JobID:     firstNonEmptyString(req.JobID, jobIDFromContext(ctx)),
+				Role:      "workflow",
+				Content:   "DeepAgent will use connector context",
+				Data:      deepAgentEventData(map[string]any{"connectors": plannedConnectors, "connector_context": normalizeConnectorScopes(req.ConnectorContext)}),
+			})
+		}
 		state.UpdatedAt = c.now()
 		c.persistState(ctx, run, state)
 		return map[string]any{
 			"planned_step_count": len(plan.Steps),
+			"planned_connectors": plannedConnectors,
 			"deep_agent_state":   state,
 		}, nil
 	})
@@ -1164,6 +1180,50 @@ func deepAgentEventGroup(eventType string) string {
 	default:
 		return "event"
 	}
+}
+
+func deepAgentPlannedConnectors(req DeepAgentTaskRequest, state *DeepAgentState, plan DeepAgentPlan) []map[string]any {
+	selected := normalizeConnectorScopes(req.ConnectorContext)
+	if len(selected) == 0 && state != nil {
+		selected = normalizeConnectorScopes(deepAgentStringSlice(state.WorkingMemory["connector_context"]))
+	}
+	if len(selected) == 0 {
+		return nil
+	}
+	stepConnectors := map[string][]string{}
+	for _, step := range plan.Steps {
+		route, ok := deepAgentStepRouteFromMap(step.Metadata)
+		if !ok {
+			text := deepAgentRouteText(step)
+			if strings.Contains(text, "github") {
+				stepConnectors["github"] = appendUniqueString(stepConnectors["github"], step.ID)
+			}
+			continue
+		}
+		if normalizeDeepAgentRouteMode(route.Mode) == DeepAgentToolModeConnector || route.Executor == deepAgentRouteExecutorConnector || route.SearchScope == "github" {
+			for _, tool := range route.AllowedTools {
+				if strings.Contains(strings.ToLower(tool), "github") {
+					stepConnectors["github"] = appendUniqueString(stepConnectors["github"], step.ID)
+				}
+			}
+			if len(route.AllowedTools) == 0 {
+				stepConnectors["github"] = appendUniqueString(stepConnectors["github"], step.ID)
+			}
+		}
+	}
+	out := make([]map[string]any, 0, len(selected))
+	for _, provider := range selected {
+		item := map[string]any{
+			"provider": provider,
+			"selected": true,
+		}
+		if steps := stepConnectors[provider]; len(steps) > 0 {
+			item["step_ids"] = steps
+			item["planned_tools"] = []string{provider + "_repo_reader", provider + "_issue_reader"}
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func (c *DeepAgentController) emitDeepAgentChildJobEvents(ctx context.Context, run *WorkflowRun, step DeepAgentStep, action DeepAgentAction, parent map[string]any) {

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -192,6 +193,134 @@ func TestVertexProviderStreamsGenerateContent(t *testing.T) {
 	}
 	if resp.Usage.OutputTokens != 2 {
 		t.Fatalf("usage = %#v", resp.Usage)
+	}
+}
+
+func TestVertexProviderFallsBackToGenerateContentWhenStreamEOF(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  "https://vertex.test/v1",
+		Model:    "gemini-test",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	var paths []string
+	provider.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		paths = append(paths, r.URL.String())
+		if strings.Contains(r.URL.String(), ":streamGenerateContent") {
+			return nil, io.EOF
+		}
+		if strings.Contains(r.URL.String(), ":generateContent") {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{
+					"candidates":[{"content":{"role":"model","parts":[{"text":"fallback text"}]},"finishReason":"STOP"}],
+					"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4,"totalTokenCount":7}
+				}`)),
+				Request: r,
+			}, nil
+		}
+		t.Fatalf("unexpected request: %s", r.URL.String())
+		return nil, nil
+	})}
+
+	var chunks []string
+	resp, err := provider.StreamMessage(context.Background(), MessageRequest{
+		Model:    "gemini-test",
+		Messages: []Message{{Role: "user", Content: "hello"}},
+	}, func(chunk string) {
+		chunks = append(chunks, chunk)
+	})
+	if err != nil {
+		t.Fatalf("StreamMessage: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("paths = %#v", paths)
+	}
+	if !strings.Contains(paths[0], ":streamGenerateContent") || !strings.Contains(paths[1], ":generateContent") {
+		t.Fatalf("unexpected paths: %#v", paths)
+	}
+	if strings.Join(chunks, "") != "fallback text" {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Text != "fallback text" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestVertexProviderSanitizesGeminiToolSchemas(t *testing.T) {
+	t.Setenv("VERTEX_PROJECT_ID", "proj-1")
+	t.Setenv("VERTEX_LOCATION", "us-central1")
+
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"candidates":[{"content":{"role":"model","parts":[{"text":"schema ok"}]},"finishReason":"STOP"}]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewVertexProvider(Config{
+		Provider: "vertex",
+		Token:    "tok",
+		BaseURL:  server.URL + "/v1",
+		Model:    "gemini-test",
+		Timeout:  30,
+	})
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	_, err = provider.CreateMessage(context.Background(), MessageRequest{
+		Model:    "gemini-test",
+		Messages: []Message{{Role: "user", Content: "use tool"}},
+		Tools: []Tool{{
+			Name:        "gmail_search_threads",
+			Description: "Search Gmail",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"$defs": map[string]interface{}{
+					"label": map[string]interface{}{
+						"type":                       "string",
+						"x-google-enum-descriptions": []interface{}{"inbox"},
+					},
+				},
+				"properties": map[string]interface{}{
+					"labels": map[string]interface{}{
+						"type": "array",
+						"items": map[string]interface{}{
+							"$ref": "#/$defs/label",
+						},
+					},
+					"kind": map[string]interface{}{
+						"type":                       []interface{}{"string", "null"},
+						"x-google-enum-descriptions": []interface{}{"primary"},
+					},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	raw, _ := json.Marshal(body["tools"])
+	text := string(raw)
+	if strings.Contains(text, "$defs") || strings.Contains(text, "$ref") || strings.Contains(text, "x-google-enum-descriptions") {
+		t.Fatalf("schema was not sanitized: %s", text)
+	}
+	if !strings.Contains(text, `"nullable":true`) {
+		t.Fatalf("nullable type union was not normalized: %s", text)
 	}
 }
 

@@ -170,6 +170,103 @@ export type BrowserMemoryRequest = {
   tags?: string[];
 };
 
+export type ConnectorPolicy = "read_only" | "draft_write" | "write_with_review" | "disabled";
+
+export type ConnectorProvider = {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  auth_url?: string;
+  client_id_env?: string;
+  scopes: string[];
+  capabilities: string[];
+  default_policy: ConnectorPolicy;
+  configured: boolean;
+  review_by_default: boolean;
+  connection_kind?: string;
+  default_mcp_server_url?: string;
+  official_mcp_server?: boolean;
+  supports_synced_index?: boolean;
+};
+
+export type ConnectorConnection = {
+  id: string;
+  user_id: string;
+  workspace_id?: string;
+  provider: string;
+  status: string;
+  permission_policy: ConnectorPolicy;
+  scopes: string[];
+  token_ref?: string;
+  external_account_id?: string;
+  external_account_label?: string;
+  metadata?: Record<string, unknown>;
+  connected_at?: string;
+  last_sync_at?: string;
+  expires_at?: string;
+  created_at: string;
+  updated_at: string;
+  disconnected_at?: string;
+};
+
+export type MCPServerBinding = {
+  server_id: string;
+  user_id: string;
+  workspace_id?: string;
+  provider: string;
+  display_name: string;
+  transport: string;
+  url?: string;
+  status: string;
+  last_discovered_at?: string;
+  instructions?: string;
+  metadata?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type MCPToolPolicy = {
+  policy_id: string;
+  user_id: string;
+  workspace_id?: string;
+  server_id: string;
+  provider: string;
+  tool_name: string;
+  permission_policy: ConnectorPolicy;
+  requires_review: boolean;
+  side_effect_level: string;
+  allowed: boolean;
+  metadata?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ConnectorContextHint = {
+  enabled: boolean;
+  task_types: string[];
+  evidence: string[];
+  policy_hint: string;
+};
+
+export type ConnectorStatus = {
+  provider: ConnectorProvider;
+  connection?: ConnectorConnection;
+  context: ConnectorContextHint;
+  mcp_server?: MCPServerBinding;
+  mcp_tools?: MCPToolPolicy[];
+};
+
+export type ConnectorAuthStart = {
+  provider: string;
+  state: string;
+  auth_url: string;
+  scopes: string[];
+  configured: boolean;
+  expires_at: string;
+  redirect_uri?: string;
+};
+
 export type Session = {
   id: string;
   title?: string;

@@ -1503,6 +1503,26 @@ func TestDeepAgentModelArtifactFallbackExtractsMarkdownReport(t *testing.T) {
 	}
 }
 
+func TestDeepAgentModelArtifactFallbackDecodesNotionMCPViewOutput(t *testing.T) {
+	output := `Here is the result of "view" for the Page with URL https://app.notion.com/p/example as of 2026-06-22T11:19:37Z:\n<page url=\"https://app.notion.com/p/example\">\n\n{"title":"Memory System 技术设计文档"}\n\n---\nVersion: 1.0\nAuthor: Architecture Team\n---\n\n# 1. 背景\n\n系统 LLM 存在 Context Window 限制。\n</page>`
+
+	got := deepAgentModelArtifactFallbackOutput(output, nil, 0)
+	if strings.Contains(got, `\n`) {
+		t.Fatalf("fallback kept literal escaped newlines: %q", got)
+	}
+	for _, unwanted := range []string{"Here is the result", "<page", "</page>", `{"title"`} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("fallback kept Notion wrapper %q in %q", unwanted, got)
+		}
+	}
+	if !strings.HasPrefix(got, "# Memory System 技术设计文档\n\n") {
+		t.Fatalf("fallback should promote Notion title to markdown heading, got %q", got)
+	}
+	if !strings.Contains(got, "# 1. 背景\n\n系统 LLM") {
+		t.Fatalf("fallback lost markdown body: %q", got)
+	}
+}
+
 func TestDeepAgentModelActionUserOutputUsesArtifactPointer(t *testing.T) {
 	metadata := map[string]any{
 		"artifact_refs": []DeepAgentArtifactRef{{

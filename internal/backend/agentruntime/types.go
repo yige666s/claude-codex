@@ -341,6 +341,7 @@ type Scope struct {
 	SkillShellEnv     map[string]string
 	SkillShellSandbox SkillShellSandboxConfig
 	AllowedTools      []string
+	ConnectorContext  []string
 	AllowedEnv        []string
 	NetworkAllowlist  []string
 	ArtifactTypes     []string
@@ -394,14 +395,15 @@ type LiveClientStream interface {
 }
 
 type ChatRequest struct {
-	UserID         string
-	SessionID      string
-	LoopGoalID     string
-	Content        string
-	AttachmentIDs  []string
-	AttachmentURLs []ChatAttachmentURL
-	ThinkingMode   bool
-	AgentMode      string
+	UserID           string
+	SessionID        string
+	LoopGoalID       string
+	Content          string
+	AttachmentIDs    []string
+	AttachmentURLs   []ChatAttachmentURL
+	ThinkingMode     bool
+	AgentMode        string
+	ConnectorContext []string
 }
 
 type ChatAttachmentURL struct {
@@ -437,20 +439,21 @@ const (
 )
 
 type Job struct {
-	ID             string              `json:"id"`
-	UserID         string              `json:"user_id,omitempty"`
-	SessionID      string              `json:"session_id"`
-	LoopGoalID     string              `json:"loop_goal_id,omitempty"`
-	Type           string              `json:"type"`
-	Status         string              `json:"status"`
-	Content        string              `json:"content,omitempty"`
-	AttachmentIDs  []string            `json:"attachment_ids,omitempty"`
-	AttachmentURLs []ChatAttachmentURL `json:"attachment_urls,omitempty"`
-	Error          string              `json:"error,omitempty"`
-	CreatedAt      time.Time           `json:"created_at"`
-	UpdatedAt      time.Time           `json:"updated_at"`
-	StartedAt      *time.Time          `json:"started_at,omitempty"`
-	FinishedAt     *time.Time          `json:"finished_at,omitempty"`
+	ID               string              `json:"id"`
+	UserID           string              `json:"user_id,omitempty"`
+	SessionID        string              `json:"session_id"`
+	LoopGoalID       string              `json:"loop_goal_id,omitempty"`
+	Type             string              `json:"type"`
+	Status           string              `json:"status"`
+	Content          string              `json:"content,omitempty"`
+	AttachmentIDs    []string            `json:"attachment_ids,omitempty"`
+	AttachmentURLs   []ChatAttachmentURL `json:"attachment_urls,omitempty"`
+	ConnectorContext []string            `json:"connector_context,omitempty"`
+	Error            string              `json:"error,omitempty"`
+	CreatedAt        time.Time           `json:"created_at"`
+	UpdatedAt        time.Time           `json:"updated_at"`
+	StartedAt        *time.Time          `json:"started_at,omitempty"`
+	FinishedAt       *time.Time          `json:"finished_at,omitempty"`
 }
 
 type JobEvent struct {

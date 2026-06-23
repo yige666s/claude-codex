@@ -23,6 +23,7 @@ type FetchTool struct {
 	allowedDomains  []string
 	cloudflareCrawl *cloudflareCrawlClient
 	cloudflareCDP   *cloudflareCDPClient
+	browserless     *browserlessSmartScrapeClient
 }
 
 type fetchInput struct {
@@ -50,6 +51,13 @@ type cloudflareCDPClient struct {
 	pollInterval time.Duration
 }
 
+type browserlessSmartScrapeClient struct {
+	client   *http.Client
+	apiToken string
+	baseURL  string
+	timeout  time.Duration
+}
+
 func NewFetchTool(client *http.Client) *FetchTool {
 	return NewFetchToolWithAllowlist(client, nil)
 }
@@ -63,6 +71,7 @@ func NewFetchToolWithAllowlist(client *http.Client, allowedDomains []string) *Fe
 		allowedDomains:  append([]string(nil), allowedDomains...),
 		cloudflareCrawl: newCloudflareCrawlClientFromEnv(client),
 		cloudflareCDP:   newCloudflareCDPClientFromEnv(client),
+		browserless:     newBrowserlessSmartScrapeClientFromEnv(client),
 	}
 }
 
@@ -120,10 +129,20 @@ func (t *FetchTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.R
 		}
 		direct, directErr := t.fetchDirect(ctx, input, requestURL)
 		if directErr != nil {
-			if cdpErr != nil {
-				return toolkit.Result{}, fmt.Errorf("cloudflare crawl failed: %w; cloudflare cdp failed: %v; direct fetch failed: %v", crawlErr, cdpErr, directErr)
+			if browserless, browserlessErr := t.fetchBrowserless(ctx, input, requestURL); browserlessErr == nil {
+				browserless.Output = fmt.Sprintf("cloudflare_crawl_error: %s\ncloudflare_cdp_error: %s\ndirect_fetch_error: %s\nfallback: browserless_smart_scrape\n%s", crawlErr.Error(), errorString(cdpErr), directErr.Error(), browserless.Output)
+				return browserless, nil
+			} else if cdpErr != nil {
+				return toolkit.Result{}, fmt.Errorf("cloudflare crawl failed: %w; cloudflare cdp failed: %v; direct fetch failed: %v; browserless fallback failed: %v", crawlErr, cdpErr, directErr, browserlessErr)
+			} else {
+				return toolkit.Result{}, fmt.Errorf("cloudflare crawl failed: %w; direct fetch failed: %v; browserless fallback failed: %v", crawlErr, directErr, browserlessErr)
 			}
-			return toolkit.Result{}, fmt.Errorf("cloudflare crawl failed: %w; direct fetch failed: %v", crawlErr, directErr)
+		}
+		if reason := browserlessFallbackReason(direct.Output); reason != "" {
+			if browserless, browserlessErr := t.fetchBrowserless(ctx, input, requestURL); browserlessErr == nil {
+				browserless.Output = fmt.Sprintf("cloudflare_crawl_error: %s\ncloudflare_cdp_error: %s\ndirect_fetch_fallback_reason: %s\nfallback: browserless_smart_scrape\n%s", crawlErr.Error(), errorString(cdpErr), reason, browserless.Output)
+				return browserless, nil
+			}
 		}
 		if cdpErr != nil {
 			direct.Output = fmt.Sprintf("cloudflare_crawl_error: %s\ncloudflare_cdp_error: %s\nfallback: direct_http\n%s", crawlErr.Error(), cdpErr.Error(), direct.Output)
@@ -132,7 +151,23 @@ func (t *FetchTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.R
 		}
 		return direct, nil
 	}
-	return t.fetchDirect(ctx, input, requestURL)
+	direct, directErr := t.fetchDirect(ctx, input, requestURL)
+	if directErr != nil {
+		if browserless, browserlessErr := t.fetchBrowserless(ctx, input, requestURL); browserlessErr == nil {
+			browserless.Output = fmt.Sprintf("direct_fetch_error: %s\nfallback: browserless_smart_scrape\n%s", directErr.Error(), browserless.Output)
+			return browserless, nil
+		}
+		return toolkit.Result{}, directErr
+	}
+	if reason := browserlessFallbackReason(direct.Output); reason != "" {
+		if browserless, browserlessErr := t.fetchBrowserless(ctx, input, requestURL); browserlessErr == nil {
+			browserless.Output = fmt.Sprintf("direct_fetch_fallback_reason: %s\nfallback: browserless_smart_scrape\n%s", reason, browserless.Output)
+			return browserless, nil
+		} else {
+			direct.Output = fmt.Sprintf("direct_fetch_fallback_reason: %s\nbrowserless_fallback_error: %s\nfallback: direct_http\n%s", reason, browserlessErr.Error(), direct.Output)
+		}
+	}
+	return direct, nil
 }
 
 func (t *FetchTool) fetchDirect(ctx context.Context, input fetchInput, requestURL string) (toolkit.Result, error) {
@@ -180,6 +215,148 @@ func (t *FetchTool) fetchDirect(ctx context.Context, input fetchInput, requestUR
 	}
 	fmt.Fprintf(&builder, "\n%s", payload)
 	return toolkit.Result{Output: builder.String()}, nil
+}
+
+func (t *FetchTool) fetchBrowserless(ctx context.Context, input fetchInput, requestURL string) (toolkit.Result, error) {
+	if t.browserless == nil || !shouldUseBrowserlessSmartScrape(requestURL) {
+		return toolkit.Result{}, fmt.Errorf("browserless smart scrape is not configured")
+	}
+	return t.browserless.fetch(ctx, input, requestURL, t.allowedDomains)
+}
+
+func newBrowserlessSmartScrapeClientFromEnv(client *http.Client) *browserlessSmartScrapeClient {
+	apiToken := strings.TrimSpace(firstEnvValue(
+		"AGENT_API_WEBFETCH_BROWSERLESS_API_TOKEN",
+		"BROWSERLESS_API_TOKEN",
+		"BROWSERLESS_TOKEN",
+	))
+	if apiToken == "" {
+		return nil
+	}
+	timeout := envDurationValue("AGENT_API_WEBFETCH_BROWSERLESS_TIMEOUT", 30*time.Second)
+	browserlessClient := client
+	if browserlessClient == nil {
+		browserlessClient = &http.Client{}
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if browserlessClient.Timeout > 0 && browserlessClient.Timeout < timeout+10*time.Second {
+		clone := *browserlessClient
+		clone.Timeout = timeout + 10*time.Second
+		browserlessClient = &clone
+	}
+	return &browserlessSmartScrapeClient{
+		client:   browserlessClient,
+		apiToken: apiToken,
+		baseURL:  strings.TrimRight(firstNonEmpty(firstEnvValue("AGENT_API_WEBFETCH_BROWSERLESS_BASE_URL", "BROWSERLESS_BASE_URL"), "https://production-sfo.browserless.io"), "/"),
+		timeout:  timeout,
+	}
+}
+
+func shouldUseBrowserlessSmartScrape(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return parsed.Scheme == "https" && host != "localhost" && host != "127.0.0.1" && host != "::1"
+}
+
+func (c *browserlessSmartScrapeClient) fetch(ctx context.Context, input fetchInput, requestURL string, allowedDomains []string) (toolkit.Result, error) {
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	endpoint := strings.TrimRight(c.baseURL, "/") + "/smart-scrape"
+	values := url.Values{}
+	values.Set("token", c.apiToken)
+	values.Set("timeout", strconv.FormatInt(int64(timeout/time.Millisecond), 10))
+	endpoint += "?" + values.Encode()
+	payload := map[string]any{
+		"url":     requestURL,
+		"formats": []string{"markdown", "html"},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(raw)))
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	request.Header.Set("content-type", "application/json")
+	response, err := c.client.Do(request)
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, 8*1024*1024))
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return toolkit.Result{}, fmt.Errorf("browserless smart scrape API failed: %s: %s", response.Status, strings.TrimSpace(string(data)))
+	}
+	var parsed browserlessSmartScrapeResponse
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return toolkit.Result{}, fmt.Errorf("decode browserless smart scrape response: %w", err)
+	}
+	if parsed.Ok != nil && !*parsed.Ok {
+		return toolkit.Result{}, fmt.Errorf("browserless smart scrape failed: %s", strings.TrimSpace(parsed.Message))
+	}
+	finalURL := firstNonEmpty(parsed.URL, requestURL)
+	if err := validateURLAllowed(finalURL, allowedDomains); err != nil {
+		return toolkit.Result{}, err
+	}
+	content := strings.TrimSpace(firstNonEmpty(parsed.Markdown, browserlessContentString(parsed.Content), stripHTML(parsed.HTML), parsed.Text, parsed.Data))
+	if content == "" {
+		return toolkit.Result{}, fmt.Errorf("browserless smart scrape returned no readable content for %s", requestURL)
+	}
+
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "status: browserless_smart_scrape %s\ncontent_type: text/markdown\nurl: %s\nsource: browserless_smart_scrape\n", response.Status, finalURL)
+	if strings.TrimSpace(parsed.ContentType) != "" {
+		fmt.Fprintf(&builder, "source_content_type: %s\n", strings.TrimSpace(parsed.ContentType))
+	}
+	if parsed.StatusCode > 0 {
+		fmt.Fprintf(&builder, "http_status: %d\n", parsed.StatusCode)
+	} else if parsed.Status > 0 {
+		fmt.Fprintf(&builder, "http_status: %d\n", parsed.Status)
+	}
+	if strings.TrimSpace(parsed.Title) != "" {
+		fmt.Fprintf(&builder, "title: %s\n", strings.TrimSpace(parsed.Title))
+	}
+	if strings.TrimSpace(parsed.Strategy) != "" {
+		fmt.Fprintf(&builder, "browserless_strategy: %s\n", strings.TrimSpace(parsed.Strategy))
+	}
+	if len(parsed.Attempted) > 0 {
+		fmt.Fprintf(&builder, "browserless_attempted: %s\n", strings.Join(parsed.Attempted, ", "))
+	}
+	if finalURL != requestURL {
+		fmt.Fprintf(&builder, "redirected_from: %s\n", requestURL)
+	}
+	if strings.TrimSpace(input.Prompt) != "" {
+		fmt.Fprintf(&builder, "prompt: %s\n", strings.TrimSpace(input.Prompt))
+	}
+	fmt.Fprintf(&builder, "\n%s", content)
+	return toolkit.Result{Output: builder.String()}, nil
+}
+
+func browserlessContentString(content any) string {
+	switch typed := content.(type) {
+	case string:
+		return stripHTML(typed)
+	case map[string]any, []any:
+		data, err := json.Marshal(typed)
+		if err == nil {
+			return string(data)
+		}
+	}
+	return ""
 }
 
 func newCloudflareCrawlClientFromEnv(client *http.Client) *cloudflareCrawlClient {
@@ -482,12 +659,13 @@ func (c *cloudflareCDPClient) readPage(ctx context.Context, webSocketURL string)
 	for {
 		page, err := client.evaluatePage(ctx, expression)
 		if err == nil && strings.TrimSpace(page.Content) != "" && (page.ReadyState == "interactive" || page.ReadyState == "complete") {
+			pageLooksLikeCookieBanner := looksLikeCookieBanner(page.Content)
 			if clicked, _ := client.evaluateBool(ctx, cdpCookieDismissExpression()); clicked {
-				if waited, waitErr := client.waitForRenderedText(ctx, expression, c.pollInterval, len(strings.TrimSpace(page.Content))); waitErr == nil {
+				if waited, waitErr := client.waitForRenderedText(ctx, expression, c.pollInterval, len(strings.TrimSpace(page.Content)), pageLooksLikeCookieBanner); waitErr == nil {
 					return waited, nil
 				}
 			}
-			if looksLikeCookieBanner(page.Content) {
+			if pageLooksLikeCookieBanner {
 				if cookieRetryUntil.IsZero() {
 					cookieRetryUntil = time.Now().Add(5 * time.Second)
 				}
@@ -650,7 +828,7 @@ func (c *cdpSocket) evaluateBool(ctx context.Context, expression string) (bool, 
 	return value, nil
 }
 
-func (c *cdpSocket) waitForRenderedText(ctx context.Context, expression string, interval time.Duration, previousLen int) (cloudflareCDPPage, error) {
+func (c *cdpSocket) waitForRenderedText(ctx context.Context, expression string, interval time.Duration, previousLen int, previousWasCookieBanner bool) (cloudflareCDPPage, error) {
 	if interval <= 0 {
 		interval = 500 * time.Millisecond
 	}
@@ -672,6 +850,9 @@ func (c *cdpSocket) waitForRenderedText(ctx context.Context, expression string, 
 			return cloudflareCDPPage{}, err
 		}
 		contentLen := len(strings.TrimSpace(page.Content))
+		if previousWasCookieBanner && contentLen > 0 && !looksLikeCookieBanner(page.Content) {
+			return page, nil
+		}
 		if contentLen > len(strings.TrimSpace(best.Content)) {
 			best = page
 		}
@@ -765,6 +946,45 @@ func bestCrawlRecord(job cloudflareCrawlJob) (cloudflareCrawlRecord, error) {
 	return record, nil
 }
 
+func browserlessFallbackReason(output string) string {
+	lower := strings.ToLower(output)
+	for _, status := range []string{
+		"status: 401",
+		"status: 403",
+		"status: 429",
+		"status: 503",
+		"status: 520",
+		"status: 521",
+		"status: 522",
+		"status: 523",
+		"status: 524",
+	} {
+		if strings.Contains(lower, status) {
+			return strings.TrimPrefix(status, "status: ")
+		}
+	}
+	for _, signal := range []string{
+		"access denied",
+		"captcha",
+		"checking your browser",
+		"enable javascript",
+		"just a moment",
+		"cloudflare",
+	} {
+		if strings.Contains(lower, signal) {
+			return signal
+		}
+	}
+	return ""
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return "none"
+	}
+	return err.Error()
+}
+
 type cloudflareStartResponse struct {
 	Success bool   `json:"success"`
 	Result  string `json:"result"`
@@ -813,6 +1033,23 @@ type cloudflareCDPPage struct {
 	Title      string `json:"title"`
 	URL        string `json:"url"`
 	Content    string `json:"content"`
+}
+
+type browserlessSmartScrapeResponse struct {
+	Ok          *bool    `json:"ok"`
+	StatusCode  int      `json:"statusCode"`
+	Content     any      `json:"content"`
+	ContentType string   `json:"contentType"`
+	Strategy    string   `json:"strategy"`
+	Attempted   []string `json:"attempted"`
+	Message     string   `json:"message"`
+	Markdown    string   `json:"markdown"`
+	HTML        string   `json:"html"`
+	Text        string   `json:"text"`
+	Data        string   `json:"data"`
+	URL         string   `json:"url"`
+	Title       string   `json:"title"`
+	Status      int      `json:"status"`
 }
 
 type cdpResponse struct {

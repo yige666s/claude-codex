@@ -33,6 +33,7 @@ const (
 	DeepAgentToolModeWeb           = "web"
 	DeepAgentToolModeCodePatch     = "code_patch"
 	DeepAgentToolModeMulti         = "multi"
+	DeepAgentToolModeConnector     = "connector"
 
 	DeepAgentErrorTransient     = "transient"
 	DeepAgentErrorDeterministic = "deterministic"
@@ -69,16 +70,17 @@ type DeepAgentRubric struct {
 }
 
 type DeepAgentTaskRequest struct {
-	UserID     string          `json:"user_id,omitempty"`
-	SessionID  string          `json:"session_id,omitempty"`
-	JobID      string          `json:"job_id,omitempty"`
-	LoopGoalID string          `json:"loop_goal_id,omitempty"`
-	Goal       string          `json:"goal"`
-	Plan       DeepAgentPlan   `json:"plan,omitempty"`
-	Policy     DeepAgentPolicy `json:"policy,omitempty"`
-	Rubric     DeepAgentRubric `json:"rubric,omitempty"`
-	LoopGoal   *LoopGoal       `json:"loop_goal,omitempty"`
-	State      map[string]any  `json:"state,omitempty"`
+	UserID           string          `json:"user_id,omitempty"`
+	SessionID        string          `json:"session_id,omitempty"`
+	JobID            string          `json:"job_id,omitempty"`
+	LoopGoalID       string          `json:"loop_goal_id,omitempty"`
+	Goal             string          `json:"goal"`
+	ConnectorContext []string        `json:"connector_context,omitempty"`
+	Plan             DeepAgentPlan   `json:"plan,omitempty"`
+	Policy           DeepAgentPolicy `json:"policy,omitempty"`
+	Rubric           DeepAgentRubric `json:"rubric,omitempty"`
+	LoopGoal         *LoopGoal       `json:"loop_goal,omitempty"`
+	State            map[string]any  `json:"state,omitempty"`
 }
 
 type DeepAgentResumeRequest struct {

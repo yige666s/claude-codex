@@ -664,6 +664,196 @@ func TestRuntimeChatInjectsCurrentTurnMemoryTransiently(t *testing.T) {
 	}
 }
 
+func TestRuntimeChatHidesConnectorContextFromVisibleTranscript(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runner := &captureContentRunner{}
+	sessionStore := NewFileSessionStore(root)
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		sessionStore,
+		nil,
+		nil,
+		func(Scope) Runner { return runner },
+	)
+	runtime.SetConnectorStore(NewMemoryConnectorStore())
+	runtime.SetMCPConnectorStore(NewMemoryMCPConnectorStore())
+	now := time.Now().UTC()
+	if _, err := runtime.connectorStore().UpsertConnection(ctx, ConnectorConnection{
+		ID:               "conn-gmail",
+		UserID:           "alice",
+		Provider:         "gmail",
+		Status:           ConnectorStatusConnected,
+		PermissionPolicy: ConnectorPolicyReadOnly,
+		Scopes:           []string{"https://www.googleapis.com/auth/gmail.readonly"},
+		TokenRef:         "gmail-token-ref",
+		ConnectedAt:      &now,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("upsert connector: %v", err)
+	}
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	sink := &collectSink{}
+	userContent := "帮我看一下今天有哪些新邮件，做一个总结"
+	if err := runtime.Chat(ctx, ChatRequest{
+		UserID:           "alice",
+		SessionID:        session.ID,
+		Content:          userContent,
+		ConnectorContext: []string{"gmail"},
+	}, sink); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if !strings.Contains(runner.prompt, "Selected external connector context:") {
+		t.Fatalf("runner prompt did not receive connector context: %q", runner.prompt)
+	}
+	sink.mu.Lock()
+	for _, event := range sink.events {
+		if event.Role == state.MessageRoleUser && strings.Contains(event.Content, "Selected external connector context:") {
+			t.Fatalf("user event leaked connector context: %#v", event)
+		}
+	}
+	sink.mu.Unlock()
+	saved, err := sessionStore.Get(ctx, "alice", session.ID)
+	if err != nil {
+		t.Fatalf("load saved session: %v", err)
+	}
+	var sawVisibleUser, sawHiddenConnector bool
+	for _, message := range saved.Messages {
+		if message.Role != state.MessageRoleUser {
+			continue
+		}
+		if message.Hidden && strings.Contains(message.Content, "Selected external connector context:") {
+			sawHiddenConnector = true
+			continue
+		}
+		if message.Hidden {
+			continue
+		}
+		sawVisibleUser = true
+		if message.Content != userContent {
+			t.Fatalf("visible user content = %q, want %q", message.Content, userContent)
+		}
+		if strings.Contains(message.Content, "Selected external connector context:") || strings.Contains(promptContentText(message.ContentBlocks), "Selected external connector context:") {
+			t.Fatalf("visible user message leaked connector context: %#v", message)
+		}
+	}
+	if !sawVisibleUser {
+		t.Fatalf("saved session has no visible user message: %#v", saved.Messages)
+	}
+	if !sawHiddenConnector {
+		t.Fatalf("saved session did not preserve hidden connector prompt for audit: %#v", saved.Messages)
+	}
+}
+
+func TestRuntimeChatInfersConnectorContextFromNaturalLanguage(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runner := &captureContentRunner{}
+	sessionStore := NewFileSessionStore(root)
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		sessionStore,
+		nil,
+		nil,
+		func(Scope) Runner { return runner },
+	)
+	runtime.SetConnectorStore(NewMemoryConnectorStore())
+	runtime.SetMCPConnectorStore(NewMemoryMCPConnectorStore())
+	now := time.Now().UTC()
+	if _, err := runtime.connectorStore().UpsertConnection(ctx, ConnectorConnection{
+		ID:               "conn-gmail",
+		UserID:           "alice",
+		Provider:         "gmail",
+		Status:           ConnectorStatusConnected,
+		PermissionPolicy: ConnectorPolicyReadOnly,
+		Scopes:           []string{"https://www.googleapis.com/auth/gmail.readonly"},
+		TokenRef:         "gmail-token-ref",
+		ConnectedAt:      &now,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}); err != nil {
+		t.Fatalf("upsert connector: %v", err)
+	}
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	sink := &collectSink{}
+	userContent := "帮我看一下今天 Gmail 里有哪些新邮件，做一个总结"
+	if err := runtime.Chat(ctx, ChatRequest{
+		UserID:    "alice",
+		SessionID: session.ID,
+		Content:   userContent,
+	}, sink); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if !strings.Contains(runner.prompt, "Selected external connector context:") || !strings.Contains(runner.prompt, "- Gmail:") {
+		t.Fatalf("runner prompt did not receive inferred gmail connector context: %q", runner.prompt)
+	}
+	saved, err := sessionStore.Get(ctx, "alice", session.ID)
+	if err != nil {
+		t.Fatalf("load saved session: %v", err)
+	}
+	for _, message := range saved.Messages {
+		if message.Role == state.MessageRoleUser && !message.Hidden && strings.Contains(message.Content, "Selected external connector context:") {
+			t.Fatalf("visible user message leaked inferred connector context: %#v", message)
+		}
+	}
+}
+
+func TestRuntimeInfersConnectorContextByProviderIntent(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(root),
+		nil,
+		nil,
+		func(Scope) Runner { return echoRunner{} },
+	)
+	runtime.SetConnectorStore(NewMemoryConnectorStore())
+	now := time.Now().UTC()
+	for _, provider := range []string{"github", "gmail", "google_drive", "notion", "slack", "linear"} {
+		if _, err := runtime.connectorStore().UpsertConnection(ctx, ConnectorConnection{
+			ID:               "conn-" + provider,
+			UserID:           "alice",
+			Provider:         provider,
+			Status:           ConnectorStatusConnected,
+			PermissionPolicy: ConnectorPolicyReadOnly,
+			TokenRef:         provider + "-token-ref",
+			ConnectedAt:      &now,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}); err != nil {
+			t.Fatalf("upsert %s connector: %v", provider, err)
+		}
+	}
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "github repo", content: "我有哪些 repo 是 public 的", want: "github"},
+		{name: "gmail email", content: "帮我总结今天 Gmail 新邮件", want: "gmail"},
+		{name: "drive storage", content: "看一下我的存储里有没有项目架构文档", want: "google_drive"},
+		{name: "notion page", content: "找一下 Notion 里的 memory system 页面", want: "notion"},
+		{name: "slack channel", content: "总结 Slack 频道里的新消息", want: "slack"},
+		{name: "linear ticket", content: "Linear 里当前有哪些任务需要处理", want: "linear"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := runtime.inferConnectorContext(ctx, "alice", tt.content)
+			if len(got) == 0 || got[0] != tt.want {
+				t.Fatalf("inferConnectorContext(%q) = %#v, want first %q", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFileMemoryServiceSkipsImplicitChatterAndRedactsPII(t *testing.T) {
 	memory := NewFileMemoryService(t.TempDir())
 	ctx := context.Background()

@@ -257,6 +257,59 @@ func buildPromptStore(cfg storeConfig) agentruntime.PromptStore {
 	return store
 }
 
+func buildConnectorStore(cfg storeConfig) agentruntime.ConnectorStore {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		db := openSQLDB(cfg)
+		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+		store := agentruntime.NewSQLConnectorStoreWithDialect(db, dialect)
+		if err := store.Init(ctx); err != nil {
+			logFatalf("init connector store: %v", err)
+		}
+		return store
+	}
+	store := agentruntime.NewMemoryConnectorStore()
+	if err := store.Init(ctx); err != nil {
+		logFatalf("init connector store: %v", err)
+	}
+	return store
+}
+
+func buildConnectorTokenVault(cfg storeConfig) agentruntime.ConnectorTokenVault {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		db := openSQLDB(cfg)
+		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+		vault := agentruntime.NewSQLConnectorTokenVaultWithDialect(db, dialect)
+		if err := vault.Init(ctx); err != nil {
+			logFatalf("init connector token vault: %v", err)
+		}
+		return vault
+	}
+	return agentruntime.NewMemoryConnectorTokenVault()
+}
+
+func buildMCPConnectorStore(cfg storeConfig) agentruntime.MCPConnectorStore {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		db := openSQLDB(cfg)
+		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+		store := agentruntime.NewSQLMCPConnectorStoreWithDialect(db, dialect)
+		if err := store.Init(ctx); err != nil {
+			logFatalf("init mcp connector store: %v", err)
+		}
+		return store
+	}
+	store := agentruntime.NewMemoryMCPConnectorStore()
+	if err := store.Init(ctx); err != nil {
+		logFatalf("init memory mcp connector store: %v", err)
+	}
+	return store
+}
+
 func countPublishedSkillRecords(records []agentruntime.SkillRegistryRecord) int {
 	count := 0
 	for _, record := range records {
