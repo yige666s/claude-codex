@@ -888,7 +888,6 @@ export type Job = {
   id: string;
   user_id?: string;
   session_id: string;
-  loop_goal_id?: string;
   type: string;
   status: JobStatus;
   content?: string;
@@ -899,38 +898,6 @@ export type Job = {
   updated_at: string;
   started_at?: string;
   finished_at?: string;
-};
-
-export type LoopRubric = {
-  acceptance_criteria?: string[];
-  required_evidence?: string[];
-  required_artifacts?: string[];
-  forbidden_actions?: string[];
-  quality_bar?: string;
-};
-
-export type LoopBudget = {
-  max_steps?: number;
-  max_actions?: number;
-  max_duration_ms?: number;
-  max_tokens?: number;
-  max_cost_cents?: number;
-  max_tool_calls?: number;
-};
-
-export type LoopTrigger = {
-  type?: string;
-  source?: string;
-  dedupe_key?: string;
-  payload?: Record<string, unknown>;
-  permission_hint?: string;
-};
-
-export type LoopStopPolicy = {
-  on_complete?: string;
-  on_blocked?: string;
-  on_budget_exceeded?: string;
-  on_review_pending?: string;
 };
 
 export type DeepAgentStepRoute = {
@@ -949,57 +916,6 @@ export type DeepAgentStepRoute = {
   confidence?: string;
   shadow_route?: Record<string, unknown>;
   shadow_diff?: string[];
-};
-
-export type DeepAgentLoopTemplate = {
-  id: string;
-  name: string;
-  description?: string;
-  task_type?: string;
-  deliverable?: string;
-  rubric?: LoopRubric;
-  budget?: LoopBudget;
-  executor_hints?: DeepAgentStepRoute[];
-  steps?: Array<{
-    id: string;
-    title: string;
-    intent?: string;
-    depends_on?: string[];
-    status?: string;
-    done_condition?: string;
-    risk_level?: string;
-    metadata?: Record<string, unknown>;
-  }>;
-  eval_tags?: string[];
-};
-
-export type LoopGoal = {
-  id: string;
-  user_id?: string;
-  session_id?: string;
-  job_id?: string;
-  workflow_run_id?: string;
-  objective: string;
-  template_id?: string;
-  task_type?: string;
-  deliverable?: string;
-  rubric?: LoopRubric;
-  budget?: LoopBudget;
-  trigger?: LoopTrigger;
-  stop_policy?: LoopStopPolicy;
-  status: string;
-  metadata?: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-  started_at?: string;
-  finished_at?: string;
-};
-
-export type LoopGoalRunResult = {
-  goal?: LoopGoal;
-  job?: Job;
-  run?: WorkflowRun;
-  deep_agent?: DeepAgentWorkflowSummary;
 };
 
 export type RuntimeEvent = {
@@ -1033,7 +949,7 @@ export type JobEvent = {
 export type TaskInboxGroup = "running" | "needs_review" | "failed" | "blocked" | "completed" | "scheduled";
 
 export type TaskInboxReviewAction = {
-  kind: "loop_run" | string;
+  kind: string;
   run_id?: string;
   step_id?: string;
   action_hash?: string;
@@ -1041,14 +957,12 @@ export type TaskInboxReviewAction = {
 
 export type TaskInboxItem = {
   id: string;
-  kind: "job" | "loop" | "artifact" | string;
+  kind: "job" | "artifact" | string;
   group: TaskInboxGroup;
   title: string;
   status: string;
   session_id?: string;
   job_id?: string;
-  loop_goal_id?: string;
-  loop_run_id?: string;
   artifact_id?: string;
   trigger?: string;
   last_event?: string;

@@ -719,21 +719,21 @@ func deepAgentResearchQualityRequired(state *DeepAgentState) bool {
 	if state == nil {
 		return false
 	}
-	if strings.EqualFold(deepAgentWorkflowString(state.WorkingMemory, "template_id"), LoopTemplateResearchReport) {
+	if strings.EqualFold(deepAgentWorkflowString(state.WorkingMemory, "template_id"), DeepAgentTemplateResearchReport) {
 		return true
 	}
-	if strings.EqualFold(normalizeLoopTemplateID(deepAgentStateLoopGoalString(state, "template_id")), LoopTemplateResearchReport) {
+	if strings.EqualFold(normalizeDeepAgentTemplateID(deepAgentStateTaskString(state, "template_id")), DeepAgentTemplateResearchReport) {
 		return true
 	}
 	taskType := strings.ToLower(firstNonEmptyString(
 		deepAgentWorkflowString(state.WorkingMemory, "task_type"),
-		deepAgentStateLoopGoalString(state, "task_type"),
+		deepAgentStateTaskString(state, "task_type"),
 	))
 	deliverable := strings.ToLower(firstNonEmptyString(
 		deepAgentWorkflowString(state.WorkingMemory, "deliverable"),
-		deepAgentStateLoopGoalString(state, "deliverable"),
+		deepAgentStateTaskString(state, "deliverable"),
 	))
-	if deepAgentContainsAny(taskType, LoopTemplateResearchReport, "research_report") || deepAgentContainsAny(deliverable, "research_report") {
+	if deepAgentContainsAny(taskType, DeepAgentTemplateResearchReport, "research_report") || deepAgentContainsAny(deliverable, "research_report") {
 		return true
 	}
 	for _, required := range normalizeDeepAgentRubric(state.Rubric).RequiredArtifacts {
@@ -1006,7 +1006,7 @@ func deepAgentFinalDeliverableType(state *DeepAgentState) string {
 	if state == nil {
 		return deepAgentDeliverableNone
 	}
-	if deliverable := deepAgentStateLoopGoalString(state, "deliverable"); deliverable != "" && deliverable != "answer" {
+	if deliverable := deepAgentStateTaskString(state, "deliverable"); deliverable != "" && deliverable != "answer" {
 		switch strings.ToLower(deliverable) {
 		case "markdown", "md":
 			return deepAgentDeliverableMarkdown
@@ -1034,7 +1034,7 @@ func deepAgentFinalRequiresSources(state *DeepAgentState) bool {
 	if state == nil {
 		return false
 	}
-	taskType := deepAgentStateLoopGoalString(state, "task_type")
+	taskType := deepAgentStateTaskString(state, "task_type")
 	if deepAgentContainsAny(strings.ToLower(taskType), "research", "monitoring", "monitor", "data_analysis") {
 		return true
 	}
@@ -1050,7 +1050,7 @@ func deepAgentFinalRequiresTests(state *DeepAgentState) bool {
 	if state == nil {
 		return false
 	}
-	taskType := deepAgentStateLoopGoalString(state, "task_type")
+	taskType := deepAgentStateTaskString(state, "task_type")
 	if deepAgentContainsAny(strings.ToLower(taskType), "code_fix", "bug_fix", "qa") {
 		return true
 	}
@@ -1062,37 +1062,14 @@ func deepAgentFinalRequiresTests(state *DeepAgentState) bool {
 	return false
 }
 
-func deepAgentStateLoopGoalString(state *DeepAgentState, key string) string {
+func deepAgentStateTaskString(state *DeepAgentState, key string) string {
 	if state == nil || state.WorkingMemory == nil {
 		return ""
 	}
-	if value := deepAgentWorkflowString(state.WorkingMemory, "loop_goal_"+key); value != "" {
+	if value := deepAgentWorkflowString(state.WorkingMemory, key); value != "" {
 		return value
 	}
-	raw := state.WorkingMemory["loop_goal"]
-	switch goal := raw.(type) {
-	case *LoopGoal:
-		return deepAgentLoopGoalField(goal, key)
-	case LoopGoal:
-		return deepAgentLoopGoalField(&goal, key)
-	case map[string]any:
-		return deepAgentWorkflowString(goal, key)
-	}
 	return ""
-}
-
-func deepAgentLoopGoalField(goal *LoopGoal, key string) string {
-	if goal == nil {
-		return ""
-	}
-	switch key {
-	case "task_type":
-		return strings.TrimSpace(goal.TaskType)
-	case "deliverable":
-		return strings.TrimSpace(goal.Deliverable)
-	default:
-		return ""
-	}
 }
 
 func deepAgentFinalEvidenceCorpus(state *DeepAgentState) string {

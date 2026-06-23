@@ -88,8 +88,6 @@ type Runtime struct {
 	artifacts         *ArtifactService
 	assetInsights     AssetInsightStore
 	jobs              JobStore
-	loopGoals         LoopGoalStore
-	loopTriggers      LoopTriggerStore
 	jobQueue          JobQueue
 	jobEventFanout    JobEventPublisher
 	jobEvents         JobEventBus
@@ -109,8 +107,6 @@ type Runtime struct {
 	engineFactory     EngineFactory
 	riskScanner       RiskScanner
 	riskRecorder      func(context.Context, RiskEvent)
-	triggerQuotaCheck func(context.Context, LoopTriggerRequest) error
-	loopTriggerPolicy LoopTriggerPolicy
 	logger            *slog.Logger
 	clock             Clock
 
@@ -121,7 +117,6 @@ type Runtime struct {
 	runningJobs           map[string]context.CancelFunc
 	connectorRefreshLocks map[string]*sync.Mutex
 	hiddenJobUserMessages map[string]bool
-	loopTriggersByJob     map[string]LoopTriggerRecord
 	shuttingDown          bool
 }
 
@@ -131,40 +126,6 @@ func (r *Runtime) SetArtifactService(artifacts *ArtifactService) {
 
 func (r *Runtime) SetJobStore(jobs JobStore) {
 	r.jobs = jobs
-}
-
-func (r *Runtime) SetLoopGoalStore(store LoopGoalStore) {
-	if r == nil {
-		return
-	}
-	if store == nil {
-		store = NewMemoryLoopGoalStore()
-	}
-	r.loopGoals = store
-}
-
-func (r *Runtime) SetLoopTriggerStore(store LoopTriggerStore) {
-	if r == nil {
-		return
-	}
-	if store == nil {
-		store = NewMemoryLoopTriggerStore()
-	}
-	r.loopTriggers = store
-}
-
-func (r *Runtime) SetLoopTriggerQuotaChecker(check func(context.Context, LoopTriggerRequest) error) {
-	if r == nil {
-		return
-	}
-	r.triggerQuotaCheck = check
-}
-
-func (r *Runtime) LoopTriggerLedgerStats(ctx context.Context, since time.Time) (LoopTriggerLedgerStats, error) {
-	if r == nil || r.loopTriggers == nil {
-		return LoopTriggerLedgerStats{}, nil
-	}
-	return r.loopTriggers.LoopTriggerLedgerStats(ctx, since)
 }
 
 func (r *Runtime) SetJobQueue(queue JobQueue) {
@@ -265,8 +226,6 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		memoryRecall:          NewMemoryRecallDecider(config.MemoryRecall, memoryRecallEmbedderFromConfig(config), componentLogger(logger, "memory_recall"), engineFactory),
 		episodeSummarizer:     RuleMemoryEpisodeSummarizer{},
 		skills:                skills,
-		loopGoals:             NewMemoryLoopGoalStore(),
-		loopTriggers:          NewMemoryLoopTriggerStore(),
 		workflowStore:         NewMemoryWorkflowStore(),
 		toolCallLedger:        NewMemoryToolCallLedgerStore(),
 		connectors:            NewMemoryConnectorStore(),
@@ -283,7 +242,6 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		runningJobs:           make(map[string]context.CancelFunc),
 		connectorRefreshLocks: make(map[string]*sync.Mutex),
 		hiddenJobUserMessages: make(map[string]bool),
-		loopTriggersByJob:     make(map[string]LoopTriggerRecord),
 		jobEvents:             NewLocalJobEventBus(128),
 		localVectorIndex:      true,
 	}
@@ -3467,41 +3425,10 @@ func (r *Runtime) CreateJob(ctx context.Context, req ChatRequest, jobType string
 	}
 	now := time.Now().UTC()
 	normalizedJobType := firstNonEmptyString(jobType, JobTypeChat)
-	loopGoalID := strings.TrimSpace(req.LoopGoalID)
-	if normalizedJobType == JobTypeDeepAgent && r.loopGoals != nil {
-		goalText := strings.TrimSpace(req.Content)
-		if goalText == "" {
-			goalText = "Please analyze the attached file(s)."
-		}
-		if loopGoalID == "" {
-			goal := normalizeLoopGoal(&LoopGoal{
-				UserID:      req.UserID,
-				SessionID:   req.SessionID,
-				Objective:   goalText,
-				TaskType:    "deep_agent",
-				Deliverable: "answer",
-				Budget:      loopBudgetFromDeepAgentPolicy(defaultDeepAgentJobPolicy()),
-				Trigger: LoopTrigger{
-					Type:   LoopTriggerManual,
-					Source: "agent_mode:plan_execute",
-				},
-				Status:    LoopGoalStatusPending,
-				CreatedAt: now,
-				UpdatedAt: now,
-			})
-			if err := r.loopGoals.UpsertLoopGoal(ctx, goal); err != nil {
-				return nil, err
-			}
-			loopGoalID = goal.ID
-		} else if _, err := r.loopGoals.GetLoopGoal(ctx, req.UserID, loopGoalID); err != nil {
-			return nil, err
-		}
-	}
 	job := &Job{
 		ID:               NewJobID(),
 		UserID:           req.UserID,
 		SessionID:        req.SessionID,
-		LoopGoalID:       loopGoalID,
 		Type:             normalizedJobType,
 		Status:           JobStatusQueued,
 		Content:          req.Content,
@@ -3513,11 +3440,6 @@ func (r *Runtime) CreateJob(ctx context.Context, req ChatRequest, jobType string
 	}
 	if err := r.jobs.CreateJob(ctx, job); err != nil {
 		return nil, err
-	}
-	if normalizedJobType == JobTypeDeepAgent && r.loopGoals != nil && loopGoalID != "" {
-		if err := r.loopGoals.UpdateLoopGoalRun(ctx, req.UserID, loopGoalID, job.ID, "", LoopGoalStatusPending, now); err != nil {
-			return nil, err
-		}
 	}
 	return job, nil
 }
@@ -3689,10 +3611,6 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 	if goal == "" {
 		goal = "Please analyze the attached file(s)."
 	}
-	loopGoal := r.loadJobLoopGoal(ctx, job)
-	if loopGoal != nil && strings.TrimSpace(loopGoal.Objective) != "" {
-		goal = strings.TrimSpace(loopGoal.Objective)
-	}
 	session, err := r.GetSession(ctx, job.UserID, job.SessionID)
 	if err != nil {
 		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
@@ -3715,42 +3633,20 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 	}
 	_ = sink.Send(ctx, Event{Type: "deep_agent_started", SessionID: job.SessionID, JobID: job.ID, Role: "workflow", Content: "Plan-and-execute task started"})
 	policy := defaultDeepAgentJobPolicy()
-	if loopGoal != nil {
-		policy = deepAgentPolicyFromLoopBudget(loopGoal.Budget, policy)
-		_ = r.loopGoals.UpdateLoopGoalRun(ctx, job.UserID, loopGoal.ID, job.ID, "", LoopGoalStatusRunning, time.Now().UTC())
-	}
 	state := map[string]any{
 		"attachment_ids":    append([]string(nil), job.AttachmentIDs...),
 		"attachment_urls":   append([]ChatAttachmentURL(nil), job.AttachmentURLs...),
 		"connector_context": normalizeConnectorScopes(job.ConnectorContext),
 	}
-	if loopGoal != nil {
-		state["loop_goal_id"] = loopGoal.ID
-		state["loop_goal"] = loopGoal
-		state["loop_goal_rubric"] = loopGoal.Rubric
-		state["loop_goal_trigger"] = loopGoal.Trigger
-		state["loop_goal_budget"] = loopGoal.Budget
-	}
-	if trigger, ok := r.loopTriggerForJob(job.ID); ok {
-		state["loop_trigger"] = trigger
-		state["loop_trigger_type"] = trigger.Type
-		state["loop_trigger_source"] = trigger.Source
-		state["loop_trigger_dedupe_key"] = trigger.DedupeKey
-		_ = sink.Send(ctx, Event{Type: "loop_trigger_started", SessionID: job.SessionID, JobID: job.ID, Role: "workflow", Content: trigger.Type, Data: deepAgentEventData(map[string]any{"loop_trigger": trigger})})
-	}
 	result, err := r.ExecuteDeepAgentTask(turnCtx, DeepAgentTaskRequest{
 		UserID:           job.UserID,
 		SessionID:        job.SessionID,
 		JobID:            job.ID,
-		LoopGoalID:       job.LoopGoalID,
 		Goal:             goal,
 		Policy:           policy,
-		Rubric:           deepAgentRubricFromLoopRubric(loopGoalRubric(loopGoal)),
-		LoopGoal:         loopGoal,
 		State:            state,
 		ConnectorContext: normalizeConnectorScopes(job.ConnectorContext),
 	}, nil, nil, nil)
-	r.updateLoopGoalFromDeepAgentResult(ctx, job, loopGoal, result, err)
 	if err != nil {
 		messageErr := r.appendDeepAgentResultMessage(ctx, job.UserID, job.SessionID, result, err)
 		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
@@ -3765,52 +3661,6 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 	}
 	_ = sink.Send(ctx, Event{Type: "deep_agent_completed", SessionID: job.SessionID, JobID: job.ID, Role: "workflow", Content: "Plan-and-execute task completed"})
 	return sink.Send(ctx, Event{Type: "done", SessionID: job.SessionID, JobID: job.ID})
-}
-
-func (r *Runtime) loadJobLoopGoal(ctx context.Context, job *Job) *LoopGoal {
-	if r == nil || r.loopGoals == nil || job == nil || strings.TrimSpace(job.LoopGoalID) == "" {
-		return nil
-	}
-	goal, err := r.loopGoals.GetLoopGoal(ctx, job.UserID, job.LoopGoalID)
-	if err != nil {
-		return nil
-	}
-	return goal
-}
-
-func (r *Runtime) updateLoopGoalFromDeepAgentResult(ctx context.Context, job *Job, goal *LoopGoal, result *DeepAgentTaskResult, runErr error) {
-	if r == nil || r.loopGoals == nil || job == nil || goal == nil {
-		return
-	}
-	status := LoopGoalStatusSucceeded
-	if result != nil && result.State != nil && strings.TrimSpace(result.State.Status) != "" {
-		status = loopGoalStatusFromDeepAgent(result.State.Status)
-	}
-	if runErr != nil && status == LoopGoalStatusSucceeded {
-		status = LoopGoalStatusFailed
-	}
-	runID := ""
-	if result != nil && result.Run != nil {
-		runID = result.Run.ID
-	}
-	_ = r.loopGoals.UpdateLoopGoalRun(ctx, job.UserID, goal.ID, job.ID, runID, status, time.Now().UTC())
-}
-
-func loopGoalRubric(goal *LoopGoal) LoopRubric {
-	if goal == nil {
-		return LoopRubric{}
-	}
-	return goal.Rubric
-}
-
-func deepAgentRubricFromLoopRubric(rubric LoopRubric) DeepAgentRubric {
-	return DeepAgentRubric{
-		AcceptanceCriteria: append([]string(nil), rubric.AcceptanceCriteria...),
-		RequiredEvidence:   append([]string(nil), rubric.RequiredEvidence...),
-		RequiredArtifacts:  append([]string(nil), rubric.RequiredArtifacts...),
-		ForbiddenActions:   append([]string(nil), rubric.ForbiddenActions...),
-		QualityBar:         rubric.QualityBar,
-	}
 }
 
 func (r *Runtime) appendDeepAgentResultMessage(ctx context.Context, userID, sessionID string, result *DeepAgentTaskResult, runErr error) error {

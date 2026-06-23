@@ -73,13 +73,11 @@ type DeepAgentTaskRequest struct {
 	UserID           string          `json:"user_id,omitempty"`
 	SessionID        string          `json:"session_id,omitempty"`
 	JobID            string          `json:"job_id,omitempty"`
-	LoopGoalID       string          `json:"loop_goal_id,omitempty"`
 	Goal             string          `json:"goal"`
 	ConnectorContext []string        `json:"connector_context,omitempty"`
 	Plan             DeepAgentPlan   `json:"plan,omitempty"`
 	Policy           DeepAgentPolicy `json:"policy,omitempty"`
 	Rubric           DeepAgentRubric `json:"rubric,omitempty"`
-	LoopGoal         *LoopGoal       `json:"loop_goal,omitempty"`
 	State            map[string]any  `json:"state,omitempty"`
 }
 

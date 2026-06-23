@@ -35,8 +35,6 @@ type TaskInboxItem struct {
 	Status            string                 `json:"status"`
 	SessionID         string                 `json:"session_id,omitempty"`
 	JobID             string                 `json:"job_id,omitempty"`
-	LoopGoalID        string                 `json:"loop_goal_id,omitempty"`
-	LoopRunID         string                 `json:"loop_run_id,omitempty"`
 	ArtifactID        string                 `json:"artifact_id,omitempty"`
 	Trigger           string                 `json:"trigger,omitempty"`
 	LastEvent         string                 `json:"last_event,omitempty"`
@@ -70,10 +68,6 @@ func (r *Runtime) TaskInbox(ctx context.Context, userID string, opts TaskInboxOp
 	if err != nil {
 		return nil, err
 	}
-	goals, err := r.ListLoopGoals(ctx, LoopGoalFilter{UserID: userID, SessionID: opts.SessionID, Limit: opts.Limit})
-	if err != nil {
-		return nil, err
-	}
 	artifacts, err := r.ListArtifacts(ctx, userID, opts.SessionID)
 	if err != nil {
 		return nil, err
@@ -90,7 +84,7 @@ func (r *Runtime) TaskInbox(ctx context.Context, userID string, opts TaskInboxOp
 		}
 	}
 
-	items := make([]TaskInboxItem, 0, len(jobs)+len(goals)+len(artifacts))
+	items := make([]TaskInboxItem, 0, len(jobs)+len(artifacts))
 	for _, job := range jobs {
 		if job == nil {
 			continue
@@ -101,12 +95,6 @@ func (r *Runtime) TaskInbox(ctx context.Context, userID string, opts TaskInboxOp
 		}
 		item := taskInboxItemFromJob(ctx, r, userID, job, jobArtifacts)
 		items = append(items, item)
-	}
-	for _, goal := range goals {
-		if goal == nil {
-			continue
-		}
-		items = append(items, taskInboxItemFromLoopGoal(goal, artifactsByJob[goal.JobID]))
 	}
 	for _, artifact := range artifacts {
 		if artifact == nil {
@@ -152,7 +140,6 @@ func taskInboxItemFromJob(ctx context.Context, r *Runtime, userID string, job *J
 		Status:            job.Status,
 		SessionID:         job.SessionID,
 		JobID:             job.ID,
-		LoopGoalID:        job.LoopGoalID,
 		Trigger:           job.Type,
 		LastEvent:         lastEvent,
 		LastEventAt:       lastEventAt,
@@ -165,39 +152,6 @@ func taskInboxItemFromJob(ctx context.Context, r *Runtime, userID string, job *J
 	}
 	if item.LastEventAt == nil {
 		item.LastEventAt = &job.UpdatedAt
-	}
-	return item
-}
-
-func taskInboxItemFromLoopGoal(goal *LoopGoal, artifacts []*Artifact) TaskInboxItem {
-	group := taskInboxGroupForLoopGoal(goal)
-	item := TaskInboxItem{
-		ID:                "loop:" + goal.ID,
-		Kind:              "loop",
-		Group:             group,
-		Title:             taskInboxTitle(goal.Objective, "Loop goal"),
-		Status:            goal.Status,
-		SessionID:         goal.SessionID,
-		JobID:             goal.JobID,
-		LoopGoalID:        goal.ID,
-		LoopRunID:         goal.WorkflowRunID,
-		Trigger:           firstNonEmptyString(goal.Trigger.Type, LoopTriggerManual),
-		LastEvent:         taskInboxLoopLastEvent(goal),
-		LastEventAt:       &goal.UpdatedAt,
-		ArtifactCount:     len(artifacts),
-		PrimaryArtifactID: taskInboxPrimaryArtifactID(artifacts),
-		NextAction:        taskInboxNextAction(group, len(artifacts) > 0),
-		NotificationType:  taskInboxNotificationType(group),
-		CreatedAt:         goal.CreatedAt,
-		UpdatedAt:         goal.UpdatedAt,
-	}
-	if group == TaskInboxGroupNeedsReview && goal.WorkflowRunID != "" {
-		item.Review = &TaskInboxReviewAction{
-			Kind:       "loop_run",
-			RunID:      goal.WorkflowRunID,
-			StepID:     taskInboxStringMetadata(goal.Metadata, "review_step_id"),
-			ActionHash: taskInboxStringMetadata(goal.Metadata, "review_action_hash"),
-		}
 	}
 	return item
 }
@@ -244,28 +198,6 @@ func taskInboxGroupForJob(job *Job) string {
 	}
 }
 
-func taskInboxGroupForLoopGoal(goal *LoopGoal) string {
-	switch goal.Status {
-	case LoopGoalStatusRunning:
-		return TaskInboxGroupRunning
-	case LoopGoalStatusPending:
-		if strings.EqualFold(goal.Trigger.Type, LoopTriggerSchedule) {
-			return TaskInboxGroupScheduled
-		}
-		return TaskInboxGroupRunning
-	case LoopGoalStatusReviewPending:
-		return TaskInboxGroupNeedsReview
-	case LoopGoalStatusFailed:
-		return TaskInboxGroupFailed
-	case LoopGoalStatusBlocked, LoopGoalStatusBudgetExceeded, LoopGoalStatusCancelled:
-		return TaskInboxGroupBlocked
-	case LoopGoalStatusSucceeded:
-		return TaskInboxGroupCompleted
-	default:
-		return TaskInboxGroupRunning
-	}
-}
-
 func taskInboxLastJobEvent(ctx context.Context, r *Runtime, userID string, job *Job) (string, *time.Time) {
 	events, err := r.ListJobEvents(ctx, userID, job.ID, "", 0)
 	if err != nil || len(events) == 0 {
@@ -299,28 +231,6 @@ func taskInboxJobLastEvent(job *Job) string {
 	}
 }
 
-func taskInboxLoopLastEvent(goal *LoopGoal) string {
-	switch goal.Status {
-	case LoopGoalStatusReviewPending:
-		return "Review required"
-	case LoopGoalStatusBudgetExceeded:
-		return "Quota blocked"
-	case LoopGoalStatusBlocked:
-		return "Loop blocked"
-	case LoopGoalStatusSucceeded:
-		return "Loop completed"
-	case LoopGoalStatusFailed:
-		return "Loop failed"
-	case LoopGoalStatusPending:
-		if strings.EqualFold(goal.Trigger.Type, LoopTriggerSchedule) {
-			return "Loop scheduled"
-		}
-		return "Loop pending"
-	default:
-		return "Loop " + goal.Status
-	}
-}
-
 func taskInboxNextAction(group string, hasArtifact bool) string {
 	switch group {
 	case TaskInboxGroupNeedsReview:
@@ -334,8 +244,6 @@ func taskInboxNextAction(group string, hasArtifact bool) string {
 			return "Open artifact"
 		}
 		return "Open result"
-	case TaskInboxGroupScheduled:
-		return "Open schedule"
 	default:
 		return "Open task"
 	}
@@ -351,8 +259,6 @@ func taskInboxNotificationType(group string) string {
 		return "quota_blocked"
 	case TaskInboxGroupCompleted:
 		return "job_completed"
-	case TaskInboxGroupScheduled:
-		return "loop_triggered"
 	default:
 		return "job_updated"
 	}
@@ -376,12 +282,4 @@ func taskInboxTitle(value, fallback string) string {
 		return value
 	}
 	return string(runes[:max-3]) + "..."
-}
-
-func taskInboxStringMetadata(metadata map[string]any, key string) string {
-	if metadata == nil {
-		return ""
-	}
-	value, _ := metadata[key].(string)
-	return strings.TrimSpace(value)
 }

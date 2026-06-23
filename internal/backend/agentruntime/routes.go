@@ -44,7 +44,6 @@ func (s *Server) buildRouter() http.Handler {
 	router.Post("/v1/auth/password-reset/request", s.handleAuthPasswordResetRequest)
 	router.Post("/v1/auth/password-reset/confirm", s.handleAuthPasswordResetConfirm)
 	router.With(s.publicRiskMiddleware(RiskOperationAuthRefresh)).Post("/v1/auth/refresh", s.handleAuthRefresh)
-	router.With(s.publicRiskMiddleware(RiskOperationLoopWebhook)).Post("/v1/loop/webhooks/{source}", s.handleLoopWebhook)
 
 	router.Group(func(r chi.Router) {
 		r.Use(s.authMiddleware)
@@ -128,14 +127,6 @@ func (s *Server) mountCoreRoutes(r chi.Router) {
 	r.Delete("/v1/browser-push/subscriptions/{subscriptionID}", s.withUserParam("subscriptionID", s.handleDeleteBrowserPushSubscription))
 	r.Post("/v1/browser-push/test", s.withUser(s.handleTestBrowserPush))
 
-	r.Post("/v1/loop/triggers", s.withUser(s.handleCreateLoopTrigger))
-	r.Get("/v1/loop-templates", s.withUser(s.handleListLoopTemplates))
-	r.Get("/v1/loop-goals", s.withUser(s.handleListLoopGoals))
-	r.Post("/v1/loop-goals", s.withUser(s.handleCreateLoopGoal))
-	r.Get("/v1/loop-goals/{goalID}", s.withUserParam("goalID", s.handleGetLoopGoal))
-	r.Post("/v1/loop-goals/{goalID}/runs", s.withUserParam("goalID", s.handleStartLoopGoalRun))
-	r.Get("/v1/loop-runs/{runID}", s.withUserParam("runID", s.handleGetLoopRun))
-	r.Post("/v1/loop-runs/{runID}/resume", s.withUserParam("runID", s.handleResumeLoopRun))
 	r.Post("/v1/deep-agent/learnings/{candidateID}/review", s.withUserParam("candidateID", s.handleReviewDeepAgentLearning))
 
 	r.Get("/v1/attachments", s.withUser(s.handleListAttachments))

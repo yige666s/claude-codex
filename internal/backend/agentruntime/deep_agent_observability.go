@@ -75,8 +75,8 @@ func deepAgentLoopMetricsForRun(run *WorkflowRun, state *DeepAgentState) DeepAge
 		return DeepAgentLoopMetrics{}
 	}
 	metrics := DeepAgentLoopMetrics{
-		TriggerType:     firstNonEmptyString(deepAgentWorkflowString(state.WorkingMemory, "loop_trigger_type"), deepAgentTriggerTypeFromGoal(state)),
-		TriggerSource:   firstNonEmptyString(deepAgentWorkflowString(state.WorkingMemory, "loop_trigger_source"), deepAgentTriggerSourceFromGoal(state)),
+		TriggerType:     deepAgentWorkflowString(state.WorkingMemory, "trigger_type"),
+		TriggerSource:   deepAgentWorkflowString(state.WorkingMemory, "trigger_source"),
 		TemplateID:      deepAgentTemplateID(state),
 		TaskType:        deepAgentTaskType(state),
 		ActionCount:     state.ActionCount,
@@ -356,12 +356,6 @@ func deepAgentTaskType(state *DeepAgentState) string {
 	if value := deepAgentWorkflowString(state.WorkingMemory, "task_type"); value != "" {
 		return value
 	}
-	if goal, ok := state.WorkingMemory["loop_goal"].(*LoopGoal); ok && goal != nil {
-		return goal.TaskType
-	}
-	if raw, ok := state.WorkingMemory["loop_goal"].(map[string]any); ok {
-		return deepAgentWorkflowString(raw, "task_type")
-	}
 	return ""
 }
 
@@ -370,40 +364,7 @@ func deepAgentTemplateID(state *DeepAgentState) string {
 		return ""
 	}
 	if value := deepAgentWorkflowString(state.WorkingMemory, "template_id"); value != "" {
-		return normalizeLoopTemplateID(value)
-	}
-	if goal, ok := state.WorkingMemory["loop_goal"].(*LoopGoal); ok && goal != nil {
-		return loopTemplateIDFromMetadata(goal.Metadata)
-	}
-	if raw, ok := state.WorkingMemory["loop_goal"].(map[string]any); ok {
-		if metadata, _ := raw["metadata"].(map[string]any); len(metadata) > 0 {
-			return loopTemplateIDFromMetadata(metadata)
-		}
-		return normalizeLoopTemplateID(deepAgentWorkflowString(raw, "template_id"))
-	}
-	return ""
-}
-
-func deepAgentTriggerTypeFromGoal(state *DeepAgentState) string {
-	if raw, ok := state.WorkingMemory["loop_goal"].(map[string]any); ok {
-		if trigger, _ := raw["trigger"].(map[string]any); len(trigger) > 0 {
-			return deepAgentWorkflowString(trigger, "type")
-		}
-	}
-	if goal, ok := state.WorkingMemory["loop_goal"].(*LoopGoal); ok && goal != nil {
-		return goal.Trigger.Type
-	}
-	return ""
-}
-
-func deepAgentTriggerSourceFromGoal(state *DeepAgentState) string {
-	if raw, ok := state.WorkingMemory["loop_goal"].(map[string]any); ok {
-		if trigger, _ := raw["trigger"].(map[string]any); len(trigger) > 0 {
-			return deepAgentWorkflowString(trigger, "source")
-		}
-	}
-	if goal, ok := state.WorkingMemory["loop_goal"].(*LoopGoal); ok && goal != nil {
-		return goal.Trigger.Source
+		return normalizeDeepAgentTemplateID(value)
 	}
 	return ""
 }
@@ -412,20 +373,8 @@ func deepAgentTriggerPayload(state *DeepAgentState) map[string]any {
 	if state == nil || state.WorkingMemory == nil {
 		return nil
 	}
-	if payload, ok := state.WorkingMemory["loop_trigger_payload"].(map[string]any); ok {
+	if payload, ok := state.WorkingMemory["trigger_payload"].(map[string]any); ok {
 		return cloneWorkflowMap(payload)
-	}
-	if raw, ok := state.WorkingMemory["loop_trigger"].(map[string]any); ok {
-		if payload, _ := raw["payload"].(map[string]any); len(payload) > 0 {
-			return cloneWorkflowMap(payload)
-		}
-	}
-	if raw, ok := state.WorkingMemory["loop_goal"].(map[string]any); ok {
-		if trigger, _ := raw["trigger"].(map[string]any); len(trigger) > 0 {
-			if payload, _ := trigger["payload"].(map[string]any); len(payload) > 0 {
-				return cloneWorkflowMap(payload)
-			}
-		}
 	}
 	return nil
 }
@@ -434,21 +383,11 @@ func deepAgentBudgetForMetrics(state *DeepAgentState) map[string]any {
 	if state == nil || state.WorkingMemory == nil {
 		return nil
 	}
-	if raw, ok := state.WorkingMemory["loop_goal_budget"].(map[string]any); ok {
+	if raw, ok := state.WorkingMemory["task_budget"].(map[string]any); ok {
 		return cloneWorkflowMap(raw)
 	}
 	if raw, ok := state.WorkingMemory["resume_policy"].(map[string]any); ok {
 		return cloneWorkflowMap(raw)
-	}
-	if goal, ok := state.WorkingMemory["loop_goal"].(*LoopGoal); ok && goal != nil {
-		return map[string]any{
-			"max_actions":     goal.Budget.MaxActions,
-			"max_steps":       goal.Budget.MaxSteps,
-			"max_duration_ms": goal.Budget.MaxDuration.Milliseconds(),
-			"max_tokens":      goal.Budget.MaxTokens,
-			"max_cost_cents":  goal.Budget.MaxCostCents,
-			"max_tool_calls":  goal.Budget.MaxToolCalls,
-		}
 	}
 	return nil
 }

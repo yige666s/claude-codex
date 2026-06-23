@@ -386,9 +386,6 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
       { name: "vertex-image-artifact", description: "Generate an artifact", run_as_job: true }
     ]
   }));
-  await page.route("**/v1/loop-templates", (route) => json(route, { templates: [] }));
-  await page.route("**/v1/loop-goals?**", (route) => json(route, { goals: [] }));
-
   await page.route("**/v1/sessions?**", async (route) => {
     return json(route, state.sessions);
   });

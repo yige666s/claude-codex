@@ -1,6 +1,6 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
 import { userFacingErrorMessage } from "./errorMessages";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, BrowserPushConfig, BrowserPushSubscriptionResponse, ConnectorAuthStart, ConnectorConnection, ConnectorPolicy, ConnectorStatus, DeepAgentLoopTemplate, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, LoopBudget, LoopGoal, LoopGoalRunResult, LoopRubric, LoopStopPolicy, LoopTrigger, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, TaskInboxResponse, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, BrowserPushConfig, BrowserPushSubscriptionResponse, ConnectorAuthStart, ConnectorConnection, ConnectorPolicy, ConnectorStatus, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, TaskInboxResponse, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -1021,51 +1021,6 @@ export class ApiClient {
 
   async testBrowserPush(): Promise<void> {
     await this.fetchJSON("/v1/browser-push/test", { method: "POST" });
-  }
-
-  async loopGoals(options: { sessionId?: string; status?: string; limit?: number } = {}): Promise<LoopGoal[]> {
-    const params = new URLSearchParams();
-    if (options.sessionId) params.set("session_id", options.sessionId);
-    if (options.status) params.set("status", options.status);
-    if (options.limit) params.set("limit", String(options.limit));
-    const query = params.toString();
-    const payload = await this.fetchJSON<{ goals: LoopGoal[] }>(`/v1/loop-goals${query ? `?${query}` : ""}`);
-    return payload.goals || [];
-  }
-
-  async loopTemplates(): Promise<DeepAgentLoopTemplate[]> {
-    const payload = await this.fetchJSON<{ templates: DeepAgentLoopTemplate[] }>("/v1/loop-templates");
-    return payload.templates || [];
-  }
-
-  async createLoopGoal(payload: { session_id: string; objective: string; template_id?: string; task_type?: string; deliverable?: string; rubric?: LoopRubric; budget?: LoopBudget; trigger?: LoopTrigger; stop_policy?: LoopStopPolicy; metadata?: Record<string, unknown> }): Promise<LoopGoal> {
-    const response = await this.fetchJSON<{ goal: LoopGoal }>("/v1/loop-goals", {
-      method: "POST",
-      headers: this.headers({ "Content-Type": "application/json" }),
-      body: JSON.stringify(payload)
-    });
-    return response.goal;
-  }
-
-  async loopGoal(goalId: string): Promise<LoopGoal> {
-    const payload = await this.fetchJSON<{ goal: LoopGoal }>(`/v1/loop-goals/${encodeURIComponent(goalId)}`);
-    return payload.goal;
-  }
-
-  async startLoopGoalRun(goalId: string): Promise<LoopGoalRunResult> {
-    return this.fetchJSON<LoopGoalRunResult>(`/v1/loop-goals/${encodeURIComponent(goalId)}/runs`, { method: "POST" });
-  }
-
-  async loopRun(runId: string): Promise<LoopGoalRunResult> {
-    return this.fetchJSON<LoopGoalRunResult>(`/v1/loop-runs/${encodeURIComponent(runId)}`);
-  }
-
-  async resumeLoopRun(runId: string, request: DeepAgentResumeRequest = {}): Promise<LoopGoalRunResult> {
-    return this.fetchJSON<LoopGoalRunResult>(`/v1/loop-runs/${encodeURIComponent(runId)}/resume`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...request, run_id: runId })
-    });
   }
 
   async attachments(sessionId?: string): Promise<Asset[]> {

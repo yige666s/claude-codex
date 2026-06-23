@@ -87,7 +87,6 @@ function JobMetadata({ job, formatTime }: { job: Job; formatTime: (value?: strin
     ["Started", formatTime(job.started_at)],
     ["Finished", formatTime(job.finished_at)],
     ["Session", job.session_id],
-    ["Loop Goal", job.loop_goal_id || ""],
     ["Attachments", String((job.attachment_ids || []).length || "")],
     ["URLs", String((job.attachment_urls || []).length || "")],
     ["Job ID", job.id]

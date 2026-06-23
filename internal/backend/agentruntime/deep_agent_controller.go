@@ -94,7 +94,7 @@ func (c *DeepAgentController) Execute(ctx context.Context, req DeepAgentTaskRequ
 	if c == nil {
 		return nil, fmt.Errorf("deep agent controller is not configured")
 	}
-	req = applyDeepAgentLoopTemplateToTaskRequest(req)
+	req = applyDeepAgentTaskTemplateToTaskRequest(req)
 	req.Policy = normalizeDeepAgentPolicy(req.Policy)
 	engine := NewWorkflowEngine(c.store, c.events)
 	var state *DeepAgentState
@@ -120,16 +120,6 @@ func (c *DeepAgentController) Execute(ctx context.Context, req DeepAgentTaskRequ
 		state.WorkingMemory["job_id"] = firstNonEmptyString(deepAgentWorkflowString(state.WorkingMemory, "job_id"), req.JobID, jobIDFromContext(ctx))
 		if connectors := normalizeConnectorScopes(req.ConnectorContext); len(connectors) > 0 {
 			state.WorkingMemory["connector_context"] = connectors
-		}
-		if strings.TrimSpace(req.LoopGoalID) != "" {
-			state.WorkingMemory["loop_goal_id"] = strings.TrimSpace(req.LoopGoalID)
-		}
-		if req.LoopGoal != nil {
-			state.WorkingMemory["loop_goal"] = req.LoopGoal
-			state.WorkingMemory["loop_goal_id"] = req.LoopGoal.ID
-			state.WorkingMemory["loop_goal_rubric"] = req.LoopGoal.Rubric
-			state.WorkingMemory["loop_goal_trigger"] = req.LoopGoal.Trigger
-			state.WorkingMemory["loop_goal_budget"] = req.LoopGoal.Budget
 		}
 		if !deepAgentRubricEmpty(state.Rubric) {
 			state.WorkingMemory["rubric"] = state.Rubric

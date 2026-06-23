@@ -1807,9 +1807,9 @@ func TestDedicatedTestExecutorRunsAllowlistedCommand(t *testing.T) {
 }
 
 func TestResearchReportVerifyTemplateUsesStateVerification(t *testing.T) {
-	req := applyDeepAgentLoopTemplateToTaskRequest(DeepAgentTaskRequest{
+	req := applyDeepAgentTaskTemplateToTaskRequest(DeepAgentTaskRequest{
 		Goal:  "帮我调研一下chance ai这款产品",
-		State: map[string]any{"template_id": LoopTemplateResearchReport},
+		State: map[string]any{"template_id": DeepAgentTemplateResearchReport},
 	})
 	var verifyStep DeepAgentStep
 	for i := range req.Plan.Steps {
@@ -1876,9 +1876,9 @@ func TestResearchReportVerifyTemplateUsesStateVerification(t *testing.T) {
 }
 
 func TestRuntimePlannerPreservesResearchVerifyStateVerification(t *testing.T) {
-	req := applyDeepAgentLoopTemplateToTaskRequest(DeepAgentTaskRequest{
+	req := applyDeepAgentTaskTemplateToTaskRequest(DeepAgentTaskRequest{
 		Goal:  "帮我调研一下chance ai这款产品",
-		State: map[string]any{"template_id": LoopTemplateResearchReport},
+		State: map[string]any{"template_id": DeepAgentTemplateResearchReport},
 	})
 	var verifyStep DeepAgentStep
 	for i := range req.Plan.Steps {
@@ -1950,9 +1950,9 @@ func TestRuntimePlannerPreservesResearchVerifyStateVerification(t *testing.T) {
 }
 
 func TestResearchReportStateVerificationRequiresMultipleSources(t *testing.T) {
-	req := applyDeepAgentLoopTemplateToTaskRequest(DeepAgentTaskRequest{
+	req := applyDeepAgentTaskTemplateToTaskRequest(DeepAgentTaskRequest{
 		Goal:  "帮我调研一下chance ai这款产品",
-		State: map[string]any{"template_id": LoopTemplateResearchReport},
+		State: map[string]any{"template_id": DeepAgentTemplateResearchReport},
 	})
 	var verifyStep DeepAgentStep
 	for i := range req.Plan.Steps {
@@ -2074,9 +2074,9 @@ func TestResearchReportFinalVerificationBlocksEntityAmbiguity(t *testing.T) {
 
 func testResearchReportVerificationState(t *testing.T, gatherSummary string, sources []DeepAgentSourceRef) *DeepAgentState {
 	t.Helper()
-	req := applyDeepAgentLoopTemplateToTaskRequest(DeepAgentTaskRequest{
+	req := applyDeepAgentTaskTemplateToTaskRequest(DeepAgentTaskRequest{
 		Goal:  "帮我调研一下chance ai这款产品",
-		State: map[string]any{"template_id": LoopTemplateResearchReport},
+		State: map[string]any{"template_id": DeepAgentTemplateResearchReport},
 	})
 	for i := range req.Plan.Steps {
 		req.Plan.Steps[i].Status = DeepAgentStepStatusSucceeded
@@ -2676,7 +2676,7 @@ func TestRuleDeepAgentVerifierAcceptsCurrentMarkdownArtifactForFinalGoal(t *test
 	}
 }
 
-func TestRuleDeepAgentVerifierRequiresSourcesForResearchLoop(t *testing.T) {
+func TestRuleDeepAgentVerifierRequiresSourcesForResearchTask(t *testing.T) {
 	state := &DeepAgentState{
 		Goal: "research Chance AI",
 		Rubric: DeepAgentRubric{
@@ -2691,7 +2691,8 @@ func TestRuleDeepAgentVerifierRequiresSourcesForResearchLoop(t *testing.T) {
 		}}},
 		CompletedSteps: []string{"research"},
 		WorkingMemory: map[string]any{
-			"loop_goal": LoopGoal{TaskType: "research", Deliverable: "answer"},
+			"task_type":   "research",
+			"deliverable": "answer",
 			"step_context": map[string]any{
 				"research": map[string]any{
 					"step_evidence": DeepAgentStepEvidence{
@@ -2707,7 +2708,7 @@ func TestRuleDeepAgentVerifierRequiresSourcesForResearchLoop(t *testing.T) {
 		t.Fatalf("CheckFinal() error = %v", err)
 	}
 	if final.Done || !deepAgentVerificationHasCheck(final.Checks, "source_verifier", false) {
-		t.Fatalf("research loop without sources should fail source verifier, got %#v", final)
+		t.Fatalf("research task without sources should fail source verifier, got %#v", final)
 	}
 	evidence := state.WorkingMemory["step_context"].(map[string]any)["research"].(map[string]any)["step_evidence"].(DeepAgentStepEvidence)
 	evidence.Sources = []DeepAgentSourceRef{{URL: "https://example.com/chance", Title: "Chance source", Provider: "WebSearch"}}
@@ -2717,7 +2718,7 @@ func TestRuleDeepAgentVerifierRequiresSourcesForResearchLoop(t *testing.T) {
 		t.Fatalf("CheckFinal() with sources error = %v", err)
 	}
 	if !final.Done || !deepAgentVerificationHasCheck(final.Checks, "source_verifier", true) || !deepAgentVerificationHasCheck(final.Checks, "content_verifier", true) {
-		t.Fatalf("research loop with sources should pass layered verifiers, got %#v", final)
+		t.Fatalf("research task with sources should pass layered verifiers, got %#v", final)
 	}
 }
 
@@ -2733,7 +2734,8 @@ func TestRuleDeepAgentVerifierRequiresTestsOrNotTestedReasonForCodeFix(t *testin
 		}}},
 		CompletedSteps: []string{"fix"},
 		WorkingMemory: map[string]any{
-			"loop_goal": LoopGoal{TaskType: "code_fix", Deliverable: "answer"},
+			"task_type":   "code_fix",
+			"deliverable": "answer",
 			"step_context": map[string]any{
 				"fix": map[string]any{
 					"step_evidence": DeepAgentStepEvidence{
@@ -2821,9 +2823,10 @@ func TestDeepAgentEvidenceRepositoryPersistsRunEvidence(t *testing.T) {
 		SessionID: session.ID,
 		Goal:      "research persistent evidence",
 		State: map[string]any{
-			"template_id":       LoopTemplateWebMonitor,
-			"task_type":         LoopTemplateWebMonitor,
-			"loop_trigger_type": LoopTriggerTypeSchedule,
+			"template_id":  DeepAgentTemplateWebMonitor,
+			"task_type":    DeepAgentTemplateWebMonitor,
+			"deliverable":  "answer",
+			"trigger_type": "schedule",
 		},
 	}, staticDeepAgentPlanner{plan: DeepAgentPlan{Steps: []DeepAgentStep{{ID: "observe", Title: "Observe", DoneCondition: "done"}}}}, evidenceOnlyDeepAgentExecutor{}, nil)
 	if err != nil {
@@ -2832,14 +2835,14 @@ func TestDeepAgentEvidenceRepositoryPersistsRunEvidence(t *testing.T) {
 	records, err := repo.ListDeepAgentEvidence(context.Background(), DeepAgentEvidenceFilter{
 		UserID:     "alice",
 		RunID:      result.Run.ID,
-		TemplateID: LoopTemplateWebMonitor,
+		TemplateID: DeepAgentTemplateWebMonitor,
 	})
 	if err != nil {
 		t.Fatalf("ListDeepAgentEvidence() error = %v", err)
 	}
 	var observed bool
 	for _, record := range records {
-		if record.StepID == "observe" && record.SourceCount == 1 && record.TriggerType == LoopTriggerTypeSchedule {
+		if record.StepID == "observe" && record.SourceCount == 1 && record.TriggerType == "schedule" {
 			observed = true
 			break
 		}
@@ -2860,7 +2863,8 @@ func TestRuleDeepAgentVerifierReadsEvidenceStoreForFinalSources(t *testing.T) {
 		}}},
 		CompletedSteps: []string{"research"},
 		WorkingMemory: map[string]any{
-			"loop_goal": LoopGoal{TaskType: "research", Deliverable: "answer"},
+			"task_type":   "research",
+			"deliverable": "answer",
 		},
 	}
 	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
@@ -3281,10 +3285,10 @@ func TestDeepAgentObservabilityMetricsTimelineAndReplay(t *testing.T) {
 		UserID: "alice",
 		Goal:   "research observability",
 		State: map[string]any{
-			"task_type":            "research_report",
-			"loop_trigger_type":    LoopTriggerSchedule,
-			"loop_trigger_source":  "cron",
-			"loop_trigger_payload": map[string]any{"cron": "0 * * * *"},
+			"task_type":       "research_report",
+			"trigger_type":    "schedule",
+			"trigger_source":  "cron",
+			"trigger_payload": map[string]any{"cron": "0 * * * *"},
 		},
 	})
 	if err != nil {
@@ -3298,7 +3302,7 @@ func TestDeepAgentObservabilityMetricsTimelineAndReplay(t *testing.T) {
 	if !ok || summary == nil || !summary.Present {
 		t.Fatalf("expected deep agent summary, got %#v", summary)
 	}
-	if summary.Metrics.TaskType != "research_report" || summary.Metrics.TriggerType != LoopTriggerSchedule || summary.Metrics.ActionCount != 1 {
+	if summary.Metrics.TaskType != "research_report" || summary.Metrics.TriggerType != "schedule" || summary.Metrics.ActionCount != 1 {
 		t.Fatalf("unexpected metrics: %#v", summary.Metrics)
 	}
 	if len(summary.Timeline) == 0 {
@@ -3327,7 +3331,7 @@ func TestEvaluationEngineSupportsDeepAgentSubject(t *testing.T) {
 	_, err := controller.Execute(context.Background(), DeepAgentTaskRequest{
 		UserID: "alice",
 		Goal:   "summarize note",
-		State:  map[string]any{"task_type": "general_loop", "loop_trigger_type": LoopTriggerManual},
+		State:  map[string]any{"task_type": "general", "trigger_type": "manual"},
 	})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -3336,7 +3340,7 @@ func TestEvaluationEngineSupportsDeepAgentSubject(t *testing.T) {
 	runtime.SetWorkflowStore(store)
 	engine := NewEvaluationEngine(RuntimeEvaluationTraceSource{Runtime: runtime})
 	report, err := engine.Evaluate(context.Background(), EvaluationRunRequest{
-		Scope: EvaluationScope{SubjectType: EvaluationSubjectDeepAgent, UserID: "alice", TaskType: "general_loop"},
+		Scope: EvaluationScope{SubjectType: EvaluationSubjectDeepAgent, UserID: "alice", TaskType: "general"},
 	})
 	if err != nil {
 		t.Fatalf("Evaluate() error = %v", err)
@@ -3352,8 +3356,8 @@ func TestEvaluationEngineSupportsDeepAgentSubject(t *testing.T) {
 	}
 }
 
-func TestDeepAgentLoopTemplatesContainRubricBudgetAndExecutorHints(t *testing.T) {
-	templates := DefaultDeepAgentLoopTemplates()
+func TestDeepAgentTaskTemplatesContainRubricBudgetAndExecutorHints(t *testing.T) {
+	templates := DefaultDeepAgentTaskTemplates()
 	if len(templates) != 6 {
 		t.Fatalf("template count = %d, want 6", len(templates))
 	}
@@ -3373,14 +3377,14 @@ func TestDeepAgentLoopTemplatesContainRubricBudgetAndExecutorHints(t *testing.T)
 	}
 }
 
-func TestDeepAgentLoopTemplateAppliesPlanRubricAndBudget(t *testing.T) {
-	req := applyDeepAgentLoopTemplateToTaskRequest(DeepAgentTaskRequest{
+func TestDeepAgentTaskTemplateAppliesPlanRubricAndBudget(t *testing.T) {
+	req := applyDeepAgentTaskTemplateToTaskRequest(DeepAgentTaskRequest{
 		Goal:   "修复 CI 失败",
-		State:  map[string]any{"template_id": LoopTemplateCIFailureFix},
+		State:  map[string]any{"template_id": DeepAgentTemplateCIFailureFix},
 		Policy: DeepAgentPolicy{MaxActions: 3},
 		Rubric: DeepAgentRubric{RequiredEvidence: []string{"local rerun output"}},
 	})
-	if got := deepAgentWorkflowString(req.State, "template_id"); got != LoopTemplateCIFailureFix {
+	if got := deepAgentWorkflowString(req.State, "template_id"); got != DeepAgentTemplateCIFailureFix {
 		t.Fatalf("template_id = %q", got)
 	}
 	if len(req.Plan.Steps) != 3 || req.Plan.Steps[0].ID != "logs" {
@@ -3396,16 +3400,16 @@ func TestDeepAgentLoopTemplateAppliesPlanRubricAndBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextAction() error = %v", err)
 	}
-	if action.Tool != DeepAgentToolModeRAGSearch || deepAgentWorkflowString(action.Args, "template_id") != LoopTemplateCIFailureFix {
+	if action.Tool != DeepAgentToolModeRAGSearch || deepAgentWorkflowString(action.Args, "template_id") != DeepAgentTemplateCIFailureFix {
 		t.Fatalf("unexpected template action: %#v", action)
 	}
 }
 
 func TestResearchReportTemplateGatherUsesWebResearchModelRoute(t *testing.T) {
 	goal := "帮我调研一下chance ai这款ai产品"
-	req := applyDeepAgentLoopTemplateToTaskRequest(DeepAgentTaskRequest{
+	req := applyDeepAgentTaskTemplateToTaskRequest(DeepAgentTaskRequest{
 		Goal:  goal,
-		State: map[string]any{"template_id": LoopTemplateResearchReport},
+		State: map[string]any{"template_id": DeepAgentTemplateResearchReport},
 	})
 	if len(req.Plan.Steps) == 0 || req.Plan.Steps[0].ID != "gather" {
 		t.Fatalf("unexpected research template plan: %#v", req.Plan)
@@ -3475,25 +3479,6 @@ func TestDeepAgentRouterStillRoutesBrowserVerificationToWebExecutor(t *testing.T
 	}
 }
 
-func TestLoopGoalAppliesExplicitTemplateDefaults(t *testing.T) {
-	goal := normalizeLoopGoal(&LoopGoal{
-		UserID:    "alice",
-		SessionID: "session-1",
-		Objective: "生成产品说明文档",
-		Metadata:  map[string]any{"template_id": LoopTemplateDocGeneration},
-		Budget:    LoopBudget{MaxActions: 2},
-	})
-	if goal.TaskType != LoopTemplateDocGeneration || goal.Deliverable != "document" {
-		t.Fatalf("template goal defaults not applied: %#v", goal)
-	}
-	if goal.Budget.MaxActions != 2 || goal.Budget.MaxSteps != 4 {
-		t.Fatalf("template budget defaults not merged: %#v", goal.Budget)
-	}
-	if !containsString(goal.Rubric.RequiredArtifacts, "document artifact") {
-		t.Fatalf("template rubric not applied: %#v", goal.Rubric)
-	}
-}
-
 func TestDeepAgentEvaluationFiltersAndAggregatesByTemplate(t *testing.T) {
 	store := NewMemoryWorkflowStore()
 	now := time.Now().UTC()
@@ -3502,8 +3487,8 @@ func TestDeepAgentEvaluationFiltersAndAggregatesByTemplate(t *testing.T) {
 		templateID string
 		taskType   string
 	}{
-		{id: "run-code", templateID: LoopTemplateCodeFix, taskType: LoopTemplateCodeFix},
-		{id: "run-doc", templateID: LoopTemplateDocGeneration, taskType: LoopTemplateDocGeneration},
+		{id: "run-code", templateID: DeepAgentTemplateCodeFix, taskType: DeepAgentTemplateCodeFix},
+		{id: "run-doc", templateID: DeepAgentTemplateDocGeneration, taskType: DeepAgentTemplateDocGeneration},
 	} {
 		state := &DeepAgentState{
 			Goal:          item.id,
@@ -3530,7 +3515,7 @@ func TestDeepAgentEvaluationFiltersAndAggregatesByTemplate(t *testing.T) {
 	runtime.SetWorkflowStore(store)
 	engine := NewEvaluationEngine(RuntimeEvaluationTraceSource{Runtime: runtime})
 	report, err := engine.Evaluate(context.Background(), EvaluationRunRequest{
-		Scope: EvaluationScope{SubjectType: EvaluationSubjectDeepAgent, UserID: "alice", TemplateID: LoopTemplateCodeFix},
+		Scope: EvaluationScope{SubjectType: EvaluationSubjectDeepAgent, UserID: "alice", TemplateID: DeepAgentTemplateCodeFix},
 	})
 	if err != nil {
 		t.Fatalf("Evaluate() error = %v", err)
@@ -3538,10 +3523,10 @@ func TestDeepAgentEvaluationFiltersAndAggregatesByTemplate(t *testing.T) {
 	if report.Run.Total != 1 || report.Results[0].SubjectID != "run-code" {
 		t.Fatalf("unexpected template-filtered report: %#v", report)
 	}
-	if got := mapStringInt(report.Run.Metrics, "deep_agent_by_template")[LoopTemplateCodeFix]; got != 1 {
+	if got := mapStringInt(report.Run.Metrics, "deep_agent_by_template")[DeepAgentTemplateCodeFix]; got != 1 {
 		t.Fatalf("deep_agent_by_template metric = %d in %#v", got, report.Run.Metrics)
 	}
-	if got := deepAgentWorkflowString(report.Results[0].Metrics, "deep_agent_template_id"); got != LoopTemplateCodeFix {
+	if got := deepAgentWorkflowString(report.Results[0].Metrics, "deep_agent_template_id"); got != DeepAgentTemplateCodeFix {
 		t.Fatalf("result template metric = %q in %#v", got, report.Results[0].Metrics)
 	}
 }

@@ -27,7 +27,6 @@ func (req adminOpsQuotaRefundRequest) ValidateRequest() error {
 
 type createJobRequest struct {
 	SessionID        string              `json:"session_id" validate:"notblank"`
-	LoopGoalID       string              `json:"loop_goal_id,omitempty"`
 	Content          string              `json:"content"`
 	Type             string              `json:"type"`
 	AttachmentIDs    []string            `json:"attachment_ids"`
@@ -50,50 +49,6 @@ type chatMessageRequest struct {
 
 func (req chatMessageRequest) ValidateRequest() error {
 	return validatePromptPayload(req.Content, req.AttachmentIDs, req.AttachmentURLs)
-}
-
-type loopTriggerHTTPRequest struct {
-	SessionID      string              `json:"session_id" validate:"notblank"`
-	Objective      string              `json:"objective"`
-	TemplateID     string              `json:"template_id,omitempty"`
-	TaskType       string              `json:"task_type,omitempty"`
-	Deliverable    string              `json:"deliverable,omitempty"`
-	Rubric         LoopRubric          `json:"rubric,omitempty"`
-	Budget         LoopBudget          `json:"budget,omitempty"`
-	StopPolicy     LoopStopPolicy      `json:"stop_policy,omitempty"`
-	TriggerType    string              `json:"trigger_type,omitempty"`
-	Source         string              `json:"source,omitempty"`
-	DedupeKey      string              `json:"dedupe_key,omitempty"`
-	Payload        map[string]any      `json:"payload,omitempty"`
-	AttachmentIDs  []string            `json:"attachment_ids"`
-	AttachmentURLs []ChatAttachmentURL `json:"attachment_urls"`
-}
-
-func (req loopTriggerHTTPRequest) ValidateRequest() error {
-	return validatePromptPayload(req.Objective, req.AttachmentIDs, req.AttachmentURLs)
-}
-
-type loopGoalHTTPRequest struct {
-	SessionID   string         `json:"session_id" validate:"notblank"`
-	Objective   string         `json:"objective" validate:"notblank"`
-	TemplateID  string         `json:"template_id,omitempty"`
-	TaskType    string         `json:"task_type,omitempty"`
-	Deliverable string         `json:"deliverable,omitempty"`
-	Rubric      LoopRubric     `json:"rubric,omitempty"`
-	Budget      LoopBudget     `json:"budget,omitempty"`
-	Trigger     LoopTrigger    `json:"trigger,omitempty"`
-	StopPolicy  LoopStopPolicy `json:"stop_policy,omitempty"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
-}
-
-func (req loopGoalHTTPRequest) ValidateRequest() error {
-	if strings.TrimSpace(req.SessionID) == "" {
-		return fmt.Errorf("session ID is required")
-	}
-	if strings.TrimSpace(req.Objective) == "" {
-		return fmt.Errorf("objective is required")
-	}
-	return nil
 }
 
 func validatePromptPayload(content string, attachmentIDs []string, attachmentURLs []ChatAttachmentURL) error {

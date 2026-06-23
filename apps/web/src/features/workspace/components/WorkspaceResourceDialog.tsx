@@ -1,33 +1,23 @@
 import { ReactNode } from "react";
-import { Briefcase, FileUp, Image, Repeat2, Search, Sparkles, X } from "lucide-react";
+import { Briefcase, FileUp, Image, Search, Sparkles, X } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../../components/ui/dialog";
 import { Input } from "../../../components/ui/input";
-import type { Asset, DeepAgentLoopTemplate, DeepAgentResumeRequest, Job, JobEvent, LoopGoal, LoopGoalRunResult, Skill } from "../../../types";
+import type { Asset, Job, JobEvent, Skill } from "../../../types";
 import type { JobStreamStatus, RightPanelTab } from "../workspaceTypes";
 import { AssetPanel } from "./right-panel/AssetPanel";
 import { JobPanel } from "./right-panel/JobPanel";
-import { LoopPanel } from "./right-panel/LoopPanel";
 import { SkillPanel } from "./right-panel/SkillPanel";
 
 type WorkspaceResourceDialogProps = {
   open: boolean;
   activeTab: RightPanelTab;
-  sessionId: string;
   searchValue: string;
   visibleCount: number;
   totalCount: number;
   skills: Skill[];
   recentSkillNames: string[];
   jobs: Job[];
-  loopTemplates: DeepAgentLoopTemplate[];
-  loopGoals: LoopGoal[];
-  selectedLoopGoalId: string;
-  selectedLoopRun?: LoopGoalRunResult | null;
-  loopObjective: string;
-  selectedLoopTemplateId: string;
-  loopBusy: string;
-  loopError: string;
   selectedJobId: string;
   jobEvents: JobEvent[];
   jobStreamNotice: string;
@@ -46,12 +36,6 @@ type WorkspaceResourceDialogProps = {
   onSkillDetails: (skill: Skill) => void;
   onToggleJob: (jobId: string) => void;
   onCancelJob: () => void;
-  onLoopObjectiveChange: (value: string) => void;
-  onLoopTemplateChange: (value: string) => void;
-  onCreateLoopGoal: () => void;
-  onSelectLoopGoal: (goalId: string) => void;
-  onStartLoopGoal: (goalId: string) => void;
-  onResumeLoopRun: (runId: string, request?: DeepAgentResumeRequest) => void;
   onPreviewAttachment: (asset: Asset) => void;
   onDownloadAttachment: (id: string) => void;
   onDeleteAttachment: (id: string) => void;
@@ -68,7 +52,6 @@ type WorkspaceResourceDialogProps = {
 const resourceTabs: Array<{ tab: RightPanelTab; label: string; icon: ReactNode }> = [
   { tab: "skills", label: "Skills", icon: <Sparkles size={17} /> },
   { tab: "jobs", label: "Jobs", icon: <Briefcase size={17} /> },
-  { tab: "loops", label: "Loops", icon: <Repeat2 size={17} /> },
   { tab: "attachments", label: "Attachments", icon: <FileUp size={17} /> },
   { tab: "artifacts", label: "Artifacts", icon: <Image size={17} /> }
 ];
@@ -76,21 +59,12 @@ const resourceTabs: Array<{ tab: RightPanelTab; label: string; icon: ReactNode }
 export function WorkspaceResourceDialog({
   open,
   activeTab,
-  sessionId,
   searchValue,
   visibleCount,
   totalCount,
   skills,
   recentSkillNames,
   jobs,
-  loopTemplates,
-  loopGoals,
-  selectedLoopGoalId,
-  selectedLoopRun,
-  loopObjective,
-  selectedLoopTemplateId,
-  loopBusy,
-  loopError,
   selectedJobId,
   jobEvents,
   jobStreamNotice,
@@ -109,12 +83,6 @@ export function WorkspaceResourceDialog({
   onSkillDetails,
   onToggleJob,
   onCancelJob,
-  onLoopObjectiveChange,
-  onLoopTemplateChange,
-  onCreateLoopGoal,
-  onSelectLoopGoal,
-  onStartLoopGoal,
-  onResumeLoopRun,
   onPreviewAttachment,
   onDownloadAttachment,
   onDeleteAttachment,
@@ -195,25 +163,6 @@ export function WorkspaceResourceDialog({
               onToggleJob={onToggleJob}
               onCancelJob={onCancelJob}
               formatTime={formatTime}
-            />
-          )}
-          {activeTab === "loops" && (
-            <LoopPanel
-              sessionId={sessionId}
-              templates={loopTemplates}
-              goals={loopGoals}
-              selectedGoalId={selectedLoopGoalId}
-              selectedRun={selectedLoopRun}
-              createObjective={loopObjective}
-              selectedTemplateId={selectedLoopTemplateId}
-              busy={loopBusy}
-              error={loopError}
-              onObjectiveChange={onLoopObjectiveChange}
-              onTemplateChange={onLoopTemplateChange}
-              onCreateGoal={onCreateLoopGoal}
-              onSelectGoal={onSelectLoopGoal}
-              onStartGoal={onStartLoopGoal}
-              onResumeRun={onResumeLoopRun}
             />
           )}
           {activeTab === "attachments" && (

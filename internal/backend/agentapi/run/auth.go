@@ -31,27 +31,6 @@ func parseOperationRateLimits(value string) map[string]agentruntime.OperationLim
 	return limits
 }
 
-func parseLoopWebhookSecrets(value string) map[string]string {
-	out := make(map[string]string)
-	for _, part := range strings.Split(value, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		source, secret, ok := strings.Cut(part, "=")
-		if !ok {
-			source, secret, ok = strings.Cut(part, ":")
-		}
-		source = strings.TrimSpace(source)
-		secret = strings.TrimSpace(secret)
-		if !ok || source == "" || secret == "" {
-			continue
-		}
-		out[source] = secret
-	}
-	return out
-}
-
 func parseOperationRateLimit(value string) (int, time.Duration, bool) {
 	limitPart, windowPart, ok := strings.Cut(strings.TrimSpace(value), "/")
 	if !ok {

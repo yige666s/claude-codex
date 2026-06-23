@@ -7,36 +7,36 @@ import (
 )
 
 const (
-	LoopTemplateResearchReport   = "research_report"
-	LoopTemplateCodeFix          = "code_fix"
-	LoopTemplateCIFailureFix     = "ci_failure_fix"
-	LoopTemplateDocGeneration    = "doc_generation"
-	LoopTemplateWebMonitor       = "web_monitor"
-	LoopTemplateMemoryRefinement = "memory_refinement"
+	DeepAgentTemplateResearchReport   = "research_report"
+	DeepAgentTemplateCodeFix          = "code_fix"
+	DeepAgentTemplateCIFailureFix     = "ci_failure_fix"
+	DeepAgentTemplateDocGeneration    = "doc_generation"
+	DeepAgentTemplateWebMonitor       = "web_monitor"
+	DeepAgentTemplateMemoryRefinement = "memory_refinement"
 )
 
-type DeepAgentLoopTemplate struct {
+type DeepAgentTaskTemplate struct {
 	ID            string               `json:"id"`
 	Name          string               `json:"name"`
 	Description   string               `json:"description,omitempty"`
 	TaskType      string               `json:"task_type,omitempty"`
 	Deliverable   string               `json:"deliverable,omitempty"`
-	Rubric        LoopRubric           `json:"rubric,omitempty"`
-	Budget        LoopBudget           `json:"budget,omitempty"`
+	Rubric        DeepAgentRubric      `json:"rubric,omitempty"`
+	Budget        DeepAgentPolicy      `json:"budget,omitempty"`
 	ExecutorHints []DeepAgentStepRoute `json:"executor_hints,omitempty"`
 	Steps         []DeepAgentStep      `json:"steps,omitempty"`
 	EvalTags      []string             `json:"eval_tags,omitempty"`
 }
 
-func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
-	return []DeepAgentLoopTemplate{
+func DefaultDeepAgentTaskTemplates() []DeepAgentTaskTemplate {
+	return []DeepAgentTaskTemplate{
 		{
-			ID:          LoopTemplateResearchReport,
+			ID:          DeepAgentTemplateResearchReport,
 			Name:        "Research report",
 			Description: "Research, source gathering, synthesis, artifact creation, and verification.",
-			TaskType:    LoopTemplateResearchReport,
+			TaskType:    DeepAgentTemplateResearchReport,
 			Deliverable: "research_report",
-			Rubric: LoopRubric{
+			Rubric: DeepAgentRubric{
 				AcceptanceCriteria: []string{
 					"sources are gathered before synthesis",
 					"final report states findings, caveats, and next steps",
@@ -47,7 +47,7 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 				RequiredArtifacts: []string{"research report"},
 				QualityBar:        "Evidence-backed, clearly structured, and explicit about uncertainty.",
 			},
-			Budget:        LoopBudget{MaxSteps: 5, MaxActions: 12, MaxDuration: 45 * time.Minute, MaxToolCalls: 12},
+			Budget:        DeepAgentPolicy{MaxSteps: 5, MaxActions: 12, MaxDuration: 45 * time.Minute},
 			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "gather", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "source_pack", allowedTools: webResearchAllowedTools(), searchScope: "web"}, {stepID: "synthesize", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "analysis"}, {stepID: "artifact", mode: DeepAgentToolModeModelArtifact, executor: deepAgentRouteExecutorArtifact, artifact: true, deliverable: "markdown_report"}, {stepID: "verify", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "verification"}}),
 			Steps: []DeepAgentStep{
 				researchGatherTemplateStep(),
@@ -58,17 +58,17 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 			EvalTags: []string{"research", "artifact", "source_quality"},
 		},
 		{
-			ID:          LoopTemplateCodeFix,
+			ID:          DeepAgentTemplateCodeFix,
 			Name:        "Code fix",
 			Description: "Reproduce, diagnose, patch, test, and summarize a code issue.",
-			TaskType:    LoopTemplateCodeFix,
+			TaskType:    DeepAgentTemplateCodeFix,
 			Deliverable: "code_change",
-			Rubric: LoopRubric{
+			Rubric: DeepAgentRubric{
 				AcceptanceCriteria: []string{"failure mode is identified before changes", "patch is scoped to the issue", "relevant tests or diagnostics pass"},
 				RequiredEvidence:   []string{"root cause", "changed files", "test output"},
 				QualityBar:         "Minimal, reversible, and verified against the reproduced behavior.",
 			},
-			Budget:        LoopBudget{MaxSteps: 5, MaxActions: 14, MaxDuration: 60 * time.Minute, MaxToolCalls: 16},
+			Budget:        DeepAgentPolicy{MaxSteps: 5, MaxActions: 14, MaxDuration: 60 * time.Minute},
 			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "reproduce", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "failure_evidence"}, {stepID: "diagnose", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "root_cause"}, {stepID: "patch", mode: DeepAgentToolModeCodePatch, executor: deepAgentRouteExecutorCodePatch, deliverable: "code_patch"}, {stepID: "test", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "verification"}}),
 			Steps: []DeepAgentStep{
 				templateStep("reproduce", "复现或确认问题", "Run the narrowest available reproduction, diagnostic, or failing test.", nil, "已确认故障表现或当前诊断入口", DeepAgentToolModeTest),
@@ -79,17 +79,17 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 			EvalTags: []string{"code", "regression", "verification"},
 		},
 		{
-			ID:          LoopTemplateCIFailureFix,
+			ID:          DeepAgentTemplateCIFailureFix,
 			Name:        "CI failure fix",
 			Description: "Read CI logs, isolate failure, repair, and rerun relevant checks.",
-			TaskType:    LoopTemplateCIFailureFix,
+			TaskType:    DeepAgentTemplateCIFailureFix,
 			Deliverable: "ci_fix",
-			Rubric: LoopRubric{
+			Rubric: DeepAgentRubric{
 				AcceptanceCriteria: []string{"CI failure excerpt is captured", "fix targets the failing check", "rerun command or local equivalent passes"},
 				RequiredEvidence:   []string{"CI log excerpt", "failing check name", "rerun result"},
 				QualityBar:         "Fix the failing check without broad unrelated refactors.",
 			},
-			Budget:        LoopBudget{MaxSteps: 4, MaxActions: 12, MaxDuration: 45 * time.Minute, MaxToolCalls: 14},
+			Budget:        DeepAgentPolicy{MaxSteps: 4, MaxActions: 12, MaxDuration: 45 * time.Minute},
 			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "logs", mode: DeepAgentToolModeRAGSearch, executor: deepAgentRouteExecutorRAG, deliverable: "ci_logs"}, {stepID: "fix", mode: DeepAgentToolModeCodePatch, executor: deepAgentRouteExecutorCodePatch, deliverable: "code_patch"}, {stepID: "rerun", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "verification"}}),
 			Steps: []DeepAgentStep{
 				templateStep("logs", "读取失败日志", "Collect the failing check, error excerpt, and relevant environment details.", nil, "已提取失败日志和失败目标", DeepAgentToolModeRAGSearch),
@@ -99,18 +99,18 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 			EvalTags: []string{"ci", "test", "regression"},
 		},
 		{
-			ID:          LoopTemplateDocGeneration,
+			ID:          DeepAgentTemplateDocGeneration,
 			Name:        "Document generation",
 			Description: "Collect context, generate an artifact, and check formatting.",
-			TaskType:    LoopTemplateDocGeneration,
+			TaskType:    DeepAgentTemplateDocGeneration,
 			Deliverable: "document",
-			Rubric: LoopRubric{
+			Rubric: DeepAgentRubric{
 				AcceptanceCriteria: []string{"source context is reflected", "artifact follows requested structure", "format checks are completed"},
 				RequiredEvidence:   []string{"source context summary", "artifact reference", "format check"},
 				RequiredArtifacts:  []string{"document artifact"},
 				QualityBar:         "Readable, structured, and faithful to the supplied context.",
 			},
-			Budget:        LoopBudget{MaxSteps: 4, MaxActions: 10, MaxDuration: 40 * time.Minute, MaxToolCalls: 10},
+			Budget:        DeepAgentPolicy{MaxSteps: 4, MaxActions: 10, MaxDuration: 40 * time.Minute},
 			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "context", mode: DeepAgentToolModeRAGSearch, executor: deepAgentRouteExecutorRAG, deliverable: "context_pack"}, {stepID: "draft", mode: DeepAgentToolModeModelArtifact, executor: deepAgentRouteExecutorArtifact, artifact: true, deliverable: "document"}, {stepID: "format", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "format_check"}}),
 			Steps: []DeepAgentStep{
 				templateStep("context", "收集文档上下文", "Collect relevant source material, constraints, and existing structure.", nil, "上下文和格式约束已明确", DeepAgentToolModeRAGSearch),
@@ -120,17 +120,17 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 			EvalTags: []string{"document", "artifact", "format"},
 		},
 		{
-			ID:          LoopTemplateWebMonitor,
+			ID:          DeepAgentTemplateWebMonitor,
 			Name:        "Web monitor",
 			Description: "Observe a web target on schedule, judge changes, and summarize or alert.",
-			TaskType:    LoopTemplateWebMonitor,
+			TaskType:    DeepAgentTemplateWebMonitor,
 			Deliverable: "monitor_summary",
-			Rubric: LoopRubric{
+			Rubric: DeepAgentRubric{
 				AcceptanceCriteria: []string{"target is observed with timestamp", "change decision is explicit", "summary or alert explains impact"},
 				RequiredEvidence:   []string{"observed target", "change signal", "summary or alert"},
 				QualityBar:         "Concise, timestamped, and actionable.",
 			},
-			Budget:        LoopBudget{MaxSteps: 3, MaxActions: 8, MaxDuration: 20 * time.Minute, MaxToolCalls: 8},
+			Budget:        DeepAgentPolicy{MaxSteps: 3, MaxActions: 8, MaxDuration: 20 * time.Minute},
 			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "observe", mode: DeepAgentToolModeWeb, executor: deepAgentRouteExecutorWeb, deliverable: "observation"}, {stepID: "judge", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "change_decision"}, {stepID: "summarize", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "monitor_summary"}}),
 			Steps: []DeepAgentStep{
 				templateStep("observe", "观察目标页面或数据源", "Fetch or inspect the configured web target and capture current state.", nil, "已记录观察结果和时间", DeepAgentToolModeWeb),
@@ -140,17 +140,17 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 			EvalTags: []string{"monitor", "web", "change_detection"},
 		},
 		{
-			ID:          LoopTemplateMemoryRefinement,
+			ID:          DeepAgentTemplateMemoryRefinement,
 			Name:        "Memory refinement",
 			Description: "Extract learnings from a session, classify them, and stage for confirmation.",
-			TaskType:    LoopTemplateMemoryRefinement,
+			TaskType:    DeepAgentTemplateMemoryRefinement,
 			Deliverable: "memory_candidates",
-			Rubric: LoopRubric{
+			Rubric: DeepAgentRubric{
 				AcceptanceCriteria: []string{"candidate learnings are extracted from evidence", "classification is explicit", "write is staged for confirmation when needed"},
 				RequiredEvidence:   []string{"source session evidence", "classified candidates", "confirmation status"},
 				QualityBar:         "Specific, non-duplicative, and privacy-aware.",
 			},
-			Budget:        LoopBudget{MaxSteps: 3, MaxActions: 8, MaxDuration: 25 * time.Minute, MaxToolCalls: 8},
+			Budget:        DeepAgentPolicy{MaxSteps: 3, MaxActions: 8, MaxDuration: 25 * time.Minute},
 			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "extract", mode: DeepAgentToolModeRAGSearch, executor: deepAgentRouteExecutorRAG, deliverable: "learning_candidates"}, {stepID: "classify", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "classification"}, {stepID: "stage", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "confirmation_queue"}}),
 			Steps: []DeepAgentStep{
 				templateStep("extract", "提取会话 learning 候选", "Extract candidate learnings from supplied session or workflow evidence.", nil, "已提取候选 learning 和来源", DeepAgentToolModeRAGSearch),
@@ -162,18 +162,18 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 	}
 }
 
-func DeepAgentLoopTemplateByID(id string) (DeepAgentLoopTemplate, bool) {
-	id = normalizeLoopTemplateID(id)
-	for _, tmpl := range DefaultDeepAgentLoopTemplates() {
+func DeepAgentTaskTemplateByID(id string) (DeepAgentTaskTemplate, bool) {
+	id = normalizeDeepAgentTemplateID(id)
+	for _, tmpl := range DefaultDeepAgentTaskTemplates() {
 		if tmpl.ID == id {
-			return cloneDeepAgentLoopTemplate(tmpl), true
+			return cloneDeepAgentTaskTemplate(tmpl), true
 		}
 	}
-	return DeepAgentLoopTemplate{}, false
+	return DeepAgentTaskTemplate{}, false
 }
 
-func applyDeepAgentLoopTemplateToTaskRequest(req DeepAgentTaskRequest) DeepAgentTaskRequest {
-	tmpl, ok := selectDeepAgentLoopTemplate(req.Goal, req.State, req.LoopGoal)
+func applyDeepAgentTaskTemplateToTaskRequest(req DeepAgentTaskRequest) DeepAgentTaskRequest {
+	tmpl, ok := selectDeepAgentTaskTemplate(req.Goal, req.State)
 	if !ok {
 		return req
 	}
@@ -186,58 +186,15 @@ func applyDeepAgentLoopTemplateToTaskRequest(req DeepAgentTaskRequest) DeepAgent
 	req.State["task_type"] = firstNonEmptyString(deepAgentWorkflowString(req.State, "task_type"), tmpl.TaskType)
 	req.State["deliverable"] = firstNonEmptyString(deepAgentWorkflowString(req.State, "deliverable"), tmpl.Deliverable)
 	req.State["template_eval_tags"] = append([]string(nil), tmpl.EvalTags...)
-	req.Rubric = mergeDeepAgentRubric(loopRubricToDeepAgentRubric(tmpl.Rubric), req.Rubric)
+	req.Rubric = mergeDeepAgentRubric(tmpl.Rubric, req.Rubric)
 	req.Policy = mergeTemplatePolicy(tmpl.Budget, req.Policy)
 	if len(req.Plan.Steps) == 0 && len(tmpl.Steps) > 0 {
 		req.Plan = deepAgentPlanFromTemplate(tmpl, req.Goal)
 	}
-	if req.LoopGoal != nil {
-		req.LoopGoal = applyLoopTemplateToGoal(req.LoopGoal)
-	}
 	return req
 }
 
-func applyLoopTemplateToGoal(goal *LoopGoal) *LoopGoal {
-	if goal == nil {
-		return nil
-	}
-	out := cloneLoopGoal(goal)
-	tmpl, ok := selectLoopTemplateForGoal(out)
-	if !ok {
-		return out
-	}
-	if out.Metadata == nil {
-		out.Metadata = map[string]any{}
-	}
-	out.Metadata["template_id"] = tmpl.ID
-	out.Metadata["deep_agent_template"] = tmpl
-	out.Metadata["template_eval_tags"] = append([]string(nil), tmpl.EvalTags...)
-	out.TaskType = firstNonEmptyString(out.TaskType, tmpl.TaskType)
-	out.Deliverable = firstNonEmptyString(out.Deliverable, tmpl.Deliverable)
-	out.Rubric = mergeLoopRubric(tmpl.Rubric, out.Rubric)
-	out.Budget = mergeLoopBudget(tmpl.Budget, out.Budget)
-	return out
-}
-
-func applyLoopTemplateToTriggerRequest(req LoopTriggerRequest) LoopTriggerRequest {
-	tmpl, ok := selectLoopTemplateByInputs(req.TemplateID, req.TaskType, req.Objective, req.Payload)
-	if !ok {
-		return req
-	}
-	req.TemplateID = tmpl.ID
-	req.TaskType = firstNonEmptyString(req.TaskType, tmpl.TaskType)
-	req.Deliverable = firstNonEmptyString(req.Deliverable, tmpl.Deliverable)
-	req.Rubric = mergeLoopRubric(tmpl.Rubric, req.Rubric)
-	req.Budget = mergeLoopBudget(tmpl.Budget, req.Budget)
-	if req.Payload == nil {
-		req.Payload = map[string]any{}
-	}
-	req.Payload["template_id"] = tmpl.ID
-	req.Payload["template_eval_tags"] = append([]string(nil), tmpl.EvalTags...)
-	return req
-}
-
-func deepAgentPlanFromTemplate(tmpl DeepAgentLoopTemplate, goal string) DeepAgentPlan {
+func deepAgentPlanFromTemplate(tmpl DeepAgentTaskTemplate, goal string) DeepAgentPlan {
 	steps := make([]DeepAgentStep, 0, len(tmpl.Steps))
 	for _, step := range tmpl.Steps {
 		copied := step
@@ -259,39 +216,15 @@ func deepAgentPlanFromTemplate(tmpl DeepAgentLoopTemplate, goal string) DeepAgen
 	return normalizeDeepAgentPlan(goal, DeepAgentPlan{Goal: goal, Steps: steps})
 }
 
-func selectDeepAgentLoopTemplate(goal string, state map[string]any, loopGoal *LoopGoal) (DeepAgentLoopTemplate, bool) {
+func selectDeepAgentTaskTemplate(goal string, state map[string]any) (DeepAgentTaskTemplate, bool) {
 	if id := deepAgentWorkflowString(state, "template_id"); id != "" {
-		return DeepAgentLoopTemplateByID(id)
-	}
-	if loopGoal != nil {
-		if tmpl, ok := selectLoopTemplateForGoal(loopGoal); ok {
-			return tmpl, true
-		}
+		return DeepAgentTaskTemplateByID(id)
 	}
 	_ = goal
-	return DeepAgentLoopTemplate{}, false
+	return DeepAgentTaskTemplate{}, false
 }
 
-func selectLoopTemplateForGoal(goal *LoopGoal) (DeepAgentLoopTemplate, bool) {
-	if goal == nil {
-		return DeepAgentLoopTemplate{}, false
-	}
-	return selectLoopTemplateByInputs(loopTemplateIDFromMetadata(goal.Metadata), goal.TaskType, goal.Objective, goal.Metadata)
-}
-
-func selectLoopTemplateByInputs(templateID, taskType, objective string, metadata map[string]any) (DeepAgentLoopTemplate, bool) {
-	if id := firstNonEmptyString(templateID, deepAgentWorkflowString(metadata, "template_id")); id != "" {
-		return DeepAgentLoopTemplateByID(id)
-	}
-	_, _, _ = taskType, objective, metadata
-	return DeepAgentLoopTemplate{}, false
-}
-
-func loopTemplateIDFromMetadata(metadata map[string]any) string {
-	return normalizeLoopTemplateID(deepAgentWorkflowString(metadata, "template_id"))
-}
-
-func normalizeLoopTemplateID(id string) string {
+func normalizeDeepAgentTemplateID(id string) string {
 	return strings.ToLower(strings.TrimSpace(id))
 }
 
@@ -303,7 +236,7 @@ func templateStep(id, title, intent string, dependsOn []string, done, tool strin
 		Executor:        routeExecutorForTool(tool),
 		DeliverableType: id,
 		SuccessCriteria: []string{done},
-		Reason:          "loop template default route",
+		Reason:          "deep-agent template default route",
 		Confidence:      "medium",
 	}
 	return DeepAgentStep{
@@ -375,7 +308,7 @@ func templateRoutes(specs []templateRouteSpec) []DeepAgentStepRoute {
 			AllowedTools:     firstNonEmptyStringSlice(spec.allowedTools, allowedToolsForTemplateMode(spec.mode)),
 			SearchScope:      spec.searchScope,
 			SuccessCriteria:  []string{fmt.Sprintf("complete %s step", spec.stepID)},
-			Reason:           "loop template executor hint",
+			Reason:           "deep-agent template executor hint",
 			Confidence:       "medium",
 		})
 	}
@@ -431,16 +364,6 @@ func allowedToolsForTemplateMode(mode string) []string {
 	}
 }
 
-func mergeLoopRubric(defaults, explicit LoopRubric) LoopRubric {
-	return LoopRubric{
-		AcceptanceCriteria: appendUniqueStrings(defaults.AcceptanceCriteria, explicit.AcceptanceCriteria),
-		RequiredEvidence:   appendUniqueStrings(defaults.RequiredEvidence, explicit.RequiredEvidence),
-		RequiredArtifacts:  appendUniqueStrings(defaults.RequiredArtifacts, explicit.RequiredArtifacts),
-		ForbiddenActions:   appendUniqueStrings(defaults.ForbiddenActions, explicit.ForbiddenActions),
-		QualityBar:         firstNonEmptyString(explicit.QualityBar, defaults.QualityBar),
-	}
-}
-
 func mergeDeepAgentRubric(defaults, explicit DeepAgentRubric) DeepAgentRubric {
 	return DeepAgentRubric{
 		AcceptanceCriteria: appendUniqueStrings(defaults.AcceptanceCriteria, explicit.AcceptanceCriteria),
@@ -451,41 +374,27 @@ func mergeDeepAgentRubric(defaults, explicit DeepAgentRubric) DeepAgentRubric {
 	}
 }
 
-func loopRubricToDeepAgentRubric(rubric LoopRubric) DeepAgentRubric {
+func normalizeDeepAgentRubric(rubric DeepAgentRubric) DeepAgentRubric {
 	return DeepAgentRubric{
-		AcceptanceCriteria: append([]string(nil), rubric.AcceptanceCriteria...),
-		RequiredEvidence:   append([]string(nil), rubric.RequiredEvidence...),
-		RequiredArtifacts:  append([]string(nil), rubric.RequiredArtifacts...),
-		ForbiddenActions:   append([]string(nil), rubric.ForbiddenActions...),
-		QualityBar:         rubric.QualityBar,
+		AcceptanceCriteria: appendUniqueStrings(nil, rubric.AcceptanceCriteria),
+		RequiredEvidence:   appendUniqueStrings(nil, rubric.RequiredEvidence),
+		RequiredArtifacts:  appendUniqueStrings(nil, rubric.RequiredArtifacts),
+		ForbiddenActions:   appendUniqueStrings(nil, rubric.ForbiddenActions),
+		QualityBar:         strings.TrimSpace(rubric.QualityBar),
 	}
 }
 
-func mergeLoopBudget(defaults, explicit LoopBudget) LoopBudget {
-	out := defaults
-	if explicit.MaxSteps > 0 {
-		out.MaxSteps = explicit.MaxSteps
-	}
-	if explicit.MaxActions > 0 {
-		out.MaxActions = explicit.MaxActions
-	}
-	if explicit.MaxDuration > 0 {
-		out.MaxDuration = explicit.MaxDuration
-	}
-	if explicit.MaxTokens > 0 {
-		out.MaxTokens = explicit.MaxTokens
-	}
-	if explicit.MaxCostCents > 0 {
-		out.MaxCostCents = explicit.MaxCostCents
-	}
-	if explicit.MaxToolCalls > 0 {
-		out.MaxToolCalls = explicit.MaxToolCalls
-	}
-	return out
+func deepAgentRubricEmpty(rubric DeepAgentRubric) bool {
+	rubric = normalizeDeepAgentRubric(rubric)
+	return len(rubric.AcceptanceCriteria) == 0 &&
+		len(rubric.RequiredEvidence) == 0 &&
+		len(rubric.RequiredArtifacts) == 0 &&
+		len(rubric.ForbiddenActions) == 0 &&
+		rubric.QualityBar == ""
 }
 
-func mergeTemplatePolicy(defaults LoopBudget, explicit DeepAgentPolicy) DeepAgentPolicy {
-	policy := deepAgentPolicyFromLoopBudget(defaults, DeepAgentPolicy{})
+func mergeTemplatePolicy(defaults DeepAgentPolicy, explicit DeepAgentPolicy) DeepAgentPolicy {
+	policy := defaults
 	if explicit.MaxSteps > 0 {
 		policy.MaxSteps = explicit.MaxSteps
 	}
@@ -524,8 +433,8 @@ func appendUniqueStrings(defaults, explicit []string) []string {
 	return out
 }
 
-func cloneDeepAgentLoopTemplate(tmpl DeepAgentLoopTemplate) DeepAgentLoopTemplate {
-	tmpl.Rubric = mergeLoopRubric(LoopRubric{}, tmpl.Rubric)
+func cloneDeepAgentTaskTemplate(tmpl DeepAgentTaskTemplate) DeepAgentTaskTemplate {
+	tmpl.Rubric = mergeDeepAgentRubric(DeepAgentRubric{}, tmpl.Rubric)
 	tmpl.ExecutorHints = append([]DeepAgentStepRoute(nil), tmpl.ExecutorHints...)
 	tmpl.EvalTags = append([]string(nil), tmpl.EvalTags...)
 	steps := make([]DeepAgentStep, 0, len(tmpl.Steps))

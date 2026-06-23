@@ -30,7 +30,6 @@ const (
 	RiskOperationAssetDownload    = "asset_download"
 	RiskOperationMemoryExtract    = "memory_extract"
 	RiskOperationDeepAgentAction  = "deep_agent_action"
-	RiskOperationLoopWebhook      = "loop_webhook"
 	RiskOperationDataExport       = "data_export"
 	RiskOperationAccountDelete    = "account_delete"
 	RiskOperationAdminAction      = "admin_action"
@@ -79,7 +78,6 @@ func DefaultOperationLimits() map[string]OperationLimit {
 		RiskOperationAttachmentUpload: {Limit: 30, Window: time.Minute},
 		RiskOperationAssetDownload:    {Limit: 120, Window: time.Minute},
 		RiskOperationMemoryExtract:    {Limit: 30, Window: time.Hour},
-		RiskOperationLoopWebhook:      {Limit: 120, Window: time.Minute},
 		RiskOperationDataExport:       {Limit: 5, Window: time.Hour},
 		RiskOperationAccountDelete:    {Limit: 3, Window: time.Hour},
 		RiskOperationAdminAction:      {Limit: 120, Window: time.Minute},

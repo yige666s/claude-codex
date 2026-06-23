@@ -68,16 +68,16 @@ type EvalRepairTriggerPolicy struct {
 
 func DefaultDeepAgentTemplateGoldenSets() []GoldenSet {
 	out := []GoldenSet{}
-	for _, tmpl := range DefaultDeepAgentLoopTemplates() {
+	for _, tmpl := range DefaultDeepAgentTaskTemplates() {
 		switch tmpl.ID {
-		case LoopTemplateResearchReport, LoopTemplateCodeFix, LoopTemplateDocGeneration:
+		case DeepAgentTemplateResearchReport, DeepAgentTemplateCodeFix, DeepAgentTemplateDocGeneration:
 			out = append(out, deepAgentTemplateGoldenSet(tmpl))
 		}
 	}
 	return out
 }
 
-func deepAgentTemplateGoldenSet(tmpl DeepAgentLoopTemplate) GoldenSet {
+func deepAgentTemplateGoldenSet(tmpl DeepAgentTaskTemplate) GoldenSet {
 	cases := []GoldenCase{
 		deepAgentTemplateGoldenCase(tmpl, "happy", "succeeded", "", 4, 180000, 2200, 0.018),
 		deepAgentTemplateGoldenCase(tmpl, "blocked", "blocked", deepAgentTemplateBlockedReason(tmpl), 2, 90000, 1200, 0.009),
@@ -98,7 +98,7 @@ func deepAgentTemplateGoldenSet(tmpl DeepAgentLoopTemplate) GoldenSet {
 	})
 }
 
-func deepAgentTemplateGoldenCase(tmpl DeepAgentLoopTemplate, scenario, expectedStatus, verifierReason string, actionCount int, durationMS int64, tokens int, cost float64) GoldenCase {
+func deepAgentTemplateGoldenCase(tmpl DeepAgentTaskTemplate, scenario, expectedStatus, verifierReason string, actionCount int, durationMS int64, tokens int, cost float64) GoldenCase {
 	expected := deepAgentTemplateExpectedAnswer(tmpl, scenario, expectedStatus, verifierReason)
 	query := fmt.Sprintf("Replay expectation: %s", expected)
 	facts := []string{tmpl.ID, scenario, expectedStatus}
@@ -135,7 +135,7 @@ func deepAgentTemplateGoldenCase(tmpl DeepAgentLoopTemplate, scenario, expectedS
 	})
 }
 
-func deepAgentTemplateExpectedAnswer(tmpl DeepAgentLoopTemplate, scenario, status, reason string) string {
+func deepAgentTemplateExpectedAnswer(tmpl DeepAgentTaskTemplate, scenario, status, reason string) string {
 	switch scenario {
 	case "blocked":
 		return fmt.Sprintf("%s replay blocked with status %s because %s for template %s", tmpl.ID, status, reason, tmpl.ID)
@@ -146,26 +146,26 @@ func deepAgentTemplateExpectedAnswer(tmpl DeepAgentLoopTemplate, scenario, statu
 	}
 }
 
-func deepAgentTemplateBlockedReason(tmpl DeepAgentLoopTemplate) string {
+func deepAgentTemplateBlockedReason(tmpl DeepAgentTaskTemplate) string {
 	switch tmpl.ID {
-	case LoopTemplateResearchReport:
+	case DeepAgentTemplateResearchReport:
 		return "missing_source_permission"
-	case LoopTemplateCodeFix:
+	case DeepAgentTemplateCodeFix:
 		return "missing_reproduction_context"
-	case LoopTemplateDocGeneration:
+	case DeepAgentTemplateDocGeneration:
 		return "missing_required_source_document"
 	default:
 		return "blocked_by_required_context"
 	}
 }
 
-func deepAgentTemplateVerifierFailureReason(tmpl DeepAgentLoopTemplate) string {
+func deepAgentTemplateVerifierFailureReason(tmpl DeepAgentTaskTemplate) string {
 	switch tmpl.ID {
-	case LoopTemplateResearchReport:
+	case DeepAgentTemplateResearchReport:
 		return "source_coverage_incomplete"
-	case LoopTemplateCodeFix:
+	case DeepAgentTemplateCodeFix:
 		return "verification_test_failed"
-	case LoopTemplateDocGeneration:
+	case DeepAgentTemplateDocGeneration:
 		return "artifact_format_check_failed"
 	default:
 		return "verifier_check_failed"
@@ -257,7 +257,7 @@ func (s *Server) RunDeepAgentTemplateReplay(ctx context.Context, req DeepAgentTe
 func normalizeTemplateReplayIDs(values []string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
-		if id := normalizeLoopTemplateID(value); id != "" {
+		if id := normalizeDeepAgentTemplateID(value); id != "" {
 			out = appendUniqueStrings(out, []string{id})
 		}
 	}

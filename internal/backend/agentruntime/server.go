@@ -24,42 +24,38 @@ import (
 	skillpkg "claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 )
 
 const defaultRateLimitWindow = time.Minute
 
 type Server struct {
-	runtime            *Runtime
-	router             http.Handler
-	auth               Authenticator
-	authService        *AuthService
-	limiter            RateLimitPolicy
-	logger             *slog.Logger
-	upgrader           websocket.Upgrader
-	security           WebSecurityConfig
-	llmStatus          func() LLMGovernanceStatus
-	llmUsage           LLMUsageAdminStore
-	llmConfig          *LLMGovernanceConfigManager
-	metrics            *MetricsRegistry
-	audit              AuditLogger
-	risk               RiskStore
-	riskScanner        RiskScanner
-	evaluation         EvaluationStore
-	evaluationJudge    GoldenJudge
-	promptStore        PromptStore
-	instrumentHTTP     func(http.Handler) http.Handler
-	operationLimiter   *OperationRateLimiter
-	adminToken         string
-	skillRegistry      SkillRegistryAdminStore
-	loopWebhookSecrets map[string]string
-	loopAutomationMu   sync.RWMutex
-	loopAutomation     LoopTriggerAutomationStatus
-	readyMu            sync.RWMutex
-	readyChecks        map[string]readinessCheck
-	shutdownOnce       sync.Once
-	shutdownCh         chan struct{}
+	runtime          *Runtime
+	router           http.Handler
+	auth             Authenticator
+	authService      *AuthService
+	limiter          RateLimitPolicy
+	logger           *slog.Logger
+	upgrader         websocket.Upgrader
+	security         WebSecurityConfig
+	llmStatus        func() LLMGovernanceStatus
+	llmUsage         LLMUsageAdminStore
+	llmConfig        *LLMGovernanceConfigManager
+	metrics          *MetricsRegistry
+	audit            AuditLogger
+	risk             RiskStore
+	riskScanner      RiskScanner
+	evaluation       EvaluationStore
+	evaluationJudge  GoldenJudge
+	promptStore      PromptStore
+	instrumentHTTP   func(http.Handler) http.Handler
+	operationLimiter *OperationRateLimiter
+	adminToken       string
+	skillRegistry    SkillRegistryAdminStore
+	readyMu          sync.RWMutex
+	readyChecks      map[string]readinessCheck
+	shutdownOnce     sync.Once
+	shutdownCh       chan struct{}
 }
 
 func NewServer(runtime *Runtime, auth Authenticator, limiter RateLimitPolicy, logger *log.Logger) *Server {
@@ -149,13 +145,6 @@ func (s *Server) SetWebSecurity(config WebSecurityConfig) error {
 
 func (s *Server) SetAuthService(authService *AuthService) {
 	s.authService = authService
-}
-
-func (s *Server) SetLoopWebhookSecrets(secrets map[string]string) {
-	if s == nil {
-		return
-	}
-	s.loopWebhookSecrets = normalizeLoopWebhookSecrets(secrets)
 }
 
 func (s *Server) SetLLMStatusProvider(provider func() LLMGovernanceStatus) {
@@ -870,24 +859,13 @@ func (s *Server) handleAdminOpsHealth(w http.ResponseWriter, r *http.Request) {
 	if s.llmConfig != nil {
 		llmStatus.Config = s.llmConfig.StatusMap()
 	}
-	ledgerStats := LoopTriggerLedgerStats{}
-	if s.runtime != nil {
-		stats, err := s.runtime.LoopTriggerLedgerStats(r.Context(), time.Now().UTC().Add(-24*time.Hour))
-		if err != nil {
-			ledgerStats = LoopTriggerLedgerStats{GeneratedAt: time.Now().UTC(), LastError: err.Error()}
-		} else {
-			ledgerStats = stats
-		}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"readiness": map[string]any{
 			"status": readinessStatus,
 			"checks": readinessChecks,
 		},
-		"llm":             llmStatus,
-		"live":            s.metrics.LiveHealthSnapshot(),
-		"loop_automation": s.LoopTriggerAutomationStatus(),
-		"loop_triggers":   ledgerStats,
+		"llm":  llmStatus,
+		"live": s.metrics.LiveHealthSnapshot(),
 	})
 }
 
@@ -2187,7 +2165,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, user Us
 		SessionID: body.SessionID,
 		Content:   body.Content,
 	})
-	job, err := s.runtime.CreateJob(r.Context(), ChatRequest{UserID: user.ID, SessionID: body.SessionID, LoopGoalID: body.LoopGoalID, Content: body.Content, AttachmentIDs: body.AttachmentIDs, AttachmentURLs: body.AttachmentURLs, ConnectorContext: body.ConnectorContext}, body.Type)
+	job, err := s.runtime.CreateJob(r.Context(), ChatRequest{UserID: user.ID, SessionID: body.SessionID, Content: body.Content, AttachmentIDs: body.AttachmentIDs, AttachmentURLs: body.AttachmentURLs, ConnectorContext: body.ConnectorContext}, body.Type)
 	if err != nil {
 		writeJSONError(w, err)
 		return
@@ -2198,267 +2176,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request, user Us
 	}
 	s.auditEvent(r, "job_create", user, map[string]any{"session_id": job.SessionID, "job_id": job.ID, "job_type": job.Type})
 	writeJSON(w, http.StatusAccepted, job)
-}
-
-func (s *Server) handleCreateLoopTrigger(w http.ResponseWriter, r *http.Request, user User) {
-	var body loopTriggerHTTPRequest
-	if err := readJSON(r, &body); err != nil {
-		writeJSONError(w, err)
-		return
-	}
-	s.scanAndRecordRisk(r, RiskScanTarget{
-		Kind:      "loop_trigger",
-		UserID:    user.ID,
-		SessionID: body.SessionID,
-		Content:   body.Objective,
-	})
-	result, err := s.runtime.StartDeepAgentLoopTrigger(r.Context(), LoopTriggerRequest{
-		UserID:         user.ID,
-		SessionID:      body.SessionID,
-		Objective:      body.Objective,
-		TemplateID:     body.TemplateID,
-		TaskType:       body.TaskType,
-		Deliverable:    body.Deliverable,
-		Rubric:         body.Rubric,
-		Budget:         body.Budget,
-		StopPolicy:     body.StopPolicy,
-		TriggerType:    body.TriggerType,
-		Source:         body.Source,
-		DedupeKey:      body.DedupeKey,
-		Payload:        body.Payload,
-		AttachmentIDs:  body.AttachmentIDs,
-		AttachmentURLs: body.AttachmentURLs,
-	})
-	if err != nil {
-		writeJSONError(w, err)
-		return
-	}
-	s.auditEvent(r, "loop_trigger_create", user, map[string]any{
-		"session_id":   body.SessionID,
-		"job_id":       result.Job.ID,
-		"trigger_type": result.Trigger.Type,
-		"source":       result.Trigger.Source,
-		"dedupe_key":   result.Trigger.DedupeKey,
-		"duplicate":    result.Duplicate,
-	})
-	status := http.StatusAccepted
-	if result.Duplicate {
-		status = http.StatusOK
-	}
-	writeJSON(w, status, result)
-}
-
-func (s *Server) handleLoopWebhook(w http.ResponseWriter, r *http.Request) {
-	source := strings.TrimSpace(chi.URLParam(r, "source"))
-	if source == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "webhook source is required"})
-		return
-	}
-	secret, ok := s.loopWebhookSecret(source)
-	if !ok {
-		s.recordRiskEvent(r, RiskEvent{
-			IPAddress:  clientIP(r),
-			Operation:  RiskOperationLoopWebhook,
-			Reason:     "unconfigured_webhook_source",
-			RiskLevel:  RiskLevelHigh,
-			ScoreDelta: 20,
-			Metadata:   map[string]any{"source": source},
-		})
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "webhook source is not allowed"})
-		return
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read webhook body: " + err.Error()})
-		return
-	}
-	if !validLoopWebhookSignature(secret, body, r.Header) {
-		s.recordRiskEvent(r, RiskEvent{
-			IPAddress:  clientIP(r),
-			Operation:  RiskOperationLoopWebhook,
-			Reason:     "invalid_webhook_signature",
-			RiskLevel:  RiskLevelHigh,
-			ScoreDelta: 25,
-			Metadata:   map[string]any{"source": source},
-		})
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid webhook signature"})
-		return
-	}
-	var bodyReq struct {
-		UserID string `json:"user_id"`
-		loopTriggerHTTPRequest
-	}
-	if err := json.Unmarshal(body, &bodyReq); err != nil {
-		writeJSONError(w, err)
-		return
-	}
-	bodyReq.UserID = strings.TrimSpace(bodyReq.UserID)
-	if bodyReq.UserID == "" {
-		writeJSONError(w, fmt.Errorf("user_id is required"))
-		return
-	}
-	if err := bodyReq.ValidateRequest(); err != nil {
-		writeJSONError(w, err)
-		return
-	}
-	req := LoopTriggerRequest{
-		UserID:         bodyReq.UserID,
-		SessionID:      bodyReq.SessionID,
-		Objective:      bodyReq.Objective,
-		TaskType:       bodyReq.TaskType,
-		Deliverable:    bodyReq.Deliverable,
-		Rubric:         bodyReq.Rubric,
-		Budget:         bodyReq.Budget,
-		StopPolicy:     bodyReq.StopPolicy,
-		TriggerType:    LoopTriggerTypeWebhook,
-		Source:         source,
-		DedupeKey:      firstNonEmptyString(bodyReq.DedupeKey, r.Header.Get("X-GitHub-Delivery"), r.Header.Get("X-Webhook-Event-ID")),
-		Payload:        bodyReq.Payload,
-		AttachmentIDs:  bodyReq.AttachmentIDs,
-		AttachmentURLs: bodyReq.AttachmentURLs,
-	}
-	result, err := s.runtime.StartDeepAgentLoopTrigger(r.Context(), req)
-	if err != nil {
-		writeJSONError(w, err)
-		return
-	}
-	actor := User{ID: bodyReq.UserID}
-	s.auditEvent(r, "loop_trigger_create", actor, map[string]any{
-		"session_id":   bodyReq.SessionID,
-		"job_id":       result.Job.ID,
-		"trigger_type": result.Trigger.Type,
-		"source":       result.Trigger.Source,
-		"dedupe_key":   result.Trigger.DedupeKey,
-		"duplicate":    result.Duplicate,
-		"webhook":      true,
-	})
-	status := http.StatusAccepted
-	if result.Duplicate {
-		status = http.StatusOK
-	}
-	writeJSON(w, status, result)
-}
-
-func (s *Server) handleCreateLoopGoal(w http.ResponseWriter, r *http.Request, user User) {
-	var body loopGoalHTTPRequest
-	if err := readJSON(r, &body); err != nil {
-		writeJSONError(w, err)
-		return
-	}
-	metadata := cloneWorkflowMap(body.Metadata)
-	if metadata == nil {
-		metadata = map[string]any{}
-	}
-	if strings.TrimSpace(body.TemplateID) != "" {
-		metadata["template_id"] = strings.TrimSpace(body.TemplateID)
-	}
-	goal, err := s.runtime.CreateLoopGoal(r.Context(), &LoopGoal{
-		UserID:      user.ID,
-		SessionID:   body.SessionID,
-		Objective:   body.Objective,
-		TaskType:    body.TaskType,
-		Deliverable: body.Deliverable,
-		Rubric:      body.Rubric,
-		Budget:      body.Budget,
-		Trigger:     body.Trigger,
-		StopPolicy:  body.StopPolicy,
-		Status:      LoopGoalStatusPending,
-		Metadata:    metadata,
-	})
-	if err != nil {
-		writeJSONError(w, err)
-		return
-	}
-	s.auditEvent(r, "loop_goal_create", user, map[string]any{"session_id": goal.SessionID, "loop_goal_id": goal.ID, "trigger_type": goal.Trigger.Type})
-	writeJSON(w, http.StatusCreated, map[string]any{"goal": goal})
-}
-
-func (s *Server) handleListLoopTemplates(w http.ResponseWriter, r *http.Request, user User) {
-	templates := DefaultDeepAgentLoopTemplates()
-	s.auditEvent(r, "loop_templates_list", user, map[string]any{"count": len(templates)})
-	writeJSON(w, http.StatusOK, map[string]any{"templates": templates})
-}
-
-func (s *Server) handleListLoopGoals(w http.ResponseWriter, r *http.Request, user User) {
-	goals, err := s.runtime.ListLoopGoals(r.Context(), LoopGoalFilter{
-		UserID:    user.ID,
-		SessionID: r.URL.Query().Get("session_id"),
-		Status:    r.URL.Query().Get("status"),
-		Limit:     parseBoundedInt(r.URL.Query().Get("limit"), 100, 1, 300),
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"goals": goals})
-}
-
-func (s *Server) handleGetLoopGoal(w http.ResponseWriter, r *http.Request, user User, goalID string) {
-	goal, err := s.runtime.GetLoopGoal(r.Context(), user.ID, goalID)
-	if err != nil {
-		status := http.StatusInternalServerError
-		message := err.Error()
-		if errors.Is(err, sql.ErrNoRows) {
-			status = http.StatusNotFound
-			message = "loop goal not found"
-		}
-		writeJSON(w, status, map[string]string{"error": message})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"goal": goal})
-}
-
-func (s *Server) handleStartLoopGoalRun(w http.ResponseWriter, r *http.Request, user User, goalID string) {
-	result, err := s.runtime.StartLoopGoalRun(r.Context(), user.ID, goalID)
-	if err != nil {
-		status := http.StatusInternalServerError
-		message := err.Error()
-		if errors.Is(err, sql.ErrNoRows) {
-			status = http.StatusNotFound
-			message = "loop goal not found"
-		}
-		writeJSON(w, status, map[string]string{"error": message})
-		return
-	}
-	s.auditEvent(r, "loop_goal_run_start", user, map[string]any{"loop_goal_id": goalID, "job_id": result.Job.ID})
-	writeJSON(w, http.StatusAccepted, result)
-}
-
-func (s *Server) handleGetLoopRun(w http.ResponseWriter, r *http.Request, user User, runID string) {
-	result, err := s.runtime.GetLoopRun(r.Context(), user.ID, runID)
-	if err != nil {
-		status := http.StatusInternalServerError
-		message := err.Error()
-		if errors.Is(err, sql.ErrNoRows) {
-			status = http.StatusNotFound
-			message = "loop run not found"
-		}
-		writeJSON(w, status, map[string]string{"error": message})
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
-}
-
-func (s *Server) handleResumeLoopRun(w http.ResponseWriter, r *http.Request, user User, runID string) {
-	var req DeepAgentResumeRequest
-	if err := readOptionalJSON(r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	req.RunID = runID
-	result, err := s.runtime.ResumeLoopRunWithRequest(r.Context(), user.ID, req)
-	if err != nil {
-		status := http.StatusInternalServerError
-		message := err.Error()
-		if errors.Is(err, sql.ErrNoRows) {
-			status = http.StatusNotFound
-			message = "loop run not found"
-		}
-		writeJSON(w, status, map[string]string{"error": message})
-		return
-	}
-	s.auditEvent(r, "loop_run_resume", user, map[string]any{"workflow_run_id": runID})
-	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, user User) {
@@ -2568,6 +2285,7 @@ func (s *Server) streamJobEvents(w http.ResponseWriter, r *http.Request, user Us
 	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	lastKeepAlive := time.Now()
 	for {
 		select {
 		case <-r.Context().Done():
@@ -2584,6 +2302,12 @@ func (s *Server) streamJobEvents(w http.ResponseWriter, r *http.Request, user Us
 				return
 			}
 		case <-ticker.C:
+			if time.Since(lastKeepAlive) >= 10*time.Second {
+				if err := sink.KeepAlive(r.Context()); err != nil {
+					return
+				}
+				lastKeepAlive = time.Now()
+			}
 			job, err := s.runtime.GetJob(r.Context(), user.ID, jobID)
 			if err != nil {
 				_ = sink.Send(r.Context(), Event{Type: "error", JobID: jobID, Error: err.Error()})
@@ -3757,28 +3481,6 @@ func (s *Server) handleCancel(w http.ResponseWriter, _ *http.Request, user User,
 
 func (s *Server) startRoutedJob(r *http.Request, ctx context.Context, user User, req ChatRequest, decision JobRoutingDecision, sink EventSink) (*Job, error) {
 	req.UserID = user.ID
-	if strings.EqualFold(firstNonEmptyString(decision.JobType, JobTypeChat), JobTypeDeepAgent) {
-		result, err := s.runtime.StartDeepAgentLoopTrigger(ctx, LoopTriggerRequest{
-			UserID:         user.ID,
-			SessionID:      req.SessionID,
-			Objective:      req.Content,
-			TriggerType:    LoopTriggerTypeManual,
-			Source:         AgentModePlanExecute,
-			Payload:        map[string]any{"route_reason": decision.Reason, "agent_mode": req.AgentMode},
-			AttachmentIDs:  req.AttachmentIDs,
-			AttachmentURLs: req.AttachmentURLs,
-		})
-		if err != nil {
-			_ = sink.Send(ctx, Event{Type: "error", SessionID: req.SessionID, Error: err.Error()})
-			return nil, err
-		}
-		job := result.Job
-		s.logEvent("chat_routed_to_job", map[string]any{"user_id": user.ID, "session_id": req.SessionID, "job_id": job.ID, "job_type": job.Type, "reason": decision.Reason, "duplicate": result.Duplicate, "trigger_type": result.Trigger.Type, "request_id": requestIDFromContext(ctx)})
-		if r != nil {
-			s.auditEvent(r, "job_create", user, map[string]any{"session_id": req.SessionID, "job_id": job.ID, "job_type": job.Type, "route_reason": decision.Reason, "loop_trigger": result.Trigger, "duplicate": result.Duplicate})
-		}
-		return job, sink.Send(ctx, Event{Type: "job", SessionID: req.SessionID, JobID: job.ID, Job: job, JobReason: decision.Reason, Data: deepAgentEventData(map[string]any{"loop_trigger": result.Trigger, "duplicate": result.Duplicate})})
-	}
 	job, err := s.runtime.CreateJob(ctx, req, firstNonEmptyString(decision.JobType, JobTypeChat))
 	if err != nil {
 		_ = sink.Send(ctx, Event{Type: "error", SessionID: req.SessionID, Error: err.Error()})
@@ -3908,7 +3610,12 @@ func newSSEEventSink(w http.ResponseWriter) (*sseEventSink, error) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+		return nil, err
+	}
+	flusher.Flush()
 	return &sseEventSink{w: w, flusher: flusher}, nil
 }
 
@@ -3928,6 +3635,21 @@ func (s *sseEventSink) SendJobEvent(ctx context.Context, record *JobEvent) error
 		event.SessionID = record.SessionID
 	}
 	return s.send(ctx, record.ID, event)
+}
+
+func (s *sseEventSink) KeepAlive(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	s.encMu.Lock()
+	defer s.encMu.Unlock()
+	if _, err := fmt.Fprint(s.w, ": keepalive\n\n"); err != nil {
+		return err
+	}
+	s.flusher.Flush()
+	return nil
 }
 
 func (s *sseEventSink) send(ctx context.Context, id string, event Event) error {

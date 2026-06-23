@@ -926,7 +926,7 @@ func normalizeEvaluationScope(scope EvaluationScope) EvaluationScope {
 	scope.SessionID = strings.TrimSpace(scope.SessionID)
 	scope.JobID = strings.TrimSpace(scope.JobID)
 	scope.JobStatus = strings.TrimSpace(scope.JobStatus)
-	scope.TemplateID = normalizeLoopTemplateID(scope.TemplateID)
+	scope.TemplateID = normalizeDeepAgentTemplateID(scope.TemplateID)
 	scope.TaskType = strings.TrimSpace(scope.TaskType)
 	scope.SkillName = strings.TrimSpace(scope.SkillName)
 	scope.Provider = strings.TrimSpace(scope.Provider)

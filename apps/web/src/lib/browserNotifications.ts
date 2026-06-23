@@ -75,7 +75,7 @@ export function taskInboxNotificationKey(item: TaskInboxItem): string {
 }
 
 export function shouldNotifyTaskInboxItem(item: TaskInboxItem): boolean {
-  return ["job_completed", "job_failed", "review_required", "quota_blocked", "loop_triggered"].includes(item.notification_type || "");
+  return ["job_completed", "job_failed", "review_required", "quota_blocked"].includes(item.notification_type || "");
 }
 
 export function notifyTaskInboxItem(item: TaskInboxItem): void {
@@ -171,7 +171,6 @@ function taskInboxNotificationOptions(item: TaskInboxItem): NotificationOptions 
       kind: item.kind,
       session_id: item.session_id,
       job_id: item.job_id,
-      loop_goal_id: item.loop_goal_id,
       artifact_id: item.primary_artifact_id || item.artifact_id
     }
   };
@@ -185,8 +184,6 @@ function taskInboxNotificationTitle(item: TaskInboxItem): string {
       return "Task failed";
     case "quota_blocked":
       return "Task blocked";
-    case "loop_triggered":
-      return "Loop update";
     case "job_completed":
       return item.artifact_count > 0 ? "Artifact ready" : "Task completed";
     default:

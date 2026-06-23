@@ -423,10 +423,9 @@ func deepAgentEvidenceRecordsForRun(run *WorkflowRun, state *DeepAgentState, now
 	if run == nil || state == nil {
 		return nil
 	}
-	triggerType := firstNonEmptyString(deepAgentWorkflowString(state.WorkingMemory, "loop_trigger_type"), deepAgentTriggerTypeFromGoal(state))
+	triggerType := deepAgentWorkflowString(state.WorkingMemory, "trigger_type")
 	templateID := deepAgentTemplateID(state)
 	taskType := deepAgentTaskType(state)
-	loopGoalID := firstNonEmptyString(deepAgentWorkflowString(state.WorkingMemory, "loop_goal_id"), runLoopGoalID(state))
 	evidence := (StateDeepAgentEvidenceStore{}).ListStepEvidence(state)
 	out := make([]DeepAgentEvidenceRecord, 0, len(evidence))
 	for _, item := range evidence {
@@ -442,7 +441,7 @@ func deepAgentEvidenceRecordsForRun(run *WorkflowRun, state *DeepAgentState, now
 			UserID:          run.UserID,
 			SessionID:       run.SessionID,
 			JobID:           run.JobID,
-			LoopGoalID:      firstNonEmptyString(loopGoalID, run.JobID),
+			LoopGoalID:      run.JobID,
 			StepID:          stepID,
 			ActionID:        actionID,
 			TemplateID:      templateID,
@@ -470,19 +469,6 @@ func deepAgentEvidenceRecordID(runID, stepID, actionID, fallback string) string 
 	}
 	sum := sha256.Sum256([]byte(raw))
 	return "dae-" + hex.EncodeToString(sum[:16])
-}
-
-func runLoopGoalID(state *DeepAgentState) string {
-	if state == nil || state.WorkingMemory == nil {
-		return ""
-	}
-	if goal, ok := state.WorkingMemory["loop_goal"].(*LoopGoal); ok && goal != nil {
-		return goal.ID
-	}
-	if raw, ok := state.WorkingMemory["loop_goal"].(map[string]any); ok {
-		return deepAgentWorkflowString(raw, "id")
-	}
-	return ""
 }
 
 func deepAgentEvidenceWhere(filter DeepAgentEvidenceFilter) ([]string, []any) {
@@ -515,7 +501,7 @@ func normalizeDeepAgentEvidenceFilter(filter DeepAgentEvidenceFilter) DeepAgentE
 	filter.LoopGoalID = strings.TrimSpace(filter.LoopGoalID)
 	filter.StepID = strings.TrimSpace(filter.StepID)
 	filter.TaskType = strings.TrimSpace(filter.TaskType)
-	filter.TemplateID = normalizeLoopTemplateID(strings.TrimSpace(filter.TemplateID))
+	filter.TemplateID = normalizeDeepAgentTemplateID(strings.TrimSpace(filter.TemplateID))
 	if filter.Limit < 0 {
 		filter.Limit = 0
 	}

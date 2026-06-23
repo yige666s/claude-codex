@@ -419,10 +419,6 @@ func (s *Server) persistEvaluationRunReportContext(ctx context.Context, report E
 		Reviews: reviews,
 		Summary: summary,
 	}
-	repairReport := s.TriggerEvalRepairLoops(ctx, persisted)
-	if repairReport.Failed > 0 {
-		logFields(s.logger, map[string]any{"event": "eval_repair_loop_trigger_partial_failure", "eval_run_id": run.ID, "failed": repairReport.Failed, "triggered": repairReport.Triggered})
-	}
 	return persisted, nil
 }
 

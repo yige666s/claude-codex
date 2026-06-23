@@ -356,40 +356,6 @@ func buildJobStore(cfg storeConfig) agentruntime.JobStore {
 	return store
 }
 
-func buildLoopGoalStore(cfg storeConfig) agentruntime.LoopGoalStore {
-	var store agentruntime.LoopGoalStore
-	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
-		db := openSQLDB(cfg)
-		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
-		store = agentruntime.NewSQLLoopGoalStoreWithDialect(db, dialect)
-	} else {
-		store = agentruntime.NewMemoryLoopGoalStore()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := store.Init(ctx); err != nil {
-		logFatalf("init loop goal store: %v", err)
-	}
-	return store
-}
-
-func buildLoopTriggerStore(cfg storeConfig) agentruntime.LoopTriggerStore {
-	var store agentruntime.LoopTriggerStore
-	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
-		db := openSQLDB(cfg)
-		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
-		store = agentruntime.NewSQLLoopTriggerStoreWithDialect(db, dialect)
-	} else {
-		store = agentruntime.NewMemoryLoopTriggerStore()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := store.Init(ctx); err != nil {
-		logFatalf("init loop trigger store: %v", err)
-	}
-	return store
-}
-
 func buildAuditLogger(cfg storeConfig) agentruntime.AuditLogger {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

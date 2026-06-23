@@ -334,7 +334,7 @@ func TestAdminOpsTemplateReplayCorpusDashboardAndRoutes(t *testing.T) {
 	if corpusRec.Code != http.StatusOK {
 		t.Fatalf("corpus status = %d body=%s", corpusRec.Code, corpusRec.Body.String())
 	}
-	if body := corpusRec.Body.String(); !strings.Contains(body, LoopTemplateResearchReport) || !strings.Contains(body, LoopTemplateCodeFix) || !strings.Contains(body, LoopTemplateDocGeneration) {
+	if body := corpusRec.Body.String(); !strings.Contains(body, DeepAgentTemplateResearchReport) || !strings.Contains(body, DeepAgentTemplateCodeFix) || !strings.Contains(body, DeepAgentTemplateDocGeneration) {
 		t.Fatalf("corpus response missing template sets: %s", body)
 	}
 

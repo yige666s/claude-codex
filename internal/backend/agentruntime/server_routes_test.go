@@ -86,6 +86,37 @@ func TestServerRouteBehaviorSnapshot(t *testing.T) {
 	}
 }
 
+func TestSSEEventSinkKeepAliveUsesCommentFrames(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sink, err := newSSEEventSink(rec)
+	if err != nil {
+		t.Fatalf("create sse sink: %v", err)
+	}
+	if err := sink.KeepAlive(context.Background()); err != nil {
+		t.Fatalf("send keepalive: %v", err)
+	}
+	if err := sink.Send(context.Background(), Event{Type: "progress", Content: "hello"}); err != nil {
+		t.Fatalf("send event: %v", err)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, ": connected\n\n") {
+		t.Fatalf("missing connected comment frame: %q", body)
+	}
+	if !strings.Contains(body, ": keepalive\n\n") {
+		t.Fatalf("missing keepalive comment frame: %q", body)
+	}
+	if strings.Contains(body, "data: : keepalive") {
+		t.Fatalf("keepalive must not be sent as event data: %q", body)
+	}
+	if !strings.Contains(body, "event: progress\n") || !strings.Contains(body, "data: ") {
+		t.Fatalf("missing normal event frame: %q", body)
+	}
+	if got := rec.Header().Get("X-Accel-Buffering"); got != "no" {
+		t.Fatalf("X-Accel-Buffering = %q, want no", got)
+	}
+}
+
 func TestConnectorLifecycleRoutes(t *testing.T) {
 	runtime := testRuntime(t)
 	runtime.SetConnectorStore(NewMemoryConnectorStore())

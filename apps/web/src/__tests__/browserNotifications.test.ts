@@ -110,7 +110,6 @@ function taskInboxItem(patch: Partial<TaskInboxItem>): TaskInboxItem {
     title: "Task",
     session_id: "session-1",
     job_id: "job-1",
-    loop_goal_id: "",
     trigger: "",
     last_event: "done",
     last_event_at: "2026-06-22T01:00:00Z",

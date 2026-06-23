@@ -13,57 +13,44 @@ import (
 )
 
 type MetricsRegistry struct {
-	mu                                      sync.Mutex
-	registry                                *prometheus.Registry
-	requestsTotal                           prometheus.Counter
-	requestsByStatus                        *prometheus.CounterVec
-	requestsByRoute                         *prometheus.CounterVec
-	requestErrorsTotal                      prometheus.Counter
-	requestLatencyMSTotal                   prometheus.Counter
-	requestDurationSeconds                  *prometheus.HistogramVec
-	rateLimitedTotal                        prometheus.Counter
-	auditErrorsTotal                        prometheus.Counter
-	governanceEvents                        *prometheus.CounterVec
-	piiRedactions                           prometheus.Counter
-	personalizationUpdates                  prometheus.Counter
-	personalizationChanges                  prometheus.Counter
-	personalizationEnabled                  *prometheus.CounterVec
-	personalizationFields                   *prometheus.CounterVec
-	browserMemoryTotal                      prometheus.Counter
-	liveActiveSessionsMetric                prometheus.Gauge
-	liveSessionsTotalMetric                 prometheus.Counter
-	liveSucceededTotalMetric                prometheus.Counter
-	liveFailedTotalMetric                   prometheus.Counter
-	liveDisconnectedMetric                  prometheus.Counter
-	liveAudioChunksMetric                   prometheus.Counter
-	liveAudioBytesMetric                    prometheus.Counter
-	liveErrorsMetric                        *prometheus.CounterVec
-	loopAutomationEnabledMetric             prometheus.Gauge
-	loopAutomationRunningMetric             prometheus.Gauge
-	loopAutomationRunsMetric                prometheus.Counter
-	loopAutomationScannedMetric             prometheus.Counter
-	loopAutomationTriggeredMetric           *prometheus.CounterVec
-	loopAutomationSkippedMetric             prometheus.Counter
-	loopAutomationFailedMetric              prometheus.Counter
-	loopAutomationDedupeConflictMetric      prometheus.Counter
-	loopAutomationExpiredPrunedMetric       prometheus.Counter
-	loopAutomationConsecutiveFailuresMetric prometheus.Gauge
-	loopAutomationLastRunUnixMetric         prometheus.Gauge
-	loopAutomationNextDueUnixMetric         prometheus.Gauge
-	loopAutomationQuotaBlockedMetric        prometheus.Counter
-	liveActiveSessions                      int64
-	liveSessionsTotal                       int64
-	liveSuccessfulSessions                  int64
-	liveFailedSessions                      int64
-	liveDisconnectedSessions                int64
-	liveAudioChunksTotal                    int64
-	liveAudioBytesTotal                     int64
-	liveDurationTotalMS                     int64
-	liveFirstTranscriptTotalMS              int64
-	liveFirstTranscriptCount                int64
-	liveFirstAudioTotalMS                   int64
-	liveFirstAudioCount                     int64
-	liveErrorsByCode                        map[string]int64
+	mu                         sync.Mutex
+	registry                   *prometheus.Registry
+	requestsTotal              prometheus.Counter
+	requestsByStatus           *prometheus.CounterVec
+	requestsByRoute            *prometheus.CounterVec
+	requestErrorsTotal         prometheus.Counter
+	requestLatencyMSTotal      prometheus.Counter
+	requestDurationSeconds     *prometheus.HistogramVec
+	rateLimitedTotal           prometheus.Counter
+	auditErrorsTotal           prometheus.Counter
+	governanceEvents           *prometheus.CounterVec
+	piiRedactions              prometheus.Counter
+	personalizationUpdates     prometheus.Counter
+	personalizationChanges     prometheus.Counter
+	personalizationEnabled     *prometheus.CounterVec
+	personalizationFields      *prometheus.CounterVec
+	browserMemoryTotal         prometheus.Counter
+	liveActiveSessionsMetric   prometheus.Gauge
+	liveSessionsTotalMetric    prometheus.Counter
+	liveSucceededTotalMetric   prometheus.Counter
+	liveFailedTotalMetric      prometheus.Counter
+	liveDisconnectedMetric     prometheus.Counter
+	liveAudioChunksMetric      prometheus.Counter
+	liveAudioBytesMetric       prometheus.Counter
+	liveErrorsMetric           *prometheus.CounterVec
+	liveActiveSessions         int64
+	liveSessionsTotal          int64
+	liveSuccessfulSessions     int64
+	liveFailedSessions         int64
+	liveDisconnectedSessions   int64
+	liveAudioChunksTotal       int64
+	liveAudioBytesTotal        int64
+	liveDurationTotalMS        int64
+	liveFirstTranscriptTotalMS int64
+	liveFirstTranscriptCount   int64
+	liveFirstAudioTotalMS      int64
+	liveFirstAudioCount        int64
+	liveErrorsByCode           map[string]int64
 }
 
 func NewMetricsRegistry() *MetricsRegistry {
@@ -164,58 +151,6 @@ func NewMetricsRegistry() *MetricsRegistry {
 		Name: "agentapi_live_errors_total",
 		Help: "Total Live websocket errors by code.",
 	}, []string{"code"})
-	m.loopAutomationEnabledMetric = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "agentapi_loop_automation_enabled",
-		Help: "Whether loop trigger automation is configured as enabled.",
-	})
-	m.loopAutomationRunningMetric = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "agentapi_loop_automation_running",
-		Help: "Whether loop trigger automation worker is currently running.",
-	})
-	m.loopAutomationRunsMetric = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "agentapi_loop_automation_runs_total",
-		Help: "Total loop trigger automation scan runs.",
-	})
-	m.loopAutomationScannedMetric = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "agentapi_loop_automation_scanned_total",
-		Help: "Total loop goals scanned by automation.",
-	})
-	m.loopAutomationTriggeredMetric = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "agentapi_loop_automation_triggered_total",
-		Help: "Total loop automation triggers by trigger type and source.",
-	}, []string{"trigger_type", "source"})
-	m.loopAutomationSkippedMetric = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "agentapi_loop_automation_skipped_total",
-		Help: "Total loop goals skipped by automation.",
-	})
-	m.loopAutomationFailedMetric = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "agentapi_loop_automation_failed_total",
-		Help: "Total loop automation trigger failures.",
-	})
-	m.loopAutomationDedupeConflictMetric = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "agentapi_loop_automation_dedupe_conflicts_total",
-		Help: "Total loop automation dedupe conflicts.",
-	})
-	m.loopAutomationExpiredPrunedMetric = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "agentapi_loop_automation_expired_pruned_total",
-		Help: "Total expired loop trigger ledger rows pruned by automation.",
-	})
-	m.loopAutomationConsecutiveFailuresMetric = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "agentapi_loop_automation_consecutive_failures",
-		Help: "Current consecutive loop automation scan failures.",
-	})
-	m.loopAutomationLastRunUnixMetric = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "agentapi_loop_automation_last_run_unix",
-		Help: "Unix timestamp of the last loop automation scan.",
-	})
-	m.loopAutomationNextDueUnixMetric = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "agentapi_loop_automation_next_due_unix",
-		Help: "Unix timestamp of the next expected loop automation scan.",
-	})
-	m.loopAutomationQuotaBlockedMetric = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "agentapi_loop_automation_quota_blocked_total",
-		Help: "Total loop automation trigger attempts blocked by quota or policy.",
-	})
 	m.registry.MustRegister(
 		m.requestsTotal,
 		m.requestsByStatus,
@@ -240,19 +175,6 @@ func NewMetricsRegistry() *MetricsRegistry {
 		m.liveAudioChunksMetric,
 		m.liveAudioBytesMetric,
 		m.liveErrorsMetric,
-		m.loopAutomationEnabledMetric,
-		m.loopAutomationRunningMetric,
-		m.loopAutomationRunsMetric,
-		m.loopAutomationScannedMetric,
-		m.loopAutomationTriggeredMetric,
-		m.loopAutomationSkippedMetric,
-		m.loopAutomationFailedMetric,
-		m.loopAutomationDedupeConflictMetric,
-		m.loopAutomationExpiredPrunedMetric,
-		m.loopAutomationConsecutiveFailuresMetric,
-		m.loopAutomationLastRunUnixMetric,
-		m.loopAutomationNextDueUnixMetric,
-		m.loopAutomationQuotaBlockedMetric,
 	)
 	return m
 }
@@ -440,59 +362,6 @@ func (m *MetricsRegistry) LiveHealthSnapshot() LiveHealthSnapshot {
 		snapshot.TranscriptionSuccessRate = float64(m.liveFirstTranscriptCount) / float64(m.liveSessionsTotal)
 	}
 	return snapshot
-}
-
-func (m *MetricsRegistry) SetLoopAutomationStatus(enabled, running bool, consecutiveFailures int, lastRunAt, nextDueAt *time.Time) {
-	if m == nil {
-		return
-	}
-	m.loopAutomationEnabledMetric.Set(boolFloat(enabled))
-	m.loopAutomationRunningMetric.Set(boolFloat(running))
-	m.loopAutomationConsecutiveFailuresMetric.Set(float64(consecutiveFailures))
-	if lastRunAt != nil && !lastRunAt.IsZero() {
-		m.loopAutomationLastRunUnixMetric.Set(float64(lastRunAt.UTC().Unix()))
-	}
-	if nextDueAt != nil && !nextDueAt.IsZero() {
-		m.loopAutomationNextDueUnixMetric.Set(float64(nextDueAt.UTC().Unix()))
-	}
-}
-
-func (m *MetricsRegistry) RecordLoopAutomationReport(report LoopTriggerAutomationReport) {
-	if m == nil {
-		return
-	}
-	m.loopAutomationRunsMetric.Inc()
-	if report.Scanned > 0 {
-		m.loopAutomationScannedMetric.Add(float64(report.Scanned))
-	}
-	if report.Skipped > 0 {
-		m.loopAutomationSkippedMetric.Add(float64(report.Skipped))
-	}
-	if report.Failed > 0 {
-		m.loopAutomationFailedMetric.Add(float64(report.Failed))
-	}
-	if report.DedupeConflicts > 0 {
-		m.loopAutomationDedupeConflictMetric.Add(float64(report.DedupeConflicts))
-	}
-	if report.PrunedExpired > 0 {
-		m.loopAutomationExpiredPrunedMetric.Add(float64(report.PrunedExpired))
-	}
-	if report.QuotaBlocked > 0 {
-		m.loopAutomationQuotaBlockedMetric.Add(float64(report.QuotaBlocked))
-	}
-}
-
-func (m *MetricsRegistry) IncLoopAutomationTrigger(triggerType, source string) {
-	if m == nil {
-		return
-	}
-	m.loopAutomationTriggeredMetric.WithLabelValues(nonEmptyMetricLabel(triggerType), nonEmptyMetricLabel(source)).Inc()
-}
-
-func (m *MetricsRegistry) IncLoopAutomationQuotaBlocked() {
-	if m != nil {
-		m.loopAutomationQuotaBlockedMetric.Inc()
-	}
 }
 
 func (m *MetricsRegistry) WritePrometheus(w http.ResponseWriter) {

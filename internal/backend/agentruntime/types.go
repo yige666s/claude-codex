@@ -397,7 +397,6 @@ type LiveClientStream interface {
 type ChatRequest struct {
 	UserID           string
 	SessionID        string
-	LoopGoalID       string
 	Content          string
 	AttachmentIDs    []string
 	AttachmentURLs   []ChatAttachmentURL
