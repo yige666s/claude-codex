@@ -608,13 +608,17 @@ func recordDeepAgentFinalVerification(state *DeepAgentState, verification DeepAg
 	if state.WorkingMemory == nil {
 		state.WorkingMemory = map[string]any{}
 	}
-	state.WorkingMemory["final_verification"] = map[string]any{
+	record := map[string]any{
 		"done":       verification.Done,
 		"reason":     verification.Reason,
 		"checks":     verification.Checks,
 		"missing":    verification.Missing,
 		"confidence": verification.Confidence,
 	}
+	if verification.ResearchQuality != nil {
+		record["research_quality"] = verification.ResearchQuality
+	}
+	state.WorkingMemory["final_verification"] = record
 }
 
 func (c *DeepAgentController) recordDeepAgentResumeStep(ctx context.Context, run *WorkflowRun, name string, handler func(*WorkflowStepRun) (map[string]any, error)) error {
@@ -782,6 +786,7 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 			c.enrichActionResultMetadata(run, step, action, &result)
 		}
 		evidence := c.ensureActionEvidence(run, step, action, &result, execErr)
+		c.inheritPriorResearchSourceEvidence(state, step, action, &result, &evidence)
 		if execErr != nil {
 			c.emitActionEvent(ctx, run, state, step, action, result, "deep_agent_action_failed", result.Error)
 			if !result.Retryable {
@@ -1012,6 +1017,38 @@ func (c *DeepAgentController) ensureActionEvidence(run *WorkflowRun, step DeepAg
 		result.Metadata["error_class"] = evidence.ErrorClass
 	}
 	return evidence
+}
+
+func (c *DeepAgentController) inheritPriorResearchSourceEvidence(state *DeepAgentState, step DeepAgentStep, action DeepAgentAction, result *DeepAgentActionResult, evidence *DeepAgentStepEvidence) {
+	if state == nil || result == nil || evidence == nil {
+		return
+	}
+	if !deepAgentRouteLooksLikeResearch(evidence.Route, step) {
+		return
+	}
+	output := firstNonEmptyString(evidence.Output, result.Output, evidence.Summary)
+	if strings.TrimSpace(output) == "" {
+		return
+	}
+	if len(evidence.Sources) > 0 || len(evidence.ToolCalls) > 0 || countDeepAgentCitationMarkers(output) > 0 {
+		return
+	}
+	prior := deepAgentStateEvidenceSummary(state)
+	if len(prior.sources) == 0 {
+		return
+	}
+	evidence.Sources = append([]DeepAgentSourceRef(nil), prior.sources...)
+	if evidence.Diagnostics == nil {
+		evidence.Diagnostics = map[string]any{}
+	}
+	evidence.Diagnostics["inherited_source_evidence"] = true
+	evidence.Diagnostics["inherited_source_count"] = len(evidence.Sources)
+	evidence.Diagnostics["inherited_source_reason"] = "current research step reused prior verified source evidence"
+	if result.Metadata == nil {
+		result.Metadata = map[string]any{}
+	}
+	result.Metadata["sources"] = evidence.Sources
+	result.Metadata["step_evidence"] = deepAgentStepEvidenceMap(*evidence)
 }
 
 func (c *DeepAgentController) storeActionEvidence(state *DeepAgentState, evidence DeepAgentStepEvidence, progress DeepAgentProgress) {

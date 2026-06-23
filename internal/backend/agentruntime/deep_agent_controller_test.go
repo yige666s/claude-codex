@@ -1038,6 +1038,55 @@ func TestRuntimeDeepAgentModelArtifactUsesAssistantMessageWhenOutputEmpty(t *tes
 	}
 }
 
+func TestRuntimeDeepAgentModelArtifactRejectsDisallowedSkillFallback(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return disallowedSkillArtifactRunner{} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	result, err := NewRuntimeDeepAgentExecutor(runtime).ExecuteDeepAgentAction(context.Background(), DeepAgentAction{
+		StepID: "write-report",
+		Tool:   "model_artifact",
+		Args: map[string]any{
+			"user_id":        "alice",
+			"session_id":     session.ID,
+			"prompt":         "生成 Browserless 调研报告",
+			"done_condition": "Markdown report artifact is available",
+			"allowed_tools":  []string{"WebSearch", "WebFetch", ArtifactToolName},
+		},
+	}, &DeepAgentState{
+		Goal:          "帮我调研 Browserless 这个产品，生成一份研究报告",
+		WorkingMemory: map[string]any{"user_id": "alice", "session_id": session.ID},
+	})
+	if err == nil {
+		t.Fatalf("ExecuteDeepAgentAction() expected disallowed tool error, got nil with %#v", result)
+	}
+	if result.Status != DeepAgentActionStatusFailed {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if names := deepAgentStringSlice(result.Metadata["disallowed_tool_names"]); strings.Join(names, ",") != "Skill" {
+		t.Fatalf("disallowed_tool_names = %#v, want Skill in %#v", names, result.Metadata)
+	}
+	if got := deepAgentAnyInt(result.Metadata["artifact_count"], -1); got != 0 {
+		t.Fatalf("artifact_count = %d, want 0 in %#v", got, result.Metadata)
+	}
+	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("disallowed skill fallback should not save artifacts: %#v", artifacts)
+	}
+}
+
 func TestRuntimeDeepAgentModelArtifactCountsStoreArtifactWithoutToolResult(t *testing.T) {
 	var runtime *Runtime
 	runtime = NewRuntime(
@@ -1503,6 +1552,13 @@ func TestDeepAgentModelArtifactFallbackExtractsMarkdownReport(t *testing.T) {
 	}
 }
 
+func TestDeepAgentModelArtifactFallbackRejectsDocxSkillApology(t *testing.T) {
+	output := "我明白了，看来 `docx` 技能暂时无法使用。不过没关系，我可以将完整的研究报告内容保存为 Markdown 格式的文档。\n\n我已经将关于 Browserless 产品的研究报告保存为 `Browserless产品研究报告.md` 文件。"
+	if !deepAgentModelArtifactFallbackLooksInvalid(deepAgentModelArtifactFallbackOutput(output, nil, 0)) {
+		t.Fatalf("docx skill apology should not be accepted as artifact fallback: %q", output)
+	}
+}
+
 func TestDeepAgentModelArtifactFallbackDecodesNotionMCPViewOutput(t *testing.T) {
 	output := `Here is the result of "view" for the Page with URL https://app.notion.com/p/example as of 2026-06-22T11:19:37Z:\n<page url=\"https://app.notion.com/p/example\">\n\n{"title":"Memory System 技术设计文档"}\n\n---\nVersion: 1.0\nAuthor: Architecture Team\n---\n\n# 1. 背景\n\n系统 LLM 存在 Context Window 限制。\n</page>`
 
@@ -1834,15 +1890,15 @@ func TestResearchReportVerifyTemplateUsesStateVerification(t *testing.T) {
 	}
 	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
 		StepID:  "gather",
-		Summary: "Collected findings, caveats, and next steps from multiple sources.",
+		Summary: "Collected findings, caveats, and next steps from multiple sources. Coverage includes company team, product features, pricing availability, user reviews, competitors, and risks uncertainty.",
 		Sources: []DeepAgentSourceRef{
-			{URL: "https://example.com/chance-ai", Title: "Chance AI source", Provider: "WebSearch"},
-			{URL: "https://example.com/chance-ai-review", Title: "Chance AI review", Provider: "WebSearch"},
+			{URL: "https://example.com/chance-ai/about", Title: "Chance AI company team and product features", Snippet: "Official notes about company team, product features, and pricing availability.", Provider: "WebSearch"},
+			{URL: "https://example.com/chance-ai-review", Title: "Chance AI user reviews and competitors", Snippet: "User reviews compare competitors and note risks uncertainty.", Provider: "WebSearch"},
 		},
 	})
 	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
 		StepID:  "artifact",
-		Summary: "Final report artifact states findings, caveats, and next steps.",
+		Summary: "Final report artifact states findings, caveats, next steps, source quality and coverage verification.",
 		Artifacts: []DeepAgentArtifactRef{{
 			ID:          "artifact-1",
 			Filename:    "chance-ai-report.md",
@@ -1903,15 +1959,15 @@ func TestRuntimePlannerPreservesResearchVerifyStateVerification(t *testing.T) {
 	}
 	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
 		StepID:  "gather",
-		Summary: "Collected findings, caveats, and next steps from multiple sources.",
+		Summary: "Collected findings, caveats, and next steps from multiple sources. Coverage includes company team, product features, pricing availability, user reviews, competitors, and risks uncertainty.",
 		Sources: []DeepAgentSourceRef{
-			{URL: "https://example.com/chance-ai", Title: "Chance AI source", Provider: "WebSearch"},
-			{URL: "https://example.com/chance-ai-review", Title: "Chance AI review", Provider: "WebSearch"},
+			{URL: "https://example.com/chance-ai/about", Title: "Chance AI company team and product features", Snippet: "Official notes about company team, product features, and pricing availability.", Provider: "WebSearch"},
+			{URL: "https://example.com/chance-ai-review", Title: "Chance AI user reviews and competitors", Snippet: "User reviews compare competitors and note risks uncertainty.", Provider: "WebSearch"},
 		},
 	})
 	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
 		StepID:  "artifact",
-		Summary: "Final report artifact states findings, caveats, and next steps.",
+		Summary: "Final report artifact states findings, caveats, next steps, source quality and coverage verification.",
 		Artifacts: []DeepAgentArtifactRef{{
 			ID:          "artifact-1",
 			Filename:    "chance-ai-report.md",
@@ -1997,6 +2053,107 @@ func TestResearchReportStateVerificationRequiresMultipleSources(t *testing.T) {
 	if err == nil || !strings.Contains(evidence.Output, "multiple source URLs or citations") {
 		t.Fatalf("expected multiple-source verification failure, err=%v evidence=%#v", err, evidence)
 	}
+}
+
+func TestResearchReportFinalVerificationRequiresCriticalCoverage(t *testing.T) {
+	state := testResearchReportVerificationState(t,
+		"Collected two traceable sources for Chance AI.",
+		[]DeepAgentSourceRef{
+			{URL: "https://example.com/chance-ai/about", Title: "Chance AI company page", Snippet: "Company and team notes.", Provider: "WebSearch"},
+			{URL: "https://example.com/chance-ai/features", Title: "Chance AI product features", Snippet: "Product feature notes.", Provider: "WebSearch"},
+		},
+	)
+	final, err := ruleDeepAgentVerifier{}.CheckFinal(context.Background(), state)
+	if err != nil {
+		t.Fatalf("CheckFinal() error = %v", err)
+	}
+	if final.Done || !deepAgentVerificationHasCheck(final.Checks, "coverage_verifier", false) {
+		t.Fatalf("research report should fail when critical coverage is missing, got %#v", final)
+	}
+	if final.ResearchQuality == nil || len(final.ResearchQuality.Coverage.Missing) == 0 {
+		t.Fatalf("research quality should report missing coverage, got %#v", final.ResearchQuality)
+	}
+}
+
+func TestResearchReportFinalVerificationRecordsQualityMetadata(t *testing.T) {
+	state := testResearchReportVerificationState(t,
+		"Collected multiple source URLs and citations. Coverage includes company team, product features, pricing availability, user reviews, competitors, and risks uncertainty.",
+		[]DeepAgentSourceRef{
+			{URL: "https://example.com/chance-ai/about", Title: "Chance AI company team and product features", Snippet: "Official notes about company team, product features, and pricing availability.", Provider: "WebSearch"},
+			{URL: "https://example.com/chance-ai-review", Title: "Chance AI user reviews and competitors", Snippet: "User reviews compare competitors and note risks uncertainty.", Provider: "WebSearch"},
+		},
+	)
+	final, err := ruleDeepAgentVerifier{}.CheckFinal(context.Background(), state)
+	if err != nil {
+		t.Fatalf("CheckFinal() error = %v", err)
+	}
+	if !final.Done {
+		t.Fatalf("research report with coverage should pass, got %#v", final)
+	}
+	if final.ResearchQuality == nil {
+		t.Fatalf("research quality metadata missing")
+	}
+	if final.ResearchQuality.SourceCount != 2 || len(final.ResearchQuality.Coverage.Missing) != 0 || final.ResearchQuality.Confidence == "" {
+		t.Fatalf("unexpected research quality metadata: %#v", final.ResearchQuality)
+	}
+	recordDeepAgentFinalVerification(state, final)
+	summary := deepAgentFinalAnswerEvidenceForSummary(state)
+	if summary.ResearchQuality == nil || summary.ResearchQuality.SourceCount != 2 {
+		t.Fatalf("summary should expose research quality metadata, got %#v", summary.ResearchQuality)
+	}
+}
+
+func TestResearchReportFinalVerificationBlocksEntityAmbiguity(t *testing.T) {
+	state := testResearchReportVerificationState(t,
+		"Collected multiple source URLs and citations. Coverage includes company team, product features, pricing availability, user reviews, competitors, and risks uncertainty.",
+		[]DeepAgentSourceRef{
+			{URL: "https://example.com/chance-ai/about", Title: "Chance AI company team and product features", Snippet: "Official notes about company team, product features, and pricing availability.", Provider: "WebSearch"},
+			{URL: "https://example.com/chance-ai-review", Title: "Chance AI user reviews and competitors", Snippet: "User reviews compare competitors and note risks uncertainty.", Provider: "WebSearch"},
+		},
+	)
+	state.WorkingMemory["entity_ambiguity"] = true
+	final, err := ruleDeepAgentVerifier{}.CheckFinal(context.Background(), state)
+	if err != nil {
+		t.Fatalf("CheckFinal() error = %v", err)
+	}
+	if final.Done || !deepAgentVerificationHasCheck(final.Checks, "entity_verifier", false) {
+		t.Fatalf("entity ambiguity should block research report completion, got %#v", final)
+	}
+}
+
+func testResearchReportVerificationState(t *testing.T, gatherSummary string, sources []DeepAgentSourceRef) *DeepAgentState {
+	t.Helper()
+	req := applyDeepAgentLoopTemplateToTaskRequest(DeepAgentTaskRequest{
+		Goal:  "帮我调研一下chance ai这款产品",
+		State: map[string]any{"template_id": LoopTemplateResearchReport},
+	})
+	for i := range req.Plan.Steps {
+		req.Plan.Steps[i].Status = DeepAgentStepStatusSucceeded
+	}
+	state := &DeepAgentState{
+		Goal:          req.Goal,
+		Plan:          req.Plan,
+		Rubric:        req.Rubric,
+		WorkingMemory: req.State,
+	}
+	state.WorkingMemory["step_context"] = map[string]any{}
+	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
+		StepID:  "gather",
+		Summary: gatherSummary,
+		Sources: sources,
+	})
+	(StateDeepAgentEvidenceStore{}).PutStepEvidence(state, DeepAgentStepEvidence{
+		StepID:  "artifact",
+		Summary: "Final report artifact states findings, caveats, next steps, source quality and coverage verification.",
+		Artifacts: []DeepAgentArtifactRef{{
+			ID:          "artifact-1",
+			Filename:    "chance-ai-report.md",
+			ContentType: "text/markdown",
+			SizeBytes:   1024,
+			StepID:      "artifact",
+		}},
+	})
+	return state
 }
 
 func TestDeepAgentSafeSideEffectLevelAllowsReadonly(t *testing.T) {
@@ -3166,7 +3323,7 @@ func TestDeepAgentObservabilityMetricsTimelineAndReplay(t *testing.T) {
 		store,
 		NoopWorkflowEventSink{},
 		staticDeepAgentPlanner{plan: DeepAgentPlan{Steps: []DeepAgentStep{{ID: "research", Title: "Research", DoneCondition: "done"}}}},
-		completingDeepAgentExecutor{},
+		researchReportCompletingDeepAgentExecutor{},
 		nil,
 	)
 	result, err := controller.Execute(context.Background(), DeepAgentTaskRequest{
@@ -3328,6 +3485,42 @@ func TestResearchReportTemplateGatherUsesWebResearchModelRoute(t *testing.T) {
 	}
 	if strings.Join(route.AllowedTools, ",") != strings.Join(wantTools, ",") {
 		t.Fatalf("route allowed tools = %#v, want %#v", route.AllowedTools, wantTools)
+	}
+}
+
+func TestDeepAgentRouterDoesNotTreatBrowserlessResearchAsWebExecutor(t *testing.T) {
+	step := DeepAgentStep{
+		ID:            "step-1",
+		Title:         "搜集 Browserless 的核心信息",
+		Intent:        "通过网络搜索，查找并整理关于 Browserless 公司/团队、产品功能和定价/可用性的基本信息。",
+		DoneCondition: "已收集到关于 Browserless 公司、产品功能和定价的关键信息，并记录了信息来源。",
+	}
+	route, ok := (&RuntimeDeepAgentStepRouter{}).deterministicRoute(step)
+	if !ok {
+		t.Fatal("expected deterministic research route")
+	}
+	if route.Mode != DeepAgentToolModeModel || route.Executor != deepAgentRouteExecutorModel || route.SearchScope != "web" {
+		t.Fatalf("route = %#v, want web research model route", route)
+	}
+	wantTools := []string{"WebSearch", "WebFetch"}
+	if strings.Join(route.AllowedTools, ",") != strings.Join(wantTools, ",") {
+		t.Fatalf("route allowed tools = %#v, want %#v", route.AllowedTools, wantTools)
+	}
+}
+
+func TestDeepAgentRouterStillRoutesBrowserVerificationToWebExecutor(t *testing.T) {
+	step := DeepAgentStep{
+		ID:            "verify-page",
+		Title:         "Open the browser and take a screenshot",
+		Intent:        "Use browser verification for https://example.com and capture DOM evidence.",
+		DoneCondition: "screenshot and DOM evidence captured",
+	}
+	route, ok := (&RuntimeDeepAgentStepRouter{}).deterministicRoute(step)
+	if !ok {
+		t.Fatal("expected deterministic web route")
+	}
+	if route.Mode != DeepAgentToolModeWeb || route.Executor != deepAgentRouteExecutorWeb {
+		t.Fatalf("route = %#v, want dedicated web route", route)
 	}
 }
 
@@ -3543,6 +3736,37 @@ func TestDeepAgentControllerRetriesResearchWithoutSourceEvidence(t *testing.T) {
 	}
 	if !strings.Contains(executor.retryPrompt, "WebSearch") || !strings.Contains(executor.retryPrompt, "WebFetch") {
 		t.Fatalf("retry prompt should force web research tools, got %q", executor.retryPrompt)
+	}
+}
+
+func TestDeepAgentControllerCarriesPriorResearchSourcesToFollowupStep(t *testing.T) {
+	controller := NewDeepAgentController(
+		NewMemoryWorkflowStore(),
+		NoopWorkflowEventSink{},
+		twoStepResearchPlanner{},
+		twoStepResearchExecutor{},
+		nil,
+	)
+	result, err := controller.Execute(context.Background(), DeepAgentTaskRequest{
+		UserID: "alice",
+		Goal:   "调研 Browserless 并整理资料",
+		Policy: DeepAgentPolicy{MaxSteps: 2, MaxActions: 3, NoProgressLimit: 2, MaxDuration: time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result == nil || result.State == nil || result.State.Status != DeepAgentRunStatusSucceeded {
+		t.Fatalf("expected successful source carry-forward, got %#v", result)
+	}
+	evidence, ok := (StateDeepAgentEvidenceStore{}).GetStepEvidence(result.State, "step-2")
+	if !ok {
+		t.Fatalf("missing step-2 evidence: %#v", result.State.WorkingMemory)
+	}
+	if len(evidence.Sources) < 2 {
+		t.Fatalf("step-2 should inherit prior sources, got %#v", evidence)
+	}
+	if !deepAgentBool(evidence.Diagnostics, "inherited_source_evidence", false) {
+		t.Fatalf("step-2 evidence should mark inherited sources, got %#v", evidence.Diagnostics)
 	}
 }
 
@@ -4051,6 +4275,38 @@ func (completingDeepAgentExecutor) ExecuteDeepAgentAction(_ context.Context, act
 	}, nil
 }
 
+type researchReportCompletingDeepAgentExecutor struct{}
+
+func (researchReportCompletingDeepAgentExecutor) ExecuteDeepAgentAction(_ context.Context, action DeepAgentAction, _ *DeepAgentState) (DeepAgentActionResult, error) {
+	evidence := DeepAgentStepEvidence{
+		StepID:  action.StepID,
+		Output:  "Research report evidence collected.",
+		Summary: "Collected multiple sources. Coverage includes company team, product features, pricing availability, user reviews, competitors, and risks uncertainty.",
+		Sources: []DeepAgentSourceRef{
+			{URL: "https://example.com/research/about", Title: "Company team and product features", Snippet: "Company team, product features, and pricing availability.", Provider: "WebSearch"},
+			{URL: "https://example.com/research/reviews", Title: "User reviews and competitors", Snippet: "User reviews compare competitors and identify risks uncertainty.", Provider: "WebSearch"},
+		},
+		Artifacts: []DeepAgentArtifactRef{{
+			ID:          "artifact-1",
+			Filename:    "research-report.md",
+			ContentType: "text/markdown",
+			SizeBytes:   1024,
+			StepID:      action.StepID,
+		}},
+	}
+	return DeepAgentActionResult{
+		Status:    DeepAgentActionStatusSucceeded,
+		Output:    evidence.Summary,
+		Completed: true,
+		Metadata: map[string]any{
+			"step_evidence":  evidence,
+			"artifact_refs":  evidence.Artifacts,
+			"sources":        evidence.Sources,
+			"citation_count": 2,
+		},
+	}, nil
+}
+
 type sourceEvidenceRetryPlanner struct{}
 
 func (sourceEvidenceRetryPlanner) CreatePlan(_ context.Context, req DeepAgentTaskRequest) (DeepAgentPlan, error) {
@@ -4083,6 +4339,46 @@ func (sourceEvidenceRetryPlanner) NextAction(_ context.Context, _ *DeepAgentStat
 	}, nil
 }
 
+type twoStepResearchPlanner struct{}
+
+func (twoStepResearchPlanner) CreatePlan(_ context.Context, req DeepAgentTaskRequest) (DeepAgentPlan, error) {
+	return DeepAgentPlan{
+		Goal: req.Goal,
+		Steps: []DeepAgentStep{
+			{
+				ID:            "step-1",
+				Title:         "初步研究 Browserless",
+				Intent:        "通过网络搜索调研 Browserless 产品",
+				DoneCondition: "收集到带来源的研究信息",
+			},
+			{
+				ID:            "step-2",
+				Title:         "整理深入调研材料",
+				Intent:        "整理 Browserless 研究信息并保留来源",
+				DoneCondition: "研究信息有来源证据",
+			},
+		},
+	}, nil
+}
+
+func (twoStepResearchPlanner) NextAction(_ context.Context, _ *DeepAgentState, step DeepAgentStep) (DeepAgentAction, error) {
+	route := DeepAgentStepRoute{
+		StepID:       step.ID,
+		Mode:         DeepAgentToolModeModel,
+		Executor:     deepAgentRouteExecutorModel,
+		SearchScope:  "web",
+		AllowedTools: []string{"WebSearch", "WebFetch"},
+	}
+	return DeepAgentAction{
+		StepID: step.ID,
+		Tool:   DeepAgentToolModeModel,
+		Args: map[string]any{
+			"prompt":     step.Intent,
+			"step_route": deepAgentStepRouteMap(route),
+		},
+	}, nil
+}
+
 type sourceEvidenceRetryExecutor struct {
 	calls       int
 	retryPrompt string
@@ -4101,6 +4397,39 @@ func (e *sourceEvidenceRetryExecutor) ExecuteDeepAgentAction(_ context.Context, 
 		e.retryPrompt = deepAgentWorkflowString(action.Args, "prompt")
 		evidence.Sources = []DeepAgentSourceRef{{URL: "https://example.com/chance-ai", Title: "Chance AI source", Provider: "WebSearch"}}
 		evidence.ToolCalls = []DeepAgentToolCallRef{{Name: "WebSearch", Status: "succeeded"}}
+	}
+	return DeepAgentActionResult{
+		Status:    DeepAgentActionStatusSucceeded,
+		Output:    evidence.Output,
+		Completed: true,
+		Metadata: map[string]any{
+			"step_evidence": deepAgentStepEvidenceMap(evidence),
+		},
+	}, nil
+}
+
+type twoStepResearchExecutor struct{}
+
+func (twoStepResearchExecutor) ExecuteDeepAgentAction(_ context.Context, action DeepAgentAction, _ *DeepAgentState) (DeepAgentActionResult, error) {
+	route, _ := deepAgentStepRouteFromMap(action.Args)
+	evidence := DeepAgentStepEvidence{
+		StepID:  action.StepID,
+		Route:   route,
+		Output:  "Browserless research notes",
+		Summary: "Browserless research notes",
+	}
+	if action.StepID == "step-1" {
+		evidence.Sources = []DeepAgentSourceRef{
+			{URL: "https://www.browserless.io/", Title: "Browserless official site", Provider: "WebSearch"},
+			{URL: "https://www.browserless.io/pricing", Title: "Browserless pricing", Provider: "WebFetch"},
+		}
+		evidence.ToolCalls = []DeepAgentToolCallRef{
+			{Name: "WebSearch", Status: "succeeded"},
+			{Name: "WebFetch", Status: "succeeded"},
+		}
+	} else {
+		evidence.Output = "已根据上一步研究结果整理 Browserless 深入调研材料。"
+		evidence.Summary = evidence.Output
 	}
 	return DeepAgentActionResult{
 		Status:    DeepAgentActionStatusSucceeded,
@@ -4349,6 +4678,25 @@ func (toolNotFoundArtifactRunner) Run(ctx context.Context, session *state.Sessio
 
 func (toolNotFoundArtifactRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, _ string) (engine.Result, error) {
 	output := `工具未找到：Skill。抱歉，无法生成 Word 格式文档。`
+	session.AddAssistantMessage(output)
+	return engine.Result{Output: output, Session: session}, nil
+}
+
+type disallowedSkillArtifactRunner struct{}
+
+func (disallowedSkillArtifactRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return disallowedSkillArtifactRunner{}.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (disallowedSkillArtifactRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, _ string) (engine.Result, error) {
+	input := json.RawMessage(`{"skill":"docx","args":"Browserless 产品研究报告"}`)
+	session.AddAssistantMessageWithTools("", []state.ToolCall{{
+		ID:    "skill-call-1",
+		Name:  skilltool.ToolName,
+		Input: input,
+	}})
+	output := "我明白了，看来 `docx` 技能暂时无法使用。不过没关系，我可以将完整的研究报告内容保存为 Markdown 格式的文档。"
+	session.AddToolResult("skill-call-1", skilltool.ToolName, input, output)
 	session.AddAssistantMessage(output)
 	return engine.Result{Output: output, Session: session}, nil
 }

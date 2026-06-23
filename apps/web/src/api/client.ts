@@ -1,6 +1,6 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
 import { userFacingErrorMessage } from "./errorMessages";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, ConnectorAuthStart, ConnectorConnection, ConnectorPolicy, ConnectorStatus, DeepAgentLoopTemplate, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, LoopBudget, LoopGoal, LoopGoalRunResult, LoopRubric, LoopStopPolicy, LoopTrigger, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, BrowserPushConfig, BrowserPushSubscriptionResponse, ConnectorAuthStart, ConnectorConnection, ConnectorPolicy, ConnectorStatus, DeepAgentLoopTemplate, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, LoopBudget, LoopGoal, LoopGoalRunResult, LoopRubric, LoopStopPolicy, LoopTrigger, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, TaskInboxResponse, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -992,6 +992,35 @@ export class ApiClient {
 
   async cancelJob(jobId: string): Promise<void> {
     await this.fetchJSON(`/v1/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+  }
+
+  async taskInbox(options: { sessionId?: string; limit?: number } = {}): Promise<TaskInboxResponse> {
+    const params = new URLSearchParams();
+    if (options.sessionId) params.set("session_id", options.sessionId);
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return this.fetchJSON<TaskInboxResponse>(`/v1/tasks/inbox${query ? `?${query}` : ""}`);
+  }
+
+  async browserPushConfig(): Promise<BrowserPushConfig> {
+    return this.fetchJSON<BrowserPushConfig>("/v1/browser-push/config");
+  }
+
+  async saveBrowserPushSubscription(subscription: PushSubscriptionJSON): Promise<BrowserPushSubscriptionResponse> {
+    const payload = await this.fetchJSON<{ subscription: BrowserPushSubscriptionResponse }>("/v1/browser-push/subscriptions", {
+      method: "POST",
+      headers: this.headers({ "Content-Type": "application/json" }),
+      body: JSON.stringify(subscription)
+    });
+    return payload.subscription;
+  }
+
+  async deleteBrowserPushSubscription(subscriptionId: string): Promise<void> {
+    await this.fetchJSON(`/v1/browser-push/subscriptions/${encodeURIComponent(subscriptionId)}`, { method: "DELETE" });
+  }
+
+  async testBrowserPush(): Promise<void> {
+    await this.fetchJSON("/v1/browser-push/test", { method: "POST" });
   }
 
   async loopGoals(options: { sessionId?: string; status?: string; limit?: number } = {}): Promise<LoopGoal[]> {

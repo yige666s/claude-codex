@@ -104,6 +104,8 @@ type Runtime struct {
 	connectorTokens   ConnectorTokenVault
 	mcpConnectors     MCPConnectorStore
 	mcpHost           mcpcore.Host
+	browserPush       BrowserPushStore
+	browserPushSender *BrowserPushSender
 	engineFactory     EngineFactory
 	riskScanner       RiskScanner
 	riskRecorder      func(context.Context, RiskEvent)
@@ -271,6 +273,7 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		connectorTokens:       NewMemoryConnectorTokenVault(),
 		mcpConnectors:         NewMemoryMCPConnectorStore(),
 		mcpHost:               mcpcore.NewRuntimeHost(nil),
+		browserPush:           NewMemoryBrowserPushStore(),
 		promptResolver:        NewPromptResolver(nil, nil),
 		engineFactory:         engineFactory,
 		logger:                logger,
@@ -1643,6 +1646,11 @@ func (r *Runtime) DeleteUserData(ctx context.Context, userID string) error {
 	}
 	if r.jobs != nil {
 		if err := r.jobs.DeleteUser(ctx, userID); err != nil {
+			return err
+		}
+	}
+	if r.browserPush != nil {
+		if err := r.browserPush.DeleteUser(ctx, userID); err != nil {
 			return err
 		}
 	}
@@ -3643,13 +3651,23 @@ func (r *Runtime) runJob(ctx context.Context, job *Job) error {
 	}
 	switch {
 	case err == nil:
-		return r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusSucceeded, "", finishedAt)
+		updateErr := r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusSucceeded, "", finishedAt)
+		if updateErr == nil {
+			go r.notifyTaskInboxJob(context.Background(), job, JobStatusSucceeded, "")
+		}
+		return updateErr
 	case errors.Is(err, context.Canceled) || errors.Is(err, ErrRuntimeShuttingDown):
 		updateErr := r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusCancelled, err.Error(), finishedAt)
 		sendErr := sink.Send(context.Background(), Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
+		if updateErr == nil {
+			go r.notifyTaskInboxJob(context.Background(), job, JobStatusCancelled, err.Error())
+		}
 		return errors.Join(updateErr, sendErr)
 	default:
 		updateErr := r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusFailed, err.Error(), finishedAt)
+		if updateErr == nil {
+			go r.notifyTaskInboxJob(context.Background(), job, JobStatusFailed, err.Error())
+		}
 		if !strings.HasPrefix(strings.TrimSpace(job.Content), "/") {
 			r.recordExecutionDenialRisk(ctx, job.UserID, job.SessionID, "", err, map[string]any{"phase": "job", "job_type": job.Type})
 		}

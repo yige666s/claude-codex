@@ -122,6 +122,11 @@ func (s *Server) mountCoreRoutes(r chi.Router) {
 	r.Get("/v1/jobs/{jobID}", s.withUserParam("jobID", s.handleGetJob))
 	r.Get("/v1/jobs/{jobID}/events", s.withUserParam("jobID", s.handleJobEvents))
 	r.Post("/v1/jobs/{jobID}/cancel", s.withUserParam("jobID", s.handleCancelJob))
+	r.Get("/v1/tasks/inbox", s.withUser(s.handleTaskInbox))
+	r.Get("/v1/browser-push/config", s.withUser(s.handleBrowserPushConfig))
+	r.Post("/v1/browser-push/subscriptions", s.withUser(s.handleUpsertBrowserPushSubscription))
+	r.Delete("/v1/browser-push/subscriptions/{subscriptionID}", s.withUserParam("subscriptionID", s.handleDeleteBrowserPushSubscription))
+	r.Post("/v1/browser-push/test", s.withUser(s.handleTestBrowserPush))
 
 	r.Post("/v1/loop/triggers", s.withUser(s.handleCreateLoopTrigger))
 	r.Get("/v1/loop-templates", s.withUser(s.handleListLoopTemplates))

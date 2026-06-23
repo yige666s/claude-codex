@@ -1030,6 +1030,58 @@ export type JobEvent = {
   created_at: string;
 };
 
+export type TaskInboxGroup = "running" | "needs_review" | "failed" | "blocked" | "completed" | "scheduled";
+
+export type TaskInboxReviewAction = {
+  kind: "loop_run" | string;
+  run_id?: string;
+  step_id?: string;
+  action_hash?: string;
+};
+
+export type TaskInboxItem = {
+  id: string;
+  kind: "job" | "loop" | "artifact" | string;
+  group: TaskInboxGroup;
+  title: string;
+  status: string;
+  session_id?: string;
+  job_id?: string;
+  loop_goal_id?: string;
+  loop_run_id?: string;
+  artifact_id?: string;
+  trigger?: string;
+  last_event?: string;
+  last_event_at?: string;
+  artifact_count: number;
+  primary_artifact_id?: string;
+  next_action?: string;
+  notification_type?: string;
+  review?: TaskInboxReviewAction;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskInboxResponse = {
+  items: TaskInboxItem[];
+  groups: Record<TaskInboxGroup, number>;
+  generated_at: string;
+};
+
+export type BrowserPushConfig = {
+  enabled: boolean;
+  public_key?: string;
+};
+
+export type BrowserPushSubscriptionResponse = {
+  id: string;
+  enabled: boolean;
+  endpoint_hash?: string;
+  created_at: string;
+  updated_at: string;
+  last_sent_at?: string;
+};
+
 export type WorkflowRun = {
   id: string;
   user_id?: string;
@@ -1182,6 +1234,22 @@ export type DeepAgentFinalAnswerEvidence = {
   sources?: Array<Record<string, unknown>>;
   tests?: Array<Record<string, unknown>>;
   known_gaps?: string[];
+  research_quality?: {
+    required?: boolean;
+    source_count?: number;
+    citation_count?: number;
+    source_quality?: Record<string, number>;
+    average_source_quality?: number;
+    citation_verification?: Record<string, unknown>;
+    coverage?: {
+      covered?: string[];
+      missing?: string[];
+    };
+    entity_disambiguation?: Record<string, unknown>;
+    unresolved_gaps?: string[];
+    confidence?: string;
+    traceable_source_titles?: string[];
+  };
 };
 
 export type DeepAgentRecoveryState = {

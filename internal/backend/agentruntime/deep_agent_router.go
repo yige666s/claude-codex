@@ -134,8 +134,8 @@ func (r *RuntimeDeepAgentStepRouter) deterministicRoute(step DeepAgentStep) (Dee
 		}, true
 	}
 	if deepAgentContainsAny(text,
-		"网页验证", "截图", "浏览器", "打开页面", "页面验证", "screenshot", "browser", "web page", "dom",
-	) {
+		"网页验证", "截图", "浏览器", "打开页面", "页面验证",
+	) || deepAgentContainsWebVerificationToken(text) {
 		return DeepAgentStepRoute{
 			StepID:      step.ID,
 			Mode:        DeepAgentToolModeWeb,
@@ -212,6 +212,45 @@ func (r *RuntimeDeepAgentStepRouter) deterministicRoute(step DeepAgentStep) (Dee
 		}, true
 	}
 	return DeepAgentStepRoute{}, false
+}
+
+func deepAgentContainsWebVerificationToken(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if strings.Contains(text, "web page") {
+		return true
+	}
+	for _, token := range []string{"browser", "screenshot", "dom"} {
+		if deepAgentContainsASCIIWord(text, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func deepAgentContainsASCIIWord(text, token string) bool {
+	token = strings.ToLower(strings.TrimSpace(token))
+	if text == "" || token == "" {
+		return false
+	}
+	start := 0
+	for {
+		idx := strings.Index(text[start:], token)
+		if idx < 0 {
+			return false
+		}
+		idx += start
+		beforeOK := idx == 0 || !deepAgentIsASCIIWordByte(text[idx-1])
+		afterIdx := idx + len(token)
+		afterOK := afterIdx >= len(text) || !deepAgentIsASCIIWordByte(text[afterIdx])
+		if beforeOK && afterOK {
+			return true
+		}
+		start = idx + len(token)
+	}
+}
+
+func deepAgentIsASCIIWordByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
 
 func (r *RuntimeDeepAgentStepRouter) skillRouteForStep(step DeepAgentStep) (DeepAgentStepRoute, bool) {

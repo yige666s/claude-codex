@@ -44,6 +44,8 @@ func TestServerRouteBehaviorSnapshot(t *testing.T) {
 		{name: "websocket route without upgrade", method: http.MethodGet, path: "/v1/sessions/" + session.ID + "/ws", userID: "alice", wantStatus: http.StatusBadRequest},
 		{name: "live websocket route without upgrade", method: http.MethodGet, path: "/v1/sessions/" + session.ID + "/live/ws", userID: "alice", wantStatus: http.StatusBadRequest},
 		{name: "authenticated jobs list", method: http.MethodGet, path: "/v1/jobs", userID: "alice", wantStatus: http.StatusOK, wantContains: `"jobs":`},
+		{name: "authenticated task inbox", method: http.MethodGet, path: "/v1/tasks/inbox", userID: "alice", wantStatus: http.StatusOK, wantContains: `"items":`},
+		{name: "authenticated browser push config", method: http.MethodGet, path: "/v1/browser-push/config", userID: "alice", wantStatus: http.StatusOK, wantContains: `"enabled":`},
 		{name: "missing job get", method: http.MethodGet, path: "/v1/jobs/missing-job", userID: "alice", wantStatus: http.StatusNotFound, wantContains: "job not found"},
 		{name: "missing job stream", method: http.MethodGet, path: "/v1/jobs/missing-job/events?stream=1", userID: "alice", wantStatus: http.StatusNotFound, wantContains: "job not found"},
 		{name: "authenticated attachments list", method: http.MethodGet, path: "/v1/attachments", userID: "alice", wantStatus: http.StatusOK, wantContains: `"attachments":`},

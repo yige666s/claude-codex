@@ -47,10 +47,11 @@ type DeepAgentRecoveryState struct {
 }
 
 type DeepAgentFinalAnswerEvidence struct {
-	Artifacts []DeepAgentArtifactRef `json:"artifacts,omitempty"`
-	Sources   []DeepAgentSourceRef   `json:"sources,omitempty"`
-	Tests     []map[string]any       `json:"tests,omitempty"`
-	KnownGaps []string               `json:"known_gaps,omitempty"`
+	Artifacts       []DeepAgentArtifactRef          `json:"artifacts,omitempty"`
+	Sources         []DeepAgentSourceRef            `json:"sources,omitempty"`
+	Tests           []map[string]any                `json:"tests,omitempty"`
+	KnownGaps       []string                        `json:"known_gaps,omitempty"`
+	ResearchQuality *DeepAgentResearchQualityReport `json:"research_quality,omitempty"`
 }
 
 func DeepAgentSummaryFromWorkflowRun(run *WorkflowRun) (*DeepAgentWorkflowSummary, bool) {
@@ -248,6 +249,9 @@ func deepAgentFinalAnswerEvidenceForSummary(state *DeepAgentState) DeepAgentFina
 		}
 	}
 	if verifier := deepAgentFinalVerifierForSummary(state); len(verifier) > 0 {
+		if quality, ok := deepAgentResearchQualityFromAny(verifier["research_quality"]); ok {
+			final.ResearchQuality = quality
+		}
 		if reason := strings.TrimSpace(deepAgentWorkflowString(verifier, "reason")); reason != "" && !deepAgentBool(verifier, "done", false) {
 			final.KnownGaps = appendUniqueString(final.KnownGaps, reason)
 		}

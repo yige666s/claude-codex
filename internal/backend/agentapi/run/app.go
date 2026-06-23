@@ -97,6 +97,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	connectorStore := buildConnectorStore(storeCfg)
 	connectorTokenVault := buildConnectorTokenVault(storeCfg)
 	mcpConnectorStore := buildMCPConnectorStore(storeCfg)
+	browserPushStore := buildBrowserPushStore(storeCfg)
 	runtimeConfig := runtimeConfigFromStartup(cfg, skillShellSandboxConfig)
 	runtimeConfig.Logger = appLogger
 	runtimeConfig.CacheStore = cacheStore
@@ -117,6 +118,13 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	runtime.SetConnectorStore(connectorStore)
 	runtime.SetConnectorTokenVault(connectorTokenVault)
 	runtime.SetMCPConnectorStore(mcpConnectorStore)
+	runtime.SetBrowserPushStore(browserPushStore)
+	runtime.SetBrowserPushSender(agentruntime.NewBrowserPushSender(agentruntime.BrowserPushConfig{
+		VAPIDPublicKey:  cfg.WebPushVAPIDPublicKey,
+		VAPIDPrivateKey: cfg.WebPushVAPIDPrivateKey,
+		VAPIDSubject:    cfg.WebPushVAPIDSubject,
+		TTLSeconds:      cfg.WebPushTTLSeconds,
+	}))
 	workerGroup.Start(workerConnectorRefresh, agentruntime.NewConnectorRefreshWorker(runtime, 5*time.Minute).Run)
 	runtime.SetLoopTriggerQuotaChecker(func(ctx context.Context, req agentruntime.LoopTriggerRequest) error {
 		return agentruntime.CheckLoopTriggerQuota(ctx, llmUsageStore, llmConfigManager.Get(), req.UserID)

@@ -1,5 +1,5 @@
 import { ReactNode, Ref, RefObject } from "react";
-import { Briefcase, Database, LogOut, MessageSquarePlus, PanelLeft, Search, Settings, X } from "lucide-react";
+import { Briefcase, Database, Inbox, LogOut, MessageSquarePlus, PanelLeft, Search, Settings, X } from "lucide-react";
 import { BrandLogo } from "../../../components/brand/BrandLogo";
 import { Button } from "../../../components/ui/button";
 import {
@@ -29,6 +29,7 @@ type WorkspaceSidebarProps = {
   onCloseMobile: () => void;
   onCreateSession: () => void;
   onOpenSearch: () => void;
+  onOpenInbox: () => void;
   onOpenResource: (tab: RightPanelTab) => void;
   onSelectSession: (id: string) => void;
   onRemoveSession: (id: string) => void;
@@ -54,6 +55,7 @@ export function WorkspaceSidebar({
   onCloseMobile,
   onCreateSession,
   onOpenSearch,
+  onOpenInbox,
   onOpenResource,
   onSelectSession,
   onRemoveSession,
@@ -102,6 +104,10 @@ export function WorkspaceSidebar({
         <Button className="sidebar-action-button" variant="ghost" onClick={onOpenSearch} title="搜索聊天" aria-label="搜索聊天">
           <Search size={18} />
           <span className="sidebar-action-label">搜索聊天</span>
+        </Button>
+        <Button className="sidebar-action-button" variant="ghost" onClick={onOpenInbox} title="Inbox" aria-label="Inbox">
+          <Inbox size={18} />
+          <span className="sidebar-action-label">Inbox</span>
         </Button>
         <nav className="sidebar-resource-nav" aria-label="Workspace resources">
           <ResourceButton tab="jobs" label="资源" hasNew={hasResourceNotice} icon={<Briefcase size={17} />} onOpen={onOpenResource} />

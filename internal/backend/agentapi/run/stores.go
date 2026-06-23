@@ -310,6 +310,25 @@ func buildMCPConnectorStore(cfg storeConfig) agentruntime.MCPConnectorStore {
 	return store
 }
 
+func buildBrowserPushStore(cfg storeConfig) agentruntime.BrowserPushStore {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		db := openSQLDB(cfg)
+		dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+		store := agentruntime.NewSQLBrowserPushStoreWithDialect(db, dialect)
+		if err := store.Init(ctx); err != nil {
+			logFatalf("init browser push store: %v", err)
+		}
+		return store
+	}
+	store := agentruntime.NewMemoryBrowserPushStore()
+	if err := store.Init(ctx); err != nil {
+		logFatalf("init memory browser push store: %v", err)
+	}
+	return store
+}
+
 func countPublishedSkillRecords(records []agentruntime.SkillRegistryRecord) int {
 	count := 0
 	for _, record := range records {

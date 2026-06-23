@@ -264,6 +264,10 @@ type Config struct {
 	JobEventFanoutEnabled                    bool
 	JobEventFanoutChannel                    string
 	JobEventFanoutOrigin                     string
+	WebPushVAPIDPublicKey                    string
+	WebPushVAPIDPrivateKey                   string
+	WebPushVAPIDSubject                      string
+	WebPushTTLSeconds                        int
 	MessageAttachmentWorkerEnabled           bool
 	MessageAttachmentWorkerBatchSize         int
 	MessageAttachmentWorkerPollInterval      time.Duration
@@ -550,6 +554,10 @@ func Default() Config {
 		JobEventFanoutEnabled:                    EnvBool("AGENT_API_JOB_EVENT_FANOUT_ENABLED", true),
 		JobEventFanoutChannel:                    FirstNonEmpty(os.Getenv("AGENT_API_JOB_EVENT_FANOUT_CHANNEL"), agentruntime.DefaultJobEventFanoutChannel),
 		JobEventFanoutOrigin:                     os.Getenv("AGENT_API_JOB_EVENT_FANOUT_ORIGIN"),
+		WebPushVAPIDPublicKey:                    os.Getenv("AGENT_API_WEB_PUSH_VAPID_PUBLIC_KEY"),
+		WebPushVAPIDPrivateKey:                   os.Getenv("AGENT_API_WEB_PUSH_VAPID_PRIVATE_KEY"),
+		WebPushVAPIDSubject:                      FirstNonEmpty(os.Getenv("AGENT_API_WEB_PUSH_VAPID_SUBJECT"), os.Getenv("AGENT_API_EMAIL_PUBLIC_BASE_URL")),
+		WebPushTTLSeconds:                        EnvInt("AGENT_API_WEB_PUSH_TTL_SECONDS", 12*60*60),
 		MessageAttachmentWorkerEnabled:           EnvBool("AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED", true),
 		MessageAttachmentWorkerBatchSize:         EnvInt("AGENT_API_MESSAGE_ATTACHMENT_WORKER_BATCH_SIZE", 25),
 		MessageAttachmentWorkerPollInterval:      EnvDuration("AGENT_API_MESSAGE_ATTACHMENT_WORKER_POLL_INTERVAL", 5*time.Second),
@@ -837,6 +845,10 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.BoolVar(&cfg.JobEventFanoutEnabled, "job-event-fanout-enabled", cfg.JobEventFanoutEnabled, "broadcast job events through Redis pub/sub for multi-instance realtime streams")
 	flags.StringVar(&cfg.JobEventFanoutChannel, "job-event-fanout-channel", cfg.JobEventFanoutChannel, "Redis pub/sub channel for multi-instance job event fanout")
 	flags.StringVar(&cfg.JobEventFanoutOrigin, "job-event-fanout-origin", cfg.JobEventFanoutOrigin, "job event fanout origin id; default is hostname-pid-random")
+	flags.StringVar(&cfg.WebPushVAPIDPublicKey, "web-push-vapid-public-key", cfg.WebPushVAPIDPublicKey, "VAPID public key for browser push notifications")
+	flags.StringVar(&cfg.WebPushVAPIDPrivateKey, "web-push-vapid-private-key", cfg.WebPushVAPIDPrivateKey, "VAPID private key for browser push notifications")
+	flags.StringVar(&cfg.WebPushVAPIDSubject, "web-push-vapid-subject", cfg.WebPushVAPIDSubject, "VAPID subscriber subject, usually mailto:admin@example.com or app URL")
+	flags.IntVar(&cfg.WebPushTTLSeconds, "web-push-ttl-seconds", cfg.WebPushTTLSeconds, "browser push notification TTL in seconds")
 	flags.BoolVar(&cfg.MessageAttachmentWorkerEnabled, "message-attachment-worker-enabled", cfg.MessageAttachmentWorkerEnabled, "enable async message attachment processing worker")
 	flags.IntVar(&cfg.MessageAttachmentWorkerBatchSize, "message-attachment-worker-batch-size", cfg.MessageAttachmentWorkerBatchSize, "message attachment worker batch size")
 	flags.DurationVar(&cfg.MessageAttachmentWorkerPollInterval, "message-attachment-worker-poll-interval", cfg.MessageAttachmentWorkerPollInterval, "message attachment worker poll interval")

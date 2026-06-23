@@ -157,6 +157,7 @@ function LoopRecovery({ summary, runID, busy, onResumeRun }: { summary: DeepAgen
 
 function LoopEvidence({ summary }: { summary: DeepAgentWorkflowSummary }) {
   const finalAnswer = summary.final_answer;
+  const researchQuality = finalAnswer?.research_quality;
   const timeline = summary.timeline || [];
   return (
     <div className="loop-evidence">
@@ -174,6 +175,39 @@ function LoopEvidence({ summary }: { summary: DeepAgentWorkflowSummary }) {
       {!!finalAnswer?.artifacts?.length && <EvidenceList title="Artifacts" items={finalAnswer.artifacts} labelKey="filename" fallbackKey="id" />}
       {!!finalAnswer?.sources?.length && <EvidenceList title="Sources" items={finalAnswer.sources} labelKey="title" fallbackKey="url" />}
       {!!finalAnswer?.tests?.length && <EvidenceList title="Tests" items={finalAnswer.tests} labelKey="command" fallbackKey="status" />}
+      {researchQuality && (
+        <div>
+          <strong>Research quality</strong>
+          <div className="loop-evidence-row">
+            <span>sources</span>
+            <small>{researchQuality.source_count || 0} sources · {researchQuality.citation_count || 0} citations · {researchQuality.confidence || "unknown"} confidence</small>
+          </div>
+          {typeof researchQuality.average_source_quality === "number" && (
+            <div className="loop-evidence-row">
+              <span>quality</span>
+              <small>{formatQualityScore(researchQuality.average_source_quality)}</small>
+            </div>
+          )}
+          {!!researchQuality.coverage?.covered?.length && (
+            <div className="loop-evidence-row">
+              <span>covered</span>
+              <small>{researchQuality.coverage.covered.join(", ")}</small>
+            </div>
+          )}
+          {!!researchQuality.coverage?.missing?.length && (
+            <div className="loop-evidence-row">
+              <span>missing</span>
+              <small>{researchQuality.coverage.missing.join(", ")}</small>
+            </div>
+          )}
+          {!!researchQuality.unresolved_gaps?.length && (
+            <div className="loop-evidence-row">
+              <span>gaps</span>
+              <small>{researchQuality.unresolved_gaps.join(", ")}</small>
+            </div>
+          )}
+        </div>
+      )}
       {!!finalAnswer?.known_gaps?.length && (
         <div>
           <strong>Known gaps</strong>
@@ -182,6 +216,10 @@ function LoopEvidence({ summary }: { summary: DeepAgentWorkflowSummary }) {
       )}
     </div>
   );
+}
+
+function formatQualityScore(value: number) {
+  return `${Math.round(value * 100)} / 100`;
 }
 
 function EvidenceList({ title, items, labelKey, fallbackKey }: { title: string; items: Array<Record<string, unknown>>; labelKey: string; fallbackKey: string }) {

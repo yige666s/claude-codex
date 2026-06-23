@@ -262,11 +262,14 @@ type DeepAgentToolRef struct {
 }
 
 type DeepAgentSourceRef struct {
-	ID       string `json:"id,omitempty"`
-	URL      string `json:"url,omitempty"`
-	Title    string `json:"title,omitempty"`
-	Snippet  string `json:"snippet,omitempty"`
-	Provider string `json:"provider,omitempty"`
+	ID           string  `json:"id,omitempty"`
+	URL          string  `json:"url,omitempty"`
+	Title        string  `json:"title,omitempty"`
+	Snippet      string  `json:"snippet,omitempty"`
+	Provider     string  `json:"provider,omitempty"`
+	Quality      string  `json:"quality,omitempty"`
+	QualityScore float64 `json:"quality_score,omitempty"`
+	SourceKind   string  `json:"source_kind,omitempty"`
 }
 
 type DeepAgentToolCallRef struct {
@@ -321,17 +324,37 @@ type DeepAgentProgress struct {
 }
 
 type DeepAgentFinalVerification struct {
-	Done       bool                         `json:"done"`
-	Reason     string                       `json:"reason,omitempty"`
-	Checks     []DeepAgentVerificationCheck `json:"checks,omitempty"`
-	Missing    []string                     `json:"missing,omitempty"`
-	Confidence string                       `json:"confidence,omitempty"`
+	Done            bool                            `json:"done"`
+	Reason          string                          `json:"reason,omitempty"`
+	Checks          []DeepAgentVerificationCheck    `json:"checks,omitempty"`
+	Missing         []string                        `json:"missing,omitempty"`
+	Confidence      string                          `json:"confidence,omitempty"`
+	ResearchQuality *DeepAgentResearchQualityReport `json:"research_quality,omitempty"`
 }
 
 type DeepAgentVerificationCheck struct {
 	Name   string `json:"name"`
 	Passed bool   `json:"passed"`
 	Reason string `json:"reason,omitempty"`
+}
+
+type DeepAgentResearchQualityReport struct {
+	Required              bool                            `json:"required"`
+	SourceCount           int                             `json:"source_count"`
+	CitationCount         int                             `json:"citation_count"`
+	SourceQuality         map[string]int                  `json:"source_quality,omitempty"`
+	AverageSourceQuality  float64                         `json:"average_source_quality,omitempty"`
+	CitationVerification  map[string]any                  `json:"citation_verification,omitempty"`
+	Coverage              DeepAgentResearchCoverageReport `json:"coverage,omitempty"`
+	EntityDisambiguation  map[string]any                  `json:"entity_disambiguation,omitempty"`
+	UnresolvedGaps        []string                        `json:"unresolved_gaps,omitempty"`
+	Confidence            string                          `json:"confidence,omitempty"`
+	TraceableSourceTitles []string                        `json:"traceable_source_titles,omitempty"`
+}
+
+type DeepAgentResearchCoverageReport struct {
+	Covered []string `json:"covered,omitempty"`
+	Missing []string `json:"missing,omitempty"`
 }
 
 type DeepAgentState struct {

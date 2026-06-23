@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -347,9 +348,6 @@ func deepAgentStateCurrentArtifactRefs(state *DeepAgentState) []DeepAgentArtifac
 		return nil
 	}
 	store, _ := state.WorkingMemory["step_context"].(map[string]any)
-	if len(store) == 0 {
-		return nil
-	}
 	seen := map[string]struct{}{}
 	out := make([]DeepAgentArtifactRef, 0)
 	for _, evidence := range (StateDeepAgentEvidenceStore{}).ListStepEvidence(state) {
@@ -424,6 +422,9 @@ func verifyDeepAgentRubric(state *DeepAgentState) []DeepAgentVerificationCheck {
 
 type deepAgentEvidenceSummary struct {
 	sourceCount       int
+	sources           []DeepAgentSourceRef
+	citationCount     int
+	sourceSeen        map[string]struct{}
 	artifactCount     int
 	toolCallCount     int
 	childJobCount     int
@@ -461,9 +462,10 @@ func collectDeepAgentEvidenceSummary(values map[string]any, summary *deepAgentEv
 	if summary == nil || len(values) == 0 {
 		return
 	}
-	summary.sourceCount += len(deepAgentSourceRefsFromAny(values["sources"]))
+	summary.addSources(deepAgentSourceRefsFromAny(values["sources"]))
 	summary.toolCallCount += len(deepAgentToolCallRefsFromAny(values["tool_calls"]))
 	summary.childJobCount += len(deepAgentChildJobRefsFromAny(values["child_jobs"]))
+	summary.citationCount += deepAgentAnyInt(values["citation_count"], 0)
 	if passed, ok := deepAgentMetadataBool(values, "tests_passed"); ok && passed {
 		summary.testsPassed = true
 		summary.testsRecorded = true
@@ -487,9 +489,10 @@ func collectDeepAgentEvidenceSummary(values map[string]any, summary *deepAgentEv
 		summary.riskViolation = violation
 	}
 	if evidence, ok := deepAgentStepEvidenceFromAny(values["step_evidence"]); ok {
-		summary.sourceCount += len(evidence.Sources)
+		summary.addSources(evidence.Sources)
 		summary.toolCallCount += len(evidence.ToolCalls)
 		summary.childJobCount += len(evidence.ChildJobs)
+		summary.citationCount += countDeepAgentCitationMarkers(firstNonEmptyString(evidence.Output, evidence.Summary))
 		if passed, ok := evidence.Diagnostics["tests_passed"].(bool); ok && passed {
 			summary.testsPassed = true
 			summary.testsRecorded = true
@@ -518,9 +521,31 @@ func collectDeepAgentEvidenceSummary(values map[string]any, summary *deepAgentEv
 	}
 }
 
+func (summary *deepAgentEvidenceSummary) addSources(refs []DeepAgentSourceRef) {
+	if summary == nil || len(refs) == 0 {
+		return
+	}
+	if summary.sourceSeen == nil {
+		summary.sourceSeen = map[string]struct{}{}
+	}
+	for _, ref := range refs {
+		key := strings.ToLower(strings.TrimSpace(firstNonEmptyString(ref.URL, ref.Title, ref.Snippet)))
+		if key == "" {
+			continue
+		}
+		summary.sourceCount++
+		if _, exists := summary.sourceSeen[key]; exists {
+			continue
+		}
+		summary.sourceSeen[key] = struct{}{}
+		summary.sources = append(summary.sources, ref)
+	}
+}
+
 func verifyDeepAgentFinalState(state *DeepAgentState) DeepAgentFinalVerification {
 	checks := []DeepAgentVerificationCheck{}
 	missing := []string{}
+	researchQuality := deepAgentResearchQualityReport(state)
 	addCheck := func(name string, passed bool, reason string) {
 		checks = append(checks, DeepAgentVerificationCheck{Name: name, Passed: passed, Reason: reason})
 		if !passed && strings.TrimSpace(reason) != "" {
@@ -530,12 +555,13 @@ func verifyDeepAgentFinalState(state *DeepAgentState) DeepAgentFinalVerification
 	for _, step := range state.Plan.Steps {
 		if step.Status != DeepAgentStepStatusSucceeded && step.Status != DeepAgentStepStatusSkipped {
 			addCheck("steps_completed", false, "not all steps completed")
-			return DeepAgentFinalVerification{Done: false, Reason: "not all steps completed", Checks: checks, Missing: missing, Confidence: "high"}
+			return DeepAgentFinalVerification{Done: false, Reason: "not all steps completed", Checks: checks, Missing: missing, Confidence: "high", ResearchQuality: researchQuality}
 		}
 	}
 	addCheck("steps_completed", true, "all steps completed")
 	verifyDeepAgentFinalArtifact(state, addCheck)
-	verifyDeepAgentFinalSources(state, addCheck)
+	verifyDeepAgentFinalSources(state, researchQuality, addCheck)
+	verifyDeepAgentResearchReportQuality(state, researchQuality, addCheck)
 	verifyDeepAgentFinalContent(state, addCheck)
 	verifyDeepAgentFinalTests(state, addCheck)
 	verifyDeepAgentFinalRisk(state, addCheck)
@@ -551,13 +577,13 @@ func verifyDeepAgentFinalState(state *DeepAgentState) DeepAgentFinalVerification
 		}
 	}
 	if len(missing) > 0 {
-		return DeepAgentFinalVerification{Done: false, Reason: strings.Join(missing, "; "), Checks: checks, Missing: missing, Confidence: "high"}
+		return DeepAgentFinalVerification{Done: false, Reason: strings.Join(missing, "; "), Checks: checks, Missing: missing, Confidence: "high", ResearchQuality: researchQuality}
 	}
 	reason := "all final verification checks passed"
 	if refs := deepAgentArtifactRefsFromAny(state.WorkingMemory["final_artifact_refs"]); len(refs) > 0 {
 		reason = "all final verification checks passed and final artifact verified"
 	}
-	return DeepAgentFinalVerification{Done: true, Reason: reason, Checks: checks, Confidence: "high"}
+	return DeepAgentFinalVerification{Done: true, Reason: reason, Checks: checks, Confidence: "high", ResearchQuality: researchQuality}
 }
 
 func verifyDeepAgentFinalArtifact(state *DeepAgentState, addCheck func(string, bool, string)) {
@@ -583,7 +609,7 @@ func verifyDeepAgentFinalArtifact(state *DeepAgentState, addCheck func(string, b
 	addCheck("artifact_verifier", true, "final artifact verified")
 }
 
-func verifyDeepAgentFinalSources(state *DeepAgentState, addCheck func(string, bool, string)) {
+func verifyDeepAgentFinalSources(state *DeepAgentState, researchQuality *DeepAgentResearchQualityReport, addCheck func(string, bool, string)) {
 	if !deepAgentFinalRequiresSources(state) {
 		addCheck("source_verifier", true, "source evidence not required")
 		return
@@ -593,7 +619,317 @@ func verifyDeepAgentFinalSources(state *DeepAgentState, addCheck func(string, bo
 		addCheck("source_verifier", false, "required source evidence is missing")
 		return
 	}
+	if deepAgentResearchQualityRequired(state) && len(evidence.sources) < 2 {
+		addCheck("source_verifier", false, "multiple source URLs or citations are required for research reports")
+		return
+	}
+	if researchQuality != nil && deepAgentResearchQualityRequired(state) {
+		invalidCount := deepAgentAnyInt(researchQuality.CitationVerification["invalid_url_count"], 0)
+		if invalidCount > 0 {
+			addCheck("source_verifier", false, fmt.Sprintf("citation verifier found %d invalid source URL(s)", invalidCount))
+			return
+		}
+	}
 	addCheck("source_verifier", true, "source evidence verified")
+}
+
+func verifyDeepAgentResearchReportQuality(state *DeepAgentState, quality *DeepAgentResearchQualityReport, addCheck func(string, bool, string)) {
+	if !deepAgentResearchQualityRequired(state) {
+		return
+	}
+	if quality == nil {
+		addCheck("research_quality_verifier", false, "research quality report is missing")
+		return
+	}
+	if quality.AverageSourceQuality > 0 && quality.AverageSourceQuality < 0.35 {
+		addCheck("source_quality_verifier", false, "source quality is too low for a research report")
+	} else {
+		addCheck("source_quality_verifier", true, "source quality scored")
+	}
+	if len(quality.Coverage.Missing) > 0 {
+		addCheck("coverage_verifier", false, "research coverage missing: "+strings.Join(quality.Coverage.Missing, ", "))
+	} else {
+		addCheck("coverage_verifier", true, "critical research coverage verified")
+	}
+	if invalid, _ := quality.EntityDisambiguation["ambiguous"].(bool); invalid {
+		reason := firstNonEmptyString(deepAgentWorkflowString(quality.EntityDisambiguation, "reason"), "entity disambiguation is unresolved")
+		addCheck("entity_verifier", false, reason)
+	} else {
+		addCheck("entity_verifier", true, "entity disambiguation verified")
+	}
+	if len(quality.UnresolvedGaps) > 0 {
+		addCheck("gap_verifier", false, "unresolved research gaps: "+strings.Join(quality.UnresolvedGaps, ", "))
+	} else {
+		addCheck("gap_verifier", true, "no critical research gaps unresolved")
+	}
+}
+
+func deepAgentResearchQualityReport(state *DeepAgentState) *DeepAgentResearchQualityReport {
+	if state == nil || !deepAgentResearchQualityRequired(state) {
+		return nil
+	}
+	evidence := deepAgentStateEvidenceSummary(state)
+	sourceQuality := map[string]int{}
+	totalScore := 0.0
+	traceableTitles := make([]string, 0, len(evidence.sources))
+	for idx, source := range evidence.sources {
+		kind, score, label := deepAgentClassifySourceQuality(source)
+		source.SourceKind = firstNonEmptyString(source.SourceKind, kind)
+		source.Quality = firstNonEmptyString(source.Quality, label)
+		source.QualityScore = firstPositiveFloat(source.QualityScore, score)
+		sourceQuality[kind]++
+		totalScore += score
+		title := firstNonEmptyString(source.Title, source.URL, fmt.Sprintf("source-%d", idx+1))
+		traceableTitles = append(traceableTitles, title)
+	}
+	avg := 0.0
+	if len(evidence.sources) > 0 {
+		avg = totalScore / float64(len(evidence.sources))
+	}
+	citationCount := evidence.citationCount
+	if citationCount < len(evidence.sources) {
+		citationCount = len(evidence.sources)
+	}
+	citationVerification := deepAgentCitationVerification(evidence.sources)
+	coverage := deepAgentResearchCoverage(state, evidence.sources)
+	entity := deepAgentEntityDisambiguation(state, evidence.sources)
+	gaps := append([]string(nil), coverage.Missing...)
+	if ambiguous, _ := entity["ambiguous"].(bool); ambiguous {
+		gaps = appendUniqueString(gaps, firstNonEmptyString(deepAgentWorkflowString(entity, "reason"), "entity disambiguation unresolved"))
+	}
+	if invalidURLCount := deepAgentAnyInt(citationVerification["invalid_url_count"], 0); invalidURLCount > 0 {
+		gaps = appendUniqueString(gaps, "invalid source URLs")
+	}
+	return &DeepAgentResearchQualityReport{
+		Required:              true,
+		SourceCount:           len(evidence.sources),
+		CitationCount:         citationCount,
+		SourceQuality:         sourceQuality,
+		AverageSourceQuality:  avg,
+		CitationVerification:  citationVerification,
+		Coverage:              coverage,
+		EntityDisambiguation:  entity,
+		UnresolvedGaps:        gaps,
+		Confidence:            deepAgentResearchQualityConfidence(len(evidence.sources), avg, len(gaps)),
+		TraceableSourceTitles: traceableTitles,
+	}
+}
+
+func deepAgentResearchQualityRequired(state *DeepAgentState) bool {
+	if state == nil {
+		return false
+	}
+	if strings.EqualFold(deepAgentWorkflowString(state.WorkingMemory, "template_id"), LoopTemplateResearchReport) {
+		return true
+	}
+	if strings.EqualFold(normalizeLoopTemplateID(deepAgentStateLoopGoalString(state, "template_id")), LoopTemplateResearchReport) {
+		return true
+	}
+	taskType := strings.ToLower(firstNonEmptyString(
+		deepAgentWorkflowString(state.WorkingMemory, "task_type"),
+		deepAgentStateLoopGoalString(state, "task_type"),
+	))
+	deliverable := strings.ToLower(firstNonEmptyString(
+		deepAgentWorkflowString(state.WorkingMemory, "deliverable"),
+		deepAgentStateLoopGoalString(state, "deliverable"),
+	))
+	if deepAgentContainsAny(taskType, LoopTemplateResearchReport, "research_report") || deepAgentContainsAny(deliverable, "research_report") {
+		return true
+	}
+	for _, required := range normalizeDeepAgentRubric(state.Rubric).RequiredArtifacts {
+		if deepAgentContainsAny(strings.ToLower(required), "research report", "调研报告", "研究报告") {
+			return true
+		}
+	}
+	return false
+}
+
+func deepAgentClassifySourceQuality(source DeepAgentSourceRef) (kind string, score float64, label string) {
+	text := strings.ToLower(strings.Join([]string{source.URL, source.Title, source.Snippet, source.Provider}, " "))
+	host := ""
+	if parsed, err := url.Parse(source.URL); err == nil {
+		host = strings.ToLower(parsed.Hostname())
+	}
+	switch {
+	case host == "" && strings.TrimSpace(source.Title) == "":
+		return "low_quality", 0.2, "low_quality"
+	case strings.HasSuffix(host, ".gov") || strings.HasSuffix(host, ".edu") ||
+		deepAgentContainsAny(text, "official", "docs.", "/docs", "developer.", "/developer", "/api/", "pricing", "about", "whitepaper", "官方"):
+		return "official_or_primary", 0.9, "high"
+	case deepAgentContainsAny(host, "github.com", "gitlab.com") || deepAgentContainsAny(text, "source code", "release notes", "changelog"):
+		return "primary", 0.75, "good"
+	case deepAgentContainsAny(host, "reuters.com", "bloomberg.com", "techcrunch.com", "theverge.com", "wired.com", "arstechnica.com", "wsj.com", "nytimes.com", "cnn.com", "bbc.com"):
+		return "news_media", 0.65, "medium"
+	case deepAgentContainsAny(host, "reddit.com", "news.ycombinator.com", "stackoverflow.com", "x.com", "twitter.com", "medium.com", "substack.com"):
+		return "community", 0.45, "medium_low"
+	case deepAgentContainsAny(host, "mirror", "scrape", "top10", "best-", "coupon", "download") || deepAgentContainsAny(text, "转载", "搬运"):
+		return "low_quality", 0.25, "low_quality"
+	default:
+		return "unknown", 0.5, "medium"
+	}
+}
+
+func deepAgentCitationVerification(sources []DeepAgentSourceRef) map[string]any {
+	validURLs := 0
+	invalidURLs := 0
+	titleCount := 0
+	snippetCount := 0
+	for _, source := range sources {
+		if strings.TrimSpace(source.Title) != "" {
+			titleCount++
+		}
+		if strings.TrimSpace(source.Snippet) != "" {
+			snippetCount++
+		}
+		if strings.TrimSpace(source.URL) == "" {
+			continue
+		}
+		parsed, err := url.Parse(source.URL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || !strings.HasPrefix(parsed.Scheme, "http") {
+			invalidURLs++
+			continue
+		}
+		validURLs++
+	}
+	return map[string]any{
+		"url_accessibility":      "syntax_checked",
+		"valid_url_count":        validURLs,
+		"invalid_url_count":      invalidURLs,
+		"title_match_count":      titleCount,
+		"claim_support_count":    snippetCount,
+		"traceable_source_count": len(sources),
+	}
+}
+
+func deepAgentResearchCoverage(state *DeepAgentState, sources []DeepAgentSourceRef) DeepAgentResearchCoverageReport {
+	corpus := deepAgentResearchEvidenceCorpus(state)
+	for _, source := range sources {
+		corpus += "\n" + strings.ToLower(strings.Join([]string{source.Title, source.Snippet, source.URL, source.Provider}, "\n"))
+	}
+	requirements := map[string][]string{
+		"company_team":         {"company", "team", "founder", "about", "公司", "团队", "创始", "开发者"},
+		"product_features":     {"feature", "capability", "function", "product", "功能", "产品", "能力", "特性"},
+		"pricing_availability": {"pricing", "price", "availability", "available", "定价", "价格", "可用", "上线"},
+		"user_reviews":         {"review", "feedback", "user", "rating", "评价", "用户", "反馈", "口碑"},
+		"competitors":          {"competitor", "alternative", "versus", "compare", "竞品", "竞争", "替代", "对比"},
+		"risks_uncertainty":    {"risk", "uncertain", "caveat", "limitation", "风险", "不确定", "限制", "注意"},
+	}
+	var covered []string
+	var missing []string
+	for key, tokens := range requirements {
+		if deepAgentContainsAny(corpus, tokens...) {
+			covered = append(covered, key)
+		} else {
+			missing = append(missing, key)
+		}
+	}
+	return DeepAgentResearchCoverageReport{Covered: covered, Missing: missing}
+}
+
+func deepAgentResearchEvidenceCorpus(state *DeepAgentState) string {
+	if state == nil {
+		return ""
+	}
+	var b strings.Builder
+	appendText := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		b.WriteString("\n")
+		b.WriteString(strings.ToLower(value))
+	}
+	for _, evidence := range (StateDeepAgentEvidenceStore{}).ListStepEvidence(state) {
+		appendText(evidence.Summary)
+		appendText(evidence.Output)
+		for _, source := range evidence.Sources {
+			appendText(source.Title)
+			appendText(source.Snippet)
+			appendText(source.URL)
+			appendText(source.Provider)
+		}
+	}
+	if state.WorkingMemory == nil {
+		return b.String()
+	}
+	store, _ := state.WorkingMemory["step_context"].(map[string]any)
+	for _, raw := range store {
+		record, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		appendText(deepAgentWorkflowString(record, "summary"))
+		appendText(deepAgentWorkflowString(record, "output"))
+		if evidence, ok := deepAgentStepEvidenceFromAny(record["step_evidence"]); ok {
+			appendText(evidence.Summary)
+			appendText(evidence.Output)
+		}
+		if metadata, _ := record["metadata"].(map[string]any); len(metadata) > 0 {
+			appendText(deepAgentWorkflowString(metadata, "summary"))
+			appendText(deepAgentWorkflowString(metadata, "output"))
+		}
+	}
+	return b.String()
+}
+
+func deepAgentEntityDisambiguation(state *DeepAgentState, sources []DeepAgentSourceRef) map[string]any {
+	for _, key := range []string{"entity_ambiguity", "ambiguous_entity", "entity_disambiguation_failed"} {
+		if state != nil && state.WorkingMemory != nil {
+			if ambiguous, ok := deepAgentMetadataBool(state.WorkingMemory, key); ok && ambiguous {
+				return map[string]any{"ambiguous": true, "reason": "entity disambiguation is unresolved"}
+			}
+		}
+	}
+	hosts := map[string]struct{}{}
+	for _, source := range sources {
+		parsed, err := url.Parse(source.URL)
+		if err != nil || parsed.Hostname() == "" {
+			continue
+		}
+		hosts[strings.ToLower(parsed.Hostname())] = struct{}{}
+	}
+	return map[string]any{"ambiguous": false, "source_clusters": len(hosts)}
+}
+
+func deepAgentResearchQualityConfidence(sourceCount int, average float64, gaps int) string {
+	switch {
+	case gaps > 0 || sourceCount < 2:
+		return "low"
+	case average >= 0.65 && sourceCount >= 3:
+		return "high"
+	default:
+		return "medium"
+	}
+}
+
+func deepAgentResearchQualityFromAny(raw any) (*DeepAgentResearchQualityReport, bool) {
+	if raw == nil {
+		return nil, false
+	}
+	if typed, ok := raw.(*DeepAgentResearchQualityReport); ok {
+		return typed, typed != nil
+	}
+	if typed, ok := raw.(DeepAgentResearchQualityReport); ok {
+		return &typed, true
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false
+	}
+	var out DeepAgentResearchQualityReport
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, false
+	}
+	return &out, true
+}
+
+func firstPositiveFloat(values ...float64) float64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func verifyDeepAgentFinalContent(state *DeepAgentState, addCheck func(string, bool, string)) {

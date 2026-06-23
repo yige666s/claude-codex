@@ -2470,6 +2470,18 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, user Use
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
 }
 
+func (s *Server) handleTaskInbox(w http.ResponseWriter, r *http.Request, user User) {
+	inbox, err := s.runtime.TaskInbox(r.Context(), user.ID, TaskInboxOptions{
+		SessionID: r.URL.Query().Get("session_id"),
+		Limit:     parseBoundedInt(r.URL.Query().Get("limit"), 100, 1, 300),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, inbox)
+}
+
 func (s *Server) handleSearchMessages(w http.ResponseWriter, r *http.Request, user User) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	limit := parseBoundedInt(r.URL.Query().Get("limit"), 20, 1, 100)

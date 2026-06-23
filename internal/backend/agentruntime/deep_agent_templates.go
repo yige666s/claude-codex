@@ -37,10 +37,15 @@ func DefaultDeepAgentLoopTemplates() []DeepAgentLoopTemplate {
 			TaskType:    LoopTemplateResearchReport,
 			Deliverable: "research_report",
 			Rubric: LoopRubric{
-				AcceptanceCriteria: []string{"sources are gathered before synthesis", "final report states findings, caveats, and next steps"},
-				RequiredEvidence:   []string{"multiple source URLs or citations", "synthesis notes", "final artifact reference"},
-				RequiredArtifacts:  []string{"research report"},
-				QualityBar:         "Evidence-backed, clearly structured, and explicit about uncertainty.",
+				AcceptanceCriteria: []string{
+					"sources are gathered before synthesis",
+					"final report states findings, caveats, and next steps",
+					"critical coverage includes company/team, product features, pricing/availability, user reviews, competitors, and risks/uncertainty",
+					"citations are traceable to source URLs or titles",
+				},
+				RequiredEvidence:  []string{"multiple source URLs or citations", "synthesis notes", "final artifact reference", "source quality and coverage verification"},
+				RequiredArtifacts: []string{"research report"},
+				QualityBar:        "Evidence-backed, clearly structured, and explicit about uncertainty.",
 			},
 			Budget:        LoopBudget{MaxSteps: 5, MaxActions: 12, MaxDuration: 45 * time.Minute, MaxToolCalls: 12},
 			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "gather", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "source_pack", allowedTools: webResearchAllowedTools(), searchScope: "web"}, {stepID: "synthesize", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "analysis"}, {stepID: "artifact", mode: DeepAgentToolModeModelArtifact, executor: deepAgentRouteExecutorArtifact, artifact: true, deliverable: "markdown_report"}, {stepID: "verify", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "verification"}}),
@@ -317,8 +322,8 @@ func templateStep(id, title, intent string, dependsOn []string, done, tool strin
 }
 
 func researchGatherTemplateStep() DeepAgentStep {
-	intent := "Use WebSearch first, then WebFetch for relevant source URLs when snippets are insufficient. Collect source material, URLs, and factual notes relevant to the user's goal."
-	step := templateStep("gather", "收集来源和关键事实", intent, nil, "已收集可追溯来源和关键事实", DeepAgentToolModeModel)
+	intent := "Use WebSearch first, then WebFetch for relevant source URLs when snippets are insufficient. Collect traceable URLs and factual notes for company/team, product features, pricing/availability, user reviews, competitors, and risks/uncertainty."
+	step := templateStep("gather", "收集来源和关键事实", intent, nil, "已收集可追溯来源，并覆盖 company/team、product features、pricing/availability、user reviews、competitors、risks/uncertainty", DeepAgentToolModeModel)
 	route := DeepAgentStepRoute{
 		StepID:          "gather",
 		Version:         "template:v1",
@@ -327,7 +332,7 @@ func researchGatherTemplateStep() DeepAgentStep {
 		DeliverableType: "source_pack",
 		AllowedTools:    webResearchAllowedTools(),
 		SearchScope:     "web",
-		SuccessCriteria: []string{"已收集可追溯来源和关键事实"},
+		SuccessCriteria: []string{"已收集可追溯来源和关键事实", "已覆盖 company/team、product features、pricing/availability、user reviews、competitors、risks/uncertainty"},
 		Reason:          "research report template source gathering route",
 		Confidence:      "high",
 	}
@@ -340,7 +345,7 @@ func researchGatherTemplateStep() DeepAgentStep {
 }
 
 func researchVerifyTemplateStep() DeepAgentStep {
-	step := templateStep("verify", "校验来源、结论和交付物", "Verify source coverage, report completeness, and artifact availability using accumulated DeepAgent evidence.", []string{"artifact"}, "来源、结论和 artifact 均通过校验", DeepAgentToolModeTest)
+	step := templateStep("verify", "校验来源、结论和交付物", "Verify source quality, citation traceability, entity disambiguation, coverage completeness, and artifact availability using accumulated DeepAgent evidence.", []string{"artifact"}, "来源质量、引用、实体、覆盖项和 artifact 均通过校验", DeepAgentToolModeTest)
 	if args, ok := step.Metadata["args"].(map[string]any); ok {
 		args["state_verification"] = true
 	}

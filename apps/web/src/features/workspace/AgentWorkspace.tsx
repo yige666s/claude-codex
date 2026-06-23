@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { ApiClient, ApiError } from "../../api/client";
 import { userFacingErrorMessage } from "../../api/errorMessages";
-import type { AgentActivity, AgentActivityItem, Asset, AuthSession, ConnectorPolicy, ConnectorStatus, DeepAgentLoopTemplate, DeepAgentResumeRequest, Job, JobEvent, LoopGoal, LoopGoalRunResult, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill } from "../../types";
+import type { AgentActivity, AgentActivityItem, Asset, AuthSession, ConnectorPolicy, ConnectorStatus, DeepAgentLoopTemplate, DeepAgentResumeRequest, Job, JobEvent, LoopGoal, LoopGoalRunResult, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill, TaskInboxItem } from "../../types";
 import { readSSEStream } from "../../lib/sse";
 import { sessionTitle } from "../../lib/sessionTitle";
 import { AuthPage, type AuthMode } from "../auth/AuthPage";
@@ -34,11 +34,24 @@ import { PreviewModal } from "./components/PreviewModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { GlobalSearchDialog } from "./components/GlobalSearchDialog";
 import { MessageComposer } from "./components/MessageComposer";
+import { TaskInboxDialog } from "./components/TaskInboxDialog";
 import { WorkspaceFrame } from "./components/WorkspaceFrame";
 import { WorkspaceResourceDialog } from "./components/WorkspaceResourceDialog";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { SkillGlyph } from "./components/right-panel/SkillPanel";
 import { LoopPanel } from "./components/right-panel/LoopPanel";
+import {
+  browserTaskNotificationPermission,
+  browserTaskNotificationsEnabled,
+  browserTaskPushSubscriptionID,
+  notifyTaskInboxItem,
+  requestBrowserTaskNotifications,
+  setBrowserTaskNotificationsEnabled,
+  setBrowserTaskPushSubscriptionID,
+  subscribeBrowserTaskPush,
+  unsubscribeBrowserTaskPush,
+  taskInboxNotificationKey
+} from "../../lib/browserNotifications";
 import { useLiveVoice } from "./hooks/useLiveVoice";
 import type { ComposerToolID, ConfirmDialog, JobStreamStatus, RightPanelSearch, RightPanelTab, ServiceStatus, Status } from "./workspaceTypes";
 
@@ -290,6 +303,13 @@ export function AgentWorkspace() {
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false);
   const [globalSearchError, setGlobalSearchError] = useState("");
   const [globalSearchTarget, setGlobalSearchTarget] = useState<{ sessionID: string; messageIndex: number } | null>(null);
+  const [taskInboxOpen, setTaskInboxOpen] = useState(false);
+  const [taskInboxItems, setTaskInboxItems] = useState<TaskInboxItem[]>([]);
+  const [taskInboxLoading, setTaskInboxLoading] = useState(false);
+  const [taskInboxError, setTaskInboxError] = useState("");
+  const [taskInboxBusyAction, setTaskInboxBusyAction] = useState("");
+  const [browserNotificationPermission, setBrowserNotificationPermission] = useState(browserTaskNotificationPermission);
+  const [browserNotificationsEnabled, setBrowserNotificationsEnabled] = useState(browserTaskNotificationsEnabled);
   const [highlightedMessageIndex, setHighlightedMessageIndex] = useState<number | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
   const [busyChat, setBusyChat] = useState(false);
@@ -359,6 +379,8 @@ export function AgentWorkspace() {
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const artifactsRef = useRef<Asset[]>([]);
   const chatTurnRef = useRef(0);
+  const taskInboxNotificationSeenRef = useRef<Set<string>>(new Set());
+  const taskInboxNotificationBaselineReadyRef = useRef(false);
   const authSession = auth || api.session();
   const activeSession = sessions.find((item) => item.id === sessionId);
   const latestJob = jobs[0];
@@ -485,6 +507,16 @@ export function AgentWorkspace() {
     }
     void loadLoopResources(sessionId, { quiet: true });
   }, [authSession?.access_token, sessionId]);
+
+  useEffect(() => {
+    if (!authSession?.user.id || !browserNotificationsEnabled) return;
+    taskInboxNotificationBaselineReadyRef.current = false;
+    void loadTaskInbox({ quiet: true, notify: true });
+    const timer = window.setInterval(() => {
+      void loadTaskInbox({ quiet: true, notify: true });
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [authSession?.user.id, browserNotificationsEnabled]);
 
   useEffect(() => {
     if (forgotCooldownSeconds <= 0) return;
@@ -801,6 +833,179 @@ export function AgentWorkspace() {
     setResourceDialogTab(tab);
     setResourceVisibleCount((current) => ({ ...current, [tab]: resourcePageSize }));
     setMobileNav(false);
+  }
+
+  function rememberTaskInboxNotifications(items: TaskInboxItem[]) {
+    for (const item of items) {
+      taskInboxNotificationSeenRef.current.add(taskInboxNotificationKey(item));
+    }
+  }
+
+  function handleTaskInboxNotifications(items: TaskInboxItem[]) {
+    if (!taskInboxNotificationBaselineReadyRef.current) {
+      rememberTaskInboxNotifications(items);
+      taskInboxNotificationBaselineReadyRef.current = true;
+      return;
+    }
+    if (!browserNotificationsEnabled) {
+      rememberTaskInboxNotifications(items);
+      return;
+    }
+    for (const item of items) {
+      const key = taskInboxNotificationKey(item);
+      if (taskInboxNotificationSeenRef.current.has(key)) continue;
+      taskInboxNotificationSeenRef.current.add(key);
+      notifyTaskInboxItem(item);
+    }
+  }
+
+  async function loadTaskInbox(options: { quiet?: boolean; notify?: boolean } = {}) {
+    if (!options.quiet) setTaskInboxLoading(true);
+    setTaskInboxError("");
+    try {
+      const inbox = await api.taskInbox({ limit: 100 });
+      const items = inbox.items || [];
+      setTaskInboxItems(items);
+      if (options.notify) {
+        handleTaskInboxNotifications(items);
+      } else {
+        rememberTaskInboxNotifications(items);
+      }
+    } catch (error) {
+      setTaskInboxError(errorMessage(error));
+    } finally {
+      if (!options.quiet) setTaskInboxLoading(false);
+    }
+  }
+
+  async function enableBrowserTaskNotifications() {
+    setTaskInboxError("");
+    const permission = await requestBrowserTaskNotifications();
+    setBrowserNotificationPermission(permission);
+    const enabled = permission === "granted";
+    setBrowserNotificationsEnabled(enabled);
+    if (enabled) {
+      try {
+        const pushConfig = await api.browserPushConfig();
+        if (pushConfig.enabled && pushConfig.public_key) {
+          const subscription = await subscribeBrowserTaskPush(pushConfig.public_key);
+          if (subscription) {
+            const saved = await api.saveBrowserPushSubscription(subscription.toJSON());
+            setBrowserTaskPushSubscriptionID(saved.id);
+            void api.testBrowserPush().catch(() => undefined);
+          }
+        }
+      } catch (error) {
+        setTaskInboxError(`Browser notifications are enabled for open pages, but offline push registration failed: ${errorMessage(error)}`);
+      }
+      rememberTaskInboxNotifications(taskInboxItems);
+      taskInboxNotificationBaselineReadyRef.current = true;
+      setStatus({ tone: "ok", text: "Browser notifications enabled" });
+      return;
+    }
+    setTaskInboxError(permission === "unsupported" ? "This browser does not support notifications." : "Browser notification permission was not granted.");
+  }
+
+  function disableBrowserTaskNotifications() {
+    const subscriptionID = browserTaskPushSubscriptionID();
+    if (subscriptionID) {
+      void api.deleteBrowserPushSubscription(subscriptionID).catch(() => undefined);
+      setBrowserTaskPushSubscriptionID("");
+    }
+    void unsubscribeBrowserTaskPush().catch(() => undefined);
+    setBrowserTaskNotificationsEnabled(false);
+    setBrowserNotificationsEnabled(false);
+    setStatus({ tone: "ok", text: "Browser notifications disabled" });
+  }
+
+  function openTaskInbox() {
+    setMobileNav(false);
+    setTaskInboxOpen(true);
+    void loadTaskInbox();
+  }
+
+  async function ensureTaskSession(item: TaskInboxItem) {
+    if (!item.session_id || item.session_id === sessionId) return;
+    selectSession(item.session_id);
+    await refreshSessionData(item.session_id);
+    await loadLoopResources(item.session_id, { quiet: true });
+  }
+
+  async function openTaskInboxItem(item: TaskInboxItem) {
+    setTaskInboxError("");
+    try {
+      await ensureTaskSession(item);
+      if (item.kind === "artifact" || item.primary_artifact_id || item.artifact_id) {
+        const artifactID = item.primary_artifact_id || item.artifact_id || "";
+        let artifact = artifactsRef.current.find((asset) => asset.id === artifactID);
+        if (!artifact) {
+          const loadedArtifacts = await api.artifacts(item.session_id || sessionId || undefined);
+          artifactsRef.current = loadedArtifacts;
+          setArtifacts(loadedArtifacts);
+          artifact = loadedArtifacts.find((asset) => asset.id === artifactID);
+        }
+        if (artifact) {
+          setTaskInboxOpen(false);
+          openArtifactWorkspace(artifact);
+          return;
+        }
+      }
+      if (item.kind === "loop" && item.loop_goal_id) {
+        const goal = await api.loopGoal(item.loop_goal_id);
+        setLoopGoals((current) => upsertLoopGoal(current, goal));
+        setSelectedLoopGoalId(goal.id);
+        if (goal.workflow_run_id) {
+          setSelectedLoopRun(await api.loopRun(goal.workflow_run_id));
+        } else {
+          setSelectedLoopRun({ goal });
+        }
+        setTaskInboxOpen(false);
+        setResourceDialogTab("loops");
+        return;
+      }
+      if (item.job_id) {
+        setTaskInboxOpen(false);
+        openJobWorkspace(item.job_id);
+        return;
+      }
+      setTaskInboxError("This task no longer has an openable target.");
+    } catch (error) {
+      setTaskInboxError(errorMessage(error));
+    }
+  }
+
+  async function reviewTaskInboxItem(item: TaskInboxItem, action: "approve" | "reject") {
+    const runID = item.review?.run_id;
+    if (!runID) return;
+    setTaskInboxBusyAction(`${item.id}:${action}`);
+    setTaskInboxError("");
+    try {
+      const result = await api.resumeLoopRun(runID, {
+        review_decision: {
+          action,
+          step_id: item.review?.step_id,
+          action_hash: item.review?.action_hash,
+          reason: action === "reject" ? "rejected from task inbox" : undefined
+        }
+      });
+      if (result.goal?.id) {
+        setSelectedLoopGoalId(result.goal.id);
+      }
+      const resultJob = result.job;
+      if (resultJob) {
+        setJobs((current) => upsertJob(current, resultJob));
+      }
+      setSelectedLoopRun(result);
+      await Promise.all([
+        loadTaskInbox({ quiet: true }),
+        loadLoopResources(item.session_id || sessionId, { quiet: true })
+      ]);
+      setStatus({ tone: "ok", text: action === "approve" ? "Review approved" : "Review rejected" });
+    } catch (error) {
+      setTaskInboxError(errorMessage(error));
+    } finally {
+      setTaskInboxBusyAction("");
+    }
   }
 
   async function loadLoopResources(targetSessionId = sessionId, options: { quiet?: boolean } = {}) {
@@ -2251,6 +2456,7 @@ export function AgentWorkspace() {
           onCloseMobile={() => setMobileNav(false)}
           onCreateSession={createSession}
           onOpenSearch={() => setGlobalSearchOpen(true)}
+          onOpenInbox={openTaskInbox}
           onOpenResource={openResourceDialog}
           onSelectSession={selectSession}
           onRemoveSession={removeSession}
@@ -2429,6 +2635,22 @@ export function AgentWorkspace() {
             onOpenChange={setGlobalSearchOpen}
             onQueryChange={setGlobalSearchQuery}
             onOpenResult={openSearchResult}
+            formatTime={formatTime}
+          />
+          <TaskInboxDialog
+            open={taskInboxOpen}
+            items={taskInboxItems}
+            loading={taskInboxLoading}
+            error={taskInboxError}
+            busyAction={taskInboxBusyAction}
+            browserNotificationPermission={browserNotificationPermission}
+            browserNotificationsEnabled={browserNotificationsEnabled}
+            onOpenChange={setTaskInboxOpen}
+            onRefresh={() => { void loadTaskInbox(); }}
+            onEnableBrowserNotifications={() => { void enableBrowserTaskNotifications(); }}
+            onDisableBrowserNotifications={disableBrowserTaskNotifications}
+            onOpenItem={(item) => { void openTaskInboxItem(item); }}
+            onReview={(item, action) => { void reviewTaskInboxItem(item, action); }}
             formatTime={formatTime}
           />
           {skillDetail && (
@@ -2614,6 +2836,11 @@ function upsertSession(items: Session[], session: Session): Session[] {
 function upsertJob(items: Job[], job: Job): Job[] {
   const next = items.filter((item) => item.id !== job.id);
   return [job, ...next].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+}
+
+function upsertLoopGoal(items: LoopGoal[], goal: LoopGoal): LoopGoal[] {
+  const next = items.filter((item) => item.id !== goal.id);
+  return [goal, ...next].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 }
 
 function appendRuntimeMessage(messages: Message[], message: Message): Message[] {
