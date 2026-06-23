@@ -618,9 +618,6 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	}
 	requiresArtifact := forceArtifact || deepAgentActionRequiresArtifact(action)
 	allowedTools := deepAgentModelActionAllowedTools(action, agentState, forceArtifact)
-	if len(allowedTools) > 0 {
-		prompt = deepAgentPromptWithAllowedToolScope(prompt, allowedTools)
-	}
 	session, err := e.deepAgentSession(ctx, userID, sessionID)
 	if err != nil {
 		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error()}, err
@@ -738,20 +735,6 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	if storeArtifactCount > 0 && diagnostics.ArtifactCount == 0 {
 		metadata["artifact_detected_from_store"] = true
 	}
-	disallowedTools := deepAgentDisallowedModelToolNames(allowedTools, resultSession, startMessageCount)
-	if len(disallowedTools) > 0 {
-		metadata["disallowed_tool_names"] = disallowedTools
-		if hiddenAssistantMessages := hideDeepAgentExecutionAssistantMessages(resultSession, startMessageCount); hiddenAssistantMessages > 0 {
-			metadata["hidden_assistant_messages"] = hiddenAssistantMessages
-		}
-		if resultSession != nil && userID != "" && strings.TrimSpace(resultSession.ID) != "" {
-			if saveErr := e.runtime.sessions.Save(ctx, userID, resultSession); saveErr != nil {
-				return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: saveErr.Error(), Retryable: true, Metadata: metadata}, saveErr
-			}
-		}
-		err := fmt.Errorf("model action used disallowed tool(s): %s", strings.Join(disallowedTools, ", "))
-		return DeepAgentActionResult{Status: DeepAgentActionStatusFailed, Error: err.Error(), Retryable: true, Metadata: metadata}, err
-	}
 	fallbackOutput := deepAgentModelArtifactFallbackOutput(result.Output, resultSession, startMessageCount)
 	invalidFallbackOutput := requiresArtifact && deepAgentModelArtifactFallbackLooksInvalid(fallbackOutput)
 	if invalidFallbackOutput {
@@ -846,14 +829,6 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	}, nil
 }
 
-func deepAgentPromptWithAllowedToolScope(prompt string, allowedTools []string) string {
-	tools := cleanStringSlice(allowedTools)
-	if len(tools) == 0 {
-		return prompt
-	}
-	return strings.TrimSpace(prompt) + "\n\nTool scope for this step:\n- You may call only these tools: " + strings.Join(tools, ", ") + ".\n- Do not call Skill or any other unlisted tool.\n- If the listed tools cannot complete the step, return a concise tool-scope error instead of using another tool."
-}
-
 func deepAgentModelActionUserOutput(artifactSatisfiedOutput, resultOutput, fallbackOutput string, metadata map[string]any, artifactCount int64) string {
 	if ready := deepAgentArtifactReadyOutput(metadata, artifactCount); ready != "" {
 		return ready
@@ -917,56 +892,6 @@ func deepAgentModelActionEvidenceMetadata(output string, session *state.Session,
 		metadata["sources"] = sources
 	}
 	return metadata
-}
-
-func deepAgentDisallowedModelToolNames(allowedTools []string, session *state.Session, startIndex int) []string {
-	if len(allowedTools) == 0 || session == nil || len(session.Messages) == 0 {
-		return nil
-	}
-	allowed := make(map[string]struct{}, len(allowedTools))
-	for _, tool := range allowedTools {
-		name := strings.ToLower(strings.TrimSpace(tool))
-		if idx := strings.Index(name, "("); idx > 0 && strings.HasSuffix(name, ")") {
-			name = strings.TrimSpace(name[:idx])
-		}
-		if name != "" {
-			allowed[name] = struct{}{}
-		}
-	}
-	if len(allowed) == 0 {
-		return nil
-	}
-	if startIndex < 0 || startIndex > len(session.Messages) {
-		startIndex = 0
-	}
-	seen := map[string]struct{}{}
-	var out []string
-	add := func(name string) {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return
-		}
-		if _, ok := allowed[strings.ToLower(name)]; ok {
-			return
-		}
-		key := strings.ToLower(name)
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		out = append(out, name)
-	}
-	for _, message := range session.Messages[startIndex:] {
-		switch message.Role {
-		case state.MessageRoleAssistant:
-			for _, call := range message.ToolCalls {
-				add(call.Name)
-			}
-		case state.MessageRoleTool:
-			add(message.ToolName)
-		}
-	}
-	return out
 }
 
 func deepAgentModelActionSourceRefs(output string, session *state.Session, startIndex int) []DeepAgentSourceRef {

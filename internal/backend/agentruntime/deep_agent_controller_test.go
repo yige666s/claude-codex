@@ -1038,55 +1038,6 @@ func TestRuntimeDeepAgentModelArtifactUsesAssistantMessageWhenOutputEmpty(t *tes
 	}
 }
 
-func TestRuntimeDeepAgentModelArtifactRejectsDisallowedSkillFallback(t *testing.T) {
-	runtime := NewRuntime(
-		RuntimeConfig{},
-		NewFileSessionStore(t.TempDir()),
-		nil,
-		nil,
-		func(Scope) Runner { return disallowedSkillArtifactRunner{} },
-	)
-	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
-	session, err := runtime.CreateSession(context.Background(), "alice", "")
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-
-	result, err := NewRuntimeDeepAgentExecutor(runtime).ExecuteDeepAgentAction(context.Background(), DeepAgentAction{
-		StepID: "write-report",
-		Tool:   "model_artifact",
-		Args: map[string]any{
-			"user_id":        "alice",
-			"session_id":     session.ID,
-			"prompt":         "生成 Browserless 调研报告",
-			"done_condition": "Markdown report artifact is available",
-			"allowed_tools":  []string{"WebSearch", "WebFetch", ArtifactToolName},
-		},
-	}, &DeepAgentState{
-		Goal:          "帮我调研 Browserless 这个产品，生成一份研究报告",
-		WorkingMemory: map[string]any{"user_id": "alice", "session_id": session.ID},
-	})
-	if err == nil {
-		t.Fatalf("ExecuteDeepAgentAction() expected disallowed tool error, got nil with %#v", result)
-	}
-	if result.Status != DeepAgentActionStatusFailed {
-		t.Fatalf("unexpected result: %#v", result)
-	}
-	if names := deepAgentStringSlice(result.Metadata["disallowed_tool_names"]); strings.Join(names, ",") != "Skill" {
-		t.Fatalf("disallowed_tool_names = %#v, want Skill in %#v", names, result.Metadata)
-	}
-	if got := deepAgentAnyInt(result.Metadata["artifact_count"], -1); got != 0 {
-		t.Fatalf("artifact_count = %d, want 0 in %#v", got, result.Metadata)
-	}
-	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
-	if err != nil {
-		t.Fatalf("list artifacts: %v", err)
-	}
-	if len(artifacts) != 0 {
-		t.Fatalf("disallowed skill fallback should not save artifacts: %#v", artifacts)
-	}
-}
-
 func TestRuntimeDeepAgentModelArtifactCountsStoreArtifactWithoutToolResult(t *testing.T) {
 	var runtime *Runtime
 	runtime = NewRuntime(
@@ -4678,25 +4629,6 @@ func (toolNotFoundArtifactRunner) Run(ctx context.Context, session *state.Sessio
 
 func (toolNotFoundArtifactRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, _ string) (engine.Result, error) {
 	output := `工具未找到：Skill。抱歉，无法生成 Word 格式文档。`
-	session.AddAssistantMessage(output)
-	return engine.Result{Output: output, Session: session}, nil
-}
-
-type disallowedSkillArtifactRunner struct{}
-
-func (disallowedSkillArtifactRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
-	return disallowedSkillArtifactRunner{}.RunGeneratedPrompt(ctx, session, prompt)
-}
-
-func (disallowedSkillArtifactRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, _ string) (engine.Result, error) {
-	input := json.RawMessage(`{"skill":"docx","args":"Browserless 产品研究报告"}`)
-	session.AddAssistantMessageWithTools("", []state.ToolCall{{
-		ID:    "skill-call-1",
-		Name:  skilltool.ToolName,
-		Input: input,
-	}})
-	output := "我明白了，看来 `docx` 技能暂时无法使用。不过没关系，我可以将完整的研究报告内容保存为 Markdown 格式的文档。"
-	session.AddToolResult("skill-call-1", skilltool.ToolName, input, output)
 	session.AddAssistantMessage(output)
 	return engine.Result{Output: output, Session: session}, nil
 }
