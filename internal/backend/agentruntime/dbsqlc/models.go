@@ -84,14 +84,28 @@ type AgentConnectorConnection struct {
 }
 
 type AgentConnectorOauthState struct {
-	State       string          `json:"state"`
-	UserID      string          `json:"user_id"`
-	Provider    string          `json:"provider"`
-	ScopesJson  json.RawMessage `json:"scopes_json"`
-	RedirectUri string          `json:"redirect_uri"`
-	CreatedAt   time.Time       `json:"created_at"`
-	ExpiresAt   time.Time       `json:"expires_at"`
-	UsedAt      sql.NullTime    `json:"used_at"`
+	State        string          `json:"state"`
+	UserID       string          `json:"user_id"`
+	Provider     string          `json:"provider"`
+	ScopesJson   json.RawMessage `json:"scopes_json"`
+	RedirectUri  string          `json:"redirect_uri"`
+	MetadataJson json.RawMessage `json:"metadata_json"`
+	CreatedAt    time.Time       `json:"created_at"`
+	ExpiresAt    time.Time       `json:"expires_at"`
+	UsedAt       sql.NullTime    `json:"used_at"`
+}
+
+type AgentConnectorToken struct {
+	TokenRef               string          `json:"token_ref"`
+	Provider               string          `json:"provider"`
+	AccessTokenCiphertext  string          `json:"access_token_ciphertext"`
+	RefreshTokenCiphertext string          `json:"refresh_token_ciphertext"`
+	TokenType              string          `json:"token_type"`
+	ScopesJson             json.RawMessage `json:"scopes_json"`
+	ExpiresAt              sql.NullTime    `json:"expires_at"`
+	RefreshExpiresAt       sql.NullTime    `json:"refresh_expires_at"`
+	CreatedAt              time.Time       `json:"created_at"`
+	UpdatedAt              time.Time       `json:"updated_at"`
 }
 
 type AgentEmailVerificationToken struct {
@@ -278,6 +292,41 @@ type AgentLoopTrigger struct {
 	Status      string          `json:"status"`
 	CreatedAt   time.Time       `json:"created_at"`
 	ExpiresAt   time.Time       `json:"expires_at"`
+}
+
+type AgentMcpServer struct {
+	ServerID         string          `json:"server_id"`
+	UserID           string          `json:"user_id"`
+	WorkspaceID      string          `json:"workspace_id"`
+	Provider         string          `json:"provider"`
+	DisplayName      string          `json:"display_name"`
+	Transport        string          `json:"transport"`
+	Url              string          `json:"url"`
+	CommandJson      json.RawMessage `json:"command_json"`
+	HeadersRef       string          `json:"headers_ref"`
+	OauthTokenRef    string          `json:"oauth_token_ref"`
+	Status           string          `json:"status"`
+	LastDiscoveredAt sql.NullTime    `json:"last_discovered_at"`
+	Instructions     string          `json:"instructions"`
+	MetadataJson     json.RawMessage `json:"metadata_json"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+}
+
+type AgentMcpToolPolicy struct {
+	PolicyID         string          `json:"policy_id"`
+	UserID           string          `json:"user_id"`
+	WorkspaceID      string          `json:"workspace_id"`
+	ServerID         string          `json:"server_id"`
+	Provider         string          `json:"provider"`
+	ToolName         string          `json:"tool_name"`
+	PermissionPolicy string          `json:"permission_policy"`
+	RequiresReview   bool            `json:"requires_review"`
+	SideEffectLevel  string          `json:"side_effect_level"`
+	Allowed          bool            `json:"allowed"`
+	MetadataJson     json.RawMessage `json:"metadata_json"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
 }
 
 type AgentMemory struct {
