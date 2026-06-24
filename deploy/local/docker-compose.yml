@@ -306,15 +306,26 @@ services:
       AGENT_API_OPERATION_RATE_LIMITS: ${AGENT_API_OPERATION_RATE_LIMITS:-auth_login=20/m,auth_register=10/h,chat_message=60/m,job_create=20/m,attachment_upload=30/m,asset_download=120/m,memory_extract=30/h,data_export=5/h,account_delete=3/h,admin_action=120/m}
       AGENT_API_CORS_ALLOWED_ORIGINS: ${AGENT_API_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:8081,http://127.0.0.1:8081,http://localhost:5173,http://127.0.0.1:5173}
       AGENT_API_STORE_BACKEND: ${AGENT_API_STORE_BACKEND:-sql}
-      AGENT_API_LLM_PROVIDER: ${AGENT_API_LLM_PROVIDER:-vertex}
+      AGENT_API_LLM_PROVIDER: ${AGENT_API_LLM_PROVIDER:-nvidia}
       AGENT_API_EVAL_JUDGE_ENABLED: ${AGENT_API_EVAL_JUDGE_ENABLED:-false}
       AGENT_API_EVAL_JUDGE_MODEL: ${AGENT_API_EVAL_JUDGE_MODEL:-}
       AGENT_API_EVAL_JUDGE_PROMPT_VERSION: ${AGENT_API_EVAL_JUDGE_PROMPT_VERSION:-ragas-json-v1}
       AGENT_API_LLM_API_KEY: ${AGENT_API_LLM_API_KEY:-}
       AGENT_API_LLM_BASE_URL: ${AGENT_API_LLM_BASE_URL:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NGC_API_KEY: ${NGC_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-}
+      NVIDIA_NIM_BASE_URL: ${NVIDIA_NIM_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       SHORTAPI_KEY: ${SHORTAPI_KEY:-}
+      SHORTAPI_API_BASE: ${SHORTAPI_API_BASE:-https://api.shortapi.ai/api/v1}
       SHORTAPI_BASE_URL: ${SHORTAPI_BASE_URL:-}
+      SHORTAPI_IMAGE_MODEL: ${SHORTAPI_IMAGE_MODEL:-google/nano-banana-2/text-to-image}
+      SHORTAPI_IMAGE_ASPECT_RATIO: ${SHORTAPI_IMAGE_ASPECT_RATIO:-1:1}
+      SHORTAPI_IMAGE_RESOLUTION: ${SHORTAPI_IMAGE_RESOLUTION:-2K}
+      SHORTAPI_IMAGE_NUM_IMAGES: ${SHORTAPI_IMAGE_NUM_IMAGES:-1}
+      SHORTAPI_IMAGE_TIMEOUT: ${SHORTAPI_IMAGE_TIMEOUT:-5m}
+      SHORTAPI_IMAGE_POLL_INTERVAL: ${SHORTAPI_IMAGE_POLL_INTERVAL:-2s}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-}
       QWEN_API_KEY: ${QWEN_API_KEY:-}
@@ -336,23 +347,37 @@ services:
       VERTEX_BASE_URL: ${VERTEX_BASE_URL:-}
       VERTEX_IMAGE_MODEL: ${VERTEX_IMAGE_MODEL:-}
       VERTEX_IMAGE_ASPECT_RATIO: ${VERTEX_IMAGE_ASPECT_RATIO:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      XAI_LIVE_MODEL: ${XAI_LIVE_MODEL:-grok-voice-latest}
+      XAI_LIVE_BASE_URL: ${XAI_LIVE_BASE_URL:-wss://api.x.ai/v1/realtime}
+      XAI_LIVE_VOICE: ${XAI_LIVE_VOICE:-ara}
+      XAI_LIVE_INPUT_MIME: ${XAI_LIVE_INPUT_MIME:-audio/pcm;rate=16000}
+      XAI_LIVE_OUTPUT_MIME: ${XAI_LIVE_OUTPUT_MIME:-audio/pcm;rate=16000}
+      XAI_LIVE_LANGUAGE_HINT: ${XAI_LIVE_LANGUAGE_HINT:-zh}
+      XAI_LIVE_VAD_THRESHOLD: ${XAI_LIVE_VAD_THRESHOLD:-0.75}
+      XAI_LIVE_VAD_SILENCE_DURATION: ${XAI_LIVE_VAD_SILENCE_DURATION:-1000ms}
+      XAI_LIVE_VAD_PREFIX_PADDING: ${XAI_LIVE_VAD_PREFIX_PADDING:-333ms}
+      XAI_LIVE_TIMEOUT: ${XAI_LIVE_TIMEOUT:-10m}
       AGENT_API_LIVE_ENABLED: ${AGENT_API_LIVE_ENABLED:-true}
-      AGENT_API_LIVE_PROVIDER: ${AGENT_API_LIVE_PROVIDER:-vertex}
-      AGENT_API_LIVE_MODEL: ${AGENT_API_LIVE_MODEL:-gemini-live-2.5-flash-preview-native-audio-09-2025}
+      AGENT_API_LIVE_PROVIDER: ${AGENT_API_LIVE_PROVIDER:-xai}
+      AGENT_API_LIVE_MODEL: ${AGENT_API_LIVE_MODEL:-grok-voice-latest}
+      AGENT_API_LIVE_XAI_API_KEY: ${AGENT_API_LIVE_XAI_API_KEY:-}
+      AGENT_API_LIVE_XAI_BASE_URL: ${AGENT_API_LIVE_XAI_BASE_URL:-wss://api.x.ai/v1/realtime}
       AGENT_API_LIVE_VERTEX_PROJECT_ID: ${AGENT_API_LIVE_VERTEX_PROJECT_ID:-}
       AGENT_API_LIVE_VERTEX_LOCATION: ${AGENT_API_LIVE_VERTEX_LOCATION:-us-central1}
       AGENT_API_LIVE_VERTEX_BASE_URL: ${AGENT_API_LIVE_VERTEX_BASE_URL:-}
       AGENT_API_LIVE_VERTEX_API_VERSION: ${AGENT_API_LIVE_VERTEX_API_VERSION:-v1beta1}
       AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE: ${AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE:-audio/pcm;rate=16000}
-      AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE: ${AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE:-}
-      AGENT_API_LIVE_VOICE_NAME: ${AGENT_API_LIVE_VOICE_NAME:-}
-      AGENT_API_LIVE_LANGUAGE_CODE: ${AGENT_API_LIVE_LANGUAGE_CODE:-zh-CN}
+      AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE: ${AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE:-audio/pcm;rate=16000}
+      AGENT_API_LIVE_VOICE_NAME: ${AGENT_API_LIVE_VOICE_NAME:-ara}
+      AGENT_API_LIVE_LANGUAGE_CODE: ${AGENT_API_LIVE_LANGUAGE_CODE:-zh}
       AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED: ${AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED:-true}
       AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED: ${AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED:-true}
       AGENT_API_LIVE_VAD_START_SENSITIVITY: ${AGENT_API_LIVE_VAD_START_SENSITIVITY:-START_SENSITIVITY_HIGH}
       AGENT_API_LIVE_VAD_END_SENSITIVITY: ${AGENT_API_LIVE_VAD_END_SENSITIVITY:-END_SENSITIVITY_HIGH}
-      AGENT_API_LIVE_VAD_PREFIX_PADDING: ${AGENT_API_LIVE_VAD_PREFIX_PADDING:-150ms}
-      AGENT_API_LIVE_VAD_SILENCE_DURATION: ${AGENT_API_LIVE_VAD_SILENCE_DURATION:-350ms}
+      AGENT_API_LIVE_VAD_THRESHOLD: ${AGENT_API_LIVE_VAD_THRESHOLD:-0.75}
+      AGENT_API_LIVE_VAD_PREFIX_PADDING: ${AGENT_API_LIVE_VAD_PREFIX_PADDING:-333ms}
+      AGENT_API_LIVE_VAD_SILENCE_DURATION: ${AGENT_API_LIVE_VAD_SILENCE_DURATION:-1000ms}
       AGENT_API_LIVE_SESSION_TIMEOUT: ${AGENT_API_LIVE_SESSION_TIMEOUT:-10m}
     ports:
       - "${AGENT_API_HOST:-127.0.0.1}:${AGENT_API_PORT:-8081}:8081"
@@ -521,11 +546,11 @@ services:
       - -skill-sandbox-warm-pool-size
       - "${AGENT_API_SKILL_SANDBOX_WARM_POOL_SIZE:-1}"
       - -llm-provider
-      - "${AGENT_API_LLM_PROVIDER:-vertex}"
+      - "${AGENT_API_LLM_PROVIDER:-nvidia}"
       - -model
-      - "${AGENT_API_MODEL:-gemini-2.5-pro}"
+      - "${AGENT_API_MODEL:-nvidia/nemotron-3-ultra-550b-a55b}"
       - -llm-model-routes
-      - "${AGENT_API_LLM_MODEL_ROUTES:-default=gemini-2.5-pro,chat=gemini-2.5-flash,chat:normal=gemini-2.5-flash,chat:search=gemini-2.5-flash,chat:complex=gemini-2.5-pro,skill=gemini-2.5-pro,skill:memory-recall-trigger=gemini-3.1-flash-lite}"
+      - "${AGENT_API_LLM_MODEL_ROUTES:-default=nvidia/nemotron-3-ultra-550b-a55b,chat=deepseek-ai/deepseek-v4-flash,chat:normal=deepseek-ai/deepseek-v4-flash,chat:search=deepseek-ai/deepseek-v4-flash,chat:complex=nvidia/nemotron-3-ultra-550b-a55b,skill=nvidia/nemotron-3-ultra-550b-a55b,skill:memory-recall-trigger=deepseek-ai/deepseek-v4-flash,judge=nvidia/nemotron-3-ultra-550b-a55b}"
       - -llm-max-attempts
       - "${AGENT_API_LLM_MAX_ATTEMPTS:-2}"
       - -llm-chat-timeout
@@ -538,29 +563,35 @@ services:
       - "${AGENT_API_LLM_DAILY_REQUEST_QUOTA:-1000}"
       - "-live-enabled=${AGENT_API_LIVE_ENABLED:-true}"
       - -live-provider
-      - "${AGENT_API_LIVE_PROVIDER:-vertex}"
+      - "${AGENT_API_LIVE_PROVIDER:-xai}"
       - -live-model
-      - "${AGENT_API_LIVE_MODEL:-gemini-live-2.5-flash-preview-native-audio-09-2025}"
+      - "${AGENT_API_LIVE_MODEL:-grok-voice-latest}"
+      - -live-xai-base-url
+      - "${AGENT_API_LIVE_XAI_BASE_URL:-wss://api.x.ai/v1/realtime}"
       - -live-vertex-location
       - "${AGENT_API_LIVE_VERTEX_LOCATION:-us-central1}"
       - -live-vertex-api-version
       - "${AGENT_API_LIVE_VERTEX_API_VERSION:-v1beta1}"
       - -live-input-audio-mime-type
       - "${AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE:-audio/pcm;rate=16000}"
+      - -live-output-audio-mime-type
+      - "${AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE:-audio/pcm;rate=16000}"
       - -live-voice-name
-      - "${AGENT_API_LIVE_VOICE_NAME:-}"
+      - "${AGENT_API_LIVE_VOICE_NAME:-ara}"
       - -live-language-code
-      - "${AGENT_API_LIVE_LANGUAGE_CODE:-zh-CN}"
+      - "${AGENT_API_LIVE_LANGUAGE_CODE:-zh}"
       - "-live-input-transcription-enabled=${AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED:-true}"
       - "-live-output-transcription-enabled=${AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED:-true}"
       - -live-vad-start-sensitivity
       - "${AGENT_API_LIVE_VAD_START_SENSITIVITY:-START_SENSITIVITY_HIGH}"
       - -live-vad-end-sensitivity
       - "${AGENT_API_LIVE_VAD_END_SENSITIVITY:-END_SENSITIVITY_HIGH}"
+      - -live-vad-threshold
+      - "${AGENT_API_LIVE_VAD_THRESHOLD:-0.75}"
       - -live-vad-prefix-padding
-      - "${AGENT_API_LIVE_VAD_PREFIX_PADDING:-150ms}"
+      - "${AGENT_API_LIVE_VAD_PREFIX_PADDING:-333ms}"
       - -live-vad-silence-duration
-      - "${AGENT_API_LIVE_VAD_SILENCE_DURATION:-350ms}"
+      - "${AGENT_API_LIVE_VAD_SILENCE_DURATION:-1000ms}"
       - -live-session-timeout
       - "${AGENT_API_LIVE_SESSION_TIMEOUT:-10m}"
       - -retention-days

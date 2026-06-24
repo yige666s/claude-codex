@@ -25,8 +25,23 @@ func TestLiveVertexWebSocketURL(t *testing.T) {
 	}
 }
 
+func TestLiveXAIWebSocketURLAddsModel(t *testing.T) {
+	got, err := liveXAIWebSocketURL(LiveConfig{
+		Provider:   "xai",
+		Model:      "grok-voice-latest",
+		XAIBaseURL: "wss://api.x.ai/v1/realtime",
+	})
+	if err != nil {
+		t.Fatalf("liveXAIWebSocketURL: %v", err)
+	}
+	want := "wss://api.x.ai/v1/realtime?model=grok-voice-latest"
+	if got != want {
+		t.Fatalf("url = %q, want %q", got, want)
+	}
+}
+
 func TestNormalizeLiveConfigUsesLowLatencyVADDefaults(t *testing.T) {
-	config := normalizeLiveConfig(LiveConfig{})
+	config := normalizeLiveConfig(LiveConfig{Provider: "vertex"})
 	if config.LanguageCode != defaultLiveLanguageCode {
 		t.Fatalf("language code = %q, want %q", config.LanguageCode, defaultLiveLanguageCode)
 	}
@@ -40,6 +55,31 @@ func TestNormalizeLiveConfigUsesLowLatencyVADDefaults(t *testing.T) {
 		t.Fatalf("prefix padding = %s", config.LiveVADPrefixPadding)
 	}
 	if config.LiveVADSilenceDuration != 350*time.Millisecond {
+		t.Fatalf("silence duration = %s", config.LiveVADSilenceDuration)
+	}
+}
+
+func TestNormalizeLiveConfigUsesXAIDefaults(t *testing.T) {
+	config := normalizeLiveConfig(LiveConfig{Provider: "xai"})
+	if config.Model != defaultLiveXAIModel {
+		t.Fatalf("model = %q, want %q", config.Model, defaultLiveXAIModel)
+	}
+	if config.XAIBaseURL != defaultLiveXAIBaseURL {
+		t.Fatalf("base URL = %q", config.XAIBaseURL)
+	}
+	if config.VoiceName != defaultLiveXAIVoiceName {
+		t.Fatalf("voice = %q", config.VoiceName)
+	}
+	if config.LanguageCode != defaultLiveXAILanguageCode {
+		t.Fatalf("language = %q", config.LanguageCode)
+	}
+	if config.LiveVADThreshold != defaultLiveXAIVADThreshold {
+		t.Fatalf("threshold = %v", config.LiveVADThreshold)
+	}
+	if config.LiveVADPrefixPadding != defaultLiveXAIVADPrefixPadding {
+		t.Fatalf("prefix padding = %s", config.LiveVADPrefixPadding)
+	}
+	if config.LiveVADSilenceDuration != defaultLiveXAIVADSilenceDuration {
 		t.Fatalf("silence duration = %s", config.LiveVADSilenceDuration)
 	}
 }
@@ -79,6 +119,51 @@ func TestLiveSetupMessageDisablesProviderVADAndEnablesResumption(t *testing.T) {
 	}
 }
 
+func TestLiveXAISessionUpdateUsesVoiceAudioAndVAD(t *testing.T) {
+	service := NewVertexLiveService(LiveConfig{
+		Enabled:                   true,
+		Provider:                  "xai",
+		Model:                     "grok-voice-latest",
+		XAIAPIKey:                 "test-key",
+		XAIBaseURL:                "wss://api.x.ai/v1/realtime",
+		VoiceName:                 "ara",
+		LanguageCode:              "zh",
+		InputAudioMIMEType:        "audio/pcm;rate=16000",
+		OutputAudioMIMEType:       "audio/pcm;rate=16000",
+		LiveVADThreshold:          0.75,
+		LiveVADPrefixPadding:      333 * time.Millisecond,
+		LiveVADSilenceDuration:    time.Second,
+		InputTranscriptionEnabled: true,
+	}, &countingLiveRecorder{instruction: "用中文回答。"}, nil)
+	message := service.xaiSessionUpdateMessage(context.Background(), LiveRequest{UserID: "alice", SessionID: "session-1"})
+	if message["type"] != "session.update" {
+		t.Fatalf("unexpected type: %#v", message)
+	}
+	session := message["session"].(map[string]any)
+	if session["voice"] != "ara" {
+		t.Fatalf("unexpected voice: %#v", session)
+	}
+	audio := session["audio"].(map[string]any)
+	input := audio["input"].(map[string]any)
+	output := audio["output"].(map[string]any)
+	inputFormat := input["format"].(map[string]any)
+	outputFormat := output["format"].(map[string]any)
+	if inputFormat["type"] != "audio/pcm" || inputFormat["rate"] != 16000 || outputFormat["type"] != "audio/pcm" || outputFormat["rate"] != 16000 {
+		t.Fatalf("unexpected audio config: %#v", audio)
+	}
+	if !strings.Contains(session["instructions"].(string), "Preferred response language hint: zh") {
+		t.Fatalf("missing language hint in instructions: %q", session["instructions"])
+	}
+	detection := session["turn_detection"].(map[string]any)
+	if detection["threshold"] != 0.75 || detection["prefix_padding_ms"] != 333 || detection["silence_duration_ms"] != 1000 {
+		t.Fatalf("unexpected VAD config: %#v", detection)
+	}
+	transcription := input["transcription"].(map[string]any)
+	if transcription["model"] != "grok-transcribe" || transcription["language_hint"] != "zh" {
+		t.Fatalf("unexpected transcription config: %#v", transcription)
+	}
+}
+
 func TestLiveSetupMessageDisablesThinkingForDefault25Model(t *testing.T) {
 	service := NewVertexLiveService(LiveConfig{
 		Enabled:         true,
@@ -112,6 +197,7 @@ func TestLiveSetupMessageUsesMinimalThinkingFor31Model(t *testing.T) {
 func TestLiveSetupMessageUsesPrebuiltVoiceAndLanguage(t *testing.T) {
 	service := NewVertexLiveService(LiveConfig{
 		Enabled:         true,
+		Provider:        "vertex",
 		VertexProjectID: "project-1",
 		Model:           defaultLiveModel,
 		VoiceName:       "kore",
@@ -134,6 +220,7 @@ func TestLiveSetupMessageUsesPrebuiltVoiceAndLanguage(t *testing.T) {
 func TestLiveConfigRejectsUnsupportedPrebuiltVoice(t *testing.T) {
 	err := validateLiveConfig(LiveConfig{
 		Enabled:         true,
+		Provider:        "vertex",
 		VertexProjectID: "project-1",
 		VoiceName:       "not-a-real-voice",
 	})
@@ -176,6 +263,23 @@ func TestLiveClientAudioEventToVertexPayload(t *testing.T) {
 	audio := realtime["audio"].(map[string]any)
 	if audio["mimeType"] != "audio/pcm;rate=16000" || audio["data"] != "AAEC" {
 		t.Fatalf("unexpected audio payload: %#v", payload)
+	}
+}
+
+func TestLiveClientAudioEventToXAIPayloads(t *testing.T) {
+	payloads, err := liveClientEventToXAIPayloads(LiveClientEvent{Type: "audio", Data: "AAEC"})
+	if err != nil {
+		t.Fatalf("liveClientEventToXAIPayloads audio: %v", err)
+	}
+	if len(payloads) != 1 || payloads[0]["type"] != "input_audio_buffer.append" || payloads[0]["audio"] != "AAEC" {
+		t.Fatalf("unexpected xAI audio payloads: %#v", payloads)
+	}
+	payloads, err = liveClientEventToXAIPayloads(LiveClientEvent{Type: "activity_end"})
+	if err != nil {
+		t.Fatalf("liveClientEventToXAIPayloads end: %v", err)
+	}
+	if len(payloads) != 2 || payloads[0]["type"] != "input_audio_buffer.commit" || payloads[1]["type"] != "response.create" {
+		t.Fatalf("unexpected xAI end payloads: %#v", payloads)
 	}
 }
 
@@ -335,6 +439,58 @@ func TestLiveTurnAccumulatorEmitsAudioAndTranscripts(t *testing.T) {
 	}
 	userText, assistantText := turn.flush()
 	if userText != "你好" || assistantText != "你好，有什么可以帮你？" {
+		t.Fatalf("flush = %q/%q", userText, assistantText)
+	}
+}
+
+func TestLiveTurnAccumulatorConsumesXAIEvents(t *testing.T) {
+	var turn liveTurnAccumulator
+	events, complete, err := turn.consumeXAI(map[string]any{"type": "session.updated"}, "")
+	if err != nil {
+		t.Fatalf("consume setup: %v", err)
+	}
+	if complete || len(events) != 1 || events[0].Type != "live_setup_complete" {
+		t.Fatalf("unexpected setup events complete=%t events=%#v", complete, events)
+	}
+	events, complete, err = turn.consumeXAI(map[string]any{
+		"type":       "conversation.item.input_audio_transcription.updated",
+		"transcript": "你好",
+	}, "")
+	if err != nil {
+		t.Fatalf("consume input: %v", err)
+	}
+	if complete || len(events) != 1 || events[0].Role != state.MessageRoleUser || events[0].Content != "你好" {
+		t.Fatalf("unexpected input events complete=%t events=%#v", complete, events)
+	}
+	events, complete, err = turn.consumeXAI(map[string]any{
+		"type":  "response.audio_transcript.delta",
+		"delta": "你好",
+	}, "audio/pcm;rate=16000")
+	if err != nil {
+		t.Fatalf("consume transcript: %v", err)
+	}
+	if complete || len(events) != 2 || events[0].Type != "live_response_start" || events[1].Role != state.MessageRoleAssistant {
+		t.Fatalf("unexpected transcript events complete=%t events=%#v", complete, events)
+	}
+	events, complete, err = turn.consumeXAI(map[string]any{
+		"type":  "response.audio.delta",
+		"delta": "AQID",
+	}, "audio/pcm;rate=16000")
+	if err != nil {
+		t.Fatalf("consume audio: %v", err)
+	}
+	if complete || len(events) != 1 || events[0].Type != "live_audio" {
+		t.Fatalf("unexpected audio events complete=%t events=%#v", complete, events)
+	}
+	events, complete, err = turn.consumeXAI(map[string]any{"type": "response.done"}, "")
+	if err != nil {
+		t.Fatalf("consume done: %v", err)
+	}
+	if !complete || len(events) != 0 {
+		t.Fatalf("unexpected done events complete=%t events=%#v", complete, events)
+	}
+	userText, assistantText := turn.flush()
+	if userText != "你好" || assistantText != "你好" {
 		t.Fatalf("flush = %q/%q", userText, assistantText)
 	}
 }

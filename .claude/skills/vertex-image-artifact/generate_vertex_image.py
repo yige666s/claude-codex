@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small Vertex Imagen smoke-test helper for the web agent artifact flow."""
+"""Image generation helper for the web agent artifact flow."""
 
 from __future__ import annotations
 
@@ -19,6 +19,12 @@ from pathlib import Path
 DEFAULT_PROMPT = "a small friendly robot painting a tiny test image, clean product illustration"
 DEFAULT_ASPECT_RATIO = "1:1"
 DEFAULT_VERTEX_IMAGE_MODEL = "imagen-3.0-generate-002"
+DEFAULT_SHORTAPI_API_BASE = "https://api.shortapi.ai/api/v1"
+DEFAULT_SHORTAPI_IMAGE_MODEL = "google/nano-banana-2/text-to-image"
+DEFAULT_SHORTAPI_IMAGE_RESOLUTION = "2K"
+DEFAULT_SHORTAPI_IMAGE_NUM_IMAGES = 1
+DEFAULT_SHORTAPI_IMAGE_TIMEOUT_SECONDS = 5 * 60
+DEFAULT_SHORTAPI_IMAGE_POLL_INTERVAL_SECONDS = 2
 SUPPORTED_ASPECT_RATIOS = ("1:1", "3:4", "4:3", "16:9", "9:16")
 ASPECT_RATIO_FLAGS = ("--ar", "--aspect-ratio", "--aspect_ratio")
 
@@ -67,6 +73,45 @@ def env_first(*names: str) -> str:
         if value:
             return value
     return ""
+
+
+def env_duration_seconds(name: str, fallback: int | float) -> float:
+    value = env_first(name)
+    if not value:
+        return float(fallback)
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h)?\s*", value, re.IGNORECASE)
+    if not match:
+        return float(fallback)
+    amount = float(match.group(1))
+    unit = (match.group(2) or "s").lower()
+    if unit == "ms":
+        return amount / 1000
+    if unit == "m":
+        return amount * 60
+    if unit == "h":
+        return amount * 3600
+    return amount
+
+
+def env_int(name: str, fallback: int) -> int:
+    value = env_first(name)
+    if not value:
+        return fallback
+    try:
+        parsed = int(value)
+    except ValueError:
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
+def normalize_shortapi_resolution(value: str) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return DEFAULT_SHORTAPI_IMAGE_RESOLUTION
+    normalized = cleaned.upper()
+    if re.fullmatch(r"[124]K", normalized):
+        return normalized
+    return cleaned
 
 
 def gcloud_access_token() -> str:
@@ -285,13 +330,13 @@ def normalize_aspect_ratio(value: str) -> tuple[str, str]:
     supported = ", ".join(SUPPORTED_ASPECT_RATIOS)
     return (
         fallback,
-        f"Requested aspect ratio {value} is not supported by Vertex Imagen; using {fallback}. Supported values: {supported}.",
+        f"Requested aspect ratio {value} is not supported by the image provider; using {fallback}. Supported values: {supported}.",
     )
 
 
 def parse_prompt_options(raw_prompt: str) -> tuple[str, str, str]:
     prompt = raw_prompt.strip()
-    aspect_ratio = env_first("VERTEX_IMAGE_ASPECT_RATIO") or DEFAULT_ASPECT_RATIO
+    aspect_ratio = env_first("SHORTAPI_IMAGE_ASPECT_RATIO", "VERTEX_IMAGE_ASPECT_RATIO") or DEFAULT_ASPECT_RATIO
     note = ""
 
     for flag in ASPECT_RATIO_FLAGS:
@@ -317,7 +362,7 @@ def parse_prompt_options(raw_prompt: str) -> tuple[str, str, str]:
 def safe_name(prompt: str) -> str:
     text = re.sub(r"[^a-zA-Z0-9]+", "-", prompt.lower()).strip("-")
     if not text:
-        text = "vertex-image"
+        text = "generated-image"
     return text[:48]
 
 
@@ -377,14 +422,257 @@ def vertex_error_message(status_code: int, detail: str) -> tuple[str, str]:
     )
 
 
+def shortapi_error_message(status_code: int, detail: str) -> tuple[str, str]:
+    message = detail
+    try:
+        payload = json.loads(detail)
+        message = str(payload.get("message") or payload.get("error") or payload.get("detail") or detail)
+    except json.JSONDecodeError:
+        pass
+    if status_code in (401, 403):
+        return ("图片服务认证或权限配置异常，请联系管理员检查 ShortAPI key。", "auth_rejected")
+    if status_code == 429:
+        return ("图片生成服务当前达到配额或频率上限，请稍后再试。", "rate_limited")
+    if status_code >= 500:
+        return ("ShortAPI 图片服务暂时不可用，请稍后再试。", "service_unavailable")
+    return (f"图片请求没有通过 ShortAPI 校验：{message[:300]}", "invalid_request")
+
+
+def shortapi_json_request(
+    method: str,
+    endpoint: str,
+    api_key: str,
+    body: dict | None = None,
+    timeout: float = 60,
+) -> dict:
+    data = None
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        # ShortAPI's Cloudflare edge currently rejects Python's default browser
+        # signature for some API requests unless a normal client UA is supplied.
+        "User-Agent": "curl/8",
+    }
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(endpoint, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        message, kind = shortapi_error_message(exc.code, detail)
+        raise SkillUserError(message, kind) from exc
+    if not text.strip():
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SkillUserError("图片服务返回了无法解析的响应，请稍后再试。", "invalid_response") from exc
+    if isinstance(payload, dict):
+        code = payload.get("code")
+        if code not in (None, 0, "0"):
+            message = str(payload.get("info") or payload.get("message") or payload.get("error") or text)
+            raise SkillUserError(f"图片请求没有通过 ShortAPI 校验：{message[:300]}", "invalid_request")
+    return payload
+
+
+def shortapi_find_first(obj: object, names: tuple[str, ...]) -> str:
+    if isinstance(obj, dict):
+        for name in names:
+            value = obj.get(name)
+            if isinstance(value, (str, int, float)) and str(value).strip():
+                return str(value).strip()
+        for value in obj.values():
+            found = shortapi_find_first(value, names)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = shortapi_find_first(value, names)
+            if found:
+                return found
+    return ""
+
+
+def shortapi_iter_strings(obj: object):
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            yield from shortapi_iter_strings(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            yield from shortapi_iter_strings(value)
+
+
+def download_image_url(url: str, timeout: float = 60) -> tuple[bytes, str]:
+    request = urllib.request.Request(url, headers={"User-Agent": "curl/8"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        content_type = response.headers.get("Content-Type") or "image/png"
+        return response.read(), content_type.split(";")[0].strip() or "image/png"
+
+
+def shortapi_image_bytes(payload: dict) -> tuple[bytes, str]:
+    for text in shortapi_iter_strings(payload):
+        value = text.strip()
+        if value.startswith("data:image/"):
+            header, encoded = value.split(",", 1)
+            mime_type = header.split(";", 1)[0].removeprefix("data:")
+            return base64.b64decode(encoded), mime_type
+    for text in shortapi_iter_strings(payload):
+        value = text.strip()
+        if value.startswith("http://") or value.startswith("https://"):
+            return download_image_url(value)
+    for text in shortapi_iter_strings(payload):
+        value = text.strip()
+        if len(value) < 80 or not re.fullmatch(r"[A-Za-z0-9+/=\s]+", value):
+            continue
+        try:
+            raw = base64.b64decode(value, validate=True)
+        except Exception:
+            continue
+        if raw.startswith(b"\x89PNG"):
+            return raw, "image/png"
+        if raw.startswith(b"\xff\xd8"):
+            return raw, "image/jpeg"
+        if raw.startswith(b"RIFF") and b"WEBP" in raw[:16]:
+            return raw, "image/webp"
+    raise SkillUserError(
+        "图片生成服务返回了结果，但没有包含可保存的图片内容。请换一个描述再试。",
+        "empty_image",
+    )
+
+
+def run_shortapi_image(prompt: str, aspect_ratio: str, prompt_hash: str, started: float) -> tuple[bytes, str, str, str]:
+    api_key = env_first("SHORTAPI_KEY")
+    if not api_key:
+        raise SkillUserError("图片服务缺少 ShortAPI key，请联系管理员检查 SHORTAPI_KEY。", "auth_config")
+    base = env_first("SHORTAPI_API_BASE", "SHORTAPI_BASE_URL").rstrip("/") or DEFAULT_SHORTAPI_API_BASE
+    model = env_first("SHORTAPI_IMAGE_MODEL") or DEFAULT_SHORTAPI_IMAGE_MODEL
+    resolution = normalize_shortapi_resolution(env_first("SHORTAPI_IMAGE_RESOLUTION") or DEFAULT_SHORTAPI_IMAGE_RESOLUTION)
+    num_images = env_int("SHORTAPI_IMAGE_NUM_IMAGES", DEFAULT_SHORTAPI_IMAGE_NUM_IMAGES)
+    timeout_seconds = env_duration_seconds("SHORTAPI_IMAGE_TIMEOUT", DEFAULT_SHORTAPI_IMAGE_TIMEOUT_SECONDS)
+    poll_seconds = max(0.25, env_duration_seconds("SHORTAPI_IMAGE_POLL_INTERVAL", DEFAULT_SHORTAPI_IMAGE_POLL_INTERVAL_SECONDS))
+
+    args = {
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "num_images": num_images,
+    }
+    create_payload = {"model": model, "args": args}
+    create_endpoint = f"{base}/job/create"
+    log_event(
+        "shortapi_create",
+        prompt_hash=prompt_hash,
+        provider="shortapi",
+        model=model,
+        aspect_ratio=aspect_ratio,
+        resolution=resolution,
+        num_images=num_images,
+    )
+    payload = shortapi_json_request("POST", create_endpoint, api_key, create_payload, timeout=60)
+    job_id = shortapi_find_first(payload, ("id", "job_id", "jobId", "task_id", "taskId"))
+    if not job_id:
+        log_event("shortapi_inline_response", prompt_hash=prompt_hash, provider="shortapi", model=model)
+        image_bytes, mime_type = shortapi_image_bytes(payload)
+        return image_bytes, mime_type, model, job_id
+
+    query_endpoint = f"{base}/job/query?{urllib.parse.urlencode({'id': job_id})}"
+    deadline = time.time() + timeout_seconds
+    last_status = ""
+    while time.time() < deadline:
+        time.sleep(poll_seconds)
+        payload = shortapi_json_request("GET", query_endpoint, api_key, timeout=60)
+        status = shortapi_find_first(payload, ("status", "state")).lower()
+        if status:
+            last_status = status
+        if status in ("3", "failed", "failure", "error", "cancelled", "canceled"):
+            raise SkillUserError("图片生成服务返回失败状态，请调整描述后再试。", "generation_failed")
+        if status in ("2", "completed", "complete", "succeeded", "success", "done", "finished"):
+            image_bytes, mime_type = shortapi_image_bytes(payload)
+            log_event(
+                "shortapi_response",
+                prompt_hash=prompt_hash,
+                provider="shortapi",
+                model=model,
+                job_id=job_id,
+                status=status,
+                duration_ms=round((time.time() - started) * 1000),
+            )
+            return image_bytes, mime_type, model, job_id
+        try:
+            image_bytes, mime_type = shortapi_image_bytes(payload)
+            return image_bytes, mime_type, model, job_id
+        except SkillUserError:
+            continue
+    raise SkillUserError(
+        f"图片生成等待超时（最后状态：{last_status or 'unknown'}），请稍后再试。",
+        "timeout",
+    )
+
+
 def main() -> int:
     started = time.time()
     prompt, aspect_ratio, aspect_ratio_note = parse_prompt_options(sys.stdin.read())
+    provider = (env_first("IMAGE_PROVIDER", "AGENT_API_IMAGE_PROVIDER") or "shortapi").lower()
+    prompt_hash = prompt_fingerprint(prompt)
+
+    if provider == "shortapi":
+        log_event(
+            "start",
+            prompt_hash=prompt_hash,
+            prompt_length=len(prompt),
+            aspect_ratio=aspect_ratio,
+            aspect_ratio_note=aspect_ratio_note,
+            provider="shortapi",
+            model=env_first("SHORTAPI_IMAGE_MODEL") or DEFAULT_SHORTAPI_IMAGE_MODEL,
+        )
+        image_bytes, mime_type, model, job_id = run_shortapi_image(prompt, aspect_ratio, prompt_hash, started)
+        if mime_type == "image/jpeg":
+            suffix = ".jpg"
+        elif mime_type == "image/webp":
+            suffix = ".webp"
+        elif mime_type == "image/png":
+            suffix = ".png"
+        else:
+            suffix = ".bin"
+
+        workspace = Path(env_first("AGENT_WORKSPACE_DIR") or os.getcwd())
+        output_dir = workspace / "generated-artifacts"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"shortapi-image-{int(time.time())}-{safe_name(prompt)}{suffix}"
+        output_file = output_dir / filename
+        output_file.write_bytes(image_bytes)
+        artifact_file_path = f"generated-artifacts/{filename}"
+        log_event(
+            "success",
+            prompt_hash=prompt_hash,
+            provider="shortapi",
+            model=model,
+            job_id=job_id,
+            filename=filename,
+            content_type=mime_type,
+            size_bytes=len(image_bytes),
+            aspect_ratio=aspect_ratio,
+            duration_ms=round((time.time() - started) * 1000),
+        )
+        print(f"output_file: {output_file}")
+        print(f"artifact_file_path: {artifact_file_path}")
+        print(f"filename: {filename}")
+        print(f"content_type: {mime_type}")
+        print(f"model: {model}")
+        print(f"aspect_ratio: {aspect_ratio}")
+        if job_id:
+            print(f"job_id: {job_id}")
+        if aspect_ratio_note:
+            print(f"aspect_ratio_note: {aspect_ratio_note}")
+        return 0
 
     project_id = env_first("VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GCP_PROJECT")
     location = env_first("VERTEX_LOCATION", "GOOGLE_CLOUD_LOCATION") or "us-central1"
     model = env_first("VERTEX_IMAGE_MODEL") or DEFAULT_VERTEX_IMAGE_MODEL
-    prompt_hash = prompt_fingerprint(prompt)
     log_event(
         "start",
         prompt_hash=prompt_hash,

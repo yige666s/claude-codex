@@ -310,6 +310,8 @@ func providerEnvAPIKey(providerName string) string {
 		return startupconfig.FirstNonEmpty(os.Getenv("ANTHROPIC_API_KEY"), os.Getenv("CLAUDE_API_KEY"))
 	case "openai", "gpt", "custom", "openai-compatible", "baseurl":
 		return startupconfig.FirstNonEmpty(os.Getenv("OPENAI_API_KEY"), os.Getenv("AGENT_API_LLM_API_KEY"))
+	case "nvidia", "nim":
+		return startupconfig.FirstNonEmpty(os.Getenv("NVIDIA_API_KEY"), os.Getenv("NGC_API_KEY"), os.Getenv("AGENT_API_LLM_API_KEY"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_EMBEDDING_API_KEY"))
 	case "qwen", "dashscope", "aliyun":
 		return startupconfig.FirstNonEmpty(os.Getenv("DASHSCOPE_API_KEY"), os.Getenv("QWEN_API_KEY"), os.Getenv("ALIBABA_CLOUD_API_KEY"), os.Getenv("AGENT_API_LLM_API_KEY"))
 	case "gemini", "google":
@@ -347,6 +349,8 @@ func providerEnvBaseURL(providerName string) string {
 		return os.Getenv("ANTHROPIC_BASE_URL")
 	case "openai", "gpt":
 		return os.Getenv("OPENAI_BASE_URL")
+	case "nvidia", "nim":
+		return startupconfig.FirstNonEmpty(os.Getenv("NVIDIA_BASE_URL"), os.Getenv("NVIDIA_NIM_BASE_URL"), os.Getenv("AGENT_API_LLM_BASE_URL"))
 	case "qwen", "dashscope", "aliyun":
 		return startupconfig.FirstNonEmpty(os.Getenv("DASHSCOPE_BASE_URL"), os.Getenv("QWEN_BASE_URL"), os.Getenv("AGENT_API_LLM_BASE_URL"))
 	case "gemini", "google":

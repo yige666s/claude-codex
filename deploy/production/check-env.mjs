@@ -85,6 +85,8 @@ if (provider === "vertex") {
   checkAny("llm", "Gemini key", ["GEMINI_API_KEY", "GOOGLE_API_KEY", "AGENT_API_LLM_API_KEY"]);
 } else if (provider === "openai") {
   checkAny("llm", "OpenAI key", ["OPENAI_API_KEY", "AGENT_API_LLM_API_KEY"]);
+} else if (provider === "nvidia" || provider === "nim") {
+  checkAny("llm", "NVIDIA key", ["NVIDIA_API_KEY", "NGC_API_KEY", "AGENT_API_LLM_API_KEY", "AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"]);
 } else if (provider === "shortapi" || provider === "short") {
   checkAny("llm", "ShortAPI key", ["SHORTAPI_KEY", "AGENT_API_LLM_API_KEY"]);
 } else if (provider === "anthropic") {
@@ -92,9 +94,16 @@ if (provider === "vertex") {
 }
 
 if (truthy(env.AGENT_API_LIVE_ENABLED)) {
-  checkRequired("live", ["AGENT_API_LIVE_PROVIDER", "AGENT_API_LIVE_MODEL", "AGENT_API_LIVE_VERTEX_LOCATION"]);
-  checkAny("live", "Live Vertex project", ["AGENT_API_LIVE_VERTEX_PROJECT_ID", "VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"]);
-  checkAny("live", "Live Vertex credentials", ["GOOGLE_APPLICATION_CREDENTIALS_JSON", "GOOGLE_APPLICATION_CREDENTIALS", "VERTEX_SERVICE_ACCOUNT_JSON", "VERTEX_SERVICE_ACCOUNT_FILE", "VERTEX_ACCESS_TOKEN"]);
+  checkRequired("live", ["AGENT_API_LIVE_PROVIDER", "AGENT_API_LIVE_MODEL"]);
+  const liveProvider = (env.AGENT_API_LIVE_PROVIDER || "").toLowerCase();
+  if (liveProvider === "xai") {
+    checkAny("live", "xAI live key", ["AGENT_API_LIVE_XAI_API_KEY", "XAI_API_KEY"]);
+    checkAny("live", "xAI live base URL", ["AGENT_API_LIVE_XAI_BASE_URL", "XAI_LIVE_BASE_URL"]);
+  } else if (liveProvider === "vertex") {
+    checkRequired("live", ["AGENT_API_LIVE_VERTEX_LOCATION"]);
+    checkAny("live", "Live Vertex project", ["AGENT_API_LIVE_VERTEX_PROJECT_ID", "VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"]);
+    checkAny("live", "Live Vertex credentials", ["GOOGLE_APPLICATION_CREDENTIALS_JSON", "GOOGLE_APPLICATION_CREDENTIALS", "VERTEX_SERVICE_ACCOUNT_JSON", "VERTEX_SERVICE_ACCOUNT_FILE", "VERTEX_ACCESS_TOKEN"]);
+  }
 }
 
 if (truthy(env.AGENT_API_BACKUP_ENABLED)) {

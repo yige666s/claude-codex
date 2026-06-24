@@ -104,6 +104,20 @@ func TestBuildLLMConfigShortAPIUsesShortAPIEnv(t *testing.T) {
 	}
 }
 
+func TestBuildLLMConfigNVIDIAUsesNIMEnv(t *testing.T) {
+	t.Setenv("NVIDIA_API_KEY", "nvidia-key")
+	cfg, err := bootstrap.BuildLLMConfig("nvidia", "", "", "", "", 30)
+	if err != nil {
+		t.Fatalf("build nvidia config: %v", err)
+	}
+	if cfg.Provider != "nvidia" || cfg.APIKey != "nvidia-key" || cfg.Model != "nvidia/nemotron-3-ultra-550b-a55b" {
+		t.Fatalf("unexpected nvidia config: %#v", cfg)
+	}
+	if cfg.BaseURL != "https://integrate.api.nvidia.com/v1" {
+		t.Fatalf("unexpected nvidia base url: %q", cfg.BaseURL)
+	}
+}
+
 func TestApplyRuntimeLLMConfigReloadsProviderCredentials(t *testing.T) {
 	t.Setenv("SHORTAPI_KEY", "shortapi-key")
 	base := bootstrap.LLMConfig{

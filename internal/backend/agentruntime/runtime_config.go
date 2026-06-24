@@ -50,6 +50,12 @@ type LLMModelOption struct {
 }
 
 var allowedLLMModelOptions = []LLMModelOption{
+	{ID: "nvidia/nemotron-3-ultra-550b-a55b", Label: "NVIDIA Nemotron 3 Ultra 550B", Provider: "nvidia"},
+	{ID: "nvidia/nemotron-3-super-120b-a12b", Label: "NVIDIA Nemotron 3 Super 120B", Provider: "nvidia"},
+	{ID: "nvidia/nemotron-3-nano-30b-a3b", Label: "NVIDIA Nemotron 3 Nano 30B", Provider: "nvidia"},
+	{ID: "deepseek-ai/deepseek-v4-flash", Label: "DeepSeek V4 Flash (NVIDIA NIM)", Provider: "nvidia"},
+	{ID: "qwen/qwen3-coder-480b-a35b-instruct", Label: "Qwen3 Coder 480B (NVIDIA NIM)", Provider: "nvidia"},
+	{ID: "qwen/qwen3-next-80b-a3b-instruct", Label: "Qwen3 Next 80B (NVIDIA NIM)", Provider: "nvidia"},
 	{ID: "gemini-3.5-flash", Label: "Gemini 3.5 Flash", Provider: "vertex", VertexLocation: "global"},
 	{ID: "gemini-3.1-flash-lite", Label: "Gemini 3.1 Flash Lite", Provider: "vertex", VertexLocation: "global"},
 	{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro", Provider: "vertex", VertexLocation: "us-central1"},

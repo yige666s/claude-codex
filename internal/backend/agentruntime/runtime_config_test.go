@@ -89,6 +89,25 @@ func TestLLMGovernanceConfigModelPatchCanSwitchToShortAPI(t *testing.T) {
 	}
 }
 
+func TestLLMGovernanceConfigModelPatchCanSwitchToNVIDIA(t *testing.T) {
+	model := "nvidia/nemotron-3-ultra-550b-a55b"
+	updated, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{
+		Provider:       "vertex",
+		Model:          "gemini-2.5-flash",
+		VertexLocation: "us-central1",
+		ModelRoutes:    "default=gemini-2.5-flash,chat:complex=gemini-2.5-pro",
+	}, LLMGovernanceConfigPatch{Model: &model})
+	if err != nil {
+		t.Fatalf("apply nvidia model patch: %v", err)
+	}
+	if updated.Provider != "nvidia" || updated.Model != model || updated.VertexLocation != "" {
+		t.Fatalf("unexpected nvidia runtime model config: %#v", updated)
+	}
+	if updated.ModelRoutes != "default=nvidia/nemotron-3-ultra-550b-a55b,chat:complex=nvidia/nemotron-3-ultra-550b-a55b" {
+		t.Fatalf("model routes = %q", updated.ModelRoutes)
+	}
+}
+
 func TestLLMGovernanceConfigLoadResetsRoutesForProviderSwitch(t *testing.T) {
 	manager := NewLLMGovernanceConfigManager(LLMGovernanceConfig{}, &memoryRuntimeConfigStore{
 		config: LLMGovernanceConfig{

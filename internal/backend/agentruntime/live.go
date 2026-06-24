@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,14 +20,23 @@ import (
 )
 
 const (
+	defaultLiveProvider                  = "xai"
 	defaultLiveModel                     = "gemini-live-2.5-flash-preview-native-audio-09-2025"
+	defaultLiveXAIModel                  = "grok-voice-latest"
+	defaultLiveXAIBaseURL                = "wss://api.x.ai/v1/realtime"
+	defaultLiveXAIVoiceName              = "ara"
+	defaultLiveXAILanguageCode           = "zh"
 	defaultLiveVertexLocation            = "us-central1"
 	defaultLiveVertexAPIVersion          = "v1beta1"
 	defaultLiveInputAudioMIMEType        = "audio/pcm;rate=16000"
+	defaultLiveOutputAudioMIMEType       = "audio/pcm;rate=16000"
 	defaultLiveLanguageCode              = "zh-CN"
 	defaultLiveSessionTimeout            = 10 * time.Minute
+	defaultLiveXAIVADThreshold           = 0.75
 	defaultLiveVADPrefixPadding          = 150 * time.Millisecond
 	defaultLiveVADSilenceDuration        = 350 * time.Millisecond
+	defaultLiveXAIVADPrefixPadding       = 333 * time.Millisecond
+	defaultLiveXAIVADSilenceDuration     = time.Second
 	defaultLiveInitialHistoryMaxMessages = 32
 	defaultLiveInitialHistoryMaxTokens   = 16000
 	defaultLiveStartupGreetingPrompt     = "Live voice is now connected. Reply with one short greeting in the user's usual language; if unsure, use English. Then wait for the user's first spoken request. You may use the provided history and memory later, after the user asks something. Do not answer, summarize, continue, or take action on prior history, saved memory, tools, or other sessions unless the user explicitly asks in a new spoken request."
@@ -117,11 +128,15 @@ func (s *VertexLiveService) SetSetupPromptCache(cache LiveSetupPromptCache) {
 func normalizeLiveConfig(config LiveConfig) LiveConfig {
 	config.Provider = strings.ToLower(strings.TrimSpace(config.Provider))
 	if config.Provider == "" {
-		config.Provider = "vertex"
+		config.Provider = defaultLiveProvider
 	}
 	config.Model = strings.TrimSpace(config.Model)
 	if config.Model == "" {
-		config.Model = defaultLiveModel
+		if config.Provider == "xai" {
+			config.Model = defaultLiveXAIModel
+		} else {
+			config.Model = defaultLiveModel
+		}
 	}
 	config.VertexProjectID = strings.TrimSpace(config.VertexProjectID)
 	config.VertexLocation = strings.TrimSpace(config.VertexLocation)
@@ -132,23 +147,53 @@ func normalizeLiveConfig(config LiveConfig) LiveConfig {
 	if config.VertexAPIVersion == "" {
 		config.VertexAPIVersion = defaultLiveVertexAPIVersion
 	}
+	config.XAIAPIKey = strings.TrimSpace(config.XAIAPIKey)
+	config.XAIBaseURL = strings.TrimSpace(config.XAIBaseURL)
+	if config.Provider == "xai" && config.XAIBaseURL == "" {
+		config.XAIBaseURL = defaultLiveXAIBaseURL
+	}
 	config.InputAudioMIMEType = strings.TrimSpace(config.InputAudioMIMEType)
 	if config.InputAudioMIMEType == "" {
 		config.InputAudioMIMEType = defaultLiveInputAudioMIMEType
 	}
 	config.OutputAudioMIMEType = strings.TrimSpace(config.OutputAudioMIMEType)
-	config.VoiceName = normalizeLivePrebuiltVoiceName(config.VoiceName)
+	if config.OutputAudioMIMEType == "" && config.Provider == "xai" {
+		config.OutputAudioMIMEType = defaultLiveOutputAudioMIMEType
+	}
+	if config.Provider == "xai" {
+		config.VoiceName = strings.TrimSpace(config.VoiceName)
+		if config.VoiceName == "" {
+			config.VoiceName = defaultLiveXAIVoiceName
+		}
+	} else {
+		config.VoiceName = normalizeLivePrebuiltVoiceName(config.VoiceName)
+	}
 	config.LanguageCode = strings.TrimSpace(config.LanguageCode)
 	if config.LanguageCode == "" {
-		config.LanguageCode = defaultLiveLanguageCode
+		if config.Provider == "xai" {
+			config.LanguageCode = defaultLiveXAILanguageCode
+		} else {
+			config.LanguageCode = defaultLiveLanguageCode
+		}
 	}
 	config.LiveVADStartSensitivity = liveNormalizeEnum(config.LiveVADStartSensitivity, "START_SENSITIVITY_HIGH")
 	config.LiveVADEndSensitivity = liveNormalizeEnum(config.LiveVADEndSensitivity, "END_SENSITIVITY_HIGH")
+	if config.Provider == "xai" && config.LiveVADThreshold <= 0 {
+		config.LiveVADThreshold = defaultLiveXAIVADThreshold
+	}
 	if config.LiveVADPrefixPadding <= 0 {
-		config.LiveVADPrefixPadding = defaultLiveVADPrefixPadding
+		if config.Provider == "xai" {
+			config.LiveVADPrefixPadding = defaultLiveXAIVADPrefixPadding
+		} else {
+			config.LiveVADPrefixPadding = defaultLiveVADPrefixPadding
+		}
 	}
 	if config.LiveVADSilenceDuration <= 0 {
-		config.LiveVADSilenceDuration = defaultLiveVADSilenceDuration
+		if config.Provider == "xai" {
+			config.LiveVADSilenceDuration = defaultLiveXAIVADSilenceDuration
+		} else {
+			config.LiveVADSilenceDuration = defaultLiveVADSilenceDuration
+		}
 	}
 	if config.SessionTimeout <= 0 {
 		config.SessionTimeout = defaultLiveSessionTimeout
@@ -179,13 +224,26 @@ func normalizeLivePrebuiltVoiceName(value string) string {
 
 func validateLiveConfig(config LiveConfig) error {
 	config = normalizeLiveConfig(config)
-	if config.Provider != "vertex" {
+	switch config.Provider {
+	case "vertex":
+	case "xai":
+		if strings.TrimSpace(config.XAIAPIKey) == "" && envString("XAI_API_KEY") == "" {
+			return fmt.Errorf("live xAI API key is required; set XAI_API_KEY or AGENT_API_LIVE_XAI_API_KEY")
+		}
+		if strings.TrimSpace(config.XAIBaseURL) == "" {
+			return fmt.Errorf("live xAI base URL is required; set XAI_LIVE_BASE_URL or AGENT_API_LIVE_XAI_BASE_URL")
+		}
+	default:
 		return fmt.Errorf("live provider %q is not supported", config.Provider)
 	}
-	if !strings.Contains(strings.TrimSpace(config.Model), "/") && liveVertexProjectID(config) == "" {
+	if config.Provider == "vertex" && !strings.Contains(strings.TrimSpace(config.Model), "/") && liveVertexProjectID(config) == "" {
 		return fmt.Errorf("live vertex project ID is required; set AGENT_API_LIVE_VERTEX_PROJECT_ID, VERTEX_PROJECT_ID, or GOOGLE_CLOUD_PROJECT")
 	}
-	if voice := strings.TrimSpace(config.VoiceName); voice != "" {
+	if config.Provider == "vertex" {
+		voice := strings.TrimSpace(config.VoiceName)
+		if voice == "" {
+			return nil
+		}
 		if _, ok := supportedLivePrebuiltVoiceNames[voice]; !ok {
 			return fmt.Errorf("unsupported live prebuilt voice %q", voice)
 		}
@@ -196,9 +254,6 @@ func validateLiveConfig(config LiveConfig) error {
 func (s *VertexLiveService) Run(ctx context.Context, req LiveRequest, input LiveClientStream, sink EventSink) error {
 	if s == nil || !s.config.Enabled {
 		return fmt.Errorf("live mode is not enabled")
-	}
-	if s.config.Provider != "vertex" {
-		return fmt.Errorf("live provider %q is not supported", s.config.Provider)
 	}
 	if strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.SessionID) == "" {
 		return fmt.Errorf("live request requires user and session")
@@ -249,6 +304,9 @@ func (s *VertexLiveService) Run(ctx context.Context, req LiveRequest, input Live
 }
 
 func (s *VertexLiveService) connect(ctx context.Context, req LiveRequest) (*websocket.Conn, error) {
+	if s.config.Provider == "xai" {
+		return s.connectXAI(ctx, req)
+	}
 	tokenProvider := s.tokenProvider
 	if tokenProvider == nil {
 		tokenProvider = newVertexLiveAccessTokenProvider(&http.Client{Timeout: 30 * time.Second})
@@ -271,6 +329,31 @@ func (s *VertexLiveService) connect(ctx context.Context, req LiveRequest) (*webs
 	if err := conn.WriteJSON(s.setupMessage(ctx, req)); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("write live setup: %w", err)
+	}
+	return conn, nil
+}
+
+func (s *VertexLiveService) connectXAI(ctx context.Context, req LiveRequest) (*websocket.Conn, error) {
+	token := strings.TrimSpace(s.config.XAIAPIKey)
+	if token == "" {
+		token = envString("XAI_API_KEY")
+	}
+	if token == "" {
+		return nil, fmt.Errorf("live xAI API key is required")
+	}
+	u, err := liveXAIWebSocketURL(s.config)
+	if err != nil {
+		return nil, err
+	}
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+token)
+	conn, _, err := s.dialer.DialContext(ctx, u, headers)
+	if err != nil {
+		return nil, fmt.Errorf("connect live xAI websocket: %w", err)
+	}
+	if err := conn.WriteJSON(s.xaiSessionUpdateMessage(ctx, req)); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("write live xAI session update: %w", err)
 	}
 	return conn, nil
 }
@@ -324,6 +407,46 @@ func (s *VertexLiveService) setupMessage(ctx context.Context, req LiveRequest) m
 		}
 	}
 	return map[string]any{"setup": setup}
+}
+
+func (s *VertexLiveService) xaiSessionUpdateMessage(ctx context.Context, req LiveRequest) map[string]any {
+	config := normalizeLiveConfig(s.config)
+	instructions := strings.TrimSpace(s.liveSystemInstruction(ctx, req))
+	if instructions == "" {
+		instructions = "You are a helpful live voice assistant."
+	}
+	if language := strings.TrimSpace(config.LanguageCode); language != "" {
+		instructions = strings.TrimSpace(instructions + "\n\nPreferred response language hint: " + language + ".")
+	}
+	session := map[string]any{
+		"modalities":   []string{"text", "audio"},
+		"instructions": instructions,
+		"voice":        config.VoiceName,
+		"audio": map[string]any{
+			"input": map[string]any{
+				"format": liveXAIAudioFormat(config.InputAudioMIMEType),
+			},
+			"output": map[string]any{
+				"format": liveXAIAudioFormat(config.OutputAudioMIMEType),
+			},
+		},
+		"turn_detection": map[string]any{
+			"type":                "server_vad",
+			"threshold":           config.LiveVADThreshold,
+			"prefix_padding_ms":   int(config.LiveVADPrefixPadding / time.Millisecond),
+			"silence_duration_ms": int(config.LiveVADSilenceDuration / time.Millisecond),
+		},
+	}
+	if config.InputTranscriptionEnabled {
+		audio := session["audio"].(map[string]any)
+		input := audio["input"].(map[string]any)
+		transcription := map[string]any{"model": "grok-transcribe"}
+		if config.LanguageCode != "" {
+			transcription["language_hint"] = config.LanguageCode
+		}
+		input["transcription"] = transcription
+	}
+	return map[string]any{"type": "session.update", "session": session}
 }
 
 func (s *VertexLiveService) liveToolFunctionDeclarations(ctx context.Context, req LiveRequest) []map[string]any {
@@ -437,6 +560,28 @@ func (s *VertexLiveService) sendLoop(ctx context.Context, req LiveRequest, input
 		if err != nil {
 			return err
 		}
+		if s.config.Provider == "xai" {
+			payloads, err := liveClientEventToXAIPayloads(event)
+			if err != nil {
+				_ = sink.Send(ctx, liveErrorEvent(req.SessionID, err))
+				continue
+			}
+			if len(payloads) == 0 {
+				if strings.EqualFold(strings.TrimSpace(event.Type), "close") {
+					return nil
+				}
+				continue
+			}
+			for _, payload := range payloads {
+				writeMu.Lock()
+				err = conn.WriteJSON(payload)
+				writeMu.Unlock()
+				if err != nil {
+					return fmt.Errorf("send live xAI input: %w", err)
+				}
+			}
+			continue
+		}
 		payload, err := liveClientEventToVertexPayload(event, s.config.InputAudioMIMEType)
 		if err != nil {
 			_ = sink.Send(ctx, liveErrorEvent(req.SessionID, err))
@@ -454,6 +599,48 @@ func (s *VertexLiveService) sendLoop(ctx context.Context, req LiveRequest, input
 		if err != nil {
 			return fmt.Errorf("send live input: %w", err)
 		}
+	}
+}
+
+func liveClientEventToXAIPayloads(event LiveClientEvent) ([]map[string]any, error) {
+	switch strings.ToLower(strings.TrimSpace(event.Type)) {
+	case "audio":
+		data := strings.TrimSpace(event.Data)
+		if data == "" {
+			return nil, fmt.Errorf("live audio event requires base64 data")
+		}
+		return []map[string]any{{"type": "input_audio_buffer.append", "audio": data}}, nil
+	case "audio_end", "audio_end_and_close", "done", "activity_end":
+		return []map[string]any{
+			{"type": "input_audio_buffer.commit"},
+			{"type": "response.create"},
+		}, nil
+	case "activity_start":
+		return nil, nil
+	case "text":
+		text := strings.TrimSpace(event.Content)
+		if text == "" {
+			return nil, fmt.Errorf("live text event requires content")
+		}
+		return []map[string]any{
+			{
+				"type": "conversation.item.create",
+				"item": map[string]any{
+					"type": "message",
+					"role": "user",
+					"content": []map[string]any{
+						{"type": "input_text", "text": text},
+					},
+				},
+			},
+			{"type": "response.create"},
+		}, nil
+	case "client_trace":
+		return nil, nil
+	case "close":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unknown live client event type %q", event.Type)
 	}
 }
 
@@ -506,17 +693,26 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 		if err := conn.ReadJSON(&message); err != nil {
 			return err
 		}
-		if calls := liveToolFunctionCalls(message); len(calls) > 0 {
-			result, err := s.handleToolFunctionCalls(ctx, req, calls, toolFunctionHandler, functionHandler, conn, writeMu, sink, turn.inputText())
-			if err != nil {
-				return err
+		if s.config.Provider != "xai" {
+			if calls := liveToolFunctionCalls(message); len(calls) > 0 {
+				result, err := s.handleToolFunctionCalls(ctx, req, calls, toolFunctionHandler, functionHandler, conn, writeMu, sink, turn.inputText())
+				if err != nil {
+					return err
+				}
+				if result.handledSkill {
+					turn.clearInput()
+				}
+				continue
 			}
-			if result.handledSkill {
-				turn.clearInput()
-			}
-			continue
 		}
-		events, complete, err := turn.consume(message, s.config.OutputAudioMIMEType)
+		var events []Event
+		var complete bool
+		var err error
+		if s.config.Provider == "xai" {
+			events, complete, err = turn.consumeXAI(message, s.config.OutputAudioMIMEType)
+		} else {
+			events, complete, err = turn.consume(message, s.config.OutputAudioMIMEType)
+		}
 		if err != nil {
 			return err
 		}
@@ -529,10 +725,14 @@ func (s *VertexLiveService) receiveLoop(ctx context.Context, req LiveRequest, co
 		}
 		for _, event := range events {
 			if event.Type == "live_setup_complete" && !initialHistorySent {
-				if err := s.sendInitialHistory(ctx, req, conn, writeMu); err != nil {
+				if s.config.Provider == "xai" {
+					initialHistorySent = true
+				} else if err := s.sendInitialHistory(ctx, req, conn, writeMu); err != nil {
 					return err
 				}
-				initialHistorySent = true
+				if s.config.Provider != "xai" {
+					initialHistorySent = true
+				}
 			}
 			event.SessionID = req.SessionID
 			if err := sink.Send(ctx, event); err != nil {
@@ -860,6 +1060,87 @@ func (a *liveTurnAccumulator) consume(message map[string]any, outputMIME string)
 	return events, complete, nil
 }
 
+func (a *liveTurnAccumulator) consumeXAI(message map[string]any, outputMIME string) ([]Event, bool, error) {
+	if errValue := message["error"]; errValue != nil {
+		data, _ := json.Marshal(errValue)
+		return nil, false, fmt.Errorf("live xAI server error: %s", data)
+	}
+	eventType := firstLiveString(message["type"], message["event"])
+	switch eventType {
+	case "session.created", "session.updated":
+		return []Event{{Type: "live_setup_complete"}}, false, nil
+	case "response.created", "response.output_item.added", "response.content_part.added":
+		if !a.outputActive && !a.outputSuppressed {
+			a.outputActive = true
+			return []Event{{Type: "live_response_start"}}, false, nil
+		}
+		return nil, false, nil
+	case "conversation.item.input_audio_transcription.updated", "conversation.item.input_audio_transcription.segment", "input_audio_buffer.transcription.completed":
+		transcript := firstLiveString(message["transcript"], message["text"])
+		if transcript == "" {
+			if item, _ := firstLiveMap(message["item"]); len(item) > 0 {
+				transcript = firstLiveString(item["transcript"], item["text"])
+			}
+		}
+		if transcript == "" || liveIsNoisyInputTranscript(transcript) {
+			return nil, false, nil
+		}
+		a.input.WriteString(transcript)
+		return []Event{{Type: "live_transcript", Role: state.MessageRoleUser, Content: transcript, Data: liveJSON(map[string]any{"source": "input", "final": true})}}, false, nil
+	case "response.audio_transcript.delta", "response.text.delta", "response.output_text.delta":
+		if a.outputSuppressed {
+			return nil, false, nil
+		}
+		delta := firstLiveString(message["delta"], message["text"])
+		if delta == "" {
+			return nil, false, nil
+		}
+		a.output.WriteString(delta)
+		events := []Event{}
+		if !a.outputActive {
+			a.outputActive = true
+			events = append(events, Event{Type: "live_response_start"})
+		}
+		events = append(events, Event{Type: "live_transcript", Role: state.MessageRoleAssistant, Content: delta, Data: liveJSON(map[string]any{"source": "output", "final": false})})
+		return events, false, nil
+	case "response.output_audio.delta", "response.audio.delta":
+		if a.outputSuppressed {
+			return nil, false, nil
+		}
+		delta := firstLiveString(message["delta"], message["audio"], message["data"])
+		if delta == "" {
+			return nil, false, nil
+		}
+		mimeType := strings.TrimSpace(outputMIME)
+		if mimeType == "" {
+			mimeType = defaultLiveOutputAudioMIMEType
+		}
+		events := []Event{}
+		if !a.outputActive {
+			a.outputActive = true
+			events = append(events, Event{Type: "live_response_start"})
+		}
+		events = append(events, Event{Type: "live_audio", Role: state.MessageRoleAssistant, Data: liveJSON(map[string]any{"mime_type": mimeType, "data": delta})})
+		return events, false, nil
+	case "response.audio_transcript.done", "response.text.done", "response.output_text.done":
+		if a.outputSuppressed {
+			return nil, false, nil
+		}
+		text := firstLiveString(message["transcript"], message["text"])
+		if text != "" && strings.TrimSpace(a.output.String()) == "" {
+			a.output.WriteString(text)
+			return []Event{{Type: "live_transcript", Role: state.MessageRoleAssistant, Content: text, Data: liveJSON(map[string]any{"source": "output", "final": true})}}, false, nil
+		}
+		return nil, false, nil
+	case "response.done":
+		return nil, true, nil
+	case "response.cancelled", "response.incomplete":
+		return nil, true, nil
+	default:
+		return nil, false, nil
+	}
+}
+
 func (a *liveTurnAccumulator) flush() (string, string) {
 	userText := strings.TrimSpace(a.input.String())
 	assistantText := strings.TrimSpace(a.output.String())
@@ -1009,6 +1290,54 @@ type liveReadyPayload struct {
 	InputAudioMIMEType string `json:"input_audio_mime_type"`
 	VoiceName          string `json:"voice_name,omitempty"`
 	LanguageCode       string `json:"language_code,omitempty"`
+}
+
+func liveXAIWebSocketURL(config LiveConfig) (string, error) {
+	config = normalizeLiveConfig(config)
+	base := strings.TrimSpace(config.XAIBaseURL)
+	if base == "" {
+		base = defaultLiveXAIBaseURL
+	}
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+	scheme := parsed.Scheme
+	if scheme == "" || (scheme != "ws" && scheme != "wss") {
+		scheme = "wss"
+	}
+	q := parsed.Query()
+	if q.Get("model") == "" {
+		q.Set("model", config.Model)
+	}
+	parsed.Scheme = scheme
+	parsed.RawQuery = q.Encode()
+	return parsed.String(), nil
+}
+
+func liveXAIAudioFormat(mimeType string) map[string]any {
+	audioType, params, err := mime.ParseMediaType(strings.ToLower(strings.TrimSpace(mimeType)))
+	if err != nil || audioType == "" {
+		audioType = strings.ToLower(strings.TrimSpace(mimeType))
+		params = map[string]string{}
+	}
+	switch {
+	case strings.Contains(audioType, "pcma") || strings.Contains(audioType, "alaw"):
+		return map[string]any{"type": "audio/pcma"}
+	case strings.Contains(audioType, "pcmu") || strings.Contains(audioType, "g711") || strings.Contains(audioType, "mulaw") || strings.Contains(audioType, "ulaw"):
+		return map[string]any{"type": "audio/pcmu"}
+	default:
+		format := map[string]any{"type": "audio/pcm"}
+		if rate := strings.TrimSpace(params["rate"]); rate != "" {
+			if parsed, err := strconv.Atoi(rate); err == nil && parsed > 0 {
+				format["rate"] = parsed
+			}
+		}
+		if _, ok := format["rate"]; !ok {
+			format["rate"] = 16000
+		}
+		return format
+	}
 }
 
 func liveVertexWebSocketURL(config LiveConfig) (string, error) {

@@ -18,13 +18,14 @@ The default stack uses SQL storage, S3-compatible artifacts from the configured
 endpoint, Redis rate limiting, Redis message context hot cache, JWT auth, and
 the built-in user system.
 Override provider settings with
-environment variables such as `AGENT_API_LLM_PROVIDER`, `OPENAI_API_KEY`,
-`DASHSCOPE_API_KEY`, `GEMINI_API_KEY`, or `VERTEX_*`.
+environment variables such as `AGENT_API_LLM_PROVIDER`, `NVIDIA_API_KEY`,
+`OPENAI_API_KEY`, `DASHSCOPE_API_KEY`, `GEMINI_API_KEY`, or `VERTEX_*`.
 Runtime model selection is managed from the Admin UI and stored in SQL.
-Gemini Live mode requires Vertex credentials inside the container. Prefer
-`VERTEX_ACCESS_TOKEN` or `GOOGLE_APPLICATION_CREDENTIALS_JSON` for test
-environments. If you mount a local service-account file with
-`AGENT_API_SECRETS_MOUNT`, set
+Live voice defaults to xAI Realtime and requires `XAI_API_KEY` plus the
+`XAI_LIVE_*` settings. Vertex Live remains available by setting
+`AGENT_API_LIVE_PROVIDER=vertex`; in that mode prefer `VERTEX_ACCESS_TOKEN` or
+`GOOGLE_APPLICATION_CREDENTIALS_JSON` for test environments. If you mount a
+local service-account file with `AGENT_API_SECRETS_MOUNT`, set
 `AGENT_API_CONTAINER_GOOGLE_APPLICATION_CREDENTIALS=/run/agentapi/secrets/vertex-service-account.json`.
 Attachment upload uses the presigned S3-compatible flow: AgentAPI signs the
 upload, the browser PUTs directly to the object store, then confirms metadata

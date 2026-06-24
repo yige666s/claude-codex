@@ -566,6 +566,8 @@ type LiveConfig struct {
 	VertexLocation             string
 	VertexBaseURL              string
 	VertexAPIVersion           string
+	XAIAPIKey                  string
+	XAIBaseURL                 string
 	InputAudioMIMEType         string
 	OutputAudioMIMEType        string
 	VoiceName                  string
@@ -574,6 +576,7 @@ type LiveConfig struct {
 	OutputTranscriptionEnabled bool
 	LiveVADStartSensitivity    string
 	LiveVADEndSensitivity      string
+	LiveVADThreshold           float64
 	LiveVADPrefixPadding       time.Duration
 	LiveVADSilenceDuration     time.Duration
 	SessionTimeout             time.Duration

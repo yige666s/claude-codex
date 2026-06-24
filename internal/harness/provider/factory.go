@@ -23,6 +23,8 @@ func (f *Factory) CreateProvider(cfg Config) (Provider, error) {
 		return NewAnthropicProvider(cfg)
 	case "openai", "gpt":
 		return NewOpenAIProvider(cfg)
+	case "nvidia", "nim":
+		return NewNVIDIAProvider(cfg)
 	case "custom", "openai-compatible", "baseurl":
 		cfg.Provider = "openai"
 		return NewOpenAIProvider(cfg)
@@ -43,7 +45,7 @@ func (f *Factory) CreateProvider(cfg Config) (Provider, error) {
 
 // ListProviders returns a list of supported providers
 func (f *Factory) ListProviders() []string {
-	return []string{"anthropic", "openai", "qwen", "gemini", "bedrock", "vertex", "shortapi", "custom"}
+	return []string{"anthropic", "openai", "nvidia", "qwen", "gemini", "bedrock", "vertex", "shortapi", "custom"}
 }
 
 // GetProviderInfo returns information about a specific provider
@@ -56,6 +58,9 @@ func (f *Factory) GetProviderInfo(providerName string) (string, []string, error)
 		return p.Name(), p.SupportedModels(), nil
 	case "openai", "gpt":
 		p := &OpenAIProvider{}
+		return p.Name(), p.SupportedModels(), nil
+	case "nvidia", "nim":
+		p := &NVIDIAProvider{}
 		return p.Name(), p.SupportedModels(), nil
 	case "custom", "openai-compatible", "baseurl":
 		p := &OpenAIProvider{}
@@ -89,6 +94,7 @@ func (f *Factory) ValidateConfig(cfg Config) error {
 	provider := strings.ToLower(cfg.Provider)
 	if provider != "anthropic" && provider != "claude" &&
 		provider != "openai" && provider != "gpt" &&
+		provider != "nvidia" && provider != "nim" &&
 		provider != "custom" && provider != "openai-compatible" && provider != "baseurl" &&
 		provider != "qwen" && provider != "dashscope" && provider != "aliyun" &&
 		provider != "gemini" && provider != "google" &&
@@ -126,6 +132,13 @@ func (f *Factory) DefaultConfig(providerName string) (Config, error) {
 			Provider: "openai",
 			BaseURL:  "https://api.openai.com/v1",
 			Model:    "gpt-4o",
+			Timeout:  600,
+		}, nil
+	case "nvidia", "nim":
+		return Config{
+			Provider: "nvidia",
+			BaseURL:  defaultNVIDIABaseURL,
+			Model:    defaultNVIDIAModel,
 			Timeout:  600,
 		}, nil
 	case "gemini", "google":

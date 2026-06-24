@@ -642,9 +642,9 @@ go run ./cmd/agentapi -llm-provider vertex -model gemini-1.5-pro
 go run ./cmd/agentapi -llm-provider vertex -model claude-sonnet-4-5@20250929
 ```
 
-### Gemini Live mode
+### xAI Live mode
 
-`cmd/agentapi` can expose a dedicated Gemini Live bridge at
+`cmd/agentapi` can expose a dedicated live voice bridge at
 `GET /v1/sessions/{session_id}/live/ws` when `AGENT_API_LIVE_ENABLED=true`.
 This is separate from the normal chat `generateContent` path. The browser sends
 base64 PCM audio frames:
@@ -653,30 +653,25 @@ base64 PCM audio frames:
 {"type":"audio","mime_type":"audio/pcm;rate=16000","data":"...base64..."}
 ```
 
-The server connects to Vertex `BidiGenerateContent`, requests audio output plus
-input/output transcription, streams `live_audio` events back to the browser, and
-persists completed transcription turns as normal user/assistant messages. Those
-messages continue through `MessageWriteService`, memory extraction, Kafka,
-Elasticsearch, and Qdrant indexing.
+The server defaults to xAI Realtime, requests audio output plus transcription,
+streams `live_audio` events back to the browser, and persists completed
+transcription turns as normal user/assistant messages. Those messages continue
+through `MessageWriteService`, memory extraction, Kafka, Elasticsearch, and
+Qdrant indexing.
 
 Relevant settings:
 
-- `AGENT_API_LIVE_MODEL=gemini-live-2.5-flash-preview-native-audio-09-2025`
-- `AGENT_API_LIVE_VERTEX_LOCATION=us-central1`
-- `AGENT_API_LIVE_VOICE_NAME=Puck`
-- `AGENT_API_LIVE_LANGUAGE_CODE=zh-CN`
+- `AGENT_API_LIVE_PROVIDER=xai`
+- `AGENT_API_LIVE_MODEL=grok-voice-latest`
+- `AGENT_API_LIVE_XAI_BASE_URL=wss://api.x.ai/v1/realtime`
+- `AGENT_API_LIVE_VOICE_NAME=ara`
+- `AGENT_API_LIVE_LANGUAGE_CODE=zh`
 - `AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED=true`
 - `AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED=true`
-- `AGENT_API_LIVE_VAD_START_SENSITIVITY=START_SENSITIVITY_HIGH`
-- `AGENT_API_LIVE_VAD_END_SENSITIVITY=END_SENSITIVITY_HIGH`
-- `AGENT_API_LIVE_VAD_PREFIX_PADDING=150ms`
-- `AGENT_API_LIVE_VAD_SILENCE_DURATION=350ms`
+- `AGENT_API_LIVE_VAD_THRESHOLD=0.75`
+- `AGENT_API_LIVE_VAD_PREFIX_PADDING=333ms`
+- `AGENT_API_LIVE_VAD_SILENCE_DURATION=1000ms`
 
-`AGENT_API_LIVE_VOICE_NAME` accepts the Gemini Live prebuilt voices from the
-Vertex Live voice configuration docs: `Achernar`, `Achird`, `Algenib`,
-`Algieba`, `Alnilam`, `Aoede`, `Autonoe`, `Callirrhoe`, `Charon`, `Despina`,
-`Enceladus`, `Erinome`, `Fenrir`, `Gacrux`, `Iapetus`, `Kore`, `Laomedeia`,
-`Leda`, `Orus`, `Puck`, `Pulcherrima`, `Rasalgethi`, `Sadachbia`,
-`Sadaltager`, `Schedar`, `Sulafat`, `Umbriel`, `Vindemiatrix`, `Zephyr`, and
-`Zubenelgenubi`. Names are normalized case-insensitively before the Live setup
-message is sent.
+Set `AGENT_API_LIVE_PROVIDER=vertex` to use the legacy Vertex Live bridge. In
+that mode `AGENT_API_LIVE_VERTEX_LOCATION`, Vertex credentials, Gemini Live
+voice names, and the Gemini VAD sensitivity settings are used.

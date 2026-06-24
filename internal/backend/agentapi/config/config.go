@@ -154,6 +154,8 @@ type Config struct {
 	LiveVertexLocation                       string
 	LiveVertexBaseURL                        string
 	LiveVertexAPIVersion                     string
+	LiveXAIAPIKey                            string
+	LiveXAIBaseURL                           string
 	LiveInputAudioMIME                       string
 	LiveOutputAudioMIME                      string
 	LiveVoiceName                            string
@@ -162,6 +164,7 @@ type Config struct {
 	LiveOutputTranscription                  bool
 	LiveVADStartSensitivity                  string
 	LiveVADEndSensitivity                    string
+	LiveVADThreshold                         float64
 	LiveVADPrefixPadding                     time.Duration
 	LiveVADSilenceDuration                   time.Duration
 	LiveSessionTimeout                       time.Duration
@@ -427,23 +430,26 @@ func Default() Config {
 		LLMFailureThreshold:                      EnvInt("AGENT_API_LLM_FAILURE_THRESHOLD", 3),
 		LLMCircuitCooldown:                       EnvDuration("AGENT_API_LLM_CIRCUIT_COOLDOWN", time.Minute),
 		LiveEnabled:                              EnvBool("AGENT_API_LIVE_ENABLED", false),
-		LiveProvider:                             FirstNonEmpty(os.Getenv("AGENT_API_LIVE_PROVIDER"), "vertex"),
-		LiveModel:                                FirstNonEmpty(os.Getenv("AGENT_API_LIVE_MODEL"), "gemini-live-2.5-flash-preview-native-audio-09-2025"),
+		LiveProvider:                             FirstNonEmpty(os.Getenv("AGENT_API_LIVE_PROVIDER"), "xai"),
+		LiveModel:                                FirstNonEmpty(os.Getenv("AGENT_API_LIVE_MODEL"), os.Getenv("XAI_LIVE_MODEL"), "grok-voice-latest"),
 		LiveVertexProjectID:                      FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_PROJECT_ID"), os.Getenv("GOCLAW_VERTEX_PROJECT_ID"), os.Getenv("VERTEX_PROJECT_ID"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GCLOUD_PROJECT")),
 		LiveVertexLocation:                       FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_LOCATION"), os.Getenv("VERTEX_LOCATION"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("CLOUD_ML_REGION"), "us-central1"),
 		LiveVertexBaseURL:                        os.Getenv("AGENT_API_LIVE_VERTEX_BASE_URL"),
 		LiveVertexAPIVersion:                     FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VERTEX_API_VERSION"), "v1beta1"),
-		LiveInputAudioMIME:                       FirstNonEmpty(os.Getenv("AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE"), "audio/pcm;rate=16000"),
-		LiveOutputAudioMIME:                      os.Getenv("AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE"),
-		LiveVoiceName:                            os.Getenv("AGENT_API_LIVE_VOICE_NAME"),
-		LiveLanguageCode:                         os.Getenv("AGENT_API_LIVE_LANGUAGE_CODE"),
+		LiveXAIAPIKey:                            FirstNonEmpty(os.Getenv("AGENT_API_LIVE_XAI_API_KEY"), os.Getenv("XAI_API_KEY")),
+		LiveXAIBaseURL:                           FirstNonEmpty(os.Getenv("AGENT_API_LIVE_XAI_BASE_URL"), os.Getenv("XAI_LIVE_BASE_URL")),
+		LiveInputAudioMIME:                       FirstNonEmpty(os.Getenv("AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE"), os.Getenv("XAI_LIVE_INPUT_MIME"), "audio/pcm;rate=16000"),
+		LiveOutputAudioMIME:                      FirstNonEmpty(os.Getenv("AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE"), os.Getenv("XAI_LIVE_OUTPUT_MIME"), "audio/pcm;rate=16000"),
+		LiveVoiceName:                            FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VOICE_NAME"), os.Getenv("XAI_LIVE_VOICE"), "ara"),
+		LiveLanguageCode:                         FirstNonEmpty(os.Getenv("AGENT_API_LIVE_LANGUAGE_CODE"), os.Getenv("XAI_LIVE_LANGUAGE_HINT"), "zh"),
 		LiveInputTranscription:                   EnvBool("AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED", true),
 		LiveOutputTranscription:                  EnvBool("AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED", true),
 		LiveVADStartSensitivity:                  FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VAD_START_SENSITIVITY"), "START_SENSITIVITY_HIGH"),
 		LiveVADEndSensitivity:                    FirstNonEmpty(os.Getenv("AGENT_API_LIVE_VAD_END_SENSITIVITY"), "END_SENSITIVITY_HIGH"),
-		LiveVADPrefixPadding:                     EnvDuration("AGENT_API_LIVE_VAD_PREFIX_PADDING", 150*time.Millisecond),
-		LiveVADSilenceDuration:                   EnvDuration("AGENT_API_LIVE_VAD_SILENCE_DURATION", 350*time.Millisecond),
-		LiveSessionTimeout:                       EnvDuration("AGENT_API_LIVE_SESSION_TIMEOUT", 10*time.Minute),
+		LiveVADThreshold:                         EnvFloat64("AGENT_API_LIVE_VAD_THRESHOLD", EnvFloat64("XAI_LIVE_VAD_THRESHOLD", 0.75)),
+		LiveVADPrefixPadding:                     EnvDuration("AGENT_API_LIVE_VAD_PREFIX_PADDING", EnvDuration("XAI_LIVE_VAD_PREFIX_PADDING", 333*time.Millisecond)),
+		LiveVADSilenceDuration:                   EnvDuration("AGENT_API_LIVE_VAD_SILENCE_DURATION", EnvDuration("XAI_LIVE_VAD_SILENCE_DURATION", time.Second)),
+		LiveSessionTimeout:                       EnvDuration("AGENT_API_LIVE_SESSION_TIMEOUT", EnvDuration("XAI_LIVE_TIMEOUT", 10*time.Minute)),
 		LiveSetupPromptCacheBackend:              FirstNonEmpty(os.Getenv("AGENT_API_LIVE_SETUP_PROMPT_CACHE_BACKEND"), os.Getenv("AGENT_API_CACHE_BACKEND"), "memory"),
 		LiveSetupPromptCacheRedisURL:             FirstNonEmpty(os.Getenv("AGENT_API_LIVE_SETUP_PROMPT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL"), os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
 		LiveSetupPromptCacheTTL:                  EnvDuration("AGENT_API_LIVE_SETUP_PROMPT_CACHE_TTL", EnvDuration("AGENT_API_CACHE_DEFAULT_TTL", time.Minute)),
@@ -688,7 +694,7 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.BoolVar(&cfg.AllowCustomWorkingDir, "allow-custom-working-dir", cfg.AllowCustomWorkingDir, "allow request-provided working_dir when no user workspace root is configured")
 	flags.StringVar(&cfg.Timezone, "timezone", cfg.Timezone, "IANA timezone used for current date/time context; empty uses server local time")
 	flags.StringVar(&cfg.Locale, "locale", cfg.Locale, "BCP 47 locale tag used for locale context; empty lets the model infer from the latest user message")
-	flags.StringVar(&cfg.LLMProvider, "llm-provider", cfg.LLMProvider, "LLM provider: anthropic, openai, qwen, gemini, vertex, shortapi, or custom")
+	flags.StringVar(&cfg.LLMProvider, "llm-provider", cfg.LLMProvider, "LLM provider: anthropic, openai, nvidia, qwen, gemini, vertex, shortapi, or custom")
 	flags.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "LLM API key; env fallback depends on -llm-provider")
 	flags.StringVar(&cfg.APIToken, "api-token", cfg.APIToken, "LLM bearer/OAuth token; env fallback depends on -llm-provider")
 	flags.StringVar(&cfg.APIBaseURL, "api-base-url", cfg.APIBaseURL, "LLM API base URL; use with openai-compatible custom providers")
@@ -706,24 +712,27 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.Float64Var(&cfg.LLMOutputCostPerMillion, "llm-output-cost-per-million", cfg.LLMOutputCostPerMillion, "estimated output token cost per 1M tokens")
 	flags.IntVar(&cfg.LLMFailureThreshold, "llm-failure-threshold", cfg.LLMFailureThreshold, "consecutive retryable failures before temporarily disabling a backend")
 	flags.DurationVar(&cfg.LLMCircuitCooldown, "llm-circuit-cooldown", cfg.LLMCircuitCooldown, "duration to skip a backend after circuit breaker opens")
-	flags.BoolVar(&cfg.LiveEnabled, "live-enabled", cfg.LiveEnabled, "enable Gemini Live websocket mode")
-	flags.StringVar(&cfg.LiveProvider, "live-provider", cfg.LiveProvider, "live provider: vertex")
-	flags.StringVar(&cfg.LiveModel, "live-model", cfg.LiveModel, "Vertex Gemini Live model")
+	flags.BoolVar(&cfg.LiveEnabled, "live-enabled", cfg.LiveEnabled, "enable live voice websocket mode")
+	flags.StringVar(&cfg.LiveProvider, "live-provider", cfg.LiveProvider, "live provider: vertex or xai")
+	flags.StringVar(&cfg.LiveModel, "live-model", cfg.LiveModel, "live voice model")
 	flags.StringVar(&cfg.LiveVertexProjectID, "live-vertex-project-id", cfg.LiveVertexProjectID, "Google Cloud project ID for Vertex Live")
 	flags.StringVar(&cfg.LiveVertexLocation, "live-vertex-location", cfg.LiveVertexLocation, "Vertex location for Gemini Live")
 	flags.StringVar(&cfg.LiveVertexBaseURL, "live-vertex-base-url", cfg.LiveVertexBaseURL, "optional Vertex Live websocket/API base URL")
 	flags.StringVar(&cfg.LiveVertexAPIVersion, "live-vertex-api-version", cfg.LiveVertexAPIVersion, "Vertex Live websocket API version")
-	flags.StringVar(&cfg.LiveInputAudioMIME, "live-input-audio-mime-type", cfg.LiveInputAudioMIME, "input audio MIME type sent to Gemini Live")
-	flags.StringVar(&cfg.LiveOutputAudioMIME, "live-output-audio-mime-type", cfg.LiveOutputAudioMIME, "fallback output audio MIME type for Gemini Live")
-	flags.StringVar(&cfg.LiveVoiceName, "live-voice-name", cfg.LiveVoiceName, "Gemini Live prebuilt voice name, for example Puck, Charon, Kore, Fenrir, Aoede, or Zephyr")
+	flags.StringVar(&cfg.LiveXAIAPIKey, "live-xai-api-key", cfg.LiveXAIAPIKey, "xAI API key for live voice; normally set XAI_API_KEY")
+	flags.StringVar(&cfg.LiveXAIBaseURL, "live-xai-base-url", cfg.LiveXAIBaseURL, "xAI realtime websocket base URL")
+	flags.StringVar(&cfg.LiveInputAudioMIME, "live-input-audio-mime-type", cfg.LiveInputAudioMIME, "input audio MIME type sent to live voice provider")
+	flags.StringVar(&cfg.LiveOutputAudioMIME, "live-output-audio-mime-type", cfg.LiveOutputAudioMIME, "fallback output audio MIME type for live voice provider")
+	flags.StringVar(&cfg.LiveVoiceName, "live-voice-name", cfg.LiveVoiceName, "live voice name; xAI example ara, Vertex examples Puck, Charon, Kore, Fenrir, Aoede, or Zephyr")
 	flags.StringVar(&cfg.LiveLanguageCode, "live-language-code", cfg.LiveLanguageCode, "optional BCP-47 Live response language code, for example zh-CN or en-US")
-	flags.BoolVar(&cfg.LiveInputTranscription, "live-input-transcription-enabled", cfg.LiveInputTranscription, "request input audio transcription from Gemini Live")
-	flags.BoolVar(&cfg.LiveOutputTranscription, "live-output-transcription-enabled", cfg.LiveOutputTranscription, "request output audio transcription from Gemini Live")
+	flags.BoolVar(&cfg.LiveInputTranscription, "live-input-transcription-enabled", cfg.LiveInputTranscription, "request input audio transcription from live voice provider")
+	flags.BoolVar(&cfg.LiveOutputTranscription, "live-output-transcription-enabled", cfg.LiveOutputTranscription, "request output audio transcription from live voice provider")
 	flags.StringVar(&cfg.LiveVADStartSensitivity, "live-vad-start-sensitivity", cfg.LiveVADStartSensitivity, "Gemini Live VAD speech start sensitivity")
 	flags.StringVar(&cfg.LiveVADEndSensitivity, "live-vad-end-sensitivity", cfg.LiveVADEndSensitivity, "Gemini Live VAD speech end sensitivity")
-	flags.DurationVar(&cfg.LiveVADPrefixPadding, "live-vad-prefix-padding", cfg.LiveVADPrefixPadding, "Gemini Live VAD detected speech duration before confirming speech start")
-	flags.DurationVar(&cfg.LiveVADSilenceDuration, "live-vad-silence-duration", cfg.LiveVADSilenceDuration, "Gemini Live VAD silence duration before confirming speech end")
-	flags.DurationVar(&cfg.LiveSessionTimeout, "live-session-timeout", cfg.LiveSessionTimeout, "max duration for one Gemini Live websocket session")
+	flags.Float64Var(&cfg.LiveVADThreshold, "live-vad-threshold", cfg.LiveVADThreshold, "xAI server VAD threshold")
+	flags.DurationVar(&cfg.LiveVADPrefixPadding, "live-vad-prefix-padding", cfg.LiveVADPrefixPadding, "Live VAD detected speech duration before confirming speech start")
+	flags.DurationVar(&cfg.LiveVADSilenceDuration, "live-vad-silence-duration", cfg.LiveVADSilenceDuration, "Live VAD silence duration before confirming speech end")
+	flags.DurationVar(&cfg.LiveSessionTimeout, "live-session-timeout", cfg.LiveSessionTimeout, "max duration for one live voice websocket session")
 	flags.StringVar(&cfg.LiveSetupPromptCacheBackend, "live-setup-prompt-cache-backend", cfg.LiveSetupPromptCacheBackend, "live setup prompt cache backend: memory, redis, or none")
 	flags.StringVar(&cfg.LiveSetupPromptCacheRedisURL, "live-setup-prompt-cache-redis-url", cfg.LiveSetupPromptCacheRedisURL, "Redis URL for live setup prompt cache")
 	flags.DurationVar(&cfg.LiveSetupPromptCacheTTL, "live-setup-prompt-cache-ttl", cfg.LiveSetupPromptCacheTTL, "live setup prompt cache TTL")

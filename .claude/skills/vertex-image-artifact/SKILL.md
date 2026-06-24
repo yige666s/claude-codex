@@ -1,6 +1,6 @@
 ---
 name: "vertex-image-artifact"
-description: "Generate one image with Vertex AI Imagen and save it as a generated artifact. Triggers include: 生成图片, 生成以下图片, 帮我生成图片, 画一张, 生图, generate image, create image, render image."
+description: "Generate one image with ShortAPI Nano Banana 2 and save it as a generated artifact. Triggers include: 生成图片, 生成以下图片, 帮我生成图片, 画一张, 生图, generate image, create image, render image."
 user-invocable: true
 argument-hint: "<image prompt>"
 allowed-tools: ["Artifact", "Bash(python3 *)"]
@@ -15,6 +15,17 @@ metadata:
     produces_artifacts: true
     policy:
       allowed_env:
+        - IMAGE_PROVIDER
+        - AGENT_API_IMAGE_PROVIDER
+        - SHORTAPI_KEY
+        - SHORTAPI_API_BASE
+        - SHORTAPI_BASE_URL
+        - SHORTAPI_IMAGE_MODEL
+        - SHORTAPI_IMAGE_ASPECT_RATIO
+        - SHORTAPI_IMAGE_RESOLUTION
+        - SHORTAPI_IMAGE_NUM_IMAGES
+        - SHORTAPI_IMAGE_TIMEOUT
+        - SHORTAPI_IMAGE_POLL_INTERVAL
         - VERTEX_PROJECT_ID
         - GOOGLE_CLOUD_PROJECT
         - GCP_PROJECT
@@ -30,11 +41,15 @@ metadata:
         - VERTEX_IMAGE_MODEL
         - VERTEX_IMAGE_ASPECT_RATIO
       network_allowlist:
+        - api.shortapi.ai
+        - shortapi.ai
         - aiplatform.googleapis.com
         - oauth2.googleapis.com
         - googleapis.com
       artifact_content_types:
         - image/png
+        - image/jpeg
+        - image/webp
       sandbox:
         runner: docker
         image: python:3.12-slim
@@ -42,6 +57,14 @@ metadata:
   openclaw:
     requires:
       env:
+        - SHORTAPI_KEY
+        - SHORTAPI_API_BASE
+        - SHORTAPI_IMAGE_MODEL
+        - SHORTAPI_IMAGE_ASPECT_RATIO
+        - SHORTAPI_IMAGE_RESOLUTION
+        - SHORTAPI_IMAGE_NUM_IMAGES
+        - SHORTAPI_IMAGE_TIMEOUT
+        - SHORTAPI_IMAGE_POLL_INTERVAL
         - VERTEX_PROJECT_ID
         - GOOGLE_CLOUD_PROJECT
         - GCP_PROJECT
@@ -58,20 +81,20 @@ metadata:
         - VERTEX_IMAGE_ASPECT_RATIO
 ---
 
-# Vertex Image Artifact Test
+# Image Artifact Generation
 
-Generate a simple test image with Vertex AI Imagen, then save the generated PNG as an artifact.
+Generate one image with ShortAPI Nano Banana 2, then save the generated image as an artifact.
 
-The shell step below calls the Vertex Imagen REST `predict` API and writes the PNG into the current user's workspace. It expects `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, and either service account credentials from `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_APPLICATION_CREDENTIALS_JSON`, a Vertex OAuth access token from `VERTEX_ACCESS_TOKEN`, `GOOGLE_OAUTH_ACCESS_TOKEN`, `GOOGLE_ACCESS_TOKEN`, or local `gcloud auth print-access-token`.
+The shell step below calls ShortAPI `POST /job/create`, polls `GET /job/query?id=...`, downloads the generated image, and writes it into the current user's workspace. It expects `SHORTAPI_KEY`; by default it uses `SHORTAPI_API_BASE=https://api.shortapi.ai/api/v1` and `SHORTAPI_IMAGE_MODEL=google/nano-banana-2/text-to-image`.
 
-Vertex Imagen generation requires the request to include `instances[0].prompt`. This skill supplies the required `parameters.sampleCount` as `1`, sends `parameters.outputOptions.mimeType` as `image/png`, defaults `VERTEX_IMAGE_MODEL` to `imagen-3.0-generate-002`, and defaults `parameters.aspectRatio` to `1:1` when the user does not specify one.
+ShortAPI generation uses `args.prompt`, `args.aspect_ratio`, `args.resolution`, and `args.num_images`. It defaults to `SHORTAPI_IMAGE_ASPECT_RATIO=1:1`, `SHORTAPI_IMAGE_RESOLUTION=2k`, and `SHORTAPI_IMAGE_NUM_IMAGES=1` when the user does not specify a ratio.
 
-The script parses image options from the user prompt before calling Vertex Imagen:
+The script parses image options from the user prompt before calling ShortAPI:
 
 - `--ar 1:1`, `--ar=1:1`, `--aspect-ratio 1:1`, or `--aspect-ratio=1:1`
 - Supported aspect ratios are `1:1`, `3:4`, `4:3`, `16:9`, and `9:16`
-- Unsupported numeric ratios are normalized to the nearest supported Vertex Imagen ratio and reported as `aspect_ratio_note`
-- Parsed flags are removed from the prompt sent to Vertex Imagen
+- Unsupported numeric ratios are normalized to the nearest supported image-provider ratio and reported as `aspect_ratio_note`
+- Parsed flags are removed from the prompt sent to ShortAPI
 
 ```!
 python3 "${CLAUDE_SKILL_DIR}/generate_vertex_image.py" <<'VERTEX_IMAGE_PROMPT'
@@ -82,10 +105,10 @@ VERTEX_IMAGE_PROMPT
 Use the `Artifact` tool exactly once with the `artifact_file_path` printed above. The value is intentionally relative to the current workspace; do not rewrite it as an absolute path.
 
 - `filename`: use the printed `filename`
-- `content_type`: `image/png`
+- `content_type`: use the printed `content_type`
 - `file_path`: use the printed `artifact_file_path`
 
-If the shell output contains `skill_error:`, do not call the `Artifact` tool. Reply in the user's language with the friendly error from `skill_error:` and, when useful, a concise next step. Do not expose raw Vertex JSON, stack traces, shell commands, auth tokens, artifact IDs, object paths, or download paths to the user.
+If the shell output contains `skill_error:`, do not call the `Artifact` tool. Reply in the user's language with the friendly error from `skill_error:` and, when useful, a concise next step. Do not expose raw provider JSON, stack traces, shell commands, auth tokens, artifact IDs, object paths, or download paths to the user.
 
 The shell output may contain `skill_log: {...}` diagnostic lines. These are for backend execution history only. Do not summarize, quote, or expose them to the user.
 
