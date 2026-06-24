@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"mime"
 	"net/http"
@@ -347,9 +348,9 @@ func (s *VertexLiveService) connectXAI(ctx context.Context, req LiveRequest) (*w
 	}
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+token)
-	conn, _, err := s.dialer.DialContext(ctx, u, headers)
+	conn, response, err := s.dialer.DialContext(ctx, u, headers)
 	if err != nil {
-		return nil, fmt.Errorf("connect live xAI websocket: %w", err)
+		return nil, fmt.Errorf("connect live xAI websocket: %w%s", err, liveWebSocketHandshakeDetail(response))
 	}
 	if err := conn.WriteJSON(s.xaiSessionUpdateMessage(ctx, req)); err != nil {
 		_ = conn.Close()
@@ -1315,6 +1316,26 @@ func liveXAIWebSocketURL(config LiveConfig) (string, error) {
 	return parsed.String(), nil
 }
 
+func liveWebSocketHandshakeDetail(response *http.Response) string {
+	if response == nil {
+		return ""
+	}
+	detail := " (status=" + response.Status + ")"
+	if response.Body == nil {
+		return detail
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 2048))
+	_ = response.Body.Close()
+	if err != nil {
+		return detail
+	}
+	bodyText := strings.TrimSpace(string(body))
+	if bodyText == "" {
+		return detail
+	}
+	return detail + ": " + bodyText
+}
+
 func liveXAIAudioFormat(mimeType string) map[string]any {
 	audioType, params, err := mime.ParseMediaType(strings.ToLower(strings.TrimSpace(mimeType)))
 	if err != nil || audioType == "" {
@@ -1420,6 +1441,8 @@ func liveErrorCode(err error) string {
 	}
 	text := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(text, "429") || strings.Contains(text, "too many requests") || strings.Contains(text, "spending limit") || strings.Contains(text, "available credits"):
+		return "live_provider_rate_limited"
 	case strings.Contains(text, "access token") || strings.Contains(text, "google_application_credentials") || strings.Contains(text, "vertex-service-account"):
 		return "live_credentials_missing"
 	case strings.Contains(text, "project id"):
@@ -1443,6 +1466,8 @@ func livePublicErrorMessage(err error) string {
 		return "Live mode is not configured for this environment."
 	case "live_provider_connection":
 		return "Live voice could not connect to the provider."
+	case "live_provider_rate_limited":
+		return "Live provider quota or rate limit has been reached."
 	case "live_timeout":
 		return "Live voice timed out."
 	case "live_client_protocol", "live_audio_invalid":

@@ -1123,6 +1123,7 @@ function liveErrorStatus(data?: unknown): string {
   const { code } = liveErrorPayload(data);
   if (code === "live_credentials_missing" || code === "live_project_missing") return "Live setup required";
   if (code === "live_timeout") return "Live voice timed out";
+  if (code === "live_provider_rate_limited") return "Live provider quota reached";
   if (code === "live_provider_connection") return "Live provider unavailable";
   if (code === "live_audio_invalid" || code === "live_client_protocol") return "Live audio failed";
   return "Live voice failed";

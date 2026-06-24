@@ -561,38 +561,38 @@ services:
       - "${AGENT_API_LLM_DAILY_TOKEN_QUOTA:-500000}"
       - -llm-daily-request-quota
       - "${AGENT_API_LLM_DAILY_REQUEST_QUOTA:-1000}"
-      - "-live-enabled=${AGENT_API_LIVE_ENABLED:-true}"
-      - -live-provider
+      - "--live-enabled=${AGENT_API_LIVE_ENABLED:-true}"
+      - --live-provider
       - "${AGENT_API_LIVE_PROVIDER:-xai}"
-      - -live-model
+      - --live-model
       - "${AGENT_API_LIVE_MODEL:-grok-voice-latest}"
-      - -live-xai-base-url
+      - --live-xai-base-url
       - "${AGENT_API_LIVE_XAI_BASE_URL:-wss://api.x.ai/v1/realtime}"
-      - -live-vertex-location
+      - --live-vertex-location
       - "${AGENT_API_LIVE_VERTEX_LOCATION:-us-central1}"
-      - -live-vertex-api-version
+      - --live-vertex-api-version
       - "${AGENT_API_LIVE_VERTEX_API_VERSION:-v1beta1}"
-      - -live-input-audio-mime-type
+      - --live-input-audio-mime-type
       - "${AGENT_API_LIVE_INPUT_AUDIO_MIME_TYPE:-audio/pcm;rate=16000}"
-      - -live-output-audio-mime-type
+      - --live-output-audio-mime-type
       - "${AGENT_API_LIVE_OUTPUT_AUDIO_MIME_TYPE:-audio/pcm;rate=16000}"
-      - -live-voice-name
+      - --live-voice-name
       - "${AGENT_API_LIVE_VOICE_NAME:-ara}"
-      - -live-language-code
+      - --live-language-code
       - "${AGENT_API_LIVE_LANGUAGE_CODE:-zh}"
-      - "-live-input-transcription-enabled=${AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED:-true}"
-      - "-live-output-transcription-enabled=${AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED:-true}"
-      - -live-vad-start-sensitivity
+      - "--live-input-transcription-enabled=${AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED:-true}"
+      - "--live-output-transcription-enabled=${AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED:-true}"
+      - --live-vad-start-sensitivity
       - "${AGENT_API_LIVE_VAD_START_SENSITIVITY:-START_SENSITIVITY_HIGH}"
-      - -live-vad-end-sensitivity
+      - --live-vad-end-sensitivity
       - "${AGENT_API_LIVE_VAD_END_SENSITIVITY:-END_SENSITIVITY_HIGH}"
-      - -live-vad-threshold
+      - --live-vad-threshold
       - "${AGENT_API_LIVE_VAD_THRESHOLD:-0.75}"
-      - -live-vad-prefix-padding
+      - --live-vad-prefix-padding
       - "${AGENT_API_LIVE_VAD_PREFIX_PADDING:-333ms}"
-      - -live-vad-silence-duration
+      - --live-vad-silence-duration
       - "${AGENT_API_LIVE_VAD_SILENCE_DURATION:-1000ms}"
-      - -live-session-timeout
+      - --live-session-timeout
       - "${AGENT_API_LIVE_SESSION_TIMEOUT:-10m}"
       - -retention-days
       - "${AGENT_API_RETENTION_DAYS:-30}"

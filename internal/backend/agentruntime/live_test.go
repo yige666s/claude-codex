@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +39,23 @@ func TestLiveXAIWebSocketURLAddsModel(t *testing.T) {
 	want := "wss://api.x.ai/v1/realtime?model=grok-voice-latest"
 	if got != want {
 		t.Fatalf("url = %q, want %q", got, want)
+	}
+}
+
+func TestLiveWebSocketHandshakeDetailIncludesStatusAndBody(t *testing.T) {
+	detail := liveWebSocketHandshakeDetail(&http.Response{
+		Status: "429 Too Many Requests",
+		Body:   io.NopCloser(strings.NewReader(`{"error":"spending limit"}`)),
+	})
+	if !strings.Contains(detail, "429 Too Many Requests") || !strings.Contains(detail, "spending limit") {
+		t.Fatalf("detail = %q, want status and body", detail)
+	}
+	err := fmt.Errorf("connect live xAI websocket: websocket: bad handshake%s", detail)
+	if got := liveErrorCode(err); got != "live_provider_rate_limited" {
+		t.Fatalf("liveErrorCode = %q, want live_provider_rate_limited", got)
+	}
+	if got := livePublicErrorMessage(err); got != "Live provider quota or rate limit has been reached." {
+		t.Fatalf("livePublicErrorMessage = %q", got)
 	}
 }
 
