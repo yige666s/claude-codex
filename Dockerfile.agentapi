@@ -22,7 +22,35 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM alpine:${ALPINE_VERSION}
 
-RUN apk add --no-cache bash ca-certificates curl docker-cli python3 tzdata \
+RUN apk add --no-cache \
+        bash \
+        ca-certificates \
+        curl \
+        docker-cli \
+        font-noto-cjk \
+        fontconfig \
+        libreoffice \
+        nodejs \
+        npm \
+        poppler-utils \
+        py3-pip \
+        python3 \
+        ttf-dejavu \
+        tzdata \
+    && python3 -m pip install --break-system-packages --no-cache-dir \
+        lxml \
+        openpyxl \
+        pdf2image \
+        pdfplumber \
+        pillow \
+        pypdf \
+        python-docx \
+        python-pptx \
+        reportlab \
+    && npm install -g \
+        docx \
+        exceljs \
+        pptxgenjs \
     && addgroup -S agentapi \
     && adduser -S -G agentapi -h /var/lib/agentapi agentapi \
     && mkdir -p /var/lib/agentapi /workspace \
@@ -31,6 +59,9 @@ RUN apk add --no-cache bash ca-certificates curl docker-cli python3 tzdata \
 COPY --from=build /out/agentapi /usr/local/bin/agentapi
 
 ENV AGENT_API_DATA_DIR=/var/lib/agentapi
+ENV HOME=/var/lib/agentapi
+ENV NODE_PATH=/usr/local/lib/node_modules
+ENV OFFICE_RUNTIME_NODE_MODULES=/usr/local/lib/node_modules
 WORKDIR /workspace
 USER agentapi
 

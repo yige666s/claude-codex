@@ -1,0 +1,30 @@
+{
+  "scriptsVersion": "alpha",
+  "items": [
+    {
+      "id": "reconstruct-artifact-tool",
+      "label": "Reconstruct all layouts",
+      "path": "./snippets/reconstruct-artifact-tool.mjs",
+      "language": "javascript",
+      "kind": "validation",
+      "target": "oai.artifact-tool.compose-no-jsx",
+      "description": "Re-export the complete reconstruction builder.",
+      "inputs": [
+        "../../artifact-tool-compose/content-tokens.json"
+      ]
+    },
+    {
+      "id": "create-presentation",
+      "label": "Create presentation",
+      "path": "./snippets/create-presentation.mjs",
+      "language": "javascript",
+      "kind": "create",
+      "target": "oai.artifact-tool.compose-no-jsx",
+      "description": "Create the complete 80-slide layout reconstruction.",
+      "inputs": [
+        "../../artifact-tool-compose/content-tokens.json",
+        "../../artifact-tool-compose/styles.mjs"
+      ]
+    }
+  ]
+}

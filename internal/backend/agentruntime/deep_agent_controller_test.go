@@ -1587,6 +1587,78 @@ func TestRuntimeDeepAgentRouterUsesDocxSkillWhenExplicitlyRequested(t *testing.T
 	}
 }
 
+func TestRuntimeDeepAgentRouterPrefersDocumentsSkillForWordResearchDocument(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return echoRunner{} },
+	)
+	runtime.skills = fakeSkillCatalog{skills: []*skills.SkillDefinition{
+		{
+			Name:          "docx",
+			Description:   "Use this skill to create Word documents and .docx files.",
+			UserInvocable: true,
+			RunAsJob:      true,
+			Metadata:      map[string]any{"produces_artifacts": true},
+		},
+		{
+			Name:          "documents",
+			Description:   "Create, edit, render, and verify Word documents and .docx artifacts.",
+			UserInvocable: true,
+			RunAsJob:      true,
+			Metadata:      map[string]any{"produces_artifacts": true},
+		},
+	}}
+	steps := ruleDeepAgentFallbackSteps("帮我调研一下 Tolan 这款 AI 产品，然后生成一个word调研文档")
+	if len(steps) != 3 {
+		t.Fatalf("expected fallback research plan, got %#v", steps)
+	}
+	planner := NewRuntimeDeepAgentPlanner(runtime)
+	action, err := planner.NextAction(context.Background(), &DeepAgentState{
+		Goal:          "帮我调研一下 Tolan 这款 AI 产品，然后生成一个word调研文档",
+		WorkingMemory: map[string]any{"user_id": "alice", "session_id": "session-1"},
+	}, steps[2])
+	if err != nil {
+		t.Fatalf("NextAction() error = %v", err)
+	}
+	if action.Tool != DeepAgentToolModeSkill {
+		t.Fatalf("word research document action tool = %q, want skill: %#v", action.Tool, action)
+	}
+	if got := deepAgentWorkflowString(action.Args, "skill_name"); got != "documents" {
+		t.Fatalf("skill_name = %q, want documents in %#v", got, action.Args)
+	}
+	if got := deepAgentWorkflowString(action.Args, "deliverable_type"); got != deepAgentDeliverableDocx {
+		t.Fatalf("deliverable_type = %q, want docx in %#v", got, action.Args)
+	}
+	if got := deepAgentWorkflowString(action.Args, "filename_hint"); !strings.HasSuffix(got, ".docx") {
+		t.Fatalf("filename_hint = %q, want .docx in %#v", got, action.Args)
+	}
+}
+
+func TestDeepAgentModelArtifactFallbackRejectsDocxDeliverable(t *testing.T) {
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(Scope) Runner { return echoRunner{} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	executor := NewRuntimeDeepAgentExecutor(runtime)
+	_, err := executor.createDeepAgentModelArtifact(context.Background(), "alice", "session-1", DeepAgentAction{
+		StepID: "write-docx",
+		Args: map[string]any{
+			"deliverable_type": deepAgentDeliverableDocx,
+			"filename_hint":    "tolan-report.docx",
+		},
+	}, "The Word document was created.")
+	if err == nil || !strings.Contains(err.Error(), "refusing markdown fallback") {
+		t.Fatalf("expected docx markdown fallback rejection, got %v", err)
+	}
+}
+
 func TestRuntimeDeepAgentRouterUsesDiagramSkillForSVGArtifact(t *testing.T) {
 	runtime := NewRuntime(
 		RuntimeConfig{},

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 )
 
@@ -257,18 +258,25 @@ func (r *RuntimeDeepAgentStepRouter) skillRouteForStep(step DeepAgentStep) (Deep
 	if r == nil || r.planner == nil {
 		return DeepAgentStepRoute{}, false
 	}
-	skill, ok := r.planner.selectSkillForStep(step)
+	text := deepAgentRouteText(step)
+	deliverable := deepAgentDeliverableTypeForStep(step)
+	var skill *skills.SkillDefinition
+	var ok bool
+	if deliverable == deepAgentDeliverableDocx {
+		skill, ok = r.preferredDocxSkillForStep()
+	}
+	if !ok || skill == nil {
+		skill, ok = r.planner.selectSkillForStep(step)
+	}
 	if !ok || skill == nil {
 		return DeepAgentStepRoute{}, false
 	}
-	text := deepAgentRouteText(step)
 	name := strings.ToLower(strings.TrimSpace(skill.Name))
-	deliverable := deepAgentDeliverableTypeForStep(step)
 	explicitSkill := strings.Contains(text, name) || deepAgentContainsAny(text, " skill", "skill ", "技能")
 	matchesSpecializedDeliverable := false
 	switch deliverable {
 	case deepAgentDeliverableDocx:
-		matchesSpecializedDeliverable = name == "docx" || strings.Contains(name, "docx")
+		matchesSpecializedDeliverable = deepAgentSkillMatchesDocxDeliverable(name)
 	case deepAgentDeliverableImage:
 		matchesSpecializedDeliverable = strings.Contains(name, "image") || strings.Contains(name, "imagen")
 	case deepAgentDeliverableSVG:
@@ -287,6 +295,34 @@ func (r *RuntimeDeepAgentStepRouter) skillRouteForStep(step DeepAgentStep) (Deep
 		Reason:           "deterministic skill selection guard",
 		Confidence:       "high",
 	}, true
+}
+
+func (r *RuntimeDeepAgentStepRouter) preferredDocxSkillForStep() (*skills.SkillDefinition, bool) {
+	if r == nil || r.runtime == nil || r.runtime.skills == nil {
+		return nil, false
+	}
+	for _, preferred := range []string{"documents", "docx"} {
+		if skill, ok := r.runtime.skills.GetSkill(preferred); ok && skill != nil && skill.UserInvocable && !skill.IsHidden {
+			return skill, true
+		}
+	}
+	for _, skill := range r.runtime.skills.ListUserInvocableSkills() {
+		if skill == nil || skill.IsHidden {
+			continue
+		}
+		if deepAgentSkillMatchesDocxDeliverable(skill.Name) {
+			return skill, true
+		}
+	}
+	return nil, false
+}
+
+func deepAgentSkillMatchesDocxDeliverable(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "documents" ||
+		name == "docx" ||
+		strings.Contains(name, "docx") ||
+		strings.Contains(name, "document")
 }
 
 func (r *RuntimeDeepAgentStepRouter) llmRouteStep(ctx context.Context, agentState *DeepAgentState, step DeepAgentStep) (DeepAgentStepRoute, error) {
@@ -469,7 +505,7 @@ func deepAgentSearchScopeForMode(mode string) string {
 func deepAgentDeliverableTypeForStep(step DeepAgentStep) string {
 	text := deepAgentRouteText(step)
 	switch {
-	case deepAgentContainsAny(text, ".docx", "docx", "word document", "word 文档", "word文档"):
+	case deepAgentTextRequestsDocx(text):
 		return deepAgentDeliverableDocx
 	case deepAgentContainsAny(text, ".svg", "svg", "流程图", "架构图", "技术图", "diagram", "flowchart", "architecture diagram"):
 		return deepAgentDeliverableSVG
@@ -484,6 +520,23 @@ func deepAgentDeliverableTypeForStep(step DeepAgentStep) string {
 	default:
 		return deepAgentDeliverableNone
 	}
+}
+
+func deepAgentTextRequestsDocx(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return false
+	}
+	if deepAgentContainsAny(text,
+		".docx", "docx", "word document", "word 文档", "word文档", "word 文件", "word文件",
+		"word 报告", "word报告", "word 调研", "word调研", "word 版", "word版",
+		"微软 word", "microsoft word",
+	) {
+		return true
+	}
+	return deepAgentContainsASCIIWord(text, "word") && deepAgentContainsAny(text,
+		"文档", "报告", "调研", "文件", "document", "report", "deliverable",
+	)
 }
 
 func deepAgentRouteText(step DeepAgentStep) string {

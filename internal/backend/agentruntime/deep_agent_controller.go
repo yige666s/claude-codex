@@ -1678,6 +1678,14 @@ func ruleDeepAgentFallbackSteps(goal string) []DeepAgentStep {
 	if !needsResearch || !needsArtifact {
 		return nil
 	}
+	finalTitle := "生成并保存最终调研报告文档"
+	finalIntent := "Create the final research report document for the user goal and save it as a downloadable artifact: " + goal
+	finalDoneCondition := "最终调研报告文档已通过 Artifact 工具生成并可下载"
+	if deepAgentTextRequestsDocx(text) {
+		finalTitle = "生成并保存最终 Word 调研报告文档"
+		finalIntent = "Use the documents or docx skill to create the final .docx Word research report artifact for the user goal: " + goal
+		finalDoneCondition = "最终 Word .docx 调研报告已通过 documents/docx skill 生成并可下载"
+	}
 	return []DeepAgentStep{
 		{
 			ID:            "step-1",
@@ -1698,11 +1706,11 @@ func ruleDeepAgentFallbackSteps(goal string) []DeepAgentStep {
 		},
 		{
 			ID:            "step-3",
-			Title:         "生成并保存最终调研报告文档",
-			Intent:        "Create the final research report document for the user goal and save it as a downloadable artifact: " + goal,
+			Title:         finalTitle,
+			Intent:        finalIntent,
 			DependsOn:     []string{"step-1", "step-2"},
 			Status:        DeepAgentStepStatusPending,
-			DoneCondition: "最终调研报告文档已通过 Artifact 工具生成并可下载",
+			DoneCondition: finalDoneCondition,
 			RiskLevel:     "medium",
 		},
 	}

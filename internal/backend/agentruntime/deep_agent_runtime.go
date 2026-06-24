@@ -1067,10 +1067,7 @@ func deepAgentPriorArtifactSatisfiesGenericDocument(agentState *DeepAgentState, 
 }
 
 func deepAgentExplicitDocxText(text string) bool {
-	return deepAgentContainsAny(text,
-		".docx", "docx", "word document", "word doc", "microsoft word",
-		"word文档", "word 文档", "生成word", "生成 word", "创建word", "创建 word",
-	)
+	return deepAgentTextRequestsDocx(text)
 }
 
 func (e *RuntimeDeepAgentExecutor) deepAgentNewArtifactCount(ctx context.Context, userID, sessionID string, before map[string]struct{}) int64 {
@@ -1328,8 +1325,29 @@ func (e *RuntimeDeepAgentExecutor) createDeepAgentModelArtifact(ctx context.Cont
 	if strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" {
 		return nil, fmt.Errorf("artifact fallback requires user_id and session_id")
 	}
+	if deepAgentActionDeliverableType(action) == deepAgentDeliverableDocx {
+		return nil, fmt.Errorf("docx deliverable requires the documents/docx skill artifact; refusing markdown fallback")
+	}
 	filename := deepAgentModelArtifactFilename(action)
 	return e.runtime.CreateArtifact(ctx, userID, sessionID, filename, "text/markdown", []byte(output))
+}
+
+func deepAgentActionDeliverableType(action DeepAgentAction) string {
+	deliverable := strings.ToLower(strings.TrimSpace(deepAgentActionString(action, "deliverable_type")))
+	if deliverable != "" && deliverable != deepAgentDeliverableNone {
+		return deliverable
+	}
+	text := strings.Join([]string{
+		deepAgentActionString(action, "filename_hint"),
+		deepAgentActionString(action, "step_title"),
+		deepAgentActionString(action, "step_intent"),
+		deepAgentActionString(action, "done_condition"),
+		deepAgentActionString(action, "success_criteria"),
+	}, "\n")
+	if deepAgentTextRequestsDocx(text) {
+		return deepAgentDeliverableDocx
+	}
+	return ""
 }
 
 func deepAgentActionRequiresArtifact(action DeepAgentAction) bool {

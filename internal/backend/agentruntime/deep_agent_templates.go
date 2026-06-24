@@ -48,7 +48,7 @@ func DefaultDeepAgentTaskTemplates() []DeepAgentTaskTemplate {
 				QualityBar:        "Evidence-backed, clearly structured, and explicit about uncertainty.",
 			},
 			Budget:        DeepAgentPolicy{MaxSteps: 5, MaxActions: 12, MaxDuration: 45 * time.Minute},
-			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "gather", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "source_pack", allowedTools: webResearchAllowedTools(), searchScope: "web"}, {stepID: "synthesize", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "analysis"}, {stepID: "artifact", mode: DeepAgentToolModeModelArtifact, executor: deepAgentRouteExecutorArtifact, artifact: true, deliverable: "markdown_report"}, {stepID: "verify", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "verification"}}),
+			ExecutorHints: templateRoutes([]templateRouteSpec{{stepID: "gather", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "source_pack", allowedTools: webResearchAllowedTools(), searchScope: "web"}, {stepID: "synthesize", mode: DeepAgentToolModeModel, executor: deepAgentRouteExecutorModel, deliverable: "analysis"}, {stepID: "artifact", mode: DeepAgentToolModeModelArtifact, executor: deepAgentRouteExecutorArtifact, artifact: true, deliverable: "research_report"}, {stepID: "verify", mode: DeepAgentToolModeTest, executor: deepAgentRouteExecutorTest, deliverable: "verification"}}),
 			Steps: []DeepAgentStep{
 				researchGatherTemplateStep(),
 				templateStep("synthesize", "综合分析并形成报告结构", "Synthesize evidence into findings, caveats, and report outline.", []string{"gather"}, "已形成清晰结论、大纲和风险说明", DeepAgentToolModeModel),

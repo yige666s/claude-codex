@@ -97,10 +97,10 @@ func formatToolCapabilityContext(descriptors []toolkit.Descriptor) string {
 		lines = append(lines, "For current or external information, use WebSearch and WebFetch before saying the information is unavailable.")
 	}
 	if names["Artifact"] {
-		lines = append(lines, "For generated files, use Artifact directly. It can create Markdown, text, CSV, JSON, HTML, and other downloadable artifacts when the user asks for a file.")
+		lines = append(lines, "For plain generated files, use Artifact directly. It can create Markdown, text, CSV, JSON, HTML, and similar downloadable artifacts. Do not save a status message as Markdown when the user asked for a Word/docx, PDF, presentation, or spreadsheet file.")
 	}
 	if names["Skill"] {
-		lines = append(lines, "Use Skill when a published skill is the best fit, such as specialized document generation or media workflows.")
+		lines = append(lines, "Use Skill when a published skill is the best fit, such as specialized document generation, Word/docx, PDF, presentation, spreadsheet, image, or media workflows.")
 	}
 	lines = append(lines,
 		"If a tool call fails, report the tool error and any partial result instead of claiming you lack the capability.",
