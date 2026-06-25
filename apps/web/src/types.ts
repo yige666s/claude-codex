@@ -46,6 +46,7 @@ export type AgentActivityItem = {
   detail?: string;
   status: "running" | "succeeded" | "failed" | "default";
   created_at: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type AgentActivity = {

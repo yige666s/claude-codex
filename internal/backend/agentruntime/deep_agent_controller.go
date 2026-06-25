@@ -1094,8 +1094,10 @@ func (c *DeepAgentController) emitActionEvent(ctx context.Context, run *Workflow
 		"tool":          tool,
 		"route":         deepAgentActionRoutePayload(tool, action),
 		"route_version": deepAgentActionString(action, "route_version"),
+		"action_id":     firstNonEmptyString(action.ID, action.Hash),
 		"action_hash":   action.Hash,
 		"action_count":  0,
+		"attempt":       deepAgentIntFromMap(action.Args, "attempt", 1),
 	}
 	if promptPreview := truncateDeepAgentDiagnosticText(deepAgentActionString(action, "prompt"), 700); promptPreview != "" {
 		payload["prompt_preview"] = promptPreview
@@ -1136,6 +1138,13 @@ func (c *DeepAgentController) emitActionEvent(ctx context.Context, run *Workflow
 	}
 	if len(result.Metadata) > 0 {
 		payload["result_metadata"] = result.Metadata
+		deepAgentCopyTraceMetric(payload, result.Metadata, "duration_ms")
+		deepAgentCopyTraceMetric(payload, result.Metadata, "token_estimate")
+		deepAgentCopyTraceMetric(payload, result.Metadata, "estimated_cost_usd")
+		deepAgentCopyTraceMetric(payload, result.Metadata, "cost")
+		if evidenceID := deepAgentWorkflowString(result.Metadata, "evidence_id"); evidenceID != "" {
+			payload["evidence_id"] = evidenceID
+		}
 		if refs := deepAgentArtifactRefsFromMetadata(result.Metadata); len(refs) > 0 {
 			payload["artifact_refs"] = refs
 		}
@@ -1153,8 +1162,13 @@ func (c *DeepAgentController) emitActionEvent(ctx context.Context, run *Workflow
 		}
 		if evidence, ok := deepAgentStepEvidenceFromAny(result.Metadata["step_evidence"]); ok {
 			payload["evidence"] = evidence
+			payload["evidence_id"] = firstNonEmptyString(deepAgentWorkflowString(result.Metadata, "evidence_id"), evidence.ActionID, action.ID, action.Hash)
 			if len(evidence.Diagnostics) > 0 {
 				payload["diagnostics"] = evidence.Diagnostics
+				deepAgentCopyTraceMetric(payload, evidence.Diagnostics, "duration_ms")
+				deepAgentCopyTraceMetric(payload, evidence.Diagnostics, "token_estimate")
+				deepAgentCopyTraceMetric(payload, evidence.Diagnostics, "estimated_cost_usd")
+				deepAgentCopyTraceMetric(payload, evidence.Diagnostics, "cost")
 			}
 			if len(evidence.Sources) > 0 {
 				payload["sources"] = evidence.Sources
@@ -1207,6 +1221,23 @@ func deepAgentEventGroup(eventType string) string {
 	default:
 		return "event"
 	}
+}
+
+func deepAgentCopyTraceMetric(dst map[string]any, src map[string]any, key string) {
+	if dst == nil || src == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	value, ok := src[key]
+	if !ok || value == nil {
+		return
+	}
+	if text, ok := value.(string); ok && strings.TrimSpace(text) == "" {
+		return
+	}
+	if _, exists := dst[key]; exists {
+		return
+	}
+	dst[key] = value
 }
 
 func deepAgentPlannedConnectors(req DeepAgentTaskRequest, state *DeepAgentState, plan DeepAgentPlan) []map[string]any {

@@ -2683,8 +2683,26 @@ function agentActivityItemFromRuntimeEvent(event: RuntimeEvent, eventId = ""): A
     title,
     detail,
     status: agentActivityStatus(event, data),
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    metadata: agentActivityMetadata(event, data)
   };
+}
+
+function agentActivityMetadata(event: RuntimeEvent, data: Record<string, unknown> | null): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {
+    event_type: event.type
+  };
+  if (event.job_id) metadata.job_id = event.job_id;
+  if (event.session_id) metadata.session_id = event.session_id;
+  if (event.content) metadata.content = event.content;
+  if (event.error) metadata.error = event.error;
+  if (event.job_reason) metadata.job_reason = event.job_reason;
+  if (data) {
+    for (const [key, value] of Object.entries(data)) {
+      if (value !== undefined && value !== null && value !== "") metadata[key] = value;
+    }
+  }
+  return metadata;
 }
 
 function activityEventID(event: RuntimeEvent, data: Record<string, unknown> | null, eventId: string): string {

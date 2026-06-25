@@ -1,4 +1,5 @@
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Copy, Download, Filter } from "lucide-react";
+import { useMemo, useState } from "react";
 import { Button } from "../../../../components/ui/button";
 import { MotionPanel } from "../../../../components/motion";
 import type { Job, JobEvent } from "../../../../types";
@@ -65,27 +66,105 @@ export function JobPanel({
 }
 
 export function JobEventTimeline({ events }: { events: JobEvent[] }) {
-  const groups = groupJobEvents(visibleJobEvents(events));
-  if (!groups.length) return <div className="empty-small">No job events yet</div>;
+  const [filter, setFilter] = useState<TraceFilter>("all");
+  const visibleEvents = useMemo(() => visibleJobEvents(events), [events]);
+  const filteredEvents = useMemo(() => visibleEvents.filter((event) => eventMatchesFilter(event, filter)), [visibleEvents, filter]);
+  const groups = groupJobEvents(filteredEvents);
+  if (!visibleEvents.length) return <div className="empty-small">No job events yet</div>;
   return (
-    <div className="timeline">
-      {groups.map((group) => (
-        <section key={group.id} className="timeline-event-group">
-          <div className="timeline-event-group-head">
-            <h4>{group.label}</h4>
-            <span>{group.description}</span>
-          </div>
-          {group.events.map((event) => (
-            <JobEventDetail key={event.id} event={event} />
+    <>
+      <div className="agent-activity-toolbar timeline-toolbar" aria-label="Trace controls">
+        <span><Filter size={13} aria-hidden="true" /> Filter</span>
+        <div className="agent-activity-filters">
+          {traceFilters.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={filter === item.id ? "active" : ""}
+              onClick={() => setFilter(item.id)}
+            >
+              {item.label}
+            </button>
           ))}
-        </section>
-      ))}
-    </div>
+        </div>
+        <button type="button" onClick={() => copyJobTrace(visibleEvents)} title="Copy trace JSON">
+          <Copy size={13} aria-hidden="true" />
+          Copy
+        </button>
+        <button type="button" onClick={() => downloadJobTrace(visibleEvents)} title="Download trace JSON">
+          <Download size={13} aria-hidden="true" />
+          JSON
+        </button>
+      </div>
+      <div className="timeline">
+        {groups.map((group) => (
+          <section key={group.id} className="timeline-event-group">
+            <div className="timeline-event-group-head">
+              <h4>{group.label}</h4>
+              <span>{group.description}</span>
+            </div>
+            {group.events.map((event) => (
+              <JobEventDetail key={event.id} event={event} />
+            ))}
+          </section>
+        ))}
+        {!groups.length && <div className="empty-small">No trace events match this filter</div>}
+      </div>
+    </>
   );
 }
 
+type TraceFilter = "all" | "model" | "tool" | "artifact" | "browser" | "verifier" | "error";
+
+const traceFilters: Array<{ id: TraceFilter; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "model", label: "Model" },
+  { id: "tool", label: "Tool" },
+  { id: "artifact", label: "Artifact" },
+  { id: "browser", label: "Browser" },
+  { id: "verifier", label: "Verifier" },
+  { id: "error", label: "Error" }
+];
+
 function visibleJobEvents(events: JobEvent[]): JobEvent[] {
   return events.filter((event) => !(event.type === "delta" && event.event?.role === "assistant"));
+}
+
+function eventMatchesFilter(event: JobEvent, filter: TraceFilter): boolean {
+  if (filter === "all") return true;
+  const data = eventData(event);
+  if (filter === "error") return eventStatus(event, data) === "failed";
+  const text = `${event.type} ${event.event?.content || ""} ${event.event?.error || ""} ${JSON.stringify(data || {})}`.toLowerCase();
+  if (filter === "model") return /\bmodel\b|llm|prompt|token/.test(text);
+  if (filter === "tool") return /tool|skill|mcp|connector|sandbox/.test(text);
+  if (filter === "artifact") return /artifact|document|docx|image|file/.test(text);
+  if (filter === "browser") return /browser|web|fetch|search|url|http/.test(text);
+  if (filter === "verifier") return /verif|test|check|review/.test(text);
+  return true;
+}
+
+function copyJobTrace(events: JobEvent[]) {
+  navigator.clipboard?.writeText(JSON.stringify(jobTracePayload(events), null, 2)).catch(() => {});
+}
+
+function downloadJobTrace(events: JobEvent[]) {
+  const blob = new Blob([JSON.stringify(jobTracePayload(events), null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `job-trace-${events[0]?.job_id || "events"}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function jobTracePayload(events: JobEvent[]) {
+  return {
+    job_id: events[0]?.job_id || "",
+    event_count: events.length,
+    events
+  };
 }
 
 type JobEventGroup = {
@@ -137,6 +216,7 @@ function JobEventDetail({ event }: { event: JobEvent }) {
   const resultMetadata = recordValue(data?.result_metadata);
   const diagnostics = recordValue(data?.diagnostics) || recordValue(resultMetadata?.diagnostic_details);
   const evidence = recordValue(data?.evidence);
+  const evidenceDiagnostics = recordValue(evidence?.diagnostics);
   const routeRows = compactRows([
     ["Mode", stringValue(route?.mode)],
     ["Executor", stringValue(route?.executor)],
@@ -156,17 +236,19 @@ function JobEventDetail({ event }: { event: JobEvent }) {
     ["Status", stringValue(data?.status)]
   ]);
   const actionRows = compactRows([
+    ["Action ID", stringValue(data?.action_id || data?.action_hash)],
     ["Plan step", stringValue(data?.step_id || data?.step_title)],
     ["Tool", stringValue(data?.tool)],
     ["Skill", stringValue(data?.skill_name)],
     ["Query", stringValue(data?.query)],
-    ["Action", stringValue(data?.action_hash)],
+    ["Input summary", stringValue(data?.input_summary || data?.prompt_preview || data?.query || event.event?.content)],
     ["Prompt", stringValue(data?.prompt_preview)],
-    ["Attempt", stringValue(data?.attempt_strategy)]
+    ["Attempt", stringValue(data?.attempt || data?.attempt_strategy)]
   ]);
   const resultRows = compactRows([
     ["Result", stringValue(data?.result_status)],
     ["Completed", boolString(data?.completed)],
+    ["Output summary", stringValue(data?.output_summary || data?.summary || evidence?.summary || resultMetadata?.summary)],
     ["Artifacts", stringValue(resultMetadata?.artifact_count)],
     ["Child job", stringValue(resultMetadata?.job_id)],
     ["Tool valid", boolString(resultMetadata?.tool_result_valid)],
@@ -174,13 +256,18 @@ function JobEventDetail({ event }: { event: JobEvent }) {
     ["Error", event.event?.error || stringValue(data?.error)]
   ]);
   const evidenceRows = compactRows([
+    ["Evidence ID", stringValue(data?.evidence_id || evidence?.action_id)],
     ["Sources", displayValue(data?.sources)],
     ["Tool calls", displayValue(data?.tool_calls)],
     ["Artifacts", displayValue(data?.artifact_refs)],
     ["Child jobs", displayValue(data?.child_jobs)],
     ["Evidence summary", stringValue(evidence?.summary)]
   ]);
-  const metricRows = rowsFromRecord(recordValue(data?.metrics));
+  const metricRows = compactRows([
+    ["Duration", formatDuration(data?.duration_ms || resultMetadata?.duration_ms || evidenceDiagnostics?.duration_ms)],
+    ["Tokens", stringValue(data?.token_estimate || resultMetadata?.token_estimate || evidenceDiagnostics?.token_estimate)],
+    ["Cost", formatCost(data?.cost || data?.cost_usd || data?.estimated_cost_usd || resultMetadata?.estimated_cost_usd || evidenceDiagnostics?.estimated_cost_usd)]
+  ]).concat(rowsFromRecord(recordValue(data?.metrics)));
   return (
     <details className={`timeline-row event-${eventStatus(event, data)}`}>
       <summary>
@@ -314,4 +401,23 @@ function displayValue(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
+}
+
+function formatDuration(value: unknown): string {
+  const ms = numberValue(value);
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`;
+}
+
+function formatCost(value: unknown): string {
+  const cost = numberValue(value);
+  if (!Number.isFinite(cost) || cost <= 0) return "";
+  return `$${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
+}
+
+function numberValue(value: unknown): number {
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim() !== "") return Number(value);
+  return Number.NaN;
 }
