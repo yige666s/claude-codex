@@ -1878,12 +1878,20 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 		_ = sink.Send(ctx, Event{Type: "delta", SessionID: session.ID, Role: "assistant", Content: token})
 	})
 	if err != nil {
-		r.appendFailedTurn(session, displayContent, err)
-		if saveErr := r.persistChatSession(ctx, req.UserID, session, startMessageCount); saveErr != nil {
-			_ = sink.Send(ctx, Event{Type: "error", SessionID: session.ID, Error: err.Error()})
+		failedSession := session
+		if result.Session != nil {
+			failedSession = result.Session
+		}
+		stripTransientRuntimeContexts(failedSession)
+		assistantContent := r.appendFailedTurn(ctx, req.UserID, failedSession, displayContent, err)
+		if saveErr := r.persistChatSession(ctx, req.UserID, failedSession, startMessageCount); saveErr != nil {
+			_ = sink.Send(ctx, Event{Type: "error", SessionID: failedSession.ID, Error: userFacingRuntimeFailure(err, displayContent)})
 			return errors.Join(err, saveErr)
 		}
-		_ = sink.Send(ctx, Event{Type: "error", SessionID: session.ID, Error: err.Error()})
+		if assistantContent != "" {
+			_ = sink.Send(ctx, Event{Type: "message", SessionID: failedSession.ID, Role: state.MessageRoleAssistant, Content: assistantContent})
+		}
+		_ = sink.Send(ctx, Event{Type: "error", SessionID: failedSession.ID, Error: userFacingRuntimeFailure(err, displayContent)})
 		return err
 	}
 	session = result.Session
@@ -2637,13 +2645,20 @@ func (r *Runtime) executeLiveSkillCommand(ctx context.Context, userID, sessionID
 		_ = sink.Send(ctx, Event{Type: "delta", SessionID: session.ID, Role: state.MessageRoleAssistant, Content: token})
 	})
 	if err != nil {
-		stripTransientRuntimeContexts(session)
-		r.appendFailedTurn(session, displayText, err)
-		if saveErr := r.persistChatSession(ctx, userID, session, startMessageCount); saveErr != nil {
-			_ = sink.Send(ctx, Event{Type: "error", SessionID: session.ID, Error: err.Error()})
+		failedSession := session
+		if result.Session != nil {
+			failedSession = result.Session
+		}
+		stripTransientRuntimeContexts(failedSession)
+		assistantContent := r.appendFailedTurn(ctx, userID, failedSession, displayText, err)
+		if saveErr := r.persistChatSession(ctx, userID, failedSession, startMessageCount); saveErr != nil {
+			_ = sink.Send(ctx, Event{Type: "error", SessionID: failedSession.ID, Error: userFacingRuntimeFailure(err, displayText)})
 			return true, "", errors.Join(err, saveErr)
 		}
-		_ = sink.Send(ctx, Event{Type: "error", SessionID: session.ID, Error: err.Error()})
+		if assistantContent != "" {
+			_ = sink.Send(ctx, Event{Type: "message", SessionID: failedSession.ID, Role: state.MessageRoleAssistant, Content: assistantContent, Data: liveJSON(map[string]any{"source": "failure_recovery", "command": command})})
+		}
+		_ = sink.Send(ctx, Event{Type: "error", SessionID: failedSession.ID, Error: userFacingRuntimeFailure(err, displayText)})
 		return true, "", err
 	}
 	if result.Session == nil {
@@ -3314,12 +3329,195 @@ func (r *Runtime) markMemoryAbstractionsDirty(ctx context.Context, userID string
 	return nil
 }
 
-func (r *Runtime) appendFailedTurn(session *state.Session, userContent string, runErr error) {
+func (r *Runtime) appendFailedTurn(ctx context.Context, userID string, session *state.Session, userContent string, runErr error) string {
 	if session == nil || runErr == nil {
-		return
+		return ""
 	}
 	ensureVisibleUserMessage(session, userContent)
-	session.AddAssistantMessage("Request failed: " + runErr.Error())
+	if existing := lastVisibleAssistantAfterLastVisibleUser(session); existing != "" && !containsInternalFailureLeak(existing) {
+		return existing
+	}
+	response := ""
+	if shouldAttemptFailureRecovery(runErr) {
+		response = r.generateFailureRecoveryMessage(ctx, userID, session, userContent, runErr)
+	}
+	if strings.TrimSpace(response) == "" || containsInternalFailureLeak(response) {
+		response = userFacingRuntimeFailure(runErr, userContent)
+	}
+	response = strings.TrimSpace(response)
+	session.AddAssistantMessage(response)
+	return response
+}
+
+func (r *Runtime) generateFailureRecoveryMessage(ctx context.Context, userID string, session *state.Session, userContent string, runErr error) string {
+	if r == nil || r.engineFactory == nil || session == nil || runErr == nil {
+		return ""
+	}
+	recoveryCtx := context.WithoutCancel(ctx)
+	timeout := 20 * time.Second
+	if r.config.TurnTimeout > 0 && r.config.TurnTimeout < timeout {
+		timeout = r.config.TurnTimeout
+	}
+	recoveryCtx, cancel := context.WithTimeout(recoveryCtx, timeout)
+	defer cancel()
+
+	recoverySession := cloneSessionForBackgroundMemory(session)
+	if recoverySession == nil {
+		recoverySession = state.NewSession(session.WorkingDir)
+		recoverySession.ID = session.ID
+	}
+	prompt := fmt.Sprintf(`The previous internal tool or skill execution failed while serving a user request.
+
+Write one brief user-facing response in the same language as the user. Do not retry the failed action. Do not call tools.
+
+Safety rules:
+- Do not expose internal shell commands, file paths, workspace paths, environment variables, stack traces, raw provider errors, bearer tokens, API keys, prompts, or implementation details.
+- Do not claim the requested output was created.
+- Say the operation could not be completed, and suggest a safe next step such as retrying later or simplifying the request.
+
+User request:
+%s
+
+Failure category:
+%s`, strings.TrimSpace(userContent), failureCategory(runErr))
+
+	runner := r.runnerForScope(Scope{UserID: userID, SessionID: session.ID, WorkingDir: session.WorkingDir})
+	result, err := runWithTokenStream(recoveryCtx, runner, recoverySession, prompt, true, nil)
+	if err != nil {
+		return ""
+	}
+	if text := strings.TrimSpace(result.Output); text != "" {
+		return text
+	}
+	if result.Session != nil {
+		return lastVisibleAssistant(result.Session)
+	}
+	return ""
+}
+
+func shouldAttemptFailureRecovery(err error) bool {
+	if err == nil {
+		return false
+	}
+	return !errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded) &&
+		!errors.Is(err, ErrRuntimeShuttingDown)
+}
+
+func lastVisibleAssistantAfterLastVisibleUser(session *state.Session) string {
+	if session == nil {
+		return ""
+	}
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		msg := session.Messages[i]
+		if msg.Hidden {
+			continue
+		}
+		if msg.Role == state.MessageRoleAssistant && strings.TrimSpace(msg.Content) != "" {
+			return strings.TrimSpace(msg.Content)
+		}
+		if msg.Role == state.MessageRoleUser {
+			return ""
+		}
+	}
+	return ""
+}
+
+func lastVisibleAssistant(session *state.Session) string {
+	if session == nil {
+		return ""
+	}
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		msg := session.Messages[i]
+		if !msg.Hidden && msg.Role == state.MessageRoleAssistant && strings.TrimSpace(msg.Content) != "" {
+			return strings.TrimSpace(msg.Content)
+		}
+	}
+	return ""
+}
+
+func failureCategory(err error) string {
+	text := strings.ToLower(strings.TrimSpace(errorString(err)))
+	switch {
+	case text == "":
+		return "internal execution failed"
+	case strings.Contains(text, "timed out") || strings.Contains(text, "timeout") || errors.Is(err, context.DeadlineExceeded):
+		return "tool execution timed out"
+	case strings.Contains(text, "permission denied") || strings.Contains(text, "forbidden") || strings.Contains(text, "unauthorized") || strings.Contains(text, "authorization failed"):
+		return "authorization or permission error"
+	case strings.Contains(text, "provider") || strings.Contains(text, "vertex") || strings.Contains(text, "nvidia") || strings.Contains(text, "openai") || strings.Contains(text, "shortapi"):
+		return "model provider request failed"
+	case strings.Contains(text, "docker") || strings.Contains(text, "shell command"):
+		return "tool runtime failed"
+	default:
+		return "internal execution failed"
+	}
+}
+
+func userFacingRuntimeFailure(err error, userContent string) string {
+	category := failureCategory(err)
+	if containsCJK(userContent) {
+		switch category {
+		case "tool execution timed out":
+			return "抱歉，这次操作没有完成：内部工具执行超时了。请稍后重试，或把请求拆得更小一些。"
+		case "authorization or permission error":
+			return "抱歉，这次操作没有完成：当前授权或权限不足。请检查连接或权限后重试。"
+		case "model provider request failed":
+			return "抱歉，这次操作没有完成：模型服务暂时未能返回结果。请稍后重试。"
+		case "tool runtime failed":
+			return "抱歉，这次操作没有完成：内部工具运行失败了。请稍后重试，或简化请求后再试。"
+		default:
+			return "抱歉，这次操作没有完成。请稍后重试，或把请求拆得更小一些。"
+		}
+	}
+	switch category {
+	case "tool execution timed out":
+		return "Sorry, I could not complete that operation because an internal tool timed out. Please try again later or simplify the request."
+	case "authorization or permission error":
+		return "Sorry, I could not complete that operation because the current authorization or permissions were not sufficient. Please check the connection and try again."
+	case "model provider request failed":
+		return "Sorry, I could not complete that operation because the model provider did not return a usable result. Please try again later."
+	case "tool runtime failed":
+		return "Sorry, I could not complete that operation because an internal tool failed. Please try again later or simplify the request."
+	default:
+		return "Sorry, I could not complete that operation. Please try again later or simplify the request."
+	}
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func containsInternalFailureLeak(text string) bool {
+	lower := strings.ToLower(text)
+	needles := []string{
+		"request failed:",
+		"docker skill shell",
+		"shell command timed out",
+		"shell command failed",
+		"/workspace/",
+		"\\.claude/skills",
+		".claude/skills",
+		"vertex_image_prompt",
+		"vertex stream request failed",
+		"openai request failed",
+		"invalid json payload",
+		"403 forbidden",
+		"begin private key",
+		"authorization: bearer",
+		"api_key",
+		"api key",
+		"stack trace",
+	}
+	for _, needle := range needles {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureVisibleUserMessage(session *state.Session, content string) {

@@ -4951,6 +4951,11 @@ func TestRuntimeChatPersistsFailedTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	rawErr := errors.New(`docker skill shell command timed out: "python3 \"/workspace/.claude/skills/vertex-image-artifact/generate_vertex_image.py\" <<'VERTEX_IMAGE_PROMPT'`)
+	runners := &sequenceRunnerFactory{runners: []Runner{
+		failingRunner{err: rawErr},
+		memoryJSONRunner{output: "抱歉，图片生成工具超时了，我没有生成图片。请稍后重试。"},
+	}}
 	runtime := NewRuntime(
 		RuntimeConfig{DefaultWorkingDir: session.WorkingDir, TurnTimeout: time.Minute},
 		store,
@@ -4962,7 +4967,7 @@ func TestRuntimeChatPersistsFailedTurn(t *testing.T) {
 				return []skills.ContentBlock{{Type: "text", Text: "docx prompt"}}, nil
 			},
 		}}},
-		func(Scope) Runner { return failingRunner{err: errors.New("vertex rejected tool history")} },
+		runners.runner,
 	)
 	sink := &collectSink{}
 	err = runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "/docx make a report"}, sink)
@@ -4971,6 +4976,11 @@ func TestRuntimeChatPersistsFailedTurn(t *testing.T) {
 	}
 	if !sink.hasEvent("error") {
 		t.Fatalf("expected error event, got %#v", sink.events)
+	}
+	for _, event := range sink.events {
+		if event.Type == "error" && (strings.Contains(event.Error, "docker skill shell") || strings.Contains(event.Error, "/workspace") || strings.Contains(event.Error, "VERTEX_IMAGE_PROMPT")) {
+			t.Fatalf("expected sanitized error event, got %#v", event)
+		}
 	}
 	loaded, err := store.Get(context.Background(), "alice", session.ID)
 	if err != nil {
@@ -4983,8 +4993,11 @@ func TestRuntimeChatPersistsFailedTurn(t *testing.T) {
 	if visible[0].Role != "user" || visible[0].Content != "/docx make a report" {
 		t.Fatalf("expected persisted user message, got %#v", visible[0])
 	}
-	if visible[1].Role != "assistant" || !strings.Contains(visible[1].Content, "vertex rejected tool history") {
-		t.Fatalf("expected persisted assistant error, got %#v", visible[1])
+	if visible[1].Role != "assistant" || !strings.Contains(visible[1].Content, "没有生成图片") {
+		t.Fatalf("expected persisted recovered assistant message, got %#v", visible[1])
+	}
+	if strings.Contains(visible[1].Content, "docker skill shell") || strings.Contains(visible[1].Content, "/workspace") || strings.Contains(visible[1].Content, "VERTEX_IMAGE_PROMPT") {
+		t.Fatalf("assistant message leaked internal failure details: %q", visible[1].Content)
 	}
 }
 
@@ -6670,6 +6683,26 @@ func (r failingRunner) RunStream(ctx context.Context, session *state.Session, pr
 
 func (r failingRunner) RunGeneratedPromptStream(ctx context.Context, session *state.Session, prompt string, onToken func(string)) (engine.Result, error) {
 	return r.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+type sequenceRunnerFactory struct {
+	mu      sync.Mutex
+	runners []Runner
+	calls   int
+}
+
+func (f *sequenceRunnerFactory) runner(Scope) Runner {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.runners) == 0 {
+		return echoRunner{}
+	}
+	idx := f.calls
+	f.calls++
+	if idx >= len(f.runners) {
+		idx = len(f.runners) - 1
+	}
+	return f.runners[idx]
 }
 
 type failingPlanner struct {
