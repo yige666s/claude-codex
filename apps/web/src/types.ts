@@ -414,6 +414,7 @@ export type LLMGovernanceConfig = {
   skill_timeout_ms?: number;
   daily_token_quota?: number;
   daily_request_quota?: number;
+  api_rate_limit_per_minute?: number;
   daily_cost_quota_usd?: number;
   input_cost_per_million?: number;
   output_cost_per_million?: number;

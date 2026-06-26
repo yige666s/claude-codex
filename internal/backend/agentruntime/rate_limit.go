@@ -16,9 +16,78 @@ type RateLimitPolicy interface {
 	Allow(key string) bool
 }
 
+type RateLimitFactory func(limit int) (RateLimitPolicy, error)
+
 type NoopRateLimiter struct{}
 
 func (NoopRateLimiter) Allow(string) bool { return true }
+
+type ConfigurableRateLimiter struct {
+	mu      sync.RWMutex
+	current RateLimitPolicy
+	factory RateLimitFactory
+}
+
+func NewConfigurableRateLimiter(initial RateLimitPolicy, factory RateLimitFactory) *ConfigurableRateLimiter {
+	if initial == nil {
+		initial = NoopRateLimiter{}
+	}
+	return &ConfigurableRateLimiter{current: initial, factory: factory}
+}
+
+func (l *ConfigurableRateLimiter) Allow(key string) bool {
+	if l == nil {
+		return true
+	}
+	l.mu.RLock()
+	current := l.current
+	l.mu.RUnlock()
+	if current == nil {
+		return true
+	}
+	return current.Allow(key)
+}
+
+func (l *ConfigurableRateLimiter) Current() RateLimitPolicy {
+	if l == nil {
+		return NoopRateLimiter{}
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if l.current == nil {
+		return NoopRateLimiter{}
+	}
+	return l.current
+}
+
+func (l *ConfigurableRateLimiter) SetLimit(limit int) error {
+	if l == nil {
+		return nil
+	}
+	if limit < 0 {
+		return fmt.Errorf("rate limit must be 0 or greater")
+	}
+	factory := l.factory
+	if factory == nil {
+		factory = func(limit int) (RateLimitPolicy, error) {
+			if limit == 0 {
+				return NoopRateLimiter{}, nil
+			}
+			return NewRateLimiter(limit, time.Minute), nil
+		}
+	}
+	next, err := factory(limit)
+	if err != nil {
+		return err
+	}
+	if next == nil {
+		next = NoopRateLimiter{}
+	}
+	l.mu.Lock()
+	l.current = next
+	l.mu.Unlock()
+	return nil
+}
 
 type RateLimiter struct {
 	limit  int

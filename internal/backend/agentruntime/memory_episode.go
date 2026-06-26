@@ -428,22 +428,7 @@ func memoryEpisodeSummarizeVariables(input MemoryEpisodeSummarizeInput) map[stri
 }
 
 func memoryEpisodeSummarizePromptTemplate() string {
-	return `Summarize this conversation as one episodic memory for future continuity.
-
-Return ONLY JSON in this exact shape:
-{"title":"short title", "summary":"complete useful summary", "l0_abstract":"one concise retrieval abstract", "key_topics":["topic"], "confidence":0.0}
-
-Rules:
-- Capture what happened, the user's goal, important decisions, conclusions, unresolved follow-ups, and concrete entities.
-- Do not invent facts not present in the conversation.
-- Keep summary under 900 Chinese characters or 650 English words.
-- Keep l0_abstract under 140 Chinese characters or 90 English words.
-- If the conversation is too trivial to remember, return empty strings and confidence 0.
-
-Session ID: {{session_id}}
-Current timestamp: {{current_timestamp}}
-Conversation JSON:
-{{conversation_json}}`
+	return PromptMemoryEpisodeSummarizeTemplate
 }
 
 func parseLLMMemoryEpisodeDraft(output string) (MemoryEpisodeDraft, error) {

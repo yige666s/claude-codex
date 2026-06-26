@@ -304,21 +304,11 @@ func (d *MemoryRecallDecider) llmTrigger(ctx context.Context, userID string, ses
 
 func memoryRecallLLMTriggerPrompt(session *state.Session, message string, config MemoryRecallConfig) string {
 	contextText := recentMemoryRecallContext(session, message, config)
-	var b strings.Builder
-	b.WriteString("You are a low-cost sidecar classifier for memory recall.\n")
-	b.WriteString("Decide whether answering the latest user message needs saved user memory beyond the visible conversation window.\n")
-	b.WriteString("Trigger recall for explicit or implicit needs for user profile, preferences, location, relationships, projects, long-term habits, prior decisions, or earlier episodic context.\n")
-	b.WriteString("Do not trigger recall for short acknowledgements, pure continuation that visible context already answers, or questions answerable without user-specific history.\n")
-	b.WriteString("Return only compact JSON: {\"recall\":true|false,\"reason\":\"short reason\",\"query\":\"semantic memory search query\"}.\n")
+	recentContext := ""
 	if strings.TrimSpace(contextText) != "" {
-		b.WriteString("\nVisible recent conversation:\n")
-		b.WriteString(tailClipRunes(contextText, config.RecentContextMaxRunes))
-		b.WriteString("\n")
+		recentContext = "\nVisible recent conversation:\n" + tailClipRunes(contextText, config.RecentContextMaxRunes) + "\n"
 	}
-	b.WriteString("\nLatest user message:\n")
-	b.WriteString(strings.TrimSpace(message))
-	b.WriteString("\n")
-	return b.String()
+	return fmt.Sprintf(PromptMemoryRecallLLMTriggerTemplate, recentContext, strings.TrimSpace(message))
 }
 
 func parseMemoryRecallLLMResponse(output string) (memoryRecallLLMResponse, error) {

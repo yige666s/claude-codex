@@ -28,6 +28,7 @@ type LLMGovernanceConfigPatch struct {
 	SkillTimeoutMS         *int64   `json:"skill_timeout_ms,omitempty"`
 	DailyTokenQuota        *int     `json:"daily_token_quota,omitempty"`
 	DailyRequestQuota      *int     `json:"daily_request_quota,omitempty"`
+	APIRateLimitPerMinute  *int     `json:"api_rate_limit_per_minute,omitempty"`
 	DailyCostQuotaUSD      *float64 `json:"daily_cost_quota_usd,omitempty"`
 	InputCostPerMillion    *float64 `json:"input_cost_per_million,omitempty"`
 	OutputCostPerMillion   *float64 `json:"output_cost_per_million,omitempty"`
@@ -50,6 +51,8 @@ type LLMModelOption struct {
 }
 
 var allowedLLMModelOptions = []LLMModelOption{
+	{ID: "deepseek-chat", Label: "DeepSeek Chat", Provider: "deepseek"},
+	{ID: "deepseek-reasoner", Label: "DeepSeek Reasoner", Provider: "deepseek"},
 	{ID: "nvidia/nemotron-3-ultra-550b-a55b", Label: "NVIDIA Nemotron 3 Ultra 550B", Provider: "nvidia"},
 	{ID: "nvidia/nemotron-3-super-120b-a12b", Label: "NVIDIA Nemotron 3 Super 120B", Provider: "nvidia"},
 	{ID: "nvidia/nemotron-3-nano-30b-a3b", Label: "NVIDIA Nemotron 3 Nano 30B", Provider: "nvidia"},
@@ -214,22 +217,23 @@ func llmGovernanceConfigStatusMapWithModels(config LLMGovernanceConfig, allowedM
 	allowedModels = normalizeLLMModelOptions(allowedModels)
 	config = config.normalizedWithOptions(allowedModels)
 	return map[string]any{
-		"provider":                 config.Provider,
-		"model":                    config.Model,
-		"vertex_location":          config.VertexLocation,
-		"model_routes":             config.ModelRoutes,
-		"allowed_models":           allowedModels,
-		"max_attempts":             config.MaxAttempts,
-		"retry_backoff_ms":         config.RetryBackoff.Milliseconds(),
-		"chat_timeout_ms":          config.ChatTimeout.Milliseconds(),
-		"skill_timeout_ms":         config.SkillTimeout.Milliseconds(),
-		"daily_token_quota":        config.DailyTokenQuota,
-		"daily_request_quota":      config.DailyRequestQuota,
-		"daily_cost_quota_usd":     config.DailyCostQuotaUSD,
-		"input_cost_per_million":   config.InputCostPerMillion,
-		"output_cost_per_million":  config.OutputCostPerMillion,
-		"failure_threshold":        config.FailureThreshold,
-		"circuit_cooldown_seconds": int(config.CircuitBreakerCooldown.Seconds()),
+		"provider":                  config.Provider,
+		"model":                     config.Model,
+		"vertex_location":           config.VertexLocation,
+		"model_routes":              config.ModelRoutes,
+		"allowed_models":            allowedModels,
+		"max_attempts":              config.MaxAttempts,
+		"retry_backoff_ms":          config.RetryBackoff.Milliseconds(),
+		"chat_timeout_ms":           config.ChatTimeout.Milliseconds(),
+		"skill_timeout_ms":          config.SkillTimeout.Milliseconds(),
+		"daily_token_quota":         config.DailyTokenQuota,
+		"daily_request_quota":       config.DailyRequestQuota,
+		"api_rate_limit_per_minute": config.APIRateLimitPerMinute,
+		"daily_cost_quota_usd":      config.DailyCostQuotaUSD,
+		"input_cost_per_million":    config.InputCostPerMillion,
+		"output_cost_per_million":   config.OutputCostPerMillion,
+		"failure_threshold":         config.FailureThreshold,
+		"circuit_cooldown_seconds":  int(config.CircuitBreakerCooldown.Seconds()),
 	}
 }
 
@@ -319,6 +323,12 @@ func applyLLMGovernanceConfigPatchWithOptions(config LLMGovernanceConfig, patch 
 		}
 		next.DailyRequestQuota = *patch.DailyRequestQuota
 	}
+	if patch.APIRateLimitPerMinute != nil {
+		if *patch.APIRateLimitPerMinute < 0 {
+			return LLMGovernanceConfig{}, fmt.Errorf("api_rate_limit_per_minute must be 0 or greater")
+		}
+		next.APIRateLimitPerMinute = *patch.APIRateLimitPerMinute
+	}
 	if patch.DailyCostQuotaUSD != nil {
 		if *patch.DailyCostQuotaUSD < 0 {
 			return LLMGovernanceConfig{}, fmt.Errorf("daily_cost_quota_usd must be 0 or greater")
@@ -364,6 +374,9 @@ func mergeLLMGovernanceConfigDefaults(defaults, loaded LLMGovernanceConfig) LLMG
 	}
 	if strings.TrimSpace(loaded.ModelRoutes) == "" {
 		loaded.ModelRoutes = defaults.ModelRoutes
+	}
+	if loaded.APIRateLimitPerMinute < 0 {
+		loaded.APIRateLimitPerMinute = defaults.APIRateLimitPerMinute
 	}
 	return loaded
 }
@@ -466,9 +479,8 @@ func resetModelRoutes(routes, model string) string {
 	return strings.Join(out, ",")
 }
 
-func modelRoutesCompatibleWithProvider(routes, provider string, options []LLMModelOption) bool {
-	provider = canonicalLLMModelProvider(provider)
-	if provider == "" || strings.TrimSpace(routes) == "" {
+func modelRoutesCompatibleWithCatalog(routes string, options []LLMModelOption) bool {
+	if strings.TrimSpace(routes) == "" {
 		return true
 	}
 	options = normalizeLLMModelOptions(options)
@@ -477,11 +489,7 @@ func modelRoutesCompatibleWithProvider(routes, provider string, options []LLMMod
 		if !ok {
 			continue
 		}
-		option, ok := llmModelOptionFor(strings.TrimSpace(model), options)
-		if !ok {
-			continue
-		}
-		if canonicalLLMModelProvider(option.Provider) != provider {
+		if _, ok := llmModelOptionFor(strings.TrimSpace(model), options); !ok {
 			return false
 		}
 	}
@@ -563,6 +571,7 @@ type llmGovernanceConfigPayload struct {
 	SkillTimeoutMS         int64   `json:"skill_timeout_ms"`
 	DailyTokenQuota        int     `json:"daily_token_quota"`
 	DailyRequestQuota      int     `json:"daily_request_quota"`
+	APIRateLimitPerMinute  *int    `json:"api_rate_limit_per_minute,omitempty"`
 	DailyCostQuotaUSD      float64 `json:"daily_cost_quota_usd"`
 	InputCostPerMillion    float64 `json:"input_cost_per_million"`
 	OutputCostPerMillion   float64 `json:"output_cost_per_million"`
@@ -586,6 +595,7 @@ func llmGovernanceConfigToPayload(config LLMGovernanceConfig) llmGovernanceConfi
 		SkillTimeoutMS:         config.SkillTimeout.Milliseconds(),
 		DailyTokenQuota:        config.DailyTokenQuota,
 		DailyRequestQuota:      config.DailyRequestQuota,
+		APIRateLimitPerMinute:  &config.APIRateLimitPerMinute,
 		DailyCostQuotaUSD:      config.DailyCostQuotaUSD,
 		InputCostPerMillion:    config.InputCostPerMillion,
 		OutputCostPerMillion:   config.OutputCostPerMillion,
@@ -606,12 +616,20 @@ func llmGovernanceConfigFromPayload(payload llmGovernanceConfigPayload) LLMGover
 		SkillTimeout:           time.Duration(payload.SkillTimeoutMS) * time.Millisecond,
 		DailyTokenQuota:        payload.DailyTokenQuota,
 		DailyRequestQuota:      payload.DailyRequestQuota,
+		APIRateLimitPerMinute:  apiRateLimitPerMinuteFromPayload(payload.APIRateLimitPerMinute),
 		DailyCostQuotaUSD:      payload.DailyCostQuotaUSD,
 		InputCostPerMillion:    payload.InputCostPerMillion,
 		OutputCostPerMillion:   payload.OutputCostPerMillion,
 		FailureThreshold:       payload.FailureThreshold,
 		CircuitBreakerCooldown: time.Duration(payload.CircuitCooldownSeconds) * time.Second,
 	}
+}
+
+func apiRateLimitPerMinuteFromPayload(value *int) int {
+	if value == nil {
+		return -1
+	}
+	return *value
 }
 
 func llmModelCatalogToPayload(options []LLMModelOption) llmModelCatalogPayload {

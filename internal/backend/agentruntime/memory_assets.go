@@ -163,15 +163,7 @@ func (r *Runtime) extractImageMemoryCandidates(ctx context.Context, userID strin
 	blocks := []publictypes.ContentBlock{
 		{
 			Type: "text",
-			Text: `Describe this image only for durable user memory extraction.
-
-Return ONLY JSON in this exact shape:
-{"memories":[{"content":"...", "category":"fact|preference|event|skill", "tags":["image"], "confidence":0.0, "importance":0.0, "reason":"short reason", "sensitivity":"none|pii|secret|unsafe", "expires_hint":""}]}
-
-Rules:
-- Store only durable user-relevant facts, preferences, events, or skills visible from or implied by the image.
-- If the image is generic or not user-relevant, return an empty memories array.
-- Do not store sensitive details such as addresses, credentials, IDs, or private documents.`,
+			Text: PromptImageMemoryExtraction,
 		},
 		{
 			Type: attachmentBlockType(contentType),
@@ -190,7 +182,7 @@ Rules:
 }
 
 func assetMemoryTextPrompt(asset *Artifact, text string) string {
-	return fmt.Sprintf("Extract durable user memory from this %s named %q.\n\n%s", normalizeAssetKind(asset.Kind), asset.Filename, truncateMemoryContent(text))
+	return fmt.Sprintf(PromptAssetMemoryTextTemplate, normalizeAssetKind(asset.Kind), asset.Filename, truncateMemoryContent(text))
 }
 
 func fallbackAssetMemoryCandidates(asset *Artifact) []MemoryCandidate {

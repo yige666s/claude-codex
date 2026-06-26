@@ -2325,6 +2325,435 @@ func TestDedicatedSubplanExecutorMergesChildEvidence(t *testing.T) {
 	}
 }
 
+func TestDedicatedSubplanExecutorJoinsParallelBranchEvidence(t *testing.T) {
+	registry := NewRuntimeDeepAgentExecutorRegistry(testRuntime(t), nil)
+	var events []Event
+	ctx := withJobEventEmitter(context.Background(), func(_ context.Context, event Event) error {
+		events = append(events, event)
+		return nil
+	})
+	evidence, err := registry.ExecuteStep(ctx, DeepAgentStepRoute{StepID: "research", Mode: DeepAgentToolModeMulti, Executor: deepAgentRouteExecutorSubPlan}, DeepAgentAction{
+		StepID: "research",
+		Tool:   DeepAgentToolModeMulti,
+		Args: map[string]any{
+			"branch_specs": []map[string]any{
+				{"id": "company", "title": "Company", "task": "research company"},
+				{"id": "market", "title": "Market", "task": "research market"},
+			},
+			"branch_results": []map[string]any{
+				{
+					"id":     "company",
+					"title":  "Company",
+					"status": DeepAgentActionStatusSucceeded,
+					"output": "Company facts\nSources:\n- Browserless docs - https://docs.browserless.io/",
+					"sources": []map[string]any{{
+						"url":   "https://docs.browserless.io/",
+						"title": "Browserless docs",
+					}},
+				},
+				{
+					"id":     "market",
+					"title":  "Market",
+					"status": DeepAgentActionStatusSucceeded,
+					"output": "Market facts",
+				},
+			},
+		},
+	}, &DeepAgentState{})
+	if err != nil {
+		t.Fatalf("ExecuteStep() error = %v", err)
+	}
+	if evidence.Route.Mode != DeepAgentToolModeMulti || evidence.Diagnostics["parallel"] != true {
+		t.Fatalf("expected parallel evidence, got %#v", evidence)
+	}
+	if got := deepAgentAnyInt(evidence.Diagnostics["succeeded_branch_count"], 0); got != 2 {
+		t.Fatalf("succeeded branches = %d evidence=%#v", got, evidence)
+	}
+	if len(evidence.Sources) != 1 || evidence.Sources[0].URL != "https://docs.browserless.io/" {
+		t.Fatalf("expected merged source evidence, got %#v", evidence.Sources)
+	}
+	if !strings.Contains(evidence.Output, "Parallel group completed: 2/2") {
+		t.Fatalf("unexpected joined output: %s", evidence.Output)
+	}
+	var joined bool
+	for _, event := range events {
+		if event.Type == "deep_agent_parallel_group_joined" {
+			joined = true
+		}
+	}
+	if !joined {
+		t.Fatalf("expected parallel join event, got %#v", events)
+	}
+}
+
+func TestDedicatedSubplanExecutorRecordsParallelCoverageAndConflicts(t *testing.T) {
+	registry := NewRuntimeDeepAgentExecutorRegistry(testRuntime(t), nil)
+	evidence, err := registry.ExecuteStep(context.Background(), DeepAgentStepRoute{StepID: "research", Mode: DeepAgentToolModeMulti, Executor: deepAgentRouteExecutorSubPlan}, DeepAgentAction{
+		StepID: "research",
+		Tool:   DeepAgentToolModeMulti,
+		Args: map[string]any{
+			"branch_specs": []map[string]any{
+				{"id": "overview", "title": "Overview", "task": "research company team product features pricing"},
+				{"id": "market", "title": "Market", "task": "research pricing competitors users risks"},
+			},
+			"branch_results": []map[string]any{
+				{
+					"id":     "overview",
+					"title":  "Overview",
+					"status": DeepAgentActionStatusSucceeded,
+					"output": "Company team: Browserless builds browser automation. Product features include hosted browsers. Pricing starts at $49 per month.",
+					"sources": []map[string]any{{
+						"url":   "https://www.browserless.io/pricing",
+						"title": "Browserless pricing",
+					}},
+				},
+				{
+					"id":     "market",
+					"title":  "Market",
+					"status": DeepAgentActionStatusSucceeded,
+					"output": "Competitors include Playwright cloud alternatives. User reviews mention reliability. Risks and uncertainty remain around scale. Pricing starts at $99 per month.",
+					"sources": []map[string]any{{
+						"url":   "https://docs.browserless.io/",
+						"title": "Browserless docs",
+					}},
+				},
+			},
+		},
+	}, &DeepAgentState{})
+	if err != nil {
+		t.Fatalf("ExecuteStep() error = %v", err)
+	}
+	if score := deepAgentAnyFloat(evidence.Diagnostics["coverage_score"], 0); score < 1 {
+		t.Fatalf("expected complete coverage, score=%v diagnostics=%#v", score, evidence.Diagnostics)
+	}
+	if missing := deepAgentStringSlice(evidence.Diagnostics["missing_coverage"]); len(missing) != 0 {
+		t.Fatalf("expected no missing coverage, got %#v", missing)
+	}
+	if got := deepAgentAnyInt(evidence.Diagnostics["conflict_count"], 0); got == 0 {
+		t.Fatalf("expected pricing conflict, diagnostics=%#v output=%s", evidence.Diagnostics, evidence.Output)
+	}
+	if !strings.Contains(evidence.Output, "Conflicts detected") {
+		t.Fatalf("expected conflict summary in output: %s", evidence.Output)
+	}
+}
+
+func TestParallelCoverageMissingCreatesSupplementalSpec(t *testing.T) {
+	executor := &runtimeDeepAgentSubplanExecutor{}
+	action := DeepAgentAction{
+		StepID: "research",
+		Tool:   DeepAgentToolModeMulti,
+		Args: map[string]any{
+			"task":         "research Browserless",
+			"max_branches": 6,
+		},
+	}
+	specs := []DeepAgentParallelBranchSpec{{ID: "overview", Title: "Overview", Task: "research company and product"}}
+	results := []DeepAgentParallelBranchResult{{
+		ID:      "overview",
+		Title:   "Overview",
+		Status:  DeepAgentActionStatusSucceeded,
+		Output:  "Company team and product features are documented.",
+		Sources: []DeepAgentSourceRef{{URL: "https://docs.browserless.io/", Title: "Browserless docs"}},
+	}}
+	quality := deepAgentParallelQualityReportFor(specs, results)
+	if len(quality.Coverage.Missing) == 0 {
+		t.Fatalf("expected missing coverage, got %#v", quality)
+	}
+	supplemental := executor.deepAgentParallelSupplementalBranchSpecs(action, specs, results, quality)
+	if len(supplemental) != 1 {
+		t.Fatalf("expected one budgeted supplemental branch, got %#v", supplemental)
+	}
+	if !strings.Contains(supplemental[0].Task, quality.Coverage.Missing[0]) {
+		t.Fatalf("supplement task should name missing coverage: %#v quality=%#v", supplemental[0], quality)
+	}
+}
+
+func TestParallelConflictCreatesReconciliationSupplement(t *testing.T) {
+	executor := &runtimeDeepAgentSubplanExecutor{}
+	longTask := "research Browserless " + strings.Repeat("large context sentence. ", 240)
+	action := DeepAgentAction{
+		StepID: "research",
+		Tool:   DeepAgentToolModeMulti,
+		Args: map[string]any{
+			"task":         longTask,
+			"max_branches": 6,
+		},
+	}
+	specs := []DeepAgentParallelBranchSpec{
+		{ID: "pricing-a", Title: "Pricing A", Task: "research pricing"},
+		{ID: "pricing-b", Title: "Pricing B", Task: "research pricing"},
+		{ID: "coverage", Title: "Coverage", Task: "research company team product features users competitors risks"},
+	}
+	results := []DeepAgentParallelBranchResult{
+		{ID: "pricing-a", Title: "Pricing A", Status: DeepAgentActionStatusSucceeded, Output: "Pricing starts at $49 per month."},
+		{ID: "pricing-b", Title: "Pricing B", Status: DeepAgentActionStatusSucceeded, Output: "Pricing starts at $99 per month."},
+		{ID: "coverage", Title: "Coverage", Status: DeepAgentActionStatusSucceeded, Output: "Company team product features users reviews competitors risks uncertainty are documented."},
+	}
+	quality := deepAgentParallelQualityReportFor(specs, results)
+	if len(quality.Conflicts) == 0 {
+		t.Fatalf("expected pricing conflict, got %#v", quality)
+	}
+	supplemental := executor.deepAgentParallelSupplementalBranchSpecs(action, specs, results, quality)
+	if len(supplemental) == 0 || supplemental[len(supplemental)-1].ID != "supplement-conflict-reconciliation" {
+		t.Fatalf("expected conflict reconciliation supplement, got %#v", supplemental)
+	}
+	conflictSpec := supplemental[len(supplemental)-1]
+	if len(conflictSpec.Task) > 2500 {
+		t.Fatalf("conflict reconciliation task should stay compact, len=%d task=%q", len(conflictSpec.Task), conflictSpec.Task)
+	}
+	if !strings.Contains(conflictSpec.Task, "Conflicts:") || !strings.Contains(conflictSpec.Task, "$49") || !strings.Contains(conflictSpec.Task, "$99") {
+		t.Fatalf("conflict reconciliation task should include compact conflict evidence, got %q", conflictSpec.Task)
+	}
+	if !strings.Contains(deepAgentParallelPromptForBranch(action, conflictSpec), "Verify only the listed conflicting claims") {
+		t.Fatalf("conflict branch should use specialized compact reconciliation prompt")
+	}
+	if strings.Contains(deepAgentParallelPromptForBranch(action, conflictSpec), "Do not create another multi-agent plan") {
+		t.Fatalf("conflict branch prompt should not use the generic branch prompt")
+	}
+}
+
+func TestParallelBranchTimeoutUsesGovernanceTimeout(t *testing.T) {
+	runtime := NewRuntime(RuntimeConfig{
+		LLMGovernanceProvider: func() LLMGovernanceConfig {
+			return LLMGovernanceConfig{ChatTimeout: 1000 * time.Second, SkillTimeout: 1000 * time.Second}
+		},
+	}, nil, nil, nil, nil)
+	executor := &runtimeDeepAgentSubplanExecutor{runtime: runtime}
+	if got := executor.deepAgentParallelBranchTimeout(DeepAgentAction{}); got != 1000*time.Second {
+		t.Fatalf("branch timeout should follow governance timeout, got %s", got)
+	}
+	if got := executor.deepAgentParallelBranchTimeout(DeepAgentAction{Args: map[string]any{"branch_timeout_ms": "120000"}}); got != 120*time.Second {
+		t.Fatalf("explicit branch_timeout_ms should override governance timeout, got %s", got)
+	}
+}
+
+func TestRuntimeDeepAgentJobPolicyUsesGovernanceTimeout(t *testing.T) {
+	runtime := NewRuntime(RuntimeConfig{
+		LLMGovernanceProvider: func() LLMGovernanceConfig {
+			return LLMGovernanceConfig{ChatTimeout: 1000 * time.Second, SkillTimeout: 900 * time.Second}
+		},
+	}, nil, nil, nil, nil)
+	policy := runtime.deepAgentJobPolicy()
+	if policy.StepTimeout != 1000*time.Second {
+		t.Fatalf("step timeout should follow governance timeout, got %s", policy.StepTimeout)
+	}
+	if policy.MaxDuration < 2000*time.Second {
+		t.Fatalf("max duration should leave room for multi-step work, got %s", policy.MaxDuration)
+	}
+}
+
+func TestParallelSupplementalSkippedWhenPrimaryBranchesAllFail(t *testing.T) {
+	executor := &runtimeDeepAgentSubplanExecutor{}
+	action := DeepAgentAction{Args: map[string]any{"max_branches": 6}}
+	specs := []DeepAgentParallelBranchSpec{
+		{ID: "overview", Title: "Overview", Task: "research overview"},
+		{ID: "market", Title: "Market", Task: "research market"},
+	}
+	results := []DeepAgentParallelBranchResult{
+		{ID: "overview", Title: "Overview", Status: DeepAgentActionStatusFailed, Error: "context deadline exceeded"},
+		{ID: "market", Title: "Market", Status: DeepAgentActionStatusFailed, Error: "context deadline exceeded"},
+	}
+	quality := deepAgentParallelQualityReportFor(specs, results)
+	if got := executor.deepAgentParallelSupplementalBranchSpecs(action, specs, results, quality); len(got) != 0 {
+		t.Fatalf("all-failed primary groups should not spawn supplemental branches, got %#v", got)
+	}
+}
+
+func TestParallelConflictFallbackResultIsNonBlocking(t *testing.T) {
+	spec := DeepAgentParallelBranchSpec{
+		ID:    "supplement-conflict-reconciliation",
+		Title: "Conflict reconciliation",
+		Task:  "Resolve conflicts:\n- pricing/default: $49 vs $99",
+		Metadata: map[string]any{
+			"conflict_reconcile": true,
+			"supplemental":       true,
+		},
+	}
+	result, ok := deepAgentParallelConflictFallbackResult(spec, "query loop failed: context deadline exceeded")
+	if !ok {
+		t.Fatalf("expected conflict timeout fallback")
+	}
+	if result.Status != DeepAgentActionStatusSucceeded {
+		t.Fatalf("fallback should be non-blocking success, got %#v", result)
+	}
+	if result.Metadata["unresolved_conflicts"] != true || !strings.Contains(result.Output, "unresolved uncertainty") {
+		t.Fatalf("fallback should preserve unresolved conflict uncertainty, got %#v", result)
+	}
+}
+
+func TestParallelConflictReconciliationDefaultsToInlineResult(t *testing.T) {
+	executor := &runtimeDeepAgentSubplanExecutor{}
+	spec := DeepAgentParallelBranchSpec{
+		ID:    "supplement-conflict-reconciliation",
+		Title: "Conflict reconciliation",
+		Task:  "Resolve conflicts:\n- pricing/default: $49 vs $99",
+		Metadata: map[string]any{
+			"conflict_reconcile": true,
+			"supplemental":       true,
+			"conflict_lines":     []string{"pricing/default: $49 vs $99"},
+		},
+	}
+	result, err := executor.executeParallelBranch(context.Background(), nil, DeepAgentStepRoute{}, DeepAgentAction{}, spec, nil)
+	if err != nil {
+		t.Fatalf("executeParallelBranch() error = %v", err)
+	}
+	if result.Status != DeepAgentActionStatusSucceeded {
+		t.Fatalf("inline conflict reconciliation should succeed, got %#v", result)
+	}
+	if result.Metadata["inline_conflict_reconciliation"] != true || result.Metadata["parallel_branch_skipped_deep_tools"] != true {
+		t.Fatalf("expected inline conflict metadata, got %#v", result.Metadata)
+	}
+	if !strings.Contains(result.Output, "$49 vs $99") {
+		t.Fatalf("inline result should preserve conflict evidence, got %q", result.Output)
+	}
+}
+
+func TestParallelConflictReconciliationDeepModeIsExplicitOptIn(t *testing.T) {
+	if deepAgentParallelDeepConflictReconciliationEnabled(DeepAgentAction{}) {
+		t.Fatalf("deep conflict reconciliation should be disabled by default")
+	}
+	if !deepAgentParallelDeepConflictReconciliationEnabled(DeepAgentAction{Args: map[string]any{"run_conflict_reconciliation_branch": true}}) {
+		t.Fatalf("run_conflict_reconciliation_branch should opt into deep reconciliation")
+	}
+	if !deepAgentParallelDeepConflictReconciliationEnabled(DeepAgentAction{Args: map[string]any{"deep_conflict_reconciliation": true}}) {
+		t.Fatalf("deep_conflict_reconciliation should opt into deep reconciliation")
+	}
+}
+
+func TestParallelBranchRouteForcesSingleBranchModelExecution(t *testing.T) {
+	route := deepAgentParallelBranchRoute("research/overview", DeepAgentToolModeMulti, []string{"WebSearch", "WebFetch"})
+	if route.Mode != DeepAgentToolModeModel || route.Executor != deepAgentRouteExecutorModel {
+		t.Fatalf("branch route should force model execution, got %#v", route)
+	}
+	if route.RequiresArtifact {
+		t.Fatalf("branch route should not require artifacts: %#v", route)
+	}
+	prompt := deepAgentParallelBranchPrompt(DeepAgentAction{Args: map[string]any{"goal": "使用 multi-agent 调研 Browserless"}}, DeepAgentParallelBranchSpec{
+		ID:    "overview",
+		Title: "Overview",
+		Task:  "并行调研公司信息",
+	})
+	if !strings.Contains(prompt, "Do not create another multi-agent plan") {
+		t.Fatalf("branch prompt should prohibit nested multi-agent execution")
+	}
+	if !strings.Contains(prompt, "Use at most 3 search queries") || !strings.Contains(prompt, "fetch at most 4 pages") {
+		t.Fatalf("branch prompt should cap search/fetch budget, got %q", prompt)
+	}
+}
+
+func TestDeepAgentSourceCurationNormalizesAndLimitsSources(t *testing.T) {
+	refs := []DeepAgentSourceRef{
+		{URL: "https://example.com/pricing?utm_source=newsletter#plans", Title: "Pricing", Provider: "WebSearch"},
+		{URL: "https://example.com/pricing?utm_campaign=launch", Title: "Pricing duplicate", Provider: "WebFetch"},
+		{URL: "https://docs.example.com/guide", Title: "Docs", Provider: "WebFetch"},
+		{URL: "https://example.com/blog/update", Title: "Blog", Provider: "WebSearch"},
+		{URL: "https://www.youtube.com/watch?v=abc", Title: "Video review", Provider: "WebSearch"},
+		{URL: "https://www.producthunt.com/products/example", Title: "Product Hunt", Provider: "WebSearch"},
+	}
+
+	got := curateDeepAgentSourceRefs(refs, 3)
+	if len(got) != 3 {
+		t.Fatalf("curated sources len = %d, got %#v", len(got), got)
+	}
+	seen := map[string]bool{}
+	for _, ref := range got {
+		key := normalizeDeepAgentSourceURL(ref.URL)
+		if seen[key] {
+			t.Fatalf("duplicate normalized URL retained: %#v", got)
+		}
+		seen[key] = true
+	}
+	if !seen["https://example.com/pricing"] {
+		t.Fatalf("expected normalized pricing source to be retained, got %#v", got)
+	}
+	exampleHostCount := 0
+	for _, ref := range got {
+		if deepAgentSourceRefHost(ref) == "example.com" {
+			exampleHostCount++
+		}
+	}
+	if exampleHostCount > deepAgentSourceMaxPerHost {
+		t.Fatalf("expected host cap <= %d, got %d in %#v", deepAgentSourceMaxPerHost, exampleHostCount, got)
+	}
+}
+
+func TestParallelJoinTreatsSupplementalFailureAsNonBlocking(t *testing.T) {
+	registry := NewRuntimeDeepAgentExecutorRegistry(testRuntime(t), nil)
+	evidence, err := registry.ExecuteStep(context.Background(), DeepAgentStepRoute{StepID: "research", Mode: DeepAgentToolModeMulti, Executor: deepAgentRouteExecutorSubPlan}, DeepAgentAction{
+		StepID: "research",
+		Tool:   DeepAgentToolModeMulti,
+		Args: map[string]any{
+			"min_successful_branches": 1,
+			"branch_specs": []map[string]any{
+				{"id": "overview", "title": "Overview", "task": "research company team product features pricing users competitors risks"},
+				{"id": "supplement-conflict-reconciliation", "title": "Conflict reconciliation", "task": "resolve conflicts", "metadata": map[string]any{"supplemental": true}},
+			},
+			"branch_results": []map[string]any{
+				{
+					"id":     "overview",
+					"title":  "Overview",
+					"status": DeepAgentActionStatusSucceeded,
+					"output": "Company team product features pricing users reviews competitors risks uncertainty are documented.",
+				},
+				{
+					"id":     "supplement-conflict-reconciliation",
+					"title":  "Conflict reconciliation",
+					"status": DeepAgentActionStatusFailed,
+					"error":  "context deadline exceeded",
+					"metadata": map[string]any{
+						"supplemental": true,
+					},
+				},
+			},
+		},
+	}, &DeepAgentState{})
+	if err != nil {
+		t.Fatalf("supplemental failure should not fail join when primary branches succeeded: %v", err)
+	}
+	if evidence.Diagnostics["tool_result_valid"] != true {
+		t.Fatalf("expected valid tool result, diagnostics=%#v", evidence.Diagnostics)
+	}
+	if got := deepAgentAnyInt(evidence.Diagnostics["primary_succeeded_count"], 0); got != 1 {
+		t.Fatalf("primary succeeded count = %d, diagnostics=%#v", got, evidence.Diagnostics)
+	}
+	if got := deepAgentAnyInt(evidence.Diagnostics["failed_branch_count"], 0); got != 1 {
+		t.Fatalf("total failed count should still include supplemental failure, got %d diagnostics=%#v", got, evidence.Diagnostics)
+	}
+}
+
+func TestDeepAgentRouterRoutesExplicitParallelResearchToParallel(t *testing.T) {
+	router := NewRuntimeDeepAgentStepRouter(testRuntime(t))
+	route, err := router.RouteStep(context.Background(), &DeepAgentState{Goal: "research browserless"}, DeepAgentStep{
+		ID:            "research",
+		Title:         "并行多方向调研 Browserless 产品",
+		Intent:        "拆成多个子任务并行收集公司/团队、产品功能、定价/可用性、用户评价、竞品、风险和不确定性",
+		DoneCondition: "收集多来源证据，支撑后续报告写作",
+	})
+	if err != nil {
+		t.Fatalf("RouteStep() error = %v", err)
+	}
+	if route.Mode != DeepAgentToolModeMulti || route.Executor != deepAgentRouteExecutorSubPlan {
+		t.Fatalf("expected multi route, got %#v", route)
+	}
+}
+
+func TestDeepAgentRouterRoutesReadonlyAuditButNotImplementationToParallel(t *testing.T) {
+	if !deepAgentStepLooksParallelizable(DeepAgentStep{
+		Title:         "代码库只读架构审查",
+		Intent:        "并行分析多个模块的风险、边界和测试覆盖",
+		DoneCondition: "完成只读审查，不产生代码变更",
+	}) {
+		t.Fatalf("expected readonly audit to be parallelizable")
+	}
+	if deepAgentStepLooksParallelizable(DeepAgentStep{
+		Title:         "实现 multi-agent 调度器",
+		Intent:        "修改后端代码并补测试",
+		DoneCondition: "代码变更完成",
+	}) {
+		t.Fatalf("implementation task should not auto-route to parallel research")
+	}
+}
+
 func TestDeepAgentStepRequiresArtifactIgnoresLaterDocumentSupport(t *testing.T) {
 	step := DeepAgentStep{
 		ID:            "research",
@@ -3535,6 +3964,26 @@ func TestDeepAgentRouterDoesNotTreatBrowserlessResearchAsWebExecutor(t *testing.
 	}
 }
 
+func TestDeepAgentRouterDoesNotTreatBrowserlessBrowserAutomationResearchAsWebExecutor(t *testing.T) {
+	step := DeepAgentStep{
+		ID:            "step-1",
+		Title:         "搜集 Browserless 浏览器自动化产品信息",
+		Intent:        "通过网络搜索调研 Browserless 浏览器自动化平台，整理公司、产品功能、定价和风险。",
+		DoneCondition: "已收集到关于 Browserless 的关键信息，并记录了信息来源。",
+	}
+	route, ok := (&RuntimeDeepAgentStepRouter{}).deterministicRoute(step)
+	if !ok {
+		t.Fatal("expected deterministic web research route")
+	}
+	if route.Mode != DeepAgentToolModeModel || route.Executor != deepAgentRouteExecutorModel || route.SearchScope != "web" {
+		t.Fatalf("route = %#v, want web research model route", route)
+	}
+	wantTools := []string{"WebSearch", "WebFetch"}
+	if strings.Join(route.AllowedTools, ",") != strings.Join(wantTools, ",") {
+		t.Fatalf("route allowed tools = %#v, want %#v", route.AllowedTools, wantTools)
+	}
+}
+
 func TestDeepAgentRouterStillRoutesBrowserVerificationToWebExecutor(t *testing.T) {
 	step := DeepAgentStep{
 		ID:            "verify-page",
@@ -3548,6 +3997,84 @@ func TestDeepAgentRouterStillRoutesBrowserVerificationToWebExecutor(t *testing.T
 	}
 	if route.Mode != DeepAgentToolModeWeb || route.Executor != deepAgentRouteExecutorWeb {
 		t.Fatalf("route = %#v, want dedicated web route", route)
+	}
+}
+
+func TestRuntimeDeepAgentPlannerFallsBackFromWebExecutorToWebToolsWithoutURL(t *testing.T) {
+	runtime := testRuntime(t)
+	planner := NewRuntimeDeepAgentPlanner(runtime)
+	state := &DeepAgentState{
+		Goal:          "调研 Browserless 浏览器自动化平台",
+		WorkingMemory: map[string]any{"user_id": "alice", "session_id": "session-1"},
+	}
+	step := DeepAgentStep{
+		ID:            "step-1",
+		Title:         "搜集 Browserless 浏览器自动化产品信息",
+		Intent:        "通过网络搜索调研 Browserless 浏览器自动化平台，整理公司、产品功能、定价和风险。",
+		DoneCondition: "已收集到可追溯来源和关键事实。",
+	}
+	route := DeepAgentStepRoute{
+		StepID:      step.ID,
+		Mode:        DeepAgentToolModeWeb,
+		Executor:    deepAgentRouteExecutorWeb,
+		SearchScope: "web",
+		Reason:      "test web route without URL",
+		Confidence:  "high",
+	}
+	action, err := planner.actionForRoute(state, step, route)
+	if err != nil {
+		t.Fatalf("actionForRoute() error = %v", err)
+	}
+	if action.Tool != DeepAgentToolModeModel {
+		t.Fatalf("action tool = %q, want model: %#v", action.Tool, action)
+	}
+	wantTools := []string{"WebSearch", "WebFetch"}
+	if got := strings.Join(deepAgentStringSlice(action.Args["allowed_tools"]), ","); got != strings.Join(wantTools, ",") {
+		t.Fatalf("allowed tools = %q, want %#v in %#v", got, wantTools, action.Args)
+	}
+	actionRoute, ok := deepAgentStepRouteFromMap(action.Args)
+	if !ok {
+		t.Fatalf("missing action route in args: %#v", action.Args)
+	}
+	if actionRoute.Mode != DeepAgentToolModeModel || actionRoute.Executor != deepAgentRouteExecutorModel || actionRoute.SearchScope != "web" {
+		t.Fatalf("action route = %#v, want model web-search route", actionRoute)
+	}
+}
+
+func TestRuntimeDeepAgentPlannerKeepsWebExecutorForExplicitURL(t *testing.T) {
+	runtime := testRuntime(t)
+	planner := NewRuntimeDeepAgentPlanner(runtime)
+	state := &DeepAgentState{Goal: "验证页面", WorkingMemory: map[string]any{"user_id": "alice", "session_id": "session-1"}}
+	step := DeepAgentStep{
+		ID:            "verify-page",
+		Title:         "打开页面并截图",
+		Intent:        "Use browser verification for https://example.com/docs and capture DOM evidence.",
+		DoneCondition: "screenshot and DOM evidence captured",
+	}
+	route := DeepAgentStepRoute{
+		StepID:      step.ID,
+		Mode:        DeepAgentToolModeWeb,
+		Executor:    deepAgentRouteExecutorWeb,
+		SearchScope: "web",
+		Reason:      "test web route with URL",
+		Confidence:  "high",
+	}
+	action, err := planner.actionForRoute(state, step, route)
+	if err != nil {
+		t.Fatalf("actionForRoute() error = %v", err)
+	}
+	if action.Tool != DeepAgentToolModeWeb {
+		t.Fatalf("action tool = %q, want web: %#v", action.Tool, action)
+	}
+	if got := deepAgentWorkflowString(action.Args, "url"); got != "https://example.com/docs" {
+		t.Fatalf("action url = %q, want explicit URL in %#v", got, action.Args)
+	}
+	actionRoute, ok := deepAgentStepRouteFromMap(action.Args)
+	if !ok {
+		t.Fatalf("missing action route in args: %#v", action.Args)
+	}
+	if actionRoute.Mode != DeepAgentToolModeWeb || actionRoute.Executor != deepAgentRouteExecutorWeb {
+		t.Fatalf("action route = %#v, want dedicated web route", actionRoute)
 	}
 }
 
@@ -3816,6 +4343,46 @@ func TestFormatDeepAgentResultMessageIncludesArtifactRefs(t *testing.T) {
 		if !strings.Contains(message, want) {
 			t.Fatalf("final message missing %q, got:\n%s", want, message)
 		}
+	}
+}
+
+func TestFormatDeepAgentResultMessageLimitsSources(t *testing.T) {
+	sources := make([]DeepAgentSourceRef, 0, deepAgentResultMessageSourceLimit+3)
+	for idx := 0; idx < deepAgentResultMessageSourceLimit+3; idx++ {
+		sources = append(sources, DeepAgentSourceRef{
+			URL:   fmt.Sprintf("https://example.com/source-%d", idx+1),
+			Title: fmt.Sprintf("Source %d", idx+1),
+		})
+	}
+	state := &DeepAgentState{
+		Goal: "生成调研报告",
+		Plan: DeepAgentPlan{Steps: []DeepAgentStep{{
+			ID:     "write-report",
+			Title:  "写报告",
+			Status: DeepAgentStepStatusSucceeded,
+		}}},
+		CompletedSteps: []string{"write-report"},
+		WorkingMemory: map[string]any{
+			"step_context": map[string]any{
+				"write-report": map[string]any{
+					"step_evidence": DeepAgentStepEvidence{
+						StepID:  "write-report",
+						Summary: "final report evidence",
+						Sources: sources,
+					},
+				},
+			},
+		},
+	}
+	message := formatDeepAgentResultMessage(&DeepAgentTaskResult{State: state, Run: &WorkflowRun{ID: "run-1"}}, nil)
+	if !strings.Contains(message, "https://example.com/source-8") {
+		t.Fatalf("final message should include the display limit source, got:\n%s", message)
+	}
+	if strings.Contains(message, "https://example.com/source-9") {
+		t.Fatalf("final message should not include sources beyond the display limit, got:\n%s", message)
+	}
+	if !strings.Contains(message, "还有 3 条来源已保留在 Job trace 中。") {
+		t.Fatalf("final message should summarize hidden sources, got:\n%s", message)
 	}
 }
 

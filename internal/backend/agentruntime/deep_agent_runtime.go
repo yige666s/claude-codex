@@ -196,14 +196,33 @@ func (p *RuntimeDeepAgentPlanner) actionForRoute(state *DeepAgentState, step Dee
 		args["prompt"] = p.modelPromptForStep(state, step)
 		args["expected_evidence"] = "test results, exit status, and failure excerpt if any"
 	case DeepAgentToolModeWeb:
-		args["prompt"] = p.modelPromptForStep(state, step)
-		args["expected_evidence"] = "URL, screenshot or DOM assertion evidence, and source refs if applicable"
+		if explicitURL := firstNonEmptyString(deepAgentArgsExplicitHTTPURL(args), deepAgentStepExplicitHTTPURL(step)); explicitURL != "" {
+			args["url"] = explicitURL
+			args["prompt"] = p.modelPromptForStep(state, step)
+			args["expected_evidence"] = "URL, screenshot or DOM assertion evidence, and source refs if applicable"
+		} else {
+			mode = DeepAgentToolModeModel
+			route.Mode = mode
+			route.Executor = deepAgentRouteExecutorModel
+			route.AllowedTools = webResearchAllowedTools()
+			route.SearchScope = "web"
+			args["prompt"] = p.modelPromptForStep(state, step)
+			args["expected_evidence"] = "WebSearch/WebFetch source URLs, fetched page evidence, and key facts"
+		}
 	case DeepAgentToolModeCodePatch:
 		args["prompt"] = p.modelPromptForStep(state, step)
 		args["expected_evidence"] = "diff summary, changed files, and verification hints"
 	case DeepAgentToolModeConnector:
 		args["query"] = firstNonEmptyString(step.Intent, step.Title, stateGoal(state))
 		args["provider"] = firstNonEmptyString(deepAgentWorkflowString(args, "provider"), "github")
+	case DeepAgentToolModeMulti:
+		args["task"] = p.modelPromptForStep(state, step)
+		args["branch_specs"] = defaultDeepAgentParallelBranchSpecs(firstNonEmptyString(step.Intent, step.Title, stateGoal(state)))
+		args["max_concurrency"] = deepAgentParallelDefaultMaxConcurrency
+		args["min_successful_branches"] = 1
+		if len(route.AllowedTools) == 0 {
+			route.AllowedTools = []string{"WebSearch", "WebFetch"}
+		}
 	default:
 		mode = DeepAgentToolModeModel
 		args["prompt"] = p.modelPromptForStep(state, step)
@@ -300,25 +319,7 @@ func (p *RuntimeDeepAgentPlanner) llmRouteStep(ctx context.Context, agentState *
 	if p == nil || p.runtime == nil {
 		return ""
 	}
-	prompt := fmt.Sprintf(`Classify the next DeepAgent step execution mode.
-
-Return exactly one word: %s, %s, %s, %s, %s, %s, %s, %s, or %s.
-
-Definitions:
-- %s: general step execution. The model may use provider tools such as WebSearch, WebFetch, Artifact, and Skill when needed.
-- %s: generate a final deliverable and ensure a downloadable artifact/file is produced for this step.
-- %s: force a published skill only when the step explicitly requires a specific specialized skill.
-- %s: search prior conversation/session context only. Do not use this for external web/product research.
-- %s: run or inspect tests, lint, typecheck, build, or static checks and return executable evidence.
-- %s: controlled web/page verification with URL, screenshot, DOM, or assertion evidence.
-- %s: code patch/edit work with diff summary, changed files, and verification hints.
-- %s: read an explicitly connected external connector such as GitHub repository or issue context.
-- %s: broad step that should be decomposed; choose %s if unsure.
-
-Step intent: %s
-Success criteria: %s
-Prior step context:
-%s`,
+	prompt := fmt.Sprintf(PromptDeepAgentExecutionModeClassifierTemplate,
 		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeConnector, DeepAgentToolModeMulti,
 		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeConnector, DeepAgentToolModeMulti, DeepAgentToolModeModel,
 		strings.TrimSpace(firstNonEmptyString(step.Intent, step.Title)), strings.TrimSpace(step.DoneCondition), p.stepContextSummary(agentState, step))
@@ -347,7 +348,7 @@ Prior step context:
 		if deepAgentStepRequiresArtifact(step) {
 			return DeepAgentToolModeModelArtifact
 		}
-		return DeepAgentToolModeModel
+		return DeepAgentToolModeMulti
 	case strings.Contains(mode, DeepAgentToolModeModel):
 		return DeepAgentToolModeModel
 	default:
@@ -414,18 +415,7 @@ func (p *RuntimeDeepAgentPlanner) modelPromptForStep(agentState *DeepAgentState,
 }
 
 func deepAgentToolUsageReminder() string {
-	return `DeepAgent tool policy:
-- Use WebSearch and WebFetch for current, external, internet, product, company, market, or competitor research.
-- **CRITICAL**: When a step requires creating a deliverable file, report, or document, you MUST use the Artifact tool to save it. Call Artifact with filename and content before completing the step.
-- Use Skill when a published skill is clearly the best specialized executor.
-- For generic "report/document" requests, create a Markdown artifact by default. Use Word/.docx only when the user explicitly asks for Word or .docx.
-- Do not claim a Skill job, Word document, or file is created/in progress unless an actual tool result confirms it.
-- Do not claim you cannot browse the web, perform real-time research, or create files when an appropriate tool is available. If a tool fails, report the tool error and continue with any partial evidence.
-
-For artifact creation steps:
-1. Generate the complete content (markdown, JSON, CSV, HTML, etc.)
-2. Call the Artifact tool with appropriate filename and the full content
-3. Confirm artifact creation with a brief pointer only. Do not paste the artifact body/content into chat after it has been saved; tell the user to view it in the Artifacts panel.`
+	return PromptDeepAgentToolUsageReminder
 }
 
 func deepAgentStepRequiresArtifact(step DeepAgentStep) bool {
@@ -912,7 +902,7 @@ func deepAgentModelActionSourceRefs(output string, session *state.Session, start
 	}
 	appendRefs(deepAgentSourceRefsFromText(output))
 	if session == nil {
-		return out
+		return curateDeepAgentSourceRefs(out, deepAgentModelActionMaxSources)
 	}
 	if startIndex < 0 || startIndex > len(session.Messages) {
 		startIndex = 0
@@ -926,7 +916,7 @@ func deepAgentModelActionSourceRefs(output string, session *state.Session, start
 		}
 		appendRefs(deepAgentSourceRefsFromText(message.ToolOutput))
 	}
-	return out
+	return curateDeepAgentSourceRefs(out, deepAgentModelActionMaxSources)
 }
 
 func hideDeepAgentExecutionUserPrompts(session *state.Session, startMessageCount int, prompt string) int {
@@ -1669,50 +1659,11 @@ func deepAgentPlannerPromptWithSkills(req DeepAgentTaskRequest, skillCatalog str
 	if rubric == "" {
 		rubric = "(none)"
 	}
-	return fmt.Sprintf(`You are the planner for a production DeepAgent controller.
-
-Split the user goal into a small intent plan. Return JSON only, with no markdown.
-
-Rules:
-- Use 1 to %d steps.
-- Every step must have id, title, intent, depends_on, and done_condition.
-- Plan steps describe what should be achieved, not how to execute it.
-- Do not choose execution mode, tool, skill, provider, API, or command in this plan.
-- Do not put metadata.tool, metadata.args, skill_name, or rag_search query in plan steps.
-- Use depends_on to express required prior step outputs by step id.
-- Each done_condition is the success_criteria and must be concrete and verifiable.
-- Do not include risky external side effects unless the goal explicitly requires them.
-
-Task rubric. Turn these acceptance criteria into concrete step done_condition values, but do not add hidden requirements that are not implied by the goal:
-%s
-
-Published skills are available later to the Step Router. Use this only to phrase deliverable intents clearly, not to select a skill in the plan:
-%s
-
-Loaded task context is available to inform the plan. Use it to understand attachments, prior session messages, existing artifacts, memory, and available capabilities, but do not quote hidden implementation details:
-%s
-
-JSON shape:
-{
-  "goal": "string",
-  "steps": [
-    {
-      "id": "step-1",
-      "title": "string",
-      "intent": "string",
-      "depends_on": [],
-      "done_condition": "string",
-      "risk_level": "low|medium|high"
-    }
-  ]
-}
-
-User goal:
-%s`, maxSteps, rubric, skillCatalog, loadedContext, strings.TrimSpace(req.Goal))
+	return fmt.Sprintf(PromptDeepAgentPlannerTemplate, maxSteps, rubric, skillCatalog, loadedContext, strings.TrimSpace(req.Goal))
 }
 
 func deepAgentPlanRepairContext(req DeepAgentTaskRequest) string {
-	return fmt.Sprintf("User goal: %s\nMax steps: %d", strings.TrimSpace(req.Goal), normalizeDeepAgentPolicy(req.Policy).MaxSteps)
+	return fmt.Sprintf(PromptDeepAgentPlanRepairContextTemplate, strings.TrimSpace(req.Goal), normalizeDeepAgentPolicy(req.Policy).MaxSteps)
 }
 
 func parseDeepAgentPlan(output string) (DeepAgentPlan, error) {

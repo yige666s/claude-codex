@@ -53,6 +53,7 @@ type LLMGovernanceConfig struct {
 	SkillTimeout           time.Duration
 	DailyTokenQuota        int
 	DailyRequestQuota      int
+	APIRateLimitPerMinute  int
 	DailyCostQuotaUSD      float64
 	InputCostPerMillion    float64
 	OutputCostPerMillion   float64
@@ -75,7 +76,7 @@ func (c LLMGovernanceConfig) normalizedWithOptions(options []LLMModelOption) LLM
 		}
 		if c.ModelRoutes == "" {
 			c.ModelRoutes = LLMModelRoutesWithDefault("", option.ID)
-		} else if !modelRoutesCompatibleWithProvider(c.ModelRoutes, c.Provider, options) {
+		} else if !modelRoutesCompatibleWithCatalog(c.ModelRoutes, options) {
 			c.ModelRoutes = resetModelRoutes(c.ModelRoutes, option.ID)
 		}
 	}

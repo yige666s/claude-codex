@@ -412,27 +412,7 @@ func (r *Runtime) runVisionAssetInsight(ctx context.Context, asset *Artifact, co
 	blocks := []publictypes.ContentBlock{
 		{
 			Type: "text",
-			Text: `Analyze this generated image artifact for asset understanding and retrieval.
-
-Return ONLY JSON in this exact shape:
-{
-  "summary": "one concise user-facing description",
-  "ocr_text": ["visible text"],
-  "visual_type": "diagram|photo|ui|chart|document|illustration|other",
-  "tags": ["short", "searchable", "tags"],
-  "entities": [{"name":"...", "type":"component|person|object|place|text|other", "description":"..."}],
-  "relationships": [{"source":"...", "target":"...", "relation":"..."}],
-  "style": {"palette":"", "layout":"", "tone":""},
-  "candidate_project_memories": [{"content":"...", "category":"fact|preference|event|skill", "tags":["artifact"], "confidence":0.0, "importance":0.0, "reason":"..."}],
-  "candidate_user_memories": [{"content":"...", "category":"fact|preference|event|skill", "tags":["artifact"], "confidence":0.0, "importance":0.0, "reason":"..."}],
-  "confidence": 0.0
-}
-
-Rules:
-- The primary output is asset insight for search and later reference, not long-term user memory.
-- Put durable project facts in candidate_project_memories only when the image clearly encodes a project/architecture/design decision.
-- Put user memories only for stable preferences explicitly implied by repeated/user-specific context. Most images should have no user memories.
-- Do not include secrets, addresses, credentials, IDs, or private document details as memories.`,
+			Text: PromptVisionAssetInsight,
 		},
 		{
 			Type: attachmentBlockType(contentType),

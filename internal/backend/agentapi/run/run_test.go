@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"claude-codex/internal/backend/agentapi/bootstrap"
+	startupconfig "claude-codex/internal/backend/agentapi/config"
 	"claude-codex/internal/backend/agentruntime"
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/tools"
@@ -101,6 +102,45 @@ func TestBuildLLMConfigShortAPIUsesShortAPIEnv(t *testing.T) {
 	}
 	if cfg.BaseURL != "https://api.shortapi.ai/v1" {
 		t.Fatalf("unexpected shortapi base url: %q", cfg.BaseURL)
+	}
+}
+
+func TestBuildLLMConfigDeepSeekUsesDeepSeekEnv(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "deepseek-key")
+	t.Setenv("DEEPSEEK_BASE_URL", "https://deepseek.example")
+	cfg, err := bootstrap.BuildLLMConfig("deepseek", "", "", "", "", 30)
+	if err != nil {
+		t.Fatalf("build deepseek config: %v", err)
+	}
+	if cfg.Provider != "deepseek" || cfg.APIKey != "deepseek-key" || cfg.Model != "deepseek-chat" {
+		t.Fatalf("unexpected deepseek config: %#v", cfg)
+	}
+	if cfg.BaseURL != "https://deepseek.example" {
+		t.Fatalf("unexpected deepseek base url: %q", cfg.BaseURL)
+	}
+}
+
+func TestStartupLLMConfigKeepsDefaultProviderBeforeChatRouting(t *testing.T) {
+	t.Setenv("NVIDIA_API_KEY", "nvidia-key")
+	t.Setenv("DEEPSEEK_API_KEY", "deepseek-key")
+	t.Setenv("DEEPSEEK_BASE_URL", "https://deepseek.example")
+	routes := "default=nvidia/nemotron-3-ultra-550b-a55b,chat=deepseek-chat,chat:normal=deepseek-chat"
+	startup := buildStartupLLMConfig(startupconfig.Config{
+		LLMProvider:    "nvidia",
+		LLMModelRoutes: routes,
+	})
+	if startup.Provider != "nvidia" || startup.Model != "nvidia/nemotron-3-ultra-550b-a55b" {
+		t.Fatalf("startup config should keep default provider/model, got %#v", startup)
+	}
+	if startup.APIKey != "nvidia-key" || startup.BaseURL != "https://integrate.api.nvidia.com/v1" {
+		t.Fatalf("startup config should keep nvidia credentials, got %#v", startup)
+	}
+	chat := bootstrap.ApplyRoutedModelForScope(startup, routes, agentruntime.Scope{Prompt: "hello"})
+	if chat.Provider != "deepseek" || chat.Model != "deepseek-chat" {
+		t.Fatalf("chat route should switch to deepseek, got %#v", chat)
+	}
+	if chat.APIKey != "deepseek-key" || chat.BaseURL != "https://deepseek.example" {
+		t.Fatalf("chat route should reload deepseek credentials, got %#v", chat)
 	}
 }
 

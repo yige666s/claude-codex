@@ -30,11 +30,8 @@ func buildStartupLLMConfig(cfg startupconfig.Config) bootstrap.LLMConfig {
 	if err != nil {
 		logFatal(err)
 	}
-	llmCfg.Model = bootstrap.RoutedModel(llmCfg.Model, cfg.LLMModelRoutes, agentruntime.Scope{})
-	if option, ok := agentruntime.LLMModelOptionFor(llmCfg.Model); ok {
-		llmCfg.Provider = option.Provider
-		llmCfg.Model = option.ID
-		llmCfg.VertexLocation = option.VertexLocation
+	if defaultModel := bootstrap.ParseModelRoutes(cfg.LLMModelRoutes)["default"]; defaultModel != "" {
+		llmCfg = bootstrap.ApplyRoutedModelForScope(llmCfg, "default="+defaultModel, agentruntime.Scope{})
 	}
 	return llmCfg
 }
@@ -51,6 +48,7 @@ func llmGovernanceConfigFromStartup(cfg startupconfig.Config, llmCfg bootstrap.L
 		SkillTimeout:           cfg.LLMSkillTimeout,
 		DailyTokenQuota:        cfg.LLMDailyTokenQuota,
 		DailyRequestQuota:      cfg.LLMDailyRequestQuota,
+		APIRateLimitPerMinute:  cfg.RateLimit,
 		DailyCostQuotaUSD:      cfg.LLMDailyCostQuotaUSD,
 		InputCostPerMillion:    cfg.LLMInputCostPerMillion,
 		OutputCostPerMillion:   cfg.LLMOutputCostPerMillion,

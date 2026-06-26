@@ -497,7 +497,7 @@ func Default() Config {
 		NetworkAllowlist:                         os.Getenv("AGENT_API_NETWORK_ALLOWLIST"),
 		SkillDirs:                                os.Getenv("AGENT_API_SKILL_DIRS"),
 		RateLimitBackend:                         FirstNonEmpty(os.Getenv("AGENT_API_RATE_LIMIT_BACKEND"), "memory"),
-		RateLimit:                                60,
+		RateLimit:                                EnvInt("AGENT_API_RATE_LIMIT", 60),
 		OperationRateLimits:                      os.Getenv("AGENT_API_OPERATION_RATE_LIMITS"),
 		CacheBackend:                             FirstNonEmpty(os.Getenv("AGENT_API_CACHE_BACKEND"), "memory"),
 		CacheRedisURL:                            FirstNonEmpty(os.Getenv("AGENT_API_CACHE_REDIS_URL"), os.Getenv("AGENT_API_REDIS_URL")),
@@ -694,7 +694,7 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.BoolVar(&cfg.AllowCustomWorkingDir, "allow-custom-working-dir", cfg.AllowCustomWorkingDir, "allow request-provided working_dir when no user workspace root is configured")
 	flags.StringVar(&cfg.Timezone, "timezone", cfg.Timezone, "IANA timezone used for current date/time context; empty uses server local time")
 	flags.StringVar(&cfg.Locale, "locale", cfg.Locale, "BCP 47 locale tag used for locale context; empty lets the model infer from the latest user message")
-	flags.StringVar(&cfg.LLMProvider, "llm-provider", cfg.LLMProvider, "LLM provider: anthropic, openai, nvidia, qwen, gemini, vertex, shortapi, or custom")
+	flags.StringVar(&cfg.LLMProvider, "llm-provider", cfg.LLMProvider, "LLM provider: anthropic, openai, deepseek, nvidia, qwen, gemini, vertex, shortapi, or custom")
 	flags.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "LLM API key; env fallback depends on -llm-provider")
 	flags.StringVar(&cfg.APIToken, "api-token", cfg.APIToken, "LLM bearer/OAuth token; env fallback depends on -llm-provider")
 	flags.StringVar(&cfg.APIBaseURL, "api-base-url", cfg.APIBaseURL, "LLM API base URL; use with openai-compatible custom providers")

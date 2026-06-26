@@ -345,12 +345,16 @@ func (e *runtimeDeepAgentCodePatchExecutor) ExecuteStep(ctx context.Context, rou
 
 type runtimeDeepAgentSubplanExecutor struct {
 	runtime *Runtime
+	parent  *RuntimeDeepAgentExecutor
 }
 
-func (e *runtimeDeepAgentSubplanExecutor) ExecuteStep(ctx context.Context, route DeepAgentStepRoute, action DeepAgentAction, _ *DeepAgentState) (DeepAgentStepEvidence, error) {
+func (e *runtimeDeepAgentSubplanExecutor) ExecuteStep(ctx context.Context, route DeepAgentStepRoute, action DeepAgentAction, agentState *DeepAgentState) (DeepAgentStepEvidence, error) {
 	route = finalizeDeepAgentActionRoute(route, action)
 	task := firstNonEmptyString(deepAgentActionString(action, "task"), deepAgentActionString(action, "prompt"), deepAgentActionString(action, "query"))
 	childJobID := firstNonEmptyString(deepAgentActionString(action, "child_job_id"), deepAgentActionString(action, "job_id"))
+	if _, hasBranchSpecs := action.Args["branch_specs"]; hasBranchSpecs || action.Args["branches"] != nil || action.Args["branch_results"] != nil || (task != "" && childJobID == "") {
+		return e.executeParallelStep(ctx, route, action, agentState)
+	}
 	if task == "" && childJobID == "" {
 		err := fmt.Errorf("subplan executor requires task or child_job_id")
 		return deepAgentDedicatedEvidence(route, action, DeepAgentActionStatusFailed, err.Error(), map[string]any{

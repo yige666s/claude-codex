@@ -86,7 +86,13 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 
 	sessionStore, memoryService := buildStores(storeCfg)
 	auth := buildAuthenticator(authConfigFromStartup(cfg))
-	limiter := bootstrap.BuildRateLimiter(cfg.RateLimitBackend, cfg.RedisURL, cfg.RateLimit, time.Minute, cfg.RedisFailOpen)
+	rateLimitFactory := func(limit int) (agentruntime.RateLimitPolicy, error) {
+		return bootstrap.BuildRateLimiterWithError(cfg.RateLimitBackend, cfg.RedisURL, limit, time.Minute, cfg.RedisFailOpen)
+	}
+	limiter := agentruntime.NewConfigurableRateLimiter(
+		bootstrap.BuildRateLimiter(cfg.RateLimitBackend, cfg.RedisURL, llmConfigManager.Get().APIRateLimitPerMinute, time.Minute, cfg.RedisFailOpen),
+		rateLimitFactory,
+	)
 	authService := buildAuthService(cfg.EnableUserSystem, storeCfg, authServiceConfigFromStartup(cfg))
 	artifactService := buildArtifactService(artifactConfigFromStartup(cfg, storeCfg))
 	assetInsightStore := buildAssetInsightStore(storeCfg)
@@ -102,6 +108,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	runtimeConfig.CacheMetrics = cacheMetrics
 	runtimeConfig.CacheDefaultTTL = cfg.CacheDefaultTTL
 	runtimeConfig.CacheFailOpen = cfg.CacheFailOpen
+	runtimeConfig.LLMGovernanceProvider = llmConfigManager.Get
 	runtime = agentruntime.NewRuntime(
 		runtimeConfig,
 		sessionStore,

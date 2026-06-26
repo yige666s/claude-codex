@@ -258,6 +258,7 @@ services:
       AGENT_API_EPISODIC_MEMORY_INJECT_LIMIT: ${AGENT_API_EPISODIC_MEMORY_INJECT_LIMIT:-5}
       AGENT_API_LOCAL_ARTIFACT_STAGING_RETENTION: ${AGENT_API_LOCAL_ARTIFACT_STAGING_RETENTION:-24h}
       AGENT_API_RATE_LIMIT_BACKEND: ${AGENT_API_RATE_LIMIT_BACKEND:-redis}
+      AGENT_API_RATE_LIMIT: ${AGENT_API_RATE_LIMIT:-60}
       AGENT_API_REDIS_URL: redis://redis:6379/0?prefix=agentapi
       AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND: ${AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND:-redis}
       AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL: ${AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:ctx}
@@ -312,6 +313,8 @@ services:
       AGENT_API_EVAL_JUDGE_PROMPT_VERSION: ${AGENT_API_EVAL_JUDGE_PROMPT_VERSION:-ragas-json-v1}
       AGENT_API_LLM_API_KEY: ${AGENT_API_LLM_API_KEY:-}
       AGENT_API_LLM_BASE_URL: ${AGENT_API_LLM_BASE_URL:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       NGC_API_KEY: ${NGC_API_KEY:-}
       NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-}
@@ -550,7 +553,7 @@ services:
       - -model
       - "${AGENT_API_MODEL:-nvidia/nemotron-3-ultra-550b-a55b}"
       - -llm-model-routes
-      - "${AGENT_API_LLM_MODEL_ROUTES:-default=nvidia/nemotron-3-ultra-550b-a55b,chat=deepseek-ai/deepseek-v4-flash,chat:normal=deepseek-ai/deepseek-v4-flash,chat:search=deepseek-ai/deepseek-v4-flash,chat:complex=nvidia/nemotron-3-ultra-550b-a55b,skill=nvidia/nemotron-3-ultra-550b-a55b,skill:memory-recall-trigger=deepseek-ai/deepseek-v4-flash,judge=nvidia/nemotron-3-ultra-550b-a55b}"
+      - "${AGENT_API_LLM_MODEL_ROUTES:-default=nvidia/nemotron-3-ultra-550b-a55b,chat=deepseek-chat,chat:normal=deepseek-chat,chat:search=deepseek-chat,chat:complex=deepseek-reasoner,skill=nvidia/nemotron-3-ultra-550b-a55b,skill:memory-recall-trigger=deepseek-chat,judge=nvidia/nemotron-3-ultra-550b-a55b}"
       - -llm-max-attempts
       - "${AGENT_API_LLM_MAX_ATTEMPTS:-2}"
       - -llm-chat-timeout

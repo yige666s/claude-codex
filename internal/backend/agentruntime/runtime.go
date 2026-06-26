@@ -53,15 +53,7 @@ var liveHarnessToolAllowlist = map[string]struct{}{
 
 const liveWebResearchFunctionName = "web_research"
 
-const consumerSecuritySystemContext = `<consumer-security>
-You are serving a consumer web user. Do not expose internal server tools, tool names, file paths, workspace paths, shell commands, environment variables, credentials, stack traces, or raw provider errors.
-
-Never claim that you can read local files, list project files, search server file contents, create arbitrary files, edit files, run shell commands, or inspect the server filesystem for the user. These are internal infrastructure capabilities, not user-facing product features.
-
-If the user asks for local filesystem access, source-code search, arbitrary file creation/editing, shell execution, secrets, env vars, or server paths, politely refuse and offer safe alternatives: ask them to upload the file, use a published user-facing skill, or generate an artifact only through an approved skill flow.
-
-Only describe published product skills and user-visible artifact/attachment flows. Do not mention hidden tools or implementation details.
-</consumer-security>`
+const consumerSecuritySystemContext = PromptConsumerSecuritySystemContext
 
 var ErrSessionNotRunning = errors.New("session is not running")
 var ErrRuntimeShuttingDown = errors.New("runtime is shutting down")
@@ -2276,7 +2268,7 @@ func liveFunctionDeclarationFromDescriptor(descriptor toolkit.Descriptor) (map[s
 func liveWebResearchFunctionDeclaration() map[string]any {
 	return map[string]any{
 		"name":        liveWebResearchFunctionName,
-		"description": "Run a backend web research pass for the current Live voice turn. Use this instead of answering from memory when the user asks for current, recent, exact, numeric, sourced, or externally verifiable information. Especially use it for multi-step searches, comparisons, market/news/model/product lookups, date ranges, rankings, and requests that explicitly say to search the web. Do not speak a factual answer before this function returns.",
+		"description": PromptLiveWebResearchFunctionDescription,
 		"parameters": map[string]any{
 			"type": "OBJECT",
 			"properties": map[string]any{
@@ -2425,10 +2417,8 @@ func liveWebResearchArgs(raw json.RawMessage) liveWebResearchInput {
 
 func liveWebResearchPrompt(input liveWebResearchInput, displayText string) string {
 	var builder strings.Builder
-	builder.WriteString("You are executing a backend web research subtask for a Live voice conversation.\n")
-	builder.WriteString("Use WebSearch first. Use WebFetch for the most relevant sources when snippets are insufficient. Do not ask follow-up questions.\n")
-	builder.WriteString("Return a complete answer in the user's language, with concrete numbers, dates, and source URLs when available. If reliable data cannot be found, say what is missing instead of guessing.\n")
-	builder.WriteString("Keep the answer concise enough for Live mode, but do not stop mid-sentence.\n\n")
+	builder.WriteString(PromptLiveWebResearchPreamble)
+	builder.WriteString("\n\n")
 	fmt.Fprintf(&builder, "Current date: %s\n", time.Now().Format("2006-01-02"))
 	fmt.Fprintf(&builder, "Research question: %s\n", input.Query)
 	if input.Requirements != "" {
@@ -2824,33 +2814,7 @@ func liveSkillSelectionPrompt(userText, recentContext string, items []*skills.Sk
 	if strings.TrimSpace(recentContext) == "" {
 		recentContext = "(none)"
 	}
-	return fmt.Sprintf(`You are a strict router for a live voice Agent product.
-
-Decide whether the user's latest utterance should be executed by exactly one published skill. Use the recent conversation only to resolve short follow-ups like "continue", "you decide", "that one", or "yes"; the latest utterance remains the trigger.
-
-Return ONLY one JSON object, no markdown:
-{"action":"skill_call","skill":"<skill_name>","args":"<natural language arguments>","confidence":0.0,"reason":"short reason"}
-
-If no skill should run, return:
-{"action":"none","skill":"","args":"","confidence":0.0,"reason":"short reason"}
-
-Rules:
-- Select a skill only when the user is asking the system to create, transform, analyze, fetch, generate, or process something that clearly matches a skill.
-- If the user asks to create or generate an image, picture, drawing, visual, file, or other artifact, select the best matching artifact/image skill when one is available.
-- If the latest utterance is a confirmation or continuation of a recent artifact/image request, select the matching skill and preserve the concrete request from context in args.
-- Do not select a skill for greetings, small talk, status questions, explanations about available skills, or ambiguous requests.
-- Use only skill names from the catalog.
-- Preserve the user's concrete request in args, without adding unsupported requirements.
-
-Available skills:
-%s
-
-Recent conversation:
-%s
-
-User utterance:
-%q
-`, catalog.String(), recentContext, userText)
+	return fmt.Sprintf(PromptLiveSkillRouterTemplate, catalog.String(), recentContext, userText)
 }
 
 func liveSkillSelectionRecentContext(session *state.Session, maxMessages int) string {
@@ -3366,20 +3330,7 @@ func (r *Runtime) generateFailureRecoveryMessage(ctx context.Context, userID str
 		recoverySession = state.NewSession(session.WorkingDir)
 		recoverySession.ID = session.ID
 	}
-	prompt := fmt.Sprintf(`The previous internal tool or skill execution failed while serving a user request.
-
-Write one brief user-facing response in the same language as the user. Do not retry the failed action. Do not call tools.
-
-Safety rules:
-- Do not expose internal shell commands, file paths, workspace paths, environment variables, stack traces, raw provider errors, bearer tokens, API keys, prompts, or implementation details.
-- Do not claim the requested output was created.
-- Say the operation could not be completed, and suggest a safe next step such as retrying later or simplifying the request.
-
-User request:
-%s
-
-Failure category:
-%s`, strings.TrimSpace(userContent), failureCategory(runErr))
+	prompt := fmt.Sprintf(PromptFailureRecoveryTemplate, strings.TrimSpace(userContent), failureCategory(runErr))
 
 	runner := r.runnerForScope(Scope{UserID: userID, SessionID: session.ID, WorkingDir: session.WorkingDir})
 	result, err := runWithTokenStream(recoveryCtx, runner, recoverySession, prompt, true, nil)
@@ -3652,6 +3603,32 @@ func defaultDeepAgentJobPolicy() DeepAgentPolicy {
 	}
 }
 
+func (r *Runtime) deepAgentJobPolicy() DeepAgentPolicy {
+	policy := defaultDeepAgentJobPolicy()
+	if r == nil || r.config.LLMGovernanceProvider == nil {
+		return policy
+	}
+	cfg := r.config.LLMGovernanceProvider().normalized()
+	governedTimeout := cfg.SkillTimeout
+	if cfg.ChatTimeout > governedTimeout {
+		governedTimeout = cfg.ChatTimeout
+	}
+	if governedTimeout <= 0 {
+		return policy
+	}
+	if policy.StepTimeout < governedTimeout {
+		policy.StepTimeout = governedTimeout
+	}
+	minMaxDuration := governedTimeout * 2
+	if minMaxDuration < policy.StepTimeout {
+		minMaxDuration = policy.StepTimeout
+	}
+	if policy.MaxDuration < minMaxDuration {
+		policy.MaxDuration = minMaxDuration
+	}
+	return policy
+}
+
 func (r *Runtime) StartJob(ctx context.Context, job *Job) error {
 	if r.jobs == nil {
 		return fmt.Errorf("job store is not configured")
@@ -3830,7 +3807,7 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 		return err
 	}
 	_ = sink.Send(ctx, Event{Type: "deep_agent_started", SessionID: job.SessionID, JobID: job.ID, Role: "workflow", Content: "Plan-and-execute task started"})
-	policy := defaultDeepAgentJobPolicy()
+	policy := r.deepAgentJobPolicy()
 	state := map[string]any{
 		"attachment_ids":    append([]string(nil), job.AttachmentIDs...),
 		"attachment_urls":   append([]ChatAttachmentURL(nil), job.AttachmentURLs...),
@@ -3953,9 +3930,13 @@ func formatDeepAgentResultMessage(result *DeepAgentTaskResult, runErr error) str
 		finalEvidence := deepAgentFinalAnswerEvidenceForSummary(state)
 		if len(finalEvidence.Sources) > 0 {
 			b.WriteString("\n\nSources：")
+			shown := 0
 			for _, source := range finalEvidence.Sources {
 				label := firstNonEmptyString(source.Title, source.URL, source.Snippet)
 				if strings.TrimSpace(label) == "" {
+					continue
+				}
+				if shown >= deepAgentResultMessageSourceLimit {
 					continue
 				}
 				b.WriteString("\n- ")
@@ -3965,6 +3946,10 @@ func formatDeepAgentResultMessage(result *DeepAgentTaskResult, runErr error) str
 					b.WriteString(strings.TrimSpace(source.URL))
 					b.WriteString("）")
 				}
+				shown++
+			}
+			if remaining := countDisplayableDeepAgentSources(finalEvidence.Sources) - shown; remaining > 0 {
+				b.WriteString(fmt.Sprintf("\n- 还有 %d 条来源已保留在 Job trace 中。", remaining))
 			}
 		}
 		if len(finalEvidence.Tests) > 0 {
@@ -3997,6 +3982,19 @@ func formatDeepAgentResultMessage(result *DeepAgentTaskResult, runErr error) str
 		b.WriteString(result.Run.ID)
 	}
 	return b.String()
+}
+
+const deepAgentResultMessageSourceLimit = 8
+
+func countDisplayableDeepAgentSources(sources []DeepAgentSourceRef) int {
+	count := 0
+	for _, source := range sources {
+		if strings.TrimSpace(firstNonEmptyString(source.Title, source.URL, source.Snippet)) == "" {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func deepAgentResultTestLabel(state *DeepAgentState, test map[string]any, idx int) string {

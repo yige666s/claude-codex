@@ -317,6 +317,10 @@ export function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; admi
                 <Input inputMode="numeric" value={configDraft.daily_request_quota || ""} onChange={(event) => updateConfigDraft("daily_request_quota", event.currentTarget.value)} placeholder="0 disables" />
               </label>
               <label className="admin-field">
+                <span>API rate limit / min</span>
+                <Input inputMode="numeric" value={configDraft.api_rate_limit_per_minute || ""} onChange={(event) => updateConfigDraft("api_rate_limit_per_minute", event.currentTarget.value)} placeholder="0 disables" />
+              </label>
+              <label className="admin-field">
                 <span>Daily cost quota USD</span>
                 <Input inputMode="decimal" value={configDraft.daily_cost_quota_usd || ""} onChange={(event) => updateConfigDraft("daily_cost_quota_usd", event.currentTarget.value)} placeholder="0 disables" />
               </label>

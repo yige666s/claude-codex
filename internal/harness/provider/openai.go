@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 )
+
+const openAICompatibleTransportAttempts = 3
 
 // OpenAIProvider implements Provider for OpenAI API (GPT models)
 type OpenAIProvider struct {
@@ -118,17 +122,8 @@ func (p *OpenAIProvider) CreateMessage(ctx context.Context, request MessageReque
 		return nil, err
 	}
 
-	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-
-	// Send request
-	resp, err := p.httpClient.Do(httpReq)
+	url := p.baseURL + "/chat/completions"
+	resp, err := p.doChatCompletionRequest(ctx, url, body, openAIReq)
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +148,65 @@ func (p *OpenAIProvider) CreateMessage(ctx context.Context, request MessageReque
 	}
 
 	return messageResponseFromOpenAI(openAIResp)
+}
+
+func (p *OpenAIProvider) doChatCompletionRequest(ctx context.Context, url string, body []byte, openAIReq openAIRequest) (*http.Response, error) {
+	var lastErr error
+	for attempt := 1; attempt <= openAICompatibleTransportAttempts; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+		resp, err := p.httpClient.Do(httpReq)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if !isRetryableOpenAICompatibleTransportError(ctx, err) || attempt == openAICompatibleTransportAttempts {
+			break
+		}
+		delay := time.Duration(attempt*250) * time.Millisecond
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, fmt.Errorf("openai request failed: %w (%s)", lastErr, openAIRequestSummary(openAIReq, len(body), url))
+}
+
+func isRetryableOpenAICompatibleTransportError(ctx context.Context, err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	errText := strings.ToLower(err.Error())
+	return strings.Contains(errText, "unexpected eof") ||
+		strings.Contains(errText, "connection reset") ||
+		strings.Contains(errText, "connection refused") ||
+		strings.Contains(errText, "tls handshake timeout") ||
+		strings.Contains(errText, "server closed idle connection")
+}
+
+func openAIRequestSummary(request openAIRequest, bodyBytes int, url string) string {
+	systemChars := 0
+	if len(request.Messages) > 0 && request.Messages[0].Role == "system" {
+		if text, ok := request.Messages[0].Content.(string); ok {
+			systemChars = len(text)
+		}
+	}
+	return fmt.Sprintf("url=%s model=%s messages=%d tools=%d body_bytes=%d system_chars=%d", url, request.Model, len(request.Messages), len(request.Tools), bodyBytes, systemChars)
 }
 
 func openAIRequestFromMessageRequest(request MessageRequest) openAIRequest {

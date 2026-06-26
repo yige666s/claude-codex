@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"claude-codex/internal/harness/skills"
@@ -137,6 +138,18 @@ func (r *RuntimeDeepAgentStepRouter) deterministicRoute(step DeepAgentStep) (Dee
 	if deepAgentContainsAny(text,
 		"网页验证", "截图", "浏览器", "打开页面", "页面验证",
 	) || deepAgentContainsWebVerificationToken(text) {
+		if deepAgentStepExplicitHTTPURL(step) == "" {
+			return DeepAgentStepRoute{
+				StepID:          step.ID,
+				Mode:            DeepAgentToolModeModel,
+				Executor:        deepAgentRouteExecutorModel,
+				DeliverableType: deepAgentDeliverableNone,
+				AllowedTools:    webResearchAllowedTools(),
+				SearchScope:     "web",
+				Reason:          "deterministic web research fallback without URL",
+				Confidence:      "high",
+			}, true
+		}
 		return DeepAgentStepRoute{
 			StepID:      step.ID,
 			Mode:        DeepAgentToolModeWeb,
@@ -197,6 +210,18 @@ func (r *RuntimeDeepAgentStepRouter) deterministicRoute(step DeepAgentStep) (Dee
 			Confidence:       "high",
 		}, true
 	}
+	if deepAgentStepLooksParallelizable(step) {
+		return DeepAgentStepRoute{
+			StepID:          step.ID,
+			Mode:            DeepAgentToolModeMulti,
+			Executor:        deepAgentRouteExecutorSubPlan,
+			DeliverableType: deepAgentDeliverableNone,
+			AllowedTools:    []string{"WebSearch", "WebFetch"},
+			SearchScope:     "web",
+			Reason:          "deterministic parallel research guard",
+			Confidence:      "high",
+		}, true
+	}
 	if deepAgentContainsAny(text,
 		"搜索", "查询", "检索", "查找", "调研", "研究", "外部", "联网", "互联网", "官网", "产品", "竞品", "新闻",
 		"web", "internet", "external", "current", "latest", "research",
@@ -226,6 +251,43 @@ func deepAgentContainsWebVerificationToken(text string) bool {
 		}
 	}
 	return false
+}
+
+func deepAgentStepExplicitHTTPURL(step DeepAgentStep) string {
+	if args, ok := step.Metadata["args"].(map[string]any); ok {
+		if url := deepAgentArgsExplicitHTTPURL(args); url != "" {
+			return url
+		}
+	}
+	return deepAgentExtractHTTPURL(strings.Join([]string{step.Intent, step.Title, step.DoneCondition}, "\n"))
+}
+
+func deepAgentArgsExplicitHTTPURL(args map[string]any) string {
+	for _, key := range []string{"url", "target_url", "input"} {
+		if url := deepAgentExtractHTTPURL(deepAgentWorkflowString(args, key)); url != "" {
+			return url
+		}
+	}
+	return ""
+}
+
+func deepAgentExtractHTTPURL(text string) string {
+	for _, field := range strings.Fields(strings.TrimSpace(text)) {
+		candidate := strings.Trim(field, " \t\r\n\"'`.,;:()[]{}<>，。；：、）】》")
+		lower := strings.ToLower(candidate)
+		if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+			continue
+		}
+		parsed, err := url.Parse(candidate)
+		if err != nil || parsed == nil {
+			continue
+		}
+		scheme := strings.ToLower(parsed.Scheme)
+		if (scheme == "http" || scheme == "https") && parsed.Host != "" {
+			return parsed.String()
+		}
+	}
+	return ""
 }
 
 func deepAgentContainsASCIIWord(text, token string) bool {
@@ -583,45 +645,7 @@ func deepAgentRoutePrompt(agentState *DeepAgentState, step DeepAgentStep) string
 	if planner := NewRuntimeDeepAgentPlanner(nil); planner != nil {
 		contextSummary = planner.stepContextSummary(agentState, step)
 	}
-	return fmt.Sprintf(`Classify the next DeepAgent step into one execution route.
-
-Return JSON only. Do not explain.
-
-Allowed mode values: "model", "model_artifact", "skill", "rag_search", "multi", "connector".
-Rules:
-- Use "model" for research, analysis, outline, and normal reasoning. External web/product research should set search_scope="web" and allowed_tools=["WebSearch","WebFetch"].
-- Use "model_artifact" only when this exact step must create a downloadable deliverable/file/artifact.
-- Use "skill" only when a specific published skill is clearly required.
-- Use "rag_search" only for prior session/history/memory search, not public web research.
-- Use "multi" only if the step must be decomposed.
-- Use "connector" only when the step should read an explicitly connected external provider such as GitHub repository or issue context.
-
-JSON shape:
-{
-  "mode": "model",
-  "executor": "model",
-  "skill_name": "",
-  "requires_artifact": false,
-  "deliverable_type": "none",
-  "filename_hint": "",
-  "allowed_tools": [],
-  "search_scope": "",
-  "success_criteria": [],
-  "reason": "short reason",
-  "confidence": "medium"
-}
-
-User goal:
-%s
-
-Step:
-ID: %s
-Title: %s
-Intent: %s
-Success criteria: %s
-
-Prior step context:
-%s`, stateGoal(agentState), step.ID, step.Title, step.Intent, step.DoneCondition, contextSummary)
+	return fmt.Sprintf(PromptDeepAgentRouteTemplate, stateGoal(agentState), step.ID, step.Title, step.Intent, step.DoneCondition, contextSummary)
 }
 
 func parseDeepAgentStepRoute(output string) (DeepAgentStepRoute, error) {

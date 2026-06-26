@@ -28,7 +28,7 @@ data:
   AGENT_API_JOB_EVENT_FANOUT_CHANNEL: "agentapi:job-events"
   AGENT_API_LLM_PROVIDER: "nvidia"
   AGENT_API_MODEL: "nvidia/nemotron-3-ultra-550b-a55b"
-  AGENT_API_LLM_MODEL_ROUTES: "default=nvidia/nemotron-3-ultra-550b-a55b,chat=deepseek-ai/deepseek-v4-flash,chat:normal=deepseek-ai/deepseek-v4-flash,chat:search=deepseek-ai/deepseek-v4-flash,chat:complex=nvidia/nemotron-3-ultra-550b-a55b,skill=nvidia/nemotron-3-ultra-550b-a55b,skill:memory-recall-trigger=deepseek-ai/deepseek-v4-flash,judge=nvidia/nemotron-3-ultra-550b-a55b"
+  AGENT_API_LLM_MODEL_ROUTES: "default=nvidia/nemotron-3-ultra-550b-a55b,chat=deepseek-chat,chat:normal=deepseek-chat,chat:search=deepseek-chat,chat:complex=deepseek-reasoner,skill=nvidia/nemotron-3-ultra-550b-a55b,skill:memory-recall-trigger=deepseek-chat,judge=nvidia/nemotron-3-ultra-550b-a55b"
   AGENT_API_EVAL_JUDGE_ENABLED: "false"
   AGENT_API_EVAL_JUDGE_MODEL: ""
   AGENT_API_EVAL_JUDGE_PROMPT_VERSION: "ragas-json-v1"

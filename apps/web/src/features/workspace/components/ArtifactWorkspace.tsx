@@ -1,8 +1,9 @@
 import { ReactNode, useEffect, useState } from "react";
-import { Brain, Download, ExternalLink, FileText, FileUp, Image, Trash2, X } from "lucide-react";
+import { Brain, Download, ExternalLink, FileUp, Image, Trash2, X } from "lucide-react";
 import { Button } from "../../../components/ui/button";
-import type { Asset } from "../../../types";
+import type { Asset, JobEvent } from "../../../types";
 import { DataPreview, isPreviewableTextAsset } from "./messages/DataPreview";
+import { buildParallelGroupsFromJobEvents, type ParallelGroupTrace } from "./parallelTrace";
 
 type BlobPreviewState = {
   status: "idle" | "loading" | "loaded" | "error";
@@ -14,6 +15,7 @@ type BlobPreviewState = {
 type ArtifactWorkspaceProps = {
   className?: string;
   artifact: Asset | null;
+  jobEvents?: JobEvent[];
   memoryBusy: Record<string, boolean>;
   memoryDisabled: boolean;
   onClose: () => void;
@@ -30,6 +32,7 @@ type ArtifactWorkspaceProps = {
 export function ArtifactWorkspace({
   className = "",
   artifact,
+  jobEvents = [],
   memoryBusy,
   memoryDisabled,
   onClose,
@@ -84,6 +87,7 @@ export function ArtifactWorkspace({
                 </div>
               </div>
               <ArtifactMetadata asset={artifact} formatBytes={formatBytes} formatTime={formatTime} />
+              <ArtifactParallelContribution groups={buildParallelGroupsFromJobEvents(jobEvents)} />
               <ArtifactPreviewSurface
                 asset={artifact}
                 loadArtifact={() => loadArtifact(artifact)}
@@ -99,6 +103,62 @@ export function ArtifactWorkspace({
         </div>
       </div>
     </aside>
+  );
+}
+
+function ArtifactParallelContribution({ groups }: { groups: ParallelGroupTrace[] }) {
+  const branchCount = groups.reduce((sum, group) => sum + group.branches.length, 0);
+  if (branchCount === 0) return null;
+  return (
+    <section className="artifact-parallel-contribution" aria-label="Parallel branch contribution">
+      <header>
+        <div>
+          <strong>Parallel contribution</strong>
+          <small>{branchCount} branches · {groups.reduce((sum, group) => sum + group.sources.length, 0)} sources</small>
+        </div>
+      </header>
+      <div className="artifact-parallel-quality">
+        {groups.map((group) => (
+          <div key={group.id} className="parallel-quality-strip">
+            {typeof group.coverageScore === "number" && <span className="parallel-quality-pill">{Math.round(group.coverageScore * 100)}% coverage</span>}
+            <span className={`parallel-quality-pill ${group.missingCoverage.length ? "warning" : ""}`}>
+              {group.missingCoverage.length ? `${group.missingCoverage.length} missing` : "complete"}
+            </span>
+            <span className={`parallel-quality-pill ${group.conflictCount ? "warning" : ""}`}>
+              {group.conflictCount ? `${group.conflictCount} conflicts` : "no conflicts"}
+            </span>
+            {group.missingCoverage.length > 0 && <small>Missing: {group.missingCoverage.join(", ")}</small>}
+            {group.conflicts.slice(0, 2).map((conflict) => (
+              <small key={`${group.id}-${conflict.field}-${conflict.subject || "default"}`}>
+                Conflict: {conflict.field}{conflict.subject ? `/${conflict.subject}` : ""} · {conflict.values.join(" vs ")}
+              </small>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div className="artifact-parallel-branches">
+        {groups.flatMap((group) => group.branches).map((branch) => (
+          <details key={branch.id} className={`artifact-parallel-branch ${branch.status}`}>
+            <summary>
+              <span>{branch.title}</span>
+              <small>{branch.status} · {branch.sourceCount} sources</small>
+            </summary>
+            {branch.sources.length > 0 ? (
+              <div className="parallel-source-chips">
+                {branch.sources.slice(0, 8).map((source, index) => source.url ? (
+                  <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.title || source.provider || `Source ${index + 1}`}</a>
+                ) : (
+                  <span key={`${source.title || source.provider}-${index}`}>{source.title || source.provider || `Source ${index + 1}`}</span>
+                ))}
+              </div>
+            ) : (
+              <p>No branch sources were recorded.</p>
+            )}
+            {branch.error && <p className="artifact-parallel-error">{branch.error}</p>}
+          </details>
+        ))}
+      </div>
+    </section>
   );
 }
 

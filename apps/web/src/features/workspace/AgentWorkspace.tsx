@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { ApiClient, ApiError } from "../../api/client";
 import { userFacingErrorMessage } from "../../api/errorMessages";
-import type { AgentActivity, AgentActivityItem, Asset, AuthSession, ConnectorPolicy, ConnectorStatus, Job, JobEvent, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill, TaskInboxItem } from "../../types";
+import type { AgentActivity, AgentActivityItem, Asset, AuthSession, ConnectorPolicy, ConnectorStatus, Job, JobEvent, JobStatus, MemoryItem, MemoryMaintenanceAction, MemorySettings, Message, MessageSearchResult, PersonalizationSettings, ReadinessStatus, RuntimeEvent, Session, Skill, TaskInboxItem } from "../../types";
 import { readSSEStream } from "../../lib/sse";
 import { sessionTitle } from "../../lib/sessionTitle";
 import { AuthPage, type AuthMode } from "../auth/AuthPage";
@@ -106,7 +106,6 @@ function applyMemorySettingsPatch(
 }
 
 const terminalJobs = new Set(["succeeded", "failed", "cancelled"]);
-const terminalRuntimeEvents = new Set(["done", "error", "cancelled"]);
 const serviceStatusPollMs = 10_000;
 const activeJobStorageKey = "agentapi.activeJob";
 const recentSkillsStorageKey = "agentapi.recentSkills";
@@ -376,7 +375,7 @@ export function AgentWorkspace() {
   const activeResourceSearch = resourceSearch[activeResourceTab];
   const activeResourceVisibleCount = resourceVisibleCount[activeResourceTab];
   const selectedWorkspaceArtifact = artifacts.find((asset) => asset.id === artifactWorkspaceAssetId) || null;
-  const selectedWorkspaceJob = jobs.find((job) => job.id === jobWorkspaceJobId) || (jobWorkspaceJobId ? {
+  const selectedWorkspaceJobBase = jobs.find((job) => job.id === jobWorkspaceJobId) || (jobWorkspaceJobId ? {
     id: jobWorkspaceJobId,
     session_id: sessionId,
     type: "job",
@@ -385,6 +384,7 @@ export function AgentWorkspace() {
     created_at: "",
     updated_at: ""
   } : null);
+  const selectedWorkspaceJob = selectedWorkspaceJobBase ? jobWithTerminalEvents(selectedWorkspaceJobBase, jobEvents) : null;
   const {
     liveStatus,
     liveUserDraft,
@@ -659,12 +659,13 @@ export function AgentWorkspace() {
     if (!selectedJobId) return;
     const job = jobs.find((item) => item.id === selectedJobId);
     if (!job) return;
-    if (terminalJobs.has(job.status)) {
+    const status = terminalJobStatusFromEvents(jobEvents, selectedJobId) || job.status;
+    if (terminalJobs.has(status)) {
       clearActiveJob(selectedJobId);
       return;
     }
     saveActiveJob(job.id, job.session_id || sessionId);
-  }, [jobs, selectedJobId, sessionId]);
+  }, [jobEvents, jobs, selectedJobId, sessionId]);
 
   useEffect(() => {
     const node = messagesRef.current;
@@ -1975,7 +1976,7 @@ export function AgentWorkspace() {
     if (!item) return;
     const targetSessionId = event.session_id || fallbackSessionId;
     if (!targetSessionId) return;
-    const terminal = terminalRuntimeEvents.has(event.type);
+    const terminal = Boolean(terminalJobStatusFromRuntimeEvent(event));
     setAgentActivity((current) => {
       const sameActivity = current && current.session_id === targetSessionId;
       const items = sameActivity ? current.items : [];
@@ -2033,9 +2034,9 @@ export function AgentWorkspace() {
       setJobEvents(events);
       events.forEach((event) => recordAgentActivity(event.event, event.session_id || sessionId, event.id));
       lastJobEventRef.current = events[events.length - 1]?.id || "";
-      const terminal = events.find((event) => terminalRuntimeEvents.has(event.type));
+      const terminal = latestTerminalJobEvent(events, jobId);
       if (terminal) {
-        finishJobStream(jobId, terminal.event);
+        finishJobStream(jobId, terminal.status, terminal.event, terminal.created_at);
         return;
       }
     } catch (error) {
@@ -2058,8 +2059,9 @@ export function AgentWorkspace() {
         if (id) lastJobEventRef.current = id;
         setJobEvents((current) => appendJobEvent(current, { id: id || `${Date.now()}`, job_id: jobId, type: event.type, event, created_at: new Date().toISOString() }));
         recordAgentActivity(event, event.session_id || sessionId, id);
-        if (terminalRuntimeEvents.has(event.type)) {
-          finishJobStream(jobId, event);
+        const terminalStatus = terminalJobStatusFromRuntimeEvent(event);
+        if (terminalStatus) {
+          finishJobStream(jobId, terminalStatus, event);
         }
       });
       if (jobStreamAbortRef.current === abort) jobStreamAbortRef.current = null;
@@ -2076,7 +2078,7 @@ export function AgentWorkspace() {
     }
   }
 
-  function finishJobStream(jobId: string, event: RuntimeEvent) {
+  function finishJobStream(jobId: string, status: JobStatus, event?: RuntimeEvent, createdAt?: string) {
     jobStreamClosedRef.current = true;
     jobStreamAbortRef.current?.abort();
     jobStreamAbortRef.current = null;
@@ -2084,19 +2086,37 @@ export function AgentWorkspace() {
     setJobStreamStatus("idle");
     setJobStreamNotice("");
     clearActiveJob(jobId);
+    markJobTerminal(jobId, status, event, createdAt);
     api.jobs(sessionId || undefined).then(setJobs).catch(() => {});
-    const targetSession = event.session_id || sessionId;
+    const targetSession = event?.session_id || sessionId;
     if (targetSession) refreshSessionData(targetSession, { revealNewArtifacts: true }).catch(() => {});
   }
 
   function scheduleJobReconnect(jobId: string) {
     clearJobReconnectTimer();
-    if (terminalJobs.has(jobs.find((job) => job.id === jobId)?.status || "")) {
+    const knownStatus = terminalJobStatusFromEvents(jobEvents, jobId) || jobs.find((job) => job.id === jobId)?.status || "";
+    if (terminalJobs.has(knownStatus)) {
       clearActiveJob(jobId);
       setJobStreamStatus("idle");
       setJobStreamNotice("");
       return;
     }
+    api.jobs(sessionId || undefined).then((jobList) => {
+      if (jobStreamClosedRef.current || activeJobStreamIdRef.current !== jobId) return;
+      setJobs(jobList);
+      const freshStatus = jobList.find((job) => job.id === jobId)?.status || "";
+      if (terminalJobs.has(freshStatus)) {
+        clearActiveJob(jobId);
+        setJobStreamStatus("idle");
+        setJobStreamNotice("");
+        return;
+      }
+      armJobReconnect(jobId);
+    }).catch(() => armJobReconnect(jobId));
+  }
+
+  function armJobReconnect(jobId: string) {
+    if (jobStreamClosedRef.current || activeJobStreamIdRef.current !== jobId) return;
     const delay = Math.min(jobReconnectMaxMs, jobReconnectBaseMs * 2 ** jobReconnectAttemptRef.current);
     jobReconnectAttemptRef.current += 1;
     jobReconnectTimerRef.current = window.setTimeout(() => {
@@ -2104,6 +2124,20 @@ export function AgentWorkspace() {
       if (jobStreamClosedRef.current || activeJobStreamIdRef.current !== jobId) return;
       openJobStream(jobId, true);
     }, delay);
+  }
+
+  function markJobTerminal(jobId: string, status: JobStatus, event?: RuntimeEvent, createdAt?: string) {
+    const timestamp = createdAt || new Date().toISOString();
+    setJobs((current) => current.map((job) => {
+      if (job.id !== jobId) return job;
+      return {
+        ...job,
+        status,
+        error: job.error || event?.error,
+        updated_at: timestamp,
+        finished_at: job.finished_at || timestamp
+      };
+    }));
   }
 
   function clearJobReconnectTimer() {
@@ -2368,6 +2402,7 @@ export function AgentWorkspace() {
                 <ArtifactWorkspace
                   className={artifactWorkspaceVisible ? "visible" : ""}
                   artifact={selectedWorkspaceArtifact}
+                  jobEvents={jobEvents.filter((event) => event.job_id === selectedWorkspaceArtifact?.job_id)}
                   memoryBusy={assetMemoryBusy}
                   memoryDisabled={!memorySettings.capture_enabled}
                   onClose={() => setArtifactWorkspaceOpen(false)}
@@ -2743,6 +2778,14 @@ function agentActivityTitle(event: RuntimeEvent, data: Record<string, unknown> |
     const child = recordFromUnknown(data?.child_job);
     return ["Started child job", stringFromUnknown(child?.id || data?.child_job_id)].filter(Boolean).join(" · ");
   }
+  if (event.type.startsWith("deep_agent_parallel_")) {
+    const branch = stringFromUnknown(data?.branch_title || data?.branch_id);
+    const group = stringFromUnknown(data?.parallel_group_id);
+    const label = event.type
+      .replace(/^deep_agent_parallel_/, "")
+      .replace(/_/g, " ");
+    return ["Parallel", label, branch || group].filter(Boolean).join(" · ");
+  }
   if (event.type.startsWith("deep_agent_action_")) {
     const step = stringFromUnknown(data?.step_title || data?.step_id) || "Action";
     const tool = stringFromUnknown(data?.skill_name || data?.tool);
@@ -2878,6 +2921,51 @@ function composerToolStatus(toolId: ComposerToolID): string {
 function appendJobEvent(events: JobEvent[], event: JobEvent): JobEvent[] {
   if (events.some((item) => item.id === event.id)) return events;
   return [...events, event];
+}
+
+function jobWithTerminalEvents(job: Job, events: JobEvent[]): Job {
+  const terminal = latestTerminalJobEvent(events, job.id);
+  if (!terminal || terminal.status === job.status) return job;
+  return {
+    ...job,
+    status: terminal.status,
+    error: job.error || terminal.event.error,
+    updated_at: terminal.created_at || job.updated_at,
+    finished_at: job.finished_at || terminal.created_at
+  };
+}
+
+function terminalJobStatusFromEvents(events: JobEvent[], jobId?: string): JobStatus | "" {
+  return latestTerminalJobEvent(events, jobId)?.status || "";
+}
+
+function latestTerminalJobEvent(events: JobEvent[], jobId?: string): { status: JobStatus; event: RuntimeEvent; created_at: string } | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (jobId && event.job_id !== jobId) continue;
+    const status = terminalJobStatusFromRuntimeEvent(event.event);
+    if (!status) continue;
+    return { status, event: event.event, created_at: event.created_at };
+  }
+  return null;
+}
+
+function terminalJobStatusFromRuntimeEvent(event?: RuntimeEvent): JobStatus | "" {
+  const jobStatus = event?.job?.status || "";
+  if (terminalJobs.has(jobStatus)) return jobStatus as JobStatus;
+  switch (event?.type) {
+    case "done":
+    case "workflow_run_succeeded":
+      return "succeeded";
+    case "error":
+    case "workflow_run_failed":
+      return "failed";
+    case "cancelled":
+    case "workflow_run_cancelled":
+      return "cancelled";
+    default:
+      return "";
+  }
 }
 
 function loadActiveJob(): { jobId: string; sessionId: string } | null {

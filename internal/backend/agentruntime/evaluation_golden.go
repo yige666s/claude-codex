@@ -390,26 +390,7 @@ func goldenJudgeSystemPrompt() string {
 const DefaultGoldenJudgePromptVersion = "ragas-json-v1"
 
 func goldenJudgeSystemPromptForVersion(version string) string {
-	return `You are an impartial RAG evaluation judge.
-Score the candidate answer from 0 to 1 on:
-- answer_correctness: does it cover the expected answer/facts?
-- answer_relevancy: does it answer the query?
-- faithfulness: is it supported by retrieved evidence?
-- context_precision: is retrieved evidence relevant?
-- context_recall: did retrieval cover gold evidence/facts?
-
-Return only valid JSON. Do not use Markdown, prose, code fences, or explanations.
-The JSON object must match this shape:
-{
-  "answer_correctness": 0.0,
-  "answer_relevancy": 0.0,
-  "faithfulness": 0.0,
-  "context_precision": 0.0,
-  "context_recall": 0.0,
-  "findings": [
-    {"severity": "warning", "code": "short_code", "message": "short reason"}
-  ]
-}`
+	return PromptGoldenJudgeSystem
 }
 
 func (j PlannerGoldenJudge) systemPrompt() string {

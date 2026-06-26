@@ -23,6 +23,8 @@ func (f *Factory) CreateProvider(cfg Config) (Provider, error) {
 		return NewAnthropicProvider(cfg)
 	case "openai", "gpt":
 		return NewOpenAIProvider(cfg)
+	case "deepseek":
+		return NewDeepSeekProvider(cfg)
 	case "nvidia", "nim":
 		return NewNVIDIAProvider(cfg)
 	case "custom", "openai-compatible", "baseurl":
@@ -45,7 +47,7 @@ func (f *Factory) CreateProvider(cfg Config) (Provider, error) {
 
 // ListProviders returns a list of supported providers
 func (f *Factory) ListProviders() []string {
-	return []string{"anthropic", "openai", "nvidia", "qwen", "gemini", "bedrock", "vertex", "shortapi", "custom"}
+	return []string{"anthropic", "openai", "deepseek", "nvidia", "qwen", "gemini", "bedrock", "vertex", "shortapi", "custom"}
 }
 
 // GetProviderInfo returns information about a specific provider
@@ -58,6 +60,9 @@ func (f *Factory) GetProviderInfo(providerName string) (string, []string, error)
 		return p.Name(), p.SupportedModels(), nil
 	case "openai", "gpt":
 		p := &OpenAIProvider{}
+		return p.Name(), p.SupportedModels(), nil
+	case "deepseek":
+		p := &DeepSeekProvider{}
 		return p.Name(), p.SupportedModels(), nil
 	case "nvidia", "nim":
 		p := &NVIDIAProvider{}
@@ -94,6 +99,7 @@ func (f *Factory) ValidateConfig(cfg Config) error {
 	provider := strings.ToLower(cfg.Provider)
 	if provider != "anthropic" && provider != "claude" &&
 		provider != "openai" && provider != "gpt" &&
+		provider != "deepseek" &&
 		provider != "nvidia" && provider != "nim" &&
 		provider != "custom" && provider != "openai-compatible" && provider != "baseurl" &&
 		provider != "qwen" && provider != "dashscope" && provider != "aliyun" &&
@@ -132,6 +138,13 @@ func (f *Factory) DefaultConfig(providerName string) (Config, error) {
 			Provider: "openai",
 			BaseURL:  "https://api.openai.com/v1",
 			Model:    "gpt-4o",
+			Timeout:  600,
+		}, nil
+	case "deepseek":
+		return Config{
+			Provider: "deepseek",
+			BaseURL:  defaultDeepSeekBaseURL,
+			Model:    defaultDeepSeekModel,
 			Timeout:  600,
 		}, nil
 	case "nvidia", "nim":

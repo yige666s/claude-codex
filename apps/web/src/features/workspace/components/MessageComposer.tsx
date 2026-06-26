@@ -98,17 +98,6 @@ export function MessageComposer({
         <ResponseTimingBadges timing={responseTiming} formatNumber={formatNumber} />
         <PendingAttachments attachments={pendingAttachments} onRemove={onRemovePendingAttachment} />
         <div className="composer-row">
-          <ComposerUploadButton
-            inputRef={attachmentInputRef}
-            uploading={uploading}
-            disabled={!canUseText}
-            accept={acceptedAttachmentTypes}
-            attachments={attachments}
-            placement={composerHasMessages ? "above" : "below"}
-            onUpload={onUploadAttachment}
-            onAddExistingAttachment={onAddExistingAttachment}
-            formatTime={formatTime}
-          />
           <Textarea
             ref={composerInputRef as Ref<HTMLTextAreaElement>}
             value={draft}
@@ -119,15 +108,29 @@ export function MessageComposer({
             disabled={!canUseText}
             rows={1}
           />
-          <div className="composer-actions">
-            <LiveVoiceControls
-              liveStatus={liveStatus}
-              busyChat={busyChat}
-              sessionId={sessionId}
-              onToggleLive={onToggleLive}
-              onPrewarmLive={onPrewarmLive}
+          <div className="composer-control-row">
+            <ComposerUploadButton
+              inputRef={attachmentInputRef}
+              uploading={uploading}
+              disabled={!canUseText}
+              accept={acceptedAttachmentTypes}
+              attachments={attachments}
+              placement={composerHasMessages ? "above" : "below"}
+              onUpload={onUploadAttachment}
+              onAddExistingAttachment={onAddExistingAttachment}
+              formatTime={formatTime}
             />
-            <SendButton busyChat={busyChat} canSend={canSend} onSend={onSendMessage} onCancel={onCancelChat} />
+            <div className="composer-control-spacer" aria-hidden="true" />
+            <div className="composer-actions">
+              <LiveVoiceControls
+                liveStatus={liveStatus}
+                busyChat={busyChat}
+                sessionId={sessionId}
+                onToggleLive={onToggleLive}
+                onPrewarmLive={onPrewarmLive}
+              />
+              <SendButton busyChat={busyChat} canSend={canSend} onSend={onSendMessage} onCancel={onCancelChat} />
+            </div>
           </div>
         </div>
       </div>

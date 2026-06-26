@@ -108,19 +108,56 @@ func TestLLMGovernanceConfigModelPatchCanSwitchToNVIDIA(t *testing.T) {
 	}
 }
 
-func TestLLMGovernanceConfigLoadResetsRoutesForProviderSwitch(t *testing.T) {
+func TestLLMGovernanceConfigModelPatchCanSwitchToDeepSeek(t *testing.T) {
+	model := "deepseek-chat"
+	updated, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{
+		Provider:       "nvidia",
+		Model:          "nvidia/nemotron-3-ultra-550b-a55b",
+		ModelRoutes:    "default=nvidia/nemotron-3-ultra-550b-a55b,chat=nvidia/nemotron-3-ultra-550b-a55b,chat:complex=nvidia/nemotron-3-ultra-550b-a55b",
+		VertexLocation: "us-central1",
+	}, LLMGovernanceConfigPatch{Model: &model})
+	if err != nil {
+		t.Fatalf("apply deepseek model patch: %v", err)
+	}
+	if updated.Provider != "deepseek" || updated.Model != model || updated.VertexLocation != "" {
+		t.Fatalf("unexpected deepseek runtime model config: %#v", updated)
+	}
+	if updated.ModelRoutes != "default=deepseek-chat,chat=deepseek-chat,chat:complex=deepseek-chat" {
+		t.Fatalf("model routes = %q", updated.ModelRoutes)
+	}
+}
+
+func TestLLMGovernanceConfigLoadPreservesCrossProviderRoutes(t *testing.T) {
 	manager := NewLLMGovernanceConfigManager(LLMGovernanceConfig{}, &memoryRuntimeConfigStore{
 		config: LLMGovernanceConfig{
-			Provider:    "shortapi",
-			Model:       "google/gemini-3.1-pro-preview",
-			ModelRoutes: "default=google/gemini-3.1-pro-preview,chat=gemini-2.5-flash,chat:complex=gemini-2.5-pro",
+			Provider:    "nvidia",
+			Model:       "nvidia/nemotron-3-ultra-550b-a55b",
+			ModelRoutes: "default=nvidia/nemotron-3-ultra-550b-a55b,chat=deepseek-chat,chat:complex=deepseek-reasoner,skill=nvidia/nemotron-3-ultra-550b-a55b",
 		},
 	})
 	if err := manager.Load(context.Background()); err != nil {
 		t.Fatalf("load config: %v", err)
 	}
 	got := manager.Get()
-	want := "default=google/gemini-3.1-pro-preview,chat=google/gemini-3.1-pro-preview,chat:complex=google/gemini-3.1-pro-preview"
+	want := "default=nvidia/nemotron-3-ultra-550b-a55b,chat=deepseek-chat,chat:complex=deepseek-reasoner,skill=nvidia/nemotron-3-ultra-550b-a55b"
+	if got.ModelRoutes != want {
+		t.Fatalf("model routes = %q, want %q", got.ModelRoutes, want)
+	}
+}
+
+func TestLLMGovernanceConfigLoadResetsUnknownRouteModels(t *testing.T) {
+	manager := NewLLMGovernanceConfigManager(LLMGovernanceConfig{}, &memoryRuntimeConfigStore{
+		config: LLMGovernanceConfig{
+			Provider:    "nvidia",
+			Model:       "nvidia/nemotron-3-ultra-550b-a55b",
+			ModelRoutes: "default=nvidia/nemotron-3-ultra-550b-a55b,chat=removed-model",
+		},
+	})
+	if err := manager.Load(context.Background()); err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	got := manager.Get()
+	want := "default=nvidia/nemotron-3-ultra-550b-a55b,chat=nvidia/nemotron-3-ultra-550b-a55b"
 	if got.ModelRoutes != want {
 		t.Fatalf("model routes = %q, want %q", got.ModelRoutes, want)
 	}
@@ -153,6 +190,49 @@ func TestLLMGovernanceConfigRejectsMismatchedVertexLocation(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected mismatched location error")
+	}
+}
+
+func TestLLMGovernanceConfigPatchUpdatesAPIRateLimit(t *testing.T) {
+	limit := 25
+	updated, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{
+		APIRateLimitPerMinute: 60,
+	}, LLMGovernanceConfigPatch{APIRateLimitPerMinute: &limit})
+	if err != nil {
+		t.Fatalf("apply api rate limit patch: %v", err)
+	}
+	if updated.APIRateLimitPerMinute != 25 {
+		t.Fatalf("api rate limit = %d, want 25", updated.APIRateLimitPerMinute)
+	}
+	status := llmGovernanceConfigStatusMap(updated)
+	if status["api_rate_limit_per_minute"] != 25 {
+		t.Fatalf("status api_rate_limit_per_minute = %#v", status["api_rate_limit_per_minute"])
+	}
+}
+
+func TestLLMGovernanceConfigRejectsNegativeAPIRateLimit(t *testing.T) {
+	limit := -1
+	if _, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{}, LLMGovernanceConfigPatch{APIRateLimitPerMinute: &limit}); err == nil {
+		t.Fatal("expected negative api rate limit error")
+	}
+}
+
+func TestLLMGovernanceConfigMissingAPIRateLimitPayloadUsesDefault(t *testing.T) {
+	loaded := llmGovernanceConfigFromPayload(llmGovernanceConfigPayload{Model: "deepseek-chat"})
+	defaults := LLMGovernanceConfig{Model: "deepseek-chat", APIRateLimitPerMinute: 60}
+	merged := mergeLLMGovernanceConfigDefaults(defaults, loaded)
+	if merged.APIRateLimitPerMinute != 60 {
+		t.Fatalf("api rate limit = %d, want default 60", merged.APIRateLimitPerMinute)
+	}
+}
+
+func TestLLMGovernanceConfigZeroAPIRateLimitPayloadIsExplicit(t *testing.T) {
+	zero := 0
+	loaded := llmGovernanceConfigFromPayload(llmGovernanceConfigPayload{Model: "deepseek-chat", APIRateLimitPerMinute: &zero})
+	defaults := LLMGovernanceConfig{Model: "deepseek-chat", APIRateLimitPerMinute: 60}
+	merged := mergeLLMGovernanceConfigDefaults(defaults, loaded)
+	if merged.APIRateLimitPerMinute != 0 {
+		t.Fatalf("api rate limit = %d, want explicit zero", merged.APIRateLimitPerMinute)
 	}
 }
 

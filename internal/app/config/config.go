@@ -29,7 +29,7 @@ type MCPServerConfig struct {
 type Config struct {
 	SchemaVersion  int               `json:"schema_version"`
 	Backend        string            `json:"backend"`
-	Provider       string            `json:"provider,omitempty"` // LLM provider: anthropic, openai, qwen, gemini, vertex, shortapi, custom
+	Provider       string            `json:"provider,omitempty"` // LLM provider: anthropic, openai, deepseek, qwen, gemini, vertex, shortapi, custom
 	Model          string            `json:"model"`
 	PermissionMode string            `json:"permission_mode"`
 	Theme          string            `json:"theme"`

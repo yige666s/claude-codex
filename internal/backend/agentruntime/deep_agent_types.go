@@ -315,6 +315,28 @@ type DeepAgentActionResult struct {
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
+type DeepAgentParallelBranchSpec struct {
+	ID              string         `json:"id"`
+	Title           string         `json:"title"`
+	Task            string         `json:"task"`
+	Tool            string         `json:"tool,omitempty"`
+	AllowedTools    []string       `json:"allowed_tools,omitempty"`
+	SuccessCriteria []string       `json:"success_criteria,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+}
+
+type DeepAgentParallelBranchResult struct {
+	ID        string                 `json:"id"`
+	Title     string                 `json:"title,omitempty"`
+	Status    string                 `json:"status"`
+	Output    string                 `json:"output,omitempty"`
+	Error     string                 `json:"error,omitempty"`
+	Sources   []DeepAgentSourceRef   `json:"sources,omitempty"`
+	Artifacts []DeepAgentArtifactRef `json:"artifacts,omitempty"`
+	ToolCalls []DeepAgentToolCallRef `json:"tool_calls,omitempty"`
+	Metadata  map[string]any         `json:"metadata,omitempty"`
+}
+
 type DeepAgentProgress struct {
 	MadeProgress bool   `json:"made_progress"`
 	StepDone     bool   `json:"step_done"`

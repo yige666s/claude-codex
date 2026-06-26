@@ -54,23 +54,5 @@ func structuredRepairPrompt(schema StructuredSchema, original string, failure er
 	if strings.TrimSpace(contextText) == "" {
 		contextText = "(none)"
 	}
-	return fmt.Sprintf(`You are repairing a failed structured JSON output for a production Agent runtime.
-
-Return ONLY one corrected JSON value. Do not explain. Do not answer the user task. Preserve the original intent and only fix fields needed to satisfy the schema.
-
-Schema name: %s
-Schema version: %s
-
-JSON schema:
-%s
-
-Validation failure:
-%s
-
-Additional context:
-%s
-
-Original output:
-%s
-`, firstNonEmptyString(schema.Name, "structured_output"), firstNonEmptyString(schema.Version, "v1"), string(schemaJSON), strings.TrimSpace(fmt.Sprint(failure)), contextText, strings.TrimSpace(original))
+	return fmt.Sprintf(PromptStructuredJSONRepairTemplate, firstNonEmptyString(schema.Name, "structured_output"), firstNonEmptyString(schema.Version, "v1"), string(schemaJSON), strings.TrimSpace(fmt.Sprint(failure)), contextText, strings.TrimSpace(original))
 }

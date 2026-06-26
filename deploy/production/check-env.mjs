@@ -85,6 +85,8 @@ if (provider === "vertex") {
   checkAny("llm", "Gemini key", ["GEMINI_API_KEY", "GOOGLE_API_KEY", "AGENT_API_LLM_API_KEY"]);
 } else if (provider === "openai") {
   checkAny("llm", "OpenAI key", ["OPENAI_API_KEY", "AGENT_API_LLM_API_KEY"]);
+} else if (provider === "deepseek") {
+  checkAny("llm", "DeepSeek key", ["DEEPSEEK_API_KEY", "AGENT_API_LLM_API_KEY"]);
 } else if (provider === "nvidia" || provider === "nim") {
   checkAny("llm", "NVIDIA key", ["NVIDIA_API_KEY", "NGC_API_KEY", "AGENT_API_LLM_API_KEY", "AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"]);
 } else if (provider === "shortapi" || provider === "short") {

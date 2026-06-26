@@ -173,6 +173,17 @@ func (s *Server) SetLLMGovernanceConfigManager(manager *LLMGovernanceConfigManag
 	s.llmConfig = manager
 }
 
+func (s *Server) SetAPIRateLimitPerMinute(limit int) error {
+	if s == nil || s.limiter == nil {
+		return nil
+	}
+	updater, ok := s.limiter.(interface{ SetLimit(int) error })
+	if !ok {
+		return nil
+	}
+	return updater.SetLimit(limit)
+}
+
 func (s *Server) SetAdminToken(token string) {
 	if s == nil {
 		return
@@ -887,9 +898,16 @@ func (s *Server) handleAdminOpsUpdateLLMConfig(w http.ResponseWriter, r *http.Re
 		writeJSONError(w, err)
 		return
 	}
-	if _, err := s.llmConfig.Update(r.Context(), patch); err != nil {
+	updated, err := s.llmConfig.Update(r.Context(), patch)
+	if err != nil {
 		writeJSONError(w, err)
 		return
+	}
+	if patch.APIRateLimitPerMinute != nil {
+		if err := s.SetAPIRateLimitPerMinute(updated.APIRateLimitPerMinute); err != nil {
+			writeJSONError(w, err)
+			return
+		}
 	}
 	s.auditEvent(r, "admin_llm_config_update", actor, map[string]any{
 		"config": s.llmConfig.StatusMap(),

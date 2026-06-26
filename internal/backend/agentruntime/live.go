@@ -414,7 +414,7 @@ func (s *VertexLiveService) xaiSessionUpdateMessage(ctx context.Context, req Liv
 	config := normalizeLiveConfig(s.config)
 	instructions := strings.TrimSpace(s.liveSystemInstruction(ctx, req))
 	if instructions == "" {
-		instructions = "You are a helpful live voice assistant."
+		instructions = PromptLiveDefaultAssistantInstruction
 	}
 	if language := strings.TrimSpace(config.LanguageCode); language != "" {
 		instructions = strings.TrimSpace(instructions + "\n\nPreferred response language hint: " + language + ".")
@@ -472,7 +472,7 @@ func (s *VertexLiveService) liveToolFunctionDeclarations(ctx context.Context, re
 func liveRunSkillFunctionDeclaration() map[string]any {
 	return map[string]any{
 		"name":        "run_skill",
-		"description": "Run one published backend skill for the current user session. Only call this when the user has explicitly and unambiguously requested it in their current turn — a clear slash command (e.g. /vertex-image-artifact) or a direct, unambiguous spoken request. Never call this proactively, speculatively, or based on skill trigger keywords in the system prompt. Do not call this before the user has spoken.",
+		"description": PromptLiveRunSkillFunctionDescription,
 		"parameters": map[string]any{
 			"type": "OBJECT",
 			"properties": map[string]any{

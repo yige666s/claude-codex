@@ -517,7 +517,8 @@ type RuntimeConfig struct {
 	CacheMetrics          *CacheMetrics `json:"-"`
 	CacheDefaultTTL       time.Duration
 	CacheFailOpen         bool
-	Logger                *slog.Logger `json:"-"`
+	LLMGovernanceProvider func() LLMGovernanceConfig `json:"-"`
+	Logger                *slog.Logger               `json:"-"`
 }
 
 type EpisodicMemoryConfig struct {

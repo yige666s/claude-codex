@@ -34,17 +34,28 @@ func BuildCacheStore(backend, redisURL, prefix string, ttl time.Duration) (agent
 }
 
 func BuildRateLimiter(backend, redisURL string, limit int, window time.Duration, redisFailOpen bool) agentruntime.RateLimitPolicy {
+	limiter, err := BuildRateLimiterWithError(backend, redisURL, limit, window, redisFailOpen)
+	if err != nil {
+		logFatalf("init redis rate limiter: %v", err)
+	}
+	return limiter
+}
+
+func BuildRateLimiterWithError(backend, redisURL string, limit int, window time.Duration, redisFailOpen bool) (agentruntime.RateLimitPolicy, error) {
+	if limit <= 0 {
+		return agentruntime.NoopRateLimiter{}, nil
+	}
 	switch strings.ToLower(strings.TrimSpace(backend)) {
 	case "redis":
 		limiter, err := agentruntime.NewRedisRateLimiter(redisURL, limit, window, redisFailOpen)
 		if err != nil {
-			logFatalf("init redis rate limiter: %v", err)
+			return nil, err
 		}
-		return limiter
+		return limiter, nil
 	case "gateway", "none", "off", "disabled":
-		return agentruntime.NoopRateLimiter{}
+		return agentruntime.NoopRateLimiter{}, nil
 	default:
-		return agentruntime.NewRateLimiter(limit, window)
+		return agentruntime.NewRateLimiter(limit, window), nil
 	}
 }
 

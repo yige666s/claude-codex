@@ -27,6 +27,7 @@ export function llmConfigDraftFromConfig(config: LLMGovernanceConfig): Record<st
     "skill_timeout_ms",
     "daily_token_quota",
     "daily_request_quota",
+    "api_rate_limit_per_minute",
     "daily_cost_quota_usd",
     "input_cost_per_million",
     "output_cost_per_million",
@@ -37,7 +38,7 @@ export function llmConfigDraftFromConfig(config: LLMGovernanceConfig): Record<st
 }
 
 export function llmConfigFromDraft(draft: Record<string, string>): LLMGovernanceConfig {
-  type IntegerLLMConfigKey = "max_attempts" | "retry_backoff_ms" | "chat_timeout_ms" | "skill_timeout_ms" | "daily_token_quota" | "daily_request_quota" | "failure_threshold" | "circuit_cooldown_seconds";
+  type IntegerLLMConfigKey = "max_attempts" | "retry_backoff_ms" | "chat_timeout_ms" | "skill_timeout_ms" | "daily_token_quota" | "daily_request_quota" | "api_rate_limit_per_minute" | "failure_threshold" | "circuit_cooldown_seconds";
   type DecimalLLMConfigKey = "daily_cost_quota_usd" | "input_cost_per_million" | "output_cost_per_million";
   const integerKeys: IntegerLLMConfigKey[] = [
     "max_attempts",
@@ -46,6 +47,7 @@ export function llmConfigFromDraft(draft: Record<string, string>): LLMGovernance
     "skill_timeout_ms",
     "daily_token_quota",
     "daily_request_quota",
+    "api_rate_limit_per_minute",
     "failure_threshold",
     "circuit_cooldown_seconds"
   ];

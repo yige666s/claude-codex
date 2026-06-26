@@ -1603,7 +1603,7 @@ func (r *Runtime) connectorContextPrompt(ctx context.Context, req ChatRequest) s
 	if len(lines) == 0 {
 		return ""
 	}
-	return "Selected external connector context:\n" + strings.Join(lines, "\n") + "\nThese connector accounts are OAuth-authorized and available for this turn, either because the user selected them or AgentAPI inferred them from the request. Listed mcp_tools are available as callable function tools using exactly those names. External connectors must be used through their MCP tools unless a built-in adapter is explicitly listed. For data-dependent questions, call a listed MCP tool before answering; do not claim you cannot access the selected account when a callable MCP tool is listed. If mcp_server is unavailable or no MCP tools are listed, say the connector is connected by OAuth but not currently callable because its MCP server is not configured. Write actions must follow each connector policy, and write_with_review means draft first and wait for user approval."
+	return PromptConnectorContextHeader + "\n" + strings.Join(lines, "\n") + "\n" + PromptConnectorContextSuffix
 }
 
 func (r *Runtime) resolveConnectorContext(ctx context.Context, req ChatRequest) []string {

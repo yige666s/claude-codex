@@ -110,7 +110,12 @@ func ObjectStoreReadinessCheck(objects ObjectStore, prefix string) func(context.
 
 func RedisReadinessCheck(limiter RateLimitPolicy) func(context.Context) error {
 	return func(ctx context.Context) error {
+		if current, ok := limiter.(interface{ Current() RateLimitPolicy }); ok {
+			limiter = current.Current()
+		}
 		switch v := limiter.(type) {
+		case NoopRateLimiter:
+			return nil
 		case *RedisRateLimiter:
 			if v == nil {
 				return fmt.Errorf("redis limiter is not configured")

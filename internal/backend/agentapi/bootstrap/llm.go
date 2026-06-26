@@ -140,11 +140,26 @@ func NewGoldenJudge(primary LLMConfig, fallbackSpec, modelRoutes, judgeModel, pr
 func applyRoutedModelForScope(config LLMConfig, modelRoutes string, scope agentruntime.Scope) LLMConfig {
 	config.Model = RoutedModel(config.Model, modelRoutes, scope)
 	if option, ok := agentruntime.LLMModelOptionFor(config.Model); ok {
+		if option.Provider != "" && !strings.EqualFold(option.Provider, config.Provider) {
+			if providerConfig, ok := runtimeProviderLLMConfig(option.Provider, config.Timeout); ok {
+				config = providerConfig
+			} else {
+				config.Provider = option.Provider
+				config.APIKey = providerEnvAPIKey(option.Provider)
+				config.Token = providerEnvToken(option.Provider)
+				config.BaseURL = providerEnvBaseURL(option.Provider)
+				config.VertexLocation = ""
+			}
+		}
 		config.Provider = option.Provider
 		config.Model = option.ID
 		config.VertexLocation = option.VertexLocation
 	}
 	return config
+}
+
+func ApplyRoutedModelForScope(config LLMConfig, modelRoutes string, scope agentruntime.Scope) LLMConfig {
+	return applyRoutedModelForScope(config, modelRoutes, scope)
 }
 
 func ApplyRuntimeLLMConfig(base LLMConfig, runtimeConfig agentruntime.LLMGovernanceConfig) LLMConfig {
@@ -310,6 +325,8 @@ func providerEnvAPIKey(providerName string) string {
 		return startupconfig.FirstNonEmpty(os.Getenv("ANTHROPIC_API_KEY"), os.Getenv("CLAUDE_API_KEY"))
 	case "openai", "gpt", "custom", "openai-compatible", "baseurl":
 		return startupconfig.FirstNonEmpty(os.Getenv("OPENAI_API_KEY"), os.Getenv("AGENT_API_LLM_API_KEY"))
+	case "deepseek":
+		return startupconfig.FirstNonEmpty(os.Getenv("DEEPSEEK_API_KEY"), os.Getenv("AGENT_API_LLM_API_KEY"))
 	case "nvidia", "nim":
 		return startupconfig.FirstNonEmpty(os.Getenv("NVIDIA_API_KEY"), os.Getenv("NGC_API_KEY"), os.Getenv("AGENT_API_LLM_API_KEY"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_EMBEDDING_API_KEY"))
 	case "qwen", "dashscope", "aliyun":
@@ -349,6 +366,8 @@ func providerEnvBaseURL(providerName string) string {
 		return os.Getenv("ANTHROPIC_BASE_URL")
 	case "openai", "gpt":
 		return os.Getenv("OPENAI_BASE_URL")
+	case "deepseek":
+		return startupconfig.FirstNonEmpty(os.Getenv("DEEPSEEK_BASE_URL"), os.Getenv("AGENT_API_LLM_BASE_URL"))
 	case "nvidia", "nim":
 		return startupconfig.FirstNonEmpty(os.Getenv("NVIDIA_BASE_URL"), os.Getenv("NVIDIA_NIM_BASE_URL"), os.Getenv("AGENT_API_LLM_BASE_URL"))
 	case "qwen", "dashscope", "aliyun":

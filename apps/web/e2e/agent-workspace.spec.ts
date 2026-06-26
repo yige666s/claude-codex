@@ -260,23 +260,24 @@ test("shows streamed agent activity as a collapsible timeline", async ({ page })
   await page.getByRole("button", { name: "Send" }).click();
 
   const activity = page.locator(".agent-activity");
+  const activityHeader = activity.locator(":scope > summary");
   await expect(activity).toBeVisible();
   await expect(activity).toHaveClass(/complete/);
-  await expect(activity.locator("summary")).toContainText("Agent activity");
-  await expect(activity.locator("summary")).toContainText("Completed");
+  await expect(activityHeader).toContainText("Agent trace");
+  await expect(activityHeader).toContainText("Completed");
   await expect(activity.locator(".agent-activity-list")).toBeHidden();
 
-  await activity.locator("summary").click();
+  await activityHeader.click();
   await expect(page.getByText("Started plan-and-execute")).toBeVisible();
   await expect(page.getByText("Gather facts · WebSearch").first()).toBeVisible();
-  await expect(page.getByText("Web search returned source notes")).toBeVisible();
+  await expect(page.getByText("Web search returned source notes").first()).toBeVisible();
   await expect(activity.locator(".agent-activity-item.running")).toHaveCount(0);
   await expect(activity.locator(".agent-activity-item.default")).toHaveCount(0);
   await expect(activity.locator(".agent-activity-item.succeeded").first()).toBeVisible();
-  await expect.poll(async () => activity.locator(".agent-activity-list").evaluate((node) => {
+  await expect.poll(async () => activity.locator(".agent-activity-body").evaluate((node) => {
     const style = window.getComputedStyle(node);
-    return style.overflowY === "auto" && node.scrollHeight > node.clientHeight;
-  }), { message: "expanded agent activity should scroll internally when the event list is long" }).toBe(true);
+    return style.overflowY === "auto" && node.clientHeight > 0;
+  }), { message: "expanded agent activity body should be the visible scroll container" }).toBe(true);
 });
 
 test("opens a fresh chat after deleting the active session", async ({ page }) => {

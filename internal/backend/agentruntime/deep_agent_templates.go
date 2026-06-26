@@ -255,7 +255,7 @@ func templateStep(id, title, intent string, dependsOn []string, done, tool strin
 }
 
 func researchGatherTemplateStep() DeepAgentStep {
-	intent := "Use WebSearch first, then WebFetch for relevant source URLs when snippets are insufficient. Collect traceable URLs and factual notes for company/team, product features, pricing/availability, user reviews, competitors, and risks/uncertainty."
+	intent := PromptResearchGatherIntent
 	step := templateStep("gather", "收集来源和关键事实", intent, nil, "已收集可追溯来源，并覆盖 company/team、product features、pricing/availability、user reviews、competitors、risks/uncertainty", DeepAgentToolModeModel)
 	route := DeepAgentStepRoute{
 		StepID:          "gather",

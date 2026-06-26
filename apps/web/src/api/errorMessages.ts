@@ -31,7 +31,7 @@ function isCredentialConfigurationError(text: string): boolean {
 }
 
 function isProviderAccessError(text: string): boolean {
-  return /(vertex|gemini|openai|anthropic|qwen|dashscope).*(unauthorized|forbidden|permission denied|quota|billing|invalid api key|401|403)/i.test(text);
+  return /(vertex|gemini|openai|deepseek|anthropic|qwen|dashscope).*(unauthorized|forbidden|permission denied|quota|billing|invalid api key|401|403)/i.test(text);
 }
 
 function isSandboxError(text: string): boolean {

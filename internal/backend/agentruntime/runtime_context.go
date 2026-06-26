@@ -144,15 +144,7 @@ func formatTemporalContext(now time.Time, timezone string) string {
 	if timezone == "" {
 		timezone = now.Location().String()
 	}
-	return fmt.Sprintf(`<temporal-context>
-Current datetime: %s
-Current date: %s
-Current weekday: %s
-Timezone: %s
-Unix timestamp: %d
-
-Use this context for questions about today, tomorrow, yesterday, current date, current time, weekdays, deadlines, and relative dates. If the user does not specify another timezone, answer in this timezone.
-</temporal-context>`,
+	return fmt.Sprintf(PromptTemporalContextTemplate,
 		now.Format(time.RFC3339),
 		now.Format("2006-01-02"),
 		now.Weekday().String(),
@@ -170,12 +162,7 @@ func (r *Runtime) localeContext() string {
 		locale = "auto"
 	}
 	timezone := r.temporalLocation().String()
-	return fmt.Sprintf(`<locale-context>
-Locale: %s
-Timezone: %s
-Language policy: respond in the user's language unless they explicitly request another language. If the user's language is ambiguous, preserve the language used in the latest user message.
-Date and time formatting: use this timezone for relative dates when no other timezone is specified. Prefer unambiguous dates such as YYYY-MM-DD, and include the localized date wording when helpful.
-</locale-context>`, locale, timezone)
+	return fmt.Sprintf(PromptLocaleContextTemplate, locale, timezone)
 }
 
 func (r *Runtime) injectLocaleContext(session *state.Session) {
