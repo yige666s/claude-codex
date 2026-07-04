@@ -36,7 +36,7 @@ func (t *SandboxBashTool) Name() string {
 }
 
 func (t *SandboxBashTool) Description() string {
-	return "Execute an allowed skill shell command inside the configured sandbox container."
+	return "Execute an allowed skill shell command in the configured skill shell runtime."
 }
 
 func (t *SandboxBashTool) InputSchema() json.RawMessage {
@@ -117,6 +117,8 @@ func (t *SandboxBashTool) emitMetric(ctx context.Context, payload sandboxBashInp
 		data["image"] = runtime.config.Image
 		data["network"] = runtime.config.Network
 		data["from_pool"] = stats.FromPool
+	} else if runtime, ok := t.runtime.(*LocalSkillShellRuntime); ok && runtime != nil {
+		data["runner"] = "local"
 	} else {
 		data["runner"] = "sandbox"
 	}

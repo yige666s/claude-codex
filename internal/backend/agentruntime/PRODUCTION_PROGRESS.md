@@ -66,8 +66,9 @@ Delivered:
 - JSON event replay plus SSE replay through `GET /v1/jobs/{id}/events?stream=1&after_id=...`.
 - SSE resume supports both explicit `after_id` and standard `Last-Event-ID`; stream responses include SSE `id:` fields.
 - Embedded UI has a Jobs drawer with job list, event timeline replay, EventSource live updates, and job cancellation controls.
-- Normal chat submission now routes long-running work to jobs internally, based on skill metadata (`run_as_job`, `long_running`, `produces_artifacts`, `execution: job`) plus conservative artifact/long-task heuristics. C-end users no longer need to choose a separate Job action.
-- Online job event streams use in-process fanout after durable replay, with bounded per-client buffers and slow-client disconnect.
+- Normal chat submission streams synchronously from `POST /v1/sessions/{id}/messages`; ordinary messages are no longer converted into background jobs. Each synchronous stream gets a backend `run_id` and SSE `id:` events so clients can resume through `GET /v1/chat/runs/{run_id}/events?stream=1` after refresh/disconnect.
+- Long-running routes still use durable jobs only when `RouteChat` explicitly selects them, such as `plan_execute` or skills marked `run_as_job` / forked execution. Those requests return a short `job` event and continue through the Jobs panel/event stream.
+- Online job event streams replay durable job events, then use Redis Streams as a resumable realtime buffer when configured. Browser EventSource clients can reconnect with the native `Last-Event-ID` mechanism; deployments without Redis Stream buffering fall back to in-process fanout after durable replay.
 - Context cancellation for running jobs and final cancelled status where applicable.
 - Generated artifacts carry `job_id` when created inside a job.
 - User export/delete/session delete/retention cleanup include job and job event data.
@@ -79,6 +80,8 @@ Known follow-ups:
   jobs through the stream pending list and claim idle work from failed workers.
 - Job event realtime delivery now uses Redis Pub/Sub fanout across API
   instances, with durable database replay as the authoritative fallback.
+- Resumable stream implementation details are tracked in
+  `docs/AGENTAPI_RESUMABLE_JOB_STREAMS_IMPLEMENTATION.md`.
 
 ### 3. Observability Completion
 
@@ -90,7 +93,7 @@ Delivered:
 - Prometheus-style `GET /metrics` with request totals, status/route buckets, error count, rate-limit blocks, audit write failures, and aggregate latency.
 - `GET /readyz` with SQL, Redis when enabled, object-store, LLM config/credentials, and LLM backend health checks wired by `cmd/agentapi`.
 - `agent_audit_logs` SQL table plus `AuditLogger` abstraction and in-memory local fallback.
-- Audit events for register/login/refresh/logout, account delete, data export, session create/delete, memory delete, attachment create/delete, artifact delete, job create/cancel, and chat-to-job routing.
+- Audit events for register/login/refresh/logout, account delete, data export, session create/delete, memory delete, attachment create/delete, artifact delete, job create/cancel, and explicit long-running chat-to-job routing.
 
 Known follow-ups:
 
@@ -169,7 +172,7 @@ Delivered:
 - Productized C-end skill browser MVP with search, category grouping, icon/name/description cards, run-as-job/version badges, detail modal, one-click `/skill args` insertion, and local recent-skill shortcuts.
 - Settings/account menu with export data, memory deletion, account deletion, and logout actions.
 - Left sidebar and right panel collapse controls for denser desktop use.
-- Connection recovery UX: top-level offline banner, job stream replay/reconnect with backoff, chat stream failure state that preserves the sent message, and active job timeline restoration after refresh.
+- Connection recovery UX: top-level offline banner, job stream replay/reconnect with backoff, normal chat-run stream restoration after refresh, chat stream failure state that preserves the sent message, and active job timeline restoration after refresh.
 - Accessibility and keyboard polish: modal focus traps and Escape handling, keyboard-accessible attachment upload, improved tab behavior around collapsed panels, and consistent tooltip/`aria-label` coverage for icon buttons.
 - Deployment integration: build-time `VITE_AGENT_API_BASE_URL` support, static frontend Docker image, nginx SPA/static hosting config, production env template updates, and frontend deployment runbook covering same-origin reverse proxy and split-origin CORS/cookie settings.
 - Playwright E2E baseline with mocked AgentAPI routes covering login/register, session creation, normal chat, attachment upload/send, job-backed skill flow, attachment/artifact previews, global search jump-to-session, and chat stream failure preservation.

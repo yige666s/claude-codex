@@ -34,6 +34,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	llmUsageStore := buildLLMUsageStore(storeCfg)
 	riskStore := buildRiskStore(storeCfg)
 	jobStore := buildJobStore(storeCfg)
+	loopTriggerStore := buildLoopTriggerStore(storeCfg)
 	skillExecutionStore := buildSkillExecutionStore(storeCfg)
 	toolCallLedgerStore := buildToolCallLedgerStore(storeCfg)
 	evaluationStore := buildEvaluationStore(storeCfg)
@@ -50,8 +51,9 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	promptStore = agentruntime.NewCacheInvalidatingPromptStore(promptStore, cacheStore)
 	llmGovernanceCfg := llmGovernanceConfigFromStartup(cfg, llmCfg)
 	llmConfigManager := agentruntime.NewLLMGovernanceConfigManager(llmGovernanceCfg, buildRuntimeConfigStore(storeCfg))
-	if err := llmConfigManager.Load(context.Background()); err != nil {
-		logFatalf("load llm governance config: %v", err)
+	llmConfigManager.SetValidator(runtimeLLMGovernanceConfigValidator(llmCfg))
+	if err := llmConfigManager.LoadAndSyncStartupConfig(context.Background()); err != nil {
+		logFatalf("sync startup llm governance config: %v", err)
 	}
 
 	skillManager := loadSkills(startupconfig.SplitCSV(cfg.SkillDirs))
@@ -305,6 +307,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		}
 	}
 	runtime.SetJobStore(jobStore)
+	runtime.SetLoopTriggerStore(loopTriggerStore)
 	runtime.SetSkillExecutionStore(skillExecutionStore)
 	riskScanner := agentruntime.NewBasicRiskScanner()
 	runtime.SetRiskScanner(riskScanner)
@@ -327,6 +330,13 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 			logInfof("close job queue redis client: %v", err)
 		}
 	}()
+	if cfg.JobEventStreamEnabled {
+		runtime.SetJobEventStream(agentruntime.NewRedisJobEventStreamStore(jobQueueRedisClient, agentruntime.RedisJobEventStreamConfig{
+			Prefix: cfg.JobEventStreamPrefix,
+			TTL:    cfg.JobEventStreamTTL,
+			MaxLen: int64(cfg.JobEventStreamMaxLen),
+		}))
+	}
 	jobEventFanoutStarted := false
 	if cfg.JobEventFanoutEnabled {
 		fanout := agentruntime.NewRedisJobEventFanout(jobQueueRedisClient, agentruntime.RedisJobEventFanoutConfig{
@@ -351,6 +361,14 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		limiter,
 		runLogger("http_server"),
 	)
+	if cfg.ChatEventStreamEnabled {
+		server.SetChatStreamStore(agentruntime.NewRedisChatStreamStore(jobQueueRedisClient, agentruntime.RedisChatStreamConfig{
+			Prefix: cfg.ChatEventStreamPrefix,
+			TTL:    cfg.ChatEventStreamTTL,
+			MaxLen: int64(cfg.ChatEventStreamMaxLen),
+			Block:  cfg.ChatEventStreamBlock,
+		}))
+	}
 	server.SetAuthService(authService)
 	server.SetAuditLogger(buildAuditLogger(storeCfg))
 	server.SetRiskStore(riskStore)

@@ -286,6 +286,104 @@ type DockerSkillShellRuntime struct {
 	lastStats  SandboxExecutionStats
 }
 
+type LocalSkillShellRuntime struct {
+	config     SkillShellSandboxConfig
+	shell      skills.FrontmatterShell
+	workingDir string
+	skillRoot  string
+	env        map[string]string
+	allowed    []string
+	lastStats  SandboxExecutionStats
+}
+
+func NewLocalSkillShellRuntime(config SkillShellSandboxConfig, shell skills.FrontmatterShell, workingDir, skillRoot string, env map[string]string, allowedTools []string) *LocalSkillShellRuntime {
+	config = config.normalized()
+	if strings.TrimSpace(workingDir) == "" {
+		workingDir = "."
+	}
+	if strings.TrimSpace(skillRoot) == "" {
+		skillRoot = workingDir
+	}
+	return &LocalSkillShellRuntime{
+		config:     config,
+		shell:      shell,
+		workingDir: filepath.Clean(workingDir),
+		skillRoot:  filepath.Clean(skillRoot),
+		env:        cloneStringMap(env),
+		allowed:    append([]string(nil), allowedTools...),
+	}
+}
+
+func (r *LocalSkillShellRuntime) ValidateCommand(command string) error {
+	if r == nil {
+		return fmt.Errorf("local skill shell runtime is not configured")
+	}
+	return skills.ValidatePromptShellCommand(command, r.shell, r.allowed)
+}
+
+func (r *LocalSkillShellRuntime) ExecuteCommand(ctx context.Context, command string) (string, error) {
+	if r == nil {
+		return "", fmt.Errorf("local skill shell runtime is not configured")
+	}
+	if err := r.ValidateCommand(command); err != nil {
+		return "", err
+	}
+	exe := "bash"
+	args := []string{"-lc", command}
+	if r.shell == skills.ShellPowerShell {
+		exe = "pwsh"
+		args = []string{"-NoProfile", "-Command", command}
+	}
+	cmd := exec.CommandContext(ctx, exe, args...)
+	cmd.Dir = r.workingDir
+	cmd.Env = os.Environ()
+	env := cloneStringMap(r.env)
+	if strings.TrimSpace(env["AGENT_WORKSPACE_DIR"]) == "" {
+		env["AGENT_WORKSPACE_DIR"] = r.workingDir
+	}
+	if strings.TrimSpace(env["CLAUDE_SKILL_DIR"]) == "" {
+		env["CLAUDE_SKILL_DIR"] = r.skillRoot
+	}
+	for key, value := range env {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	var output sandboxLimitBuffer
+	output.limit = r.config.MaxOutputBytes
+	started := time.Now()
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	duration := time.Since(started)
+	outputText := strings.TrimSpace(output.String())
+	r.lastStats = SandboxExecutionStats{
+		Runner:    "local",
+		Network:   r.config.Network,
+		Duration:  duration,
+		Startup:   0,
+		OutputLen: len(outputText),
+	}
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("local skill shell command timed out: %q", command)
+		}
+		if outputText == "" {
+			return "", fmt.Errorf("local skill shell command failed for %q: %v", command, err)
+		}
+		return "", fmt.Errorf("local skill shell command failed for %q: %s", command, outputText)
+	}
+	if output.exceeded {
+		return "", fmt.Errorf("local skill shell output exceeds max size of %d bytes", output.limit)
+	}
+	return outputText, nil
+}
+
+func (r *LocalSkillShellRuntime) LastSandboxStats() SandboxExecutionStats {
+	if r == nil {
+		return SandboxExecutionStats{}
+	}
+	return r.lastStats
+}
+
 func NewDockerSkillShellRuntime(config SkillShellSandboxConfig, shell skills.FrontmatterShell, workspace, skillRoot string, env map[string]string, allowedTools []string) *DockerSkillShellRuntime {
 	config = config.normalized()
 	if strings.TrimSpace(skillRoot) == "" {
@@ -388,9 +486,19 @@ func (r *DockerSkillShellRuntime) executeWarm(ctx context.Context, workspace, sk
 		return "", SandboxExecutionStats{}, false, nil
 	}
 	defer defaultDockerSkillWarmPool.release(name)
-	args := []string{"exec", "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "-w", skillRoot, "-e", "AGENT_WORKSPACE_DIR=" + workspace, "-e", "CLAUDE_SKILL_DIR=" + skillRoot}
+	tmpDir := filepath.Join(workspace, "tmp")
+	args := []string{
+		"exec",
+		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		"-w", skillRoot,
+		"-e", "AGENT_WORKSPACE_DIR=" + workspace,
+		"-e", "CLAUDE_SKILL_DIR=" + skillRoot,
+		"-e", "SKILL_DIR=" + skillRoot,
+		"-e", "TMP_DIR=" + tmpDir,
+		"-e", "TMPDIR=" + tmpDir,
+	}
 	for _, key := range sortedMapKeys(r.env) {
-		if key == "AGENT_WORKSPACE_DIR" || key == "CLAUDE_SKILL_DIR" {
+		if skillShellReservedEnvKey(key) {
 			continue
 		}
 		args = append(args, "-e", key+"="+r.env[key])
@@ -441,23 +549,31 @@ func (r *DockerSkillShellRuntime) dockerArgs(workspace, skillRoot, command strin
 		"-e", "PYTHONDONTWRITEBYTECODE=1",
 	}
 	if r.useContainerVolumes() {
+		tmpDir := filepath.Join(workspace, "tmp")
 		args = append(args,
 			"--volumes-from", containerHostname(),
 			"-w", skillRoot,
 			"-e", "AGENT_WORKSPACE_DIR="+workspace,
 			"-e", "CLAUDE_SKILL_DIR="+skillRoot,
+			"-e", "SKILL_DIR="+skillRoot,
+			"-e", "TMP_DIR="+tmpDir,
+			"-e", "TMPDIR="+tmpDir,
 		)
 	} else {
+		tmpDir := filepath.Join(containerWorkspaceDir, "tmp")
 		args = append(args,
 			"-v", workspace+":"+containerWorkspaceDir+":rw",
 			"-v", skillRoot+":"+containerSkillDir+":ro",
 			"-w", containerSkillDir,
 			"-e", "AGENT_WORKSPACE_DIR="+containerWorkspaceDir,
 			"-e", "CLAUDE_SKILL_DIR="+containerSkillDir,
+			"-e", "SKILL_DIR="+containerSkillDir,
+			"-e", "TMP_DIR="+tmpDir,
+			"-e", "TMPDIR="+tmpDir,
 		)
 	}
 	for _, key := range sortedMapKeys(r.env) {
-		if key == "AGENT_WORKSPACE_DIR" || key == "CLAUDE_SKILL_DIR" {
+		if skillShellReservedEnvKey(key) {
 			continue
 		}
 		args = append(args, "-e", key+"="+r.env[key])
@@ -469,6 +585,15 @@ func (r *DockerSkillShellRuntime) dockerArgs(workspace, skillRoot, command strin
 		args = append(args, "sh", "-lc", command)
 	}
 	return args
+}
+
+func skillShellReservedEnvKey(key string) bool {
+	switch key {
+	case "AGENT_WORKSPACE_DIR", "CLAUDE_SKILL_DIR", "SKILL_DIR", "TMP_DIR", "TMPDIR":
+		return true
+	default:
+		return false
+	}
 }
 
 const sandboxReadyMarker = "__AGENT_SANDBOX_READY_MS__="

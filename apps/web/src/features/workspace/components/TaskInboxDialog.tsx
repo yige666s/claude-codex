@@ -109,43 +109,56 @@ export function TaskInboxDialog({
                 <div className="task-inbox-group-empty">Nothing here.</div>
               ) : (
                 <div className="task-inbox-list">
-                  {entry.items.map((item) => (
-                    <article key={item.id} className={`task-card task-card-${item.group}`}>
-                      <button type="button" className="task-card-main" onClick={() => onOpenItem(item)}>
+                  {entry.items.map((item) => {
+                    const sessionUnavailable = Boolean(item.session_id) && item.session_available === false;
+                    const cardBody = (
+                      <>
                         <span className="task-card-kind">{item.kind} · {item.status}</span>
                         <strong>{item.title}</strong>
-                        <small>{item.last_event || "Task updated"}</small>
+                        <small>{sessionUnavailable ? "关联聊天已删除。" : (item.last_event || "Task updated")}</small>
                         <span className="task-card-meta">
                           {item.trigger && <span>{item.trigger}</span>}
+                          {sessionUnavailable && <span>聊天已删除</span>}
                           {item.artifact_count > 0 && <span>{item.artifact_count} artifact{item.artifact_count === 1 ? "" : "s"}</span>}
                           <span>{formatTime(item.last_event_at || item.updated_at)}</span>
                         </span>
-                      </button>
-                      <div className="task-card-actions">
-                        {item.review?.run_id && (
-                          <>
-                            <Button
-                              className="task-review-approve"
-                              onClick={() => onReview(item, "approve")}
-                              disabled={Boolean(busyAction)}
-                            >
-                              Approve
-                            </Button>
-                            <Button
-                              className="task-review-reject"
-                              onClick={() => onReview(item, "reject")}
-                              disabled={Boolean(busyAction)}
-                            >
-                              Reject
-                            </Button>
-                          </>
+                      </>
+                    );
+                    return (
+                      <article key={item.id} className={`task-card task-card-${item.group}${sessionUnavailable ? " task-card-orphaned" : ""}`}>
+                        {sessionUnavailable ? (
+                          <div className="task-card-main task-card-main-static">{cardBody}</div>
+                        ) : (
+                          <button type="button" className="task-card-main" onClick={() => onOpenItem(item)}>
+                            {cardBody}
+                          </button>
                         )}
-                        <Button className="icon ghost" onClick={() => onOpenItem(item)} title={item.next_action || "Open"} aria-label={item.next_action || "Open"}>
-                          <ChevronRight size={18} />
-                        </Button>
-                      </div>
-                    </article>
-                  ))}
+                        {!sessionUnavailable && <div className="task-card-actions">
+                          {item.review?.run_id && (
+                            <>
+                              <Button
+                                className="task-review-approve"
+                                onClick={() => onReview(item, "approve")}
+                                disabled={Boolean(busyAction)}
+                              >
+                                Approve
+                              </Button>
+                              <Button
+                                className="task-review-reject"
+                                onClick={() => onReview(item, "reject")}
+                                disabled={Boolean(busyAction)}
+                              >
+                                Reject
+                              </Button>
+                            </>
+                          )}
+                          <Button className="icon ghost" onClick={() => onOpenItem(item)} title={item.next_action || "Open"} aria-label={item.next_action || "Open"}>
+                            <ChevronRight size={18} />
+                          </Button>
+                        </div>}
+                      </article>
+                    );
+                  })}
                 </div>
               )}
             </section>

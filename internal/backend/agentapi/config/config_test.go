@@ -64,6 +64,17 @@ func TestDefaultReadsLLMModelAlias(t *testing.T) {
 	}
 }
 
+func TestDefaultDisablesRateLimiting(t *testing.T) {
+	cfg := Default()
+
+	if cfg.RateLimitBackend != "none" {
+		t.Fatalf("RateLimitBackend = %q, want none", cfg.RateLimitBackend)
+	}
+	if cfg.OperationRateLimits != "" {
+		t.Fatalf("OperationRateLimits = %q, want empty", cfg.OperationRateLimits)
+	}
+}
+
 func TestBindFlagsOverridesConfig(t *testing.T) {
 	cfg := Default()
 	command := &cobra.Command{

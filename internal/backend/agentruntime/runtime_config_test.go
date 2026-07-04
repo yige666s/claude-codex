@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -108,6 +109,26 @@ func TestLLMGovernanceConfigModelPatchCanSwitchToNVIDIA(t *testing.T) {
 	}
 }
 
+func TestLLMGovernanceConfigModelPatchResetsStaleSubmittedRoutesOnProviderSwitch(t *testing.T) {
+	model := "nvidia/nemotron-3-ultra-550b-a55b"
+	routes := "default=deepseek-chat,chat=deepseek-chat,chat:normal=deepseek-chat,skill=deepseek-chat"
+	updated, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{
+		Provider:    "deepseek",
+		Model:       "deepseek-chat",
+		ModelRoutes: routes,
+	}, LLMGovernanceConfigPatch{
+		Model:       &model,
+		ModelRoutes: &routes,
+	})
+	if err != nil {
+		t.Fatalf("apply nvidia model patch with stale routes: %v", err)
+	}
+	want := "default=nvidia/nemotron-3-ultra-550b-a55b,chat=nvidia/nemotron-3-ultra-550b-a55b,chat:normal=nvidia/nemotron-3-ultra-550b-a55b,skill=nvidia/nemotron-3-ultra-550b-a55b"
+	if updated.ModelRoutes != want {
+		t.Fatalf("model routes = %q, want %q", updated.ModelRoutes, want)
+	}
+}
+
 func TestLLMGovernanceConfigModelPatchCanSwitchToDeepSeek(t *testing.T) {
 	model := "deepseek-chat"
 	updated, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{
@@ -210,6 +231,108 @@ func TestLLMGovernanceConfigPatchUpdatesAPIRateLimit(t *testing.T) {
 	}
 }
 
+func TestLLMGovernanceConfigPatchUpdatesParallelBranchBudget(t *testing.T) {
+	maxBranches := 3
+	timeoutMS := int64(45000)
+	maxTools := 5
+	maxSources := 7
+	maxTokens := 1800
+	updated, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{}, LLMGovernanceConfigPatch{
+		MaxParallelBranches:     &maxBranches,
+		ParallelBranchTimeoutMS: &timeoutMS,
+		ParallelMaxToolCalls:    &maxTools,
+		ParallelMaxSources:      &maxSources,
+		ParallelMaxTokens:       &maxTokens,
+	})
+	if err != nil {
+		t.Fatalf("applyLLMGovernanceConfigPatch() error = %v", err)
+	}
+	if updated.MaxParallelBranches != maxBranches ||
+		updated.ParallelBranchTimeout != 45*time.Second ||
+		updated.ParallelMaxToolCalls != maxTools ||
+		updated.ParallelMaxSources != maxSources ||
+		updated.ParallelMaxTokens != maxTokens {
+		t.Fatalf("parallel branch budget not applied: %#v", updated)
+	}
+	payload := llmGovernanceConfigToPayload(updated)
+	roundTrip := llmGovernanceConfigFromPayload(payload).normalized()
+	if roundTrip.MaxParallelBranches != maxBranches || roundTrip.ParallelBranchTimeout != 45*time.Second || roundTrip.ParallelMaxSources != maxSources {
+		t.Fatalf("parallel branch budget did not round-trip: %#v", roundTrip)
+	}
+}
+
+func TestLLMGovernanceConfigPatchUpdatesLoopGovernance(t *testing.T) {
+	maxLoopDurationMS := int64(120000)
+	maxLoopActions := 5
+	maxBranchCount := 4
+	maxBranchConcurrency := 2
+	evaluatorTimeoutMS := int64(45000)
+	conflictTimeoutMS := int64(30000)
+	maxSourcesPerBranch := 9
+	searchQualityThreshold := 0.72
+	automaticTriggerEnabled := true
+	riskyWriteApprovalMode := "block"
+	updated, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{}, LLMGovernanceConfigPatch{
+		MaxLoopDurationMS:       &maxLoopDurationMS,
+		MaxLoopActions:          &maxLoopActions,
+		MaxBranchCount:          &maxBranchCount,
+		MaxBranchConcurrency:    &maxBranchConcurrency,
+		EvaluatorTimeoutMS:      &evaluatorTimeoutMS,
+		ConflictTimeoutMS:       &conflictTimeoutMS,
+		MaxSourcesPerBranch:     &maxSourcesPerBranch,
+		SearchQualityThreshold:  &searchQualityThreshold,
+		AutomaticTriggerEnabled: &automaticTriggerEnabled,
+		RiskyWriteApprovalMode:  &riskyWriteApprovalMode,
+	})
+	if err != nil {
+		t.Fatalf("applyLLMGovernanceConfigPatch() error = %v", err)
+	}
+	if updated.MaxLoopDuration != 2*time.Minute ||
+		updated.MaxLoopActions != maxLoopActions ||
+		updated.MaxBranchCount != maxBranchCount ||
+		updated.MaxBranchConcurrency != maxBranchConcurrency ||
+		updated.EvaluatorTimeout != 45*time.Second ||
+		updated.ConflictTimeout != 30*time.Second ||
+		updated.MaxSourcesPerBranch != maxSourcesPerBranch ||
+		updated.SearchQualityThreshold != searchQualityThreshold ||
+		!updated.AutomaticTriggerEnabled ||
+		updated.RiskyWriteApprovalMode != riskyWriteApprovalMode {
+		t.Fatalf("loop governance not applied: %#v", updated)
+	}
+	status := llmGovernanceConfigStatusMap(updated)
+	if status["max_loop_actions"] != maxLoopActions || status["risky_write_approval_mode"] != riskyWriteApprovalMode {
+		t.Fatalf("loop governance status missing fields: %#v", status)
+	}
+	roundTrip := llmGovernanceConfigFromPayload(llmGovernanceConfigToPayload(updated)).normalized()
+	if roundTrip.MaxLoopDuration != 2*time.Minute ||
+		roundTrip.MaxBranchConcurrency != maxBranchConcurrency ||
+		roundTrip.SearchQualityThreshold != searchQualityThreshold ||
+		!roundTrip.AutomaticTriggerEnabled ||
+		roundTrip.RiskyWriteApprovalMode != riskyWriteApprovalMode {
+		t.Fatalf("loop governance did not round-trip: %#v", roundTrip)
+	}
+}
+
+func TestRuntimeDeepAgentJobPolicyUsesGovernanceConfig(t *testing.T) {
+	runtime := &Runtime{config: RuntimeConfig{
+		LLMGovernanceProvider: func() LLMGovernanceConfig {
+			return LLMGovernanceConfig{
+				ChatTimeout:     30 * time.Second,
+				SkillTimeout:    45 * time.Second,
+				MaxLoopDuration: 2 * time.Minute,
+				MaxLoopActions:  4,
+			}
+		},
+	}}
+	policy := runtime.deepAgentJobPolicy()
+	if policy.MaxActions != 4 || policy.MaxDuration != 2*time.Minute {
+		t.Fatalf("policy did not use governance max loop config: %#v", policy)
+	}
+	if policy.StepTimeout != 2*time.Minute {
+		t.Fatalf("step timeout = %v, want capped max loop duration", policy.StepTimeout)
+	}
+}
+
 func TestLLMGovernanceConfigRejectsNegativeAPIRateLimit(t *testing.T) {
 	limit := -1
 	if _, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{}, LLMGovernanceConfigPatch{APIRateLimitPerMinute: &limit}); err == nil {
@@ -253,6 +376,60 @@ func TestLLMGovernanceConfigManagerPreservesRuntimeDefaultsWhenLoadingOldPayload
 	}
 	if loaded.MaxAttempts != 3 {
 		t.Fatalf("max attempts = %d, want 3", loaded.MaxAttempts)
+	}
+}
+
+func TestLLMGovernanceConfigManagerSyncsStartupConfigOverStoredConfig(t *testing.T) {
+	store := &memoryRuntimeConfigStore{
+		config: LLMGovernanceConfig{
+			Provider:    "deepseek",
+			Model:       "deepseek-chat",
+			ModelRoutes: "default=deepseek-chat,chat=deepseek-chat",
+		},
+		configOK: true,
+	}
+	manager := NewLLMGovernanceConfigManager(LLMGovernanceConfig{
+		Provider:    "simple",
+		Model:       "simple",
+		ModelRoutes: "default=simple,chat=simple",
+	}, store)
+	if err := manager.LoadAndSyncStartupConfig(context.Background()); err != nil {
+		t.Fatalf("sync startup config: %v", err)
+	}
+	loaded := manager.Get()
+	if loaded.Provider != "simple" || loaded.Model != "simple" {
+		t.Fatalf("manager config = %#v, want startup simple config", loaded)
+	}
+	if store.config.Provider != "simple" || store.config.Model != "simple" {
+		t.Fatalf("stored config = %#v, want startup simple config persisted", store.config)
+	}
+	if store.config.ModelRoutes != "default=simple,chat=simple" {
+		t.Fatalf("stored model routes = %q, want startup routes", store.config.ModelRoutes)
+	}
+}
+
+func TestLLMGovernanceConfigManagerRejectsInvalidUpdateBeforePersist(t *testing.T) {
+	store := &memoryRuntimeConfigStore{
+		config: LLMGovernanceConfig{
+			Provider:    "simple",
+			Model:       "simple",
+			ModelRoutes: "default=simple,chat=simple",
+		},
+		configOK: true,
+	}
+	manager := NewLLMGovernanceConfigManager(store.config, store)
+	manager.SetValidator(func(context.Context, LLMGovernanceConfig) error {
+		return errors.New("llm credential is required")
+	})
+	model := "deepseek-chat"
+	if _, err := manager.Update(context.Background(), LLMGovernanceConfigPatch{Model: &model}); err == nil {
+		t.Fatal("expected validator error")
+	}
+	if got := manager.Get(); got.Provider != "simple" || got.Model != "simple" {
+		t.Fatalf("manager config changed after rejected update: %#v", got)
+	}
+	if store.config.Provider != "simple" || store.config.Model != "simple" {
+		t.Fatalf("stored config changed after rejected update: %#v", store.config)
 	}
 }
 

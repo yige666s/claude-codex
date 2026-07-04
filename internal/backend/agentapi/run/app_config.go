@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -38,22 +39,30 @@ func buildStartupLLMConfig(cfg startupconfig.Config) bootstrap.LLMConfig {
 
 func llmGovernanceConfigFromStartup(cfg startupconfig.Config, llmCfg bootstrap.LLMConfig) agentruntime.LLMGovernanceConfig {
 	return agentruntime.LLMGovernanceConfig{
-		Provider:               llmCfg.Provider,
-		Model:                  llmCfg.Model,
-		VertexLocation:         llmCfg.VertexLocation,
-		ModelRoutes:            agentruntime.LLMModelRoutesWithDefault(cfg.LLMModelRoutes, llmCfg.Model),
-		MaxAttempts:            cfg.LLMMaxAttempts,
-		RetryBackoff:           cfg.LLMRetryBackoff,
-		ChatTimeout:            cfg.LLMChatTimeout,
-		SkillTimeout:           cfg.LLMSkillTimeout,
-		DailyTokenQuota:        cfg.LLMDailyTokenQuota,
-		DailyRequestQuota:      cfg.LLMDailyRequestQuota,
-		APIRateLimitPerMinute:  cfg.RateLimit,
-		DailyCostQuotaUSD:      cfg.LLMDailyCostQuotaUSD,
-		InputCostPerMillion:    cfg.LLMInputCostPerMillion,
-		OutputCostPerMillion:   cfg.LLMOutputCostPerMillion,
-		FailureThreshold:       cfg.LLMFailureThreshold,
-		CircuitBreakerCooldown: cfg.LLMCircuitCooldown,
+		Provider:                llmCfg.Provider,
+		Model:                   llmCfg.Model,
+		VertexLocation:          llmCfg.VertexLocation,
+		ModelRoutes:             agentruntime.LLMModelRoutesWithDefault(cfg.LLMModelRoutes, llmCfg.Model),
+		MaxAttempts:             cfg.LLMMaxAttempts,
+		RetryBackoff:            cfg.LLMRetryBackoff,
+		ChatTimeout:             cfg.LLMChatTimeout,
+		SkillTimeout:            cfg.LLMSkillTimeout,
+		AutomaticTriggerEnabled: cfg.LoopAutomationEnabled,
+		DailyTokenQuota:         cfg.LLMDailyTokenQuota,
+		DailyRequestQuota:       cfg.LLMDailyRequestQuota,
+		APIRateLimitPerMinute:   cfg.RateLimit,
+		DailyCostQuotaUSD:       cfg.LLMDailyCostQuotaUSD,
+		InputCostPerMillion:     cfg.LLMInputCostPerMillion,
+		OutputCostPerMillion:    cfg.LLMOutputCostPerMillion,
+		FailureThreshold:        cfg.LLMFailureThreshold,
+		CircuitBreakerCooldown:  cfg.LLMCircuitCooldown,
+	}
+}
+
+func runtimeLLMGovernanceConfigValidator(base bootstrap.LLMConfig) agentruntime.LLMGovernanceConfigValidator {
+	return func(ctx context.Context, config agentruntime.LLMGovernanceConfig) error {
+		effective := bootstrap.ApplyRuntimeLLMConfig(base, config)
+		return bootstrap.LLMConfigReadinessCheck(effective)(ctx)
 	}
 }
 
@@ -95,6 +104,15 @@ func runtimeConfigFromStartup(cfg startupconfig.Config, skillShellSandboxConfig 
 		DeepAgent: agentruntime.DeepAgentRuntimeConfig{
 			V2Enabled:     cfg.DeepAgentV2Enabled,
 			V2ShadowRoute: cfg.DeepAgentV2ShadowRoute,
+		},
+		LoopDiscovery: agentruntime.LoopDiscoveryConfig{
+			AutomationEnabled:         cfg.LoopAutomationEnabled,
+			ScheduleTriggersEnabled:   cfg.LoopScheduleTriggersEnabled,
+			WebhookTriggersEnabled:    cfg.LoopWebhookTriggersEnabled,
+			MonitorTriggersEnabled:    cfg.LoopMonitorTriggersEnabled,
+			EvalRepairTriggersEnabled: cfg.LoopEvalRepairTriggersEnabled,
+			ConnectorTriggersEnabled:  cfg.LoopConnectorTriggersEnabled,
+			TriggerTTL:                cfg.LoopTriggerTTL,
 		},
 		MessageSearch:     messageSearchConfigFromStartup(cfg),
 		MemoryVector:      memoryVectorConfigFromStartup(cfg),

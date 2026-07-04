@@ -71,13 +71,13 @@ func TestRealGeminiLiveNativeFunctionCallingRoutesSkill(t *testing.T) {
 	sink.waitFor(t, func(event Event) bool { return event.Type == "live_setup_complete" }, "real Live setup", 20*time.Second)
 	stream.send(LiveClientEvent{Type: "text", Content: "Please use the smoke skill with args hello from real Gemini Live."})
 	start := sink.waitFor(t, func(event Event) bool {
-		return event.Type == "live_skill_start" && strings.HasPrefix(event.Content, "/smoke ")
+		return event.Type == "tool_call_start" && strings.HasPrefix(event.Tool, "/smoke ")
 	}, "real Gemini native run_skill call", 30*time.Second)
-	t.Logf("real native function call routed command: %s", start.Content)
+	t.Logf("real native function call routed command: %s", start.Tool)
 	result := sink.waitFor(t, func(event Event) bool {
-		return event.Type == "live_skill_result" && strings.Contains(event.Content, "real live smoke skill result")
+		return event.Type == "tool_call_result" && strings.Contains(event.Summary, "real live smoke skill result")
 	}, "real Live skill result", 10*time.Second)
-	t.Logf("real skill result: %s", result.Content)
+	t.Logf("real skill result: %s", result.Summary)
 
 	stream.close()
 	cancel()

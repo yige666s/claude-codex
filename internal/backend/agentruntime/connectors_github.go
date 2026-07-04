@@ -167,14 +167,14 @@ func (r *Runtime) doGitHubConnectorRequest(ctx context.Context, userID, workspac
 			return json.Unmarshal([]byte(started.Output), out)
 		}
 	}
-	emitJobEventFromContext(ctx, Event{Type: "connector_tool_call_started", Role: "tool", Content: toolName, Data: deepAgentEventData(entry.Metadata)})
+	emitJobEventFromContext(ctx, toolCallStartEvent("", toolName, idempotencyKey, json.RawMessage(inputJSON), entry.Metadata))
 	endpoint := connectorGitHubAPIBaseURL() + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		if ledger != nil {
 			_ = ledger.FailToolCall(ctx, idempotencyKey, err.Error(), nil)
 		}
-		emitJobEventFromContext(ctx, Event{Type: "connector_tool_call_failed", Role: "tool", Content: toolName, Error: err.Error(), Data: deepAgentEventData(entry.Metadata)})
+		emitJobEventFromContext(ctx, toolCallResultEvent("", toolName, idempotencyKey, json.RawMessage(inputJSON), "", err, entry.Metadata))
 		return err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -184,7 +184,7 @@ func (r *Runtime) doGitHubConnectorRequest(ctx context.Context, userID, workspac
 		if ledger != nil {
 			_ = ledger.FailToolCall(ctx, idempotencyKey, err.Error(), map[string]any{"endpoint": endpoint})
 		}
-		emitJobEventFromContext(ctx, Event{Type: "connector_tool_call_failed", Role: "tool", Content: toolName, Error: err.Error(), Data: deepAgentEventData(entry.Metadata)})
+		emitJobEventFromContext(ctx, toolCallResultEvent("", toolName, idempotencyKey, json.RawMessage(inputJSON), "", err, entry.Metadata))
 		return err
 	}
 	defer resp.Body.Close()
@@ -200,7 +200,7 @@ func (r *Runtime) doGitHubConnectorRequest(ctx context.Context, userID, workspac
 		if ledger != nil {
 			_ = ledger.FailToolCall(ctx, idempotencyKey, err.Error(), map[string]any{"endpoint": endpoint, "status_code": resp.StatusCode})
 		}
-		emitJobEventFromContext(ctx, Event{Type: "connector_tool_call_failed", Role: "tool", Content: toolName, Error: err.Error(), Data: deepAgentEventData(entry.Metadata)})
+		emitJobEventFromContext(ctx, toolCallResultEvent("", toolName, idempotencyKey, json.RawMessage(inputJSON), "", err, entry.Metadata))
 		return err
 	}
 	if err := json.Unmarshal(body, out); err != nil {
@@ -212,7 +212,7 @@ func (r *Runtime) doGitHubConnectorRequest(ctx context.Context, userID, workspac
 	if ledger != nil {
 		_ = ledger.CompleteToolCall(ctx, idempotencyKey, string(body), map[string]any{"endpoint": endpoint, "status_code": resp.StatusCode})
 	}
-	emitJobEventFromContext(ctx, Event{Type: "connector_tool_call_succeeded", Role: "tool", Content: toolName, Data: deepAgentEventData(map[string]any{"provider": "github", "tool_name": toolName, "status_code": resp.StatusCode})})
+	emitJobEventFromContext(ctx, toolCallResultEvent("", toolName, idempotencyKey, json.RawMessage(inputJSON), "GitHub connector call completed.", nil, map[string]any{"provider": "github", "tool_name": toolName, "status_code": resp.StatusCode}))
 	return nil
 }
 

@@ -42,9 +42,10 @@ export type Message = {
 export type AgentActivityItem = {
   id: string;
   type: string;
+  channel?: "thinking" | "tool" | "answer" | "citation" | "checkpoint" | "notice";
   title: string;
   detail?: string;
-  status: "running" | "succeeded" | "failed" | "default";
+  status: "running" | "succeeded" | "failed" | "cancelled" | "default";
   created_at: string;
   metadata?: Record<string, unknown>;
 };
@@ -98,6 +99,7 @@ export type MemoryItem = {
   superseded_by_id?: string;
   last_injected_at?: string;
   metadata?: Record<string, unknown>;
+  expires_at?: string;
   created_at: string;
   updated_at: string;
 };
@@ -412,6 +414,21 @@ export type LLMGovernanceConfig = {
   retry_backoff_ms?: number;
   chat_timeout_ms?: number;
   skill_timeout_ms?: number;
+  max_loop_duration_ms?: number;
+  max_loop_actions?: number;
+  max_branch_count?: number;
+  max_branch_concurrency?: number;
+  max_parallel_branches?: number;
+  parallel_branch_timeout_ms?: number;
+  parallel_max_tool_calls?: number;
+  parallel_max_sources?: number;
+  parallel_max_tokens?: number;
+  evaluator_timeout_ms?: number;
+  conflict_reconciliation_timeout_ms?: number;
+  max_sources_per_branch?: number;
+  search_quality_threshold?: number;
+  automatic_trigger_enabled?: boolean;
+  risky_write_approval_mode?: string;
   daily_token_quota?: number;
   daily_request_quota?: number;
   api_rate_limit_per_minute?: number;
@@ -922,14 +939,32 @@ export type DeepAgentStepRoute = {
 
 export type RuntimeEvent = {
   type: string;
+  id?: string;
   session_id?: string;
+  run_id?: string;
   role?: string;
   content?: string;
+  text?: string;
+  tool?: string;
+  input?: unknown;
+  summary?: string;
+  sources?: unknown[];
+  source_id?: string;
+  answer_span?: string;
+  message?: string;
   error?: string;
   job_id?: string;
   job?: Job;
   job_reason?: string;
   data?: unknown;
+};
+
+export type ChatRunSummary = {
+  run_id: string;
+  session_id?: string;
+  terminal?: boolean;
+  last_event_id?: string;
+  updated_at?: string;
 };
 
 export type LiveClientEvent = {
@@ -964,6 +999,7 @@ export type TaskInboxItem = {
   title: string;
   status: string;
   session_id?: string;
+  session_available?: boolean;
   job_id?: string;
   artifact_id?: string;
   trigger?: string;
@@ -982,6 +1018,37 @@ export type TaskInboxResponse = {
   items: TaskInboxItem[];
   groups: Record<TaskInboxGroup, number>;
   generated_at: string;
+};
+
+export type LoopDiscoveryEvent = {
+  session_id?: string;
+  trigger_type: "manual" | "schedule" | "webhook" | "monitor" | "eval_failure" | "connector_event" | string;
+  source?: string;
+  dedupe_key?: string;
+  objective?: string;
+  payload?: Record<string, unknown>;
+};
+
+export type LoopTriggerRecord = {
+  id: string;
+  user_id?: string;
+  session_id?: string;
+  dedupe_key: string;
+  trigger_type: string;
+  source?: string;
+  payload?: Record<string, unknown>;
+  job_id?: string;
+  loop_goal_id?: string;
+  status: string;
+  failure_reason?: string;
+  created_at: string;
+  expires_at: string;
+};
+
+export type LoopDiscoveryResult = {
+  trigger: LoopTriggerRecord;
+  job?: Job;
+  duplicate: boolean;
 };
 
 export type BrowserPushConfig = {
@@ -1014,12 +1081,87 @@ export type WorkflowRun = {
   finished_at?: string;
 };
 
+export type LoopContract = {
+  id?: string;
+  version?: string;
+  objective?: string;
+  task_type?: string;
+  deliverable?: {
+    type?: string;
+    format?: string;
+    filename_hint?: string;
+  };
+  rubric?: {
+    acceptance_criteria?: string[];
+    required_evidence?: string[];
+    required_artifacts?: string[];
+    forbidden_actions?: string[];
+    quality_bar?: string;
+  };
+  budget?: {
+    max_steps?: number;
+    max_actions?: number;
+    max_duration_ms?: number;
+    step_timeout_ms?: number;
+    no_progress_limit?: number;
+  };
+  tool_policy?: {
+    allowed_modes?: string[];
+    connector_context?: string[];
+    write_mode?: string;
+  };
+  source_policy?: {
+    requires_sources?: boolean;
+    min_source_count?: number;
+    preferred_sources?: string[];
+    preferred_domains?: string[];
+    blocked_domains?: string[];
+    max_sources_per_branch?: number;
+    max_duplicate_domains?: number;
+    require_primary_source?: boolean;
+    recency_requirement?: string;
+    min_source_score?: number;
+    quality_bar?: string;
+  };
+  risk_policy?: {
+    requires_review?: boolean;
+    forbidden_actions?: string[];
+    review_policy?: string;
+  };
+  stop_policy?: {
+    done_when?: string[];
+    max_no_progress?: number;
+    on_budget_exceeded?: string;
+  };
+  evaluator_policy?: {
+    requires_final_verification?: boolean;
+    verifier?: string;
+    evidence_required?: string[];
+    artifact_required?: string[];
+  };
+  created_from?: string;
+  created_at?: string;
+};
+
+export type GateDecision = {
+  gate?: string;
+  allow: boolean;
+  block_reason?: string;
+  requires_review?: boolean;
+  repair_hint?: string;
+  evidence_refs?: string[];
+  category?: string;
+};
+
 export type DeepAgentWorkflowSummary = {
   present: boolean;
   goal?: string;
   status?: string;
   blocker?: string;
   recovery?: DeepAgentRecoveryState;
+  loop_contract?: LoopContract;
+  handoff?: LoopHandoff;
+  gate_decisions?: GateDecision[];
   final_answer?: DeepAgentFinalAnswerEvidence;
   metrics?: Record<string, unknown>;
   timeline?: DeepAgentTimelineItem[];
@@ -1051,6 +1193,16 @@ export type DeepAgentWorkflowSummary = {
   evidence?: Array<Record<string, unknown>>;
   artifact_refs?: Array<Record<string, unknown>>;
   final_verifier?: Record<string, unknown>;
+  evaluator_verdict?: {
+    verdict?: string;
+    passed?: boolean;
+    failed_criteria?: string[];
+    confidence?: string;
+    repair_plan?: string[];
+    reason?: string;
+    source_coverage?: Record<string, unknown>;
+    rubric_coverage?: Record<string, unknown>;
+  };
   action_history?: Array<{
     id?: string;
     step_id: string;
@@ -1069,10 +1221,14 @@ export type DeepAgentWorkflowSummary = {
     run_id?: string;
     step_id?: string;
     evidence_id?: string;
+    evidence_refs?: string[];
+    source_job?: string;
+    owner?: string;
     memory_item_id?: string;
     risk_level?: string;
     sensitivity?: string;
     visibility?: string;
+    confidence?: number;
     requires_user_confirmation?: boolean;
     policy_reason?: string;
     user_confirmed?: boolean;
@@ -1114,6 +1270,7 @@ export type DeepAgentReplayReport = {
   run_id: string;
   goal?: string;
   status?: string;
+  trace_summary?: DeepAgentTraceSummary;
   task_type?: string;
   trigger_payload?: Record<string, unknown>;
   planner_decisions?: DeepAgentTimelineItem[];
@@ -1122,6 +1279,17 @@ export type DeepAgentReplayReport = {
   verifier_checks?: Array<{ name: string; passed: boolean; reason?: string }>;
   metrics?: Record<string, unknown>;
   findings?: EvaluationFinding[];
+};
+
+export type DeepAgentTraceSummary = {
+  final_status?: string;
+  root_cause?: string;
+  category?: string;
+  failed_phase?: string;
+  failed_gate?: string;
+  failed_tool?: string;
+  suggested_repair?: string;
+  top_evidence?: string[];
 };
 
 export type DeepAgentResumeBudget = {
@@ -1141,8 +1309,42 @@ export type DeepAgentReviewDecision = {
 export type DeepAgentResumeRequest = {
   run_id?: string;
   state_patch?: Record<string, unknown>;
+  handoff_patch?: LoopHandoff;
   additional_budget?: DeepAgentResumeBudget;
   review_decision?: DeepAgentReviewDecision;
+};
+
+export type LoopHandoff = {
+  type?: string;
+  summary?: string;
+  resume_point?: string;
+  resume_available?: boolean;
+  workspace?: {
+    repo?: string;
+    branch?: string;
+    worktree?: string;
+    base_commit?: string;
+    changed_files?: string[];
+    test_commands?: string[];
+    rollback_plan?: string;
+  };
+  artifact?: {
+    source_artifacts?: Array<Record<string, unknown>>;
+    draft_artifact?: Record<string, unknown>;
+    final_artifact?: Record<string, unknown>;
+    review_state?: string;
+  };
+  connector?: {
+    provider?: string;
+    scopes?: string[];
+    risk_level?: string;
+    pending_write_actions?: Array<Record<string, unknown>>;
+  };
+  review_state?: string;
+  blocking_reason?: string;
+  recommended_action?: string;
+  metadata?: Record<string, unknown>;
+  updated_at?: string;
 };
 
 export type DeepAgentFinalAnswerEvidence = {
@@ -1186,6 +1388,8 @@ export type DeepAgentRecoveryState = {
   budget_exceeded?: boolean;
   review_action_hash?: string;
   review_step_id?: string;
+  resume_point?: string;
+  handoff_summary?: string;
   additional_budget_hint?: DeepAgentResumeBudget;
 };
 

@@ -65,6 +65,45 @@ func TestDeepAgentControllerCompletesAndPersistsCheckpoints(t *testing.T) {
 	}
 }
 
+func TestDeepAgentControllerRequiresEvaluatorPassBeforeSuccess(t *testing.T) {
+	store := NewMemoryWorkflowStore()
+	controller := NewDeepAgentController(
+		store,
+		NoopWorkflowEventSink{},
+		staticDeepAgentPlanner{plan: DeepAgentPlan{Steps: []DeepAgentStep{{
+			ID:            "write",
+			Title:         "Write",
+			DoneCondition: "done",
+		}}}},
+		completingDeepAgentExecutor{},
+		nil,
+	)
+	controller.SetEvaluator(failingDeepAgentEvaluator{})
+	result, err := controller.Execute(context.Background(), DeepAgentTaskRequest{
+		UserID:    "alice",
+		SessionID: "session-1",
+		Goal:      "prepare report",
+		Policy:    DeepAgentPolicy{MaxSteps: 2, MaxActions: 2, NoProgressLimit: 1, MaxDuration: time.Minute},
+	})
+	if err == nil {
+		t.Fatal("Execute() should fail when evaluator verdict is not pass")
+	}
+	if result == nil || result.State == nil || result.State.Status != DeepAgentRunStatusBlocked {
+		t.Fatalf("expected blocked state, got result=%#v err=%v", result, err)
+	}
+	verdict := deepAgentEvaluatorVerdictForSummary(result.State)
+	if deepAgentWorkflowString(verdict, "verdict") != DeepAgentEvaluatorNeedsRepair {
+		t.Fatalf("missing evaluator verdict: %#v", verdict)
+	}
+	runs, err := store.ListWorkflowRuns(context.Background(), WorkflowRunFilter{Name: deepAgentTaskWorkflowName})
+	if err != nil {
+		t.Fatalf("ListWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 1 || runs[0].State["deep_agent_status"] == DeepAgentRunStatusSucceeded {
+		t.Fatalf("workflow should not be marked succeeded without evaluator pass: %#v", runs)
+	}
+}
+
 func TestDeepAgentControllerEmitsActionDetailEvents(t *testing.T) {
 	store := NewMemoryWorkflowStore()
 	controller := NewDeepAgentController(
@@ -1453,7 +1492,7 @@ func TestDeepAgentModelActionEvidenceMetadataIncludesResearchTools(t *testing.T)
 		},
 	}
 
-	metadata := deepAgentModelActionEvidenceMetadata("Tolan 是一个 AI 陪伴产品，已完成原始资料汇总。", session, 0)
+	metadata := deepAgentModelActionEvidenceMetadata("Tolan 是一个 AI 陪伴产品，已完成原始资料汇总。", session, 0, LoopContractSourcePolicy{})
 	evidence := deepAgentEvidenceFromActionResult(DeepAgentStepRoute{
 		Mode:         DeepAgentToolModeModel,
 		Executor:     deepAgentRouteExecutorModel,
@@ -2515,15 +2554,117 @@ func TestParallelConflictCreatesReconciliationSupplement(t *testing.T) {
 func TestParallelBranchTimeoutUsesGovernanceTimeout(t *testing.T) {
 	runtime := NewRuntime(RuntimeConfig{
 		LLMGovernanceProvider: func() LLMGovernanceConfig {
-			return LLMGovernanceConfig{ChatTimeout: 1000 * time.Second, SkillTimeout: 1000 * time.Second}
+			return LLMGovernanceConfig{ChatTimeout: 1000 * time.Second, SkillTimeout: 1000 * time.Second, ParallelBranchTimeout: 75 * time.Second}
 		},
 	}, nil, nil, nil, nil)
 	executor := &runtimeDeepAgentSubplanExecutor{runtime: runtime}
-	if got := executor.deepAgentParallelBranchTimeout(DeepAgentAction{}); got != 1000*time.Second {
-		t.Fatalf("branch timeout should follow governance timeout, got %s", got)
+	if got := executor.deepAgentParallelBranchTimeout(DeepAgentAction{}); got != 75*time.Second {
+		t.Fatalf("branch timeout should follow parallel governance timeout, got %s", got)
 	}
 	if got := executor.deepAgentParallelBranchTimeout(DeepAgentAction{Args: map[string]any{"branch_timeout_ms": "120000"}}); got != 120*time.Second {
 		t.Fatalf("explicit branch_timeout_ms should override governance timeout, got %s", got)
+	}
+}
+
+func TestParallelPlannerUsesCoverageFanoutAndGovernanceBudget(t *testing.T) {
+	runtime := NewRuntime(RuntimeConfig{
+		LLMGovernanceProvider: func() LLMGovernanceConfig {
+			return LLMGovernanceConfig{
+				MaxParallelBranches:   3,
+				ParallelBranchTimeout: 45 * time.Second,
+				ParallelMaxToolCalls:  5,
+				ParallelMaxSources:    7,
+				ParallelMaxTokens:     1800,
+			}
+		},
+	}, nil, nil, nil, nil)
+	planner := NewRuntimeDeepAgentPlanner(runtime)
+	step := DeepAgentStep{
+		ID:            "research",
+		Title:         "并行多方向调研 Browserless 产品",
+		Intent:        "拆成多个子任务分别覆盖 company team, product features, pricing availability, user reviews, competitors, risks uncertainty.",
+		DoneCondition: "收集多来源证据，支撑后续报告写作",
+	}
+	action, err := planner.actionForRoute(&DeepAgentState{Goal: "research Browserless"}, step, DeepAgentStepRoute{
+		StepID:       step.ID,
+		Mode:         DeepAgentToolModeMulti,
+		Executor:     deepAgentRouteExecutorSubPlan,
+		AllowedTools: []string{"WebSearch", "WebFetch"},
+	})
+	if err != nil {
+		t.Fatalf("actionForRoute() error = %v", err)
+	}
+	specs := decodeDeepAgentParallelBranchSpecs(action.Args["branch_specs"])
+	if len(specs) != 3 {
+		t.Fatalf("expected governance-capped coverage branches, got %d: %#v", len(specs), specs)
+	}
+	seen := map[string]bool{}
+	for _, spec := range specs {
+		if spec.Kind != "primary" || spec.CoverageDimension == "" {
+			t.Fatalf("branch should be primary with coverage dimension: %#v", spec)
+		}
+		if seen[spec.CoverageDimension] {
+			t.Fatalf("duplicate coverage dimension generated: %#v", specs)
+		}
+		seen[spec.CoverageDimension] = true
+	}
+	if got := deepAgentAnyInt(action.Args["max_branches"], 0); got != 3 {
+		t.Fatalf("max_branches = %d, want 3", got)
+	}
+	if got := deepAgentAnyInt(action.Args["branch_max_sources"], 0); got != 7 {
+		t.Fatalf("branch_max_sources = %d, want 7", got)
+	}
+}
+
+func TestParallelPlannerMergesDuplicateCoverageDimensions(t *testing.T) {
+	action := DeepAgentAction{Args: map[string]any{
+		"branch_specs": []map[string]any{
+			{"id": "pricing-a", "title": "Pricing A", "task": "research pricing and availability"},
+			{"id": "pricing-b", "title": "Pricing B", "task": "verify price tiers and availability"},
+			{"id": "reviews", "title": "Reviews", "task": "research user reviews"},
+		},
+		"max_branches": 4,
+	}}
+	specs := deepAgentParallelPlanBranchSpecs(deepAgentParallelBranchSpecsFromAction(action, nil), action, 4)
+	if len(specs) != 2 {
+		t.Fatalf("expected duplicate pricing coverage to merge, got %#v", specs)
+	}
+	if specs[0].CoverageDimension != "pricing_availability" || !strings.Contains(specs[0].Task, "Merged related branch objective") {
+		t.Fatalf("expected merged pricing branch, got %#v", specs[0])
+	}
+}
+
+func TestParallelJoinOutputsBranchContributions(t *testing.T) {
+	registry := NewRuntimeDeepAgentExecutorRegistry(testRuntime(t), nil)
+	evidence, err := registry.ExecuteStep(context.Background(), DeepAgentStepRoute{StepID: "research", Mode: DeepAgentToolModeMulti, Executor: deepAgentRouteExecutorSubPlan}, DeepAgentAction{
+		StepID: "research",
+		Tool:   DeepAgentToolModeMulti,
+		Args: map[string]any{
+			"branch_specs": []map[string]any{
+				{"id": "pricing", "title": "Pricing", "task": "research pricing availability", "coverage_dimension": "pricing_availability"},
+			},
+			"branch_results": []map[string]any{{
+				"id":     "pricing",
+				"title":  "Pricing",
+				"status": DeepAgentActionStatusSucceeded,
+				"output": "Pricing starts at $49 per month. Availability is public.",
+				"sources": []map[string]any{{
+					"url":   "https://www.browserless.io/pricing",
+					"title": "Browserless pricing",
+				}},
+			}},
+		},
+	}, &DeepAgentState{})
+	if err != nil {
+		t.Fatalf("ExecuteStep() error = %v", err)
+	}
+	var contributions []DeepAgentBranchContribution
+	data, err := json.Marshal(evidence.Diagnostics["branch_contributions"])
+	if err != nil || json.Unmarshal(data, &contributions) != nil || len(contributions) != 1 {
+		t.Fatalf("expected branch contributions, got %#v", evidence.Diagnostics["branch_contributions"])
+	}
+	if contributions[0].CoverageDimension != "pricing_availability" || len(contributions[0].Findings) == 0 || contributions[0].RecommendedNextAction == "" {
+		t.Fatalf("unexpected branch contribution: %#v", contributions[0])
 	}
 }
 
@@ -2677,6 +2818,154 @@ func TestDeepAgentSourceCurationNormalizesAndLimitsSources(t *testing.T) {
 	}
 }
 
+func TestDeepAgentSourcePolicyFiltersAndReportsReasons(t *testing.T) {
+	refs := []DeepAgentSourceRef{
+		{URL: "https://example.com/pricing?utm_source=ad#plans", Title: "Official pricing", Provider: "WebFetch"},
+		{URL: "https://example.com/pricing", Title: "Duplicate pricing", Provider: "WebSearch"},
+		{URL: "https://example.com/docs", Title: "Official docs", Provider: "WebFetch"},
+		{URL: "https://example.com/blog", Title: "Official blog", Provider: "WebSearch"},
+		{URL: "https://blocked.example/review", Title: "Blocked review", Provider: "WebSearch"},
+		{URL: "https://low.example/top-10-tools", Title: "Top 10 sponsored tools", Provider: "WebSearch", QualityScore: 0.1},
+		{URL: "https://news.example/story", Title: "Credible news", Provider: "WebSearch"},
+	}
+	policy := LoopContractSourcePolicy{
+		PreferredDomains:     []string{"example.com"},
+		BlockedDomains:       []string{"blocked.example"},
+		MaxSourcesPerBranch:  4,
+		MaxDuplicateDomains:  2,
+		RequirePrimarySource: true,
+		MinSourceScore:       0.4,
+	}
+
+	got, report := curateDeepAgentSourceRefsWithPolicy(refs, 4, policy)
+	if len(got) != 3 {
+		t.Fatalf("curated sources len = %d, got %#v report %#v", len(got), got, report)
+	}
+	if !report.PrimarySourcePresent || !report.PrimarySourceRequired {
+		t.Fatalf("expected primary source report, got %#v", report)
+	}
+	if report.DuplicateURLCount == 0 || report.DuplicateDomainCount == 0 || report.BlockedDomainCount == 0 || report.LowScoreCount == 0 {
+		t.Fatalf("expected duplicate URL/domain, blocked, and low-score counts, got %#v", report)
+	}
+	for _, ref := range got {
+		if ref.Domain == "" {
+			t.Fatalf("expected curated source domain, got %#v", got)
+		}
+		if len(ref.ScoreReasons) == 0 {
+			t.Fatalf("expected score reasons, got %#v", got)
+		}
+		if ref.Domain == "blocked.example" || strings.Contains(ref.URL, "top-10-tools") {
+			t.Fatalf("filtered source retained: %#v", got)
+		}
+	}
+}
+
+func TestPlannerInjectsSourcePolicyIntoWebResearchAction(t *testing.T) {
+	planner := NewRuntimeDeepAgentPlanner(testRuntime(t))
+	state := &DeepAgentState{
+		Goal: "Research Example product pricing",
+		WorkingMemory: map[string]any{
+			"source_policy": LoopContractSourcePolicy{
+				PreferredDomains:    []string{"example.com"},
+				BlockedDomains:      []string{"spam.example"},
+				MaxDuplicateDomains: 1,
+				MaxSourcesPerBranch: 5,
+				MinSourceScore:      0.45,
+			},
+		},
+	}
+	step := DeepAgentStep{ID: "research", Title: "Research product pricing", Intent: "Find product pricing sources"}
+	route := DeepAgentStepRoute{StepID: "research", Mode: DeepAgentToolModeWeb, Executor: deepAgentRouteExecutorModel, SearchScope: "web"}
+
+	action, err := planner.actionForRoute(state, step, route)
+	if err != nil {
+		t.Fatalf("actionForRoute error: %v", err)
+	}
+	policy := deepAgentSourcePolicyFromAny(action.Args["source_policy"])
+	if policy.MaxDuplicateDomains != 1 || policy.MaxSourcesPerBranch != 5 || !deepAgentDomainMatches("docs.example.com", policy.PreferredDomains) {
+		t.Fatalf("source policy not injected: %#v", policy)
+	}
+	prompt := deepAgentWorkflowString(action.Args, "prompt")
+	if !strings.Contains(prompt, "Source policy:") || !strings.Contains(prompt, "spam.example") {
+		t.Fatalf("web prompt missing source policy, got %q", prompt)
+	}
+}
+
+func TestDeepAgentHandoffBuildsWorkspaceMetadata(t *testing.T) {
+	state := &DeepAgentState{
+		Goal:    "fix code in repo",
+		Status:  DeepAgentRunStatusBlocked,
+		Blocker: "tests failed",
+		Plan: DeepAgentPlan{Steps: []DeepAgentStep{{
+			ID:     "fix",
+			Title:  "Fix failing test",
+			Status: DeepAgentStepStatusFailed,
+		}}},
+		CurrentStepIndex: 0,
+		WorkingMemory: map[string]any{
+			"repo":          "git@example.com/acme/repo.git",
+			"branch":        "feature/fix",
+			"base_commit":   "abc123",
+			"test_commands": []string{"go test ./..."},
+		},
+		ActionHistory: []DeepAgentAction{{
+			StepID: "fix",
+			Tool:   DeepAgentToolModeCodePatch,
+			Args: map[string]any{
+				"changed_files": []string{"internal/app.go"},
+			},
+		}},
+	}
+
+	handoff := buildDeepAgentHandoff(state, time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC))
+	if handoff.Type != "workspace" || !handoff.ResumeAvailable {
+		t.Fatalf("expected workspace resume handoff, got %#v", handoff)
+	}
+	if handoff.Workspace.Repo != "git@example.com/acme/repo.git" || handoff.Workspace.Branch != "feature/fix" || handoff.Workspace.BaseCommit != "abc123" {
+		t.Fatalf("workspace metadata missing: %#v", handoff.Workspace)
+	}
+	if !deepAgentStringSliceContains(handoff.Workspace.ChangedFiles, "internal/app.go") || !deepAgentStringSliceContains(handoff.Workspace.TestCommands, "go test ./...") {
+		t.Fatalf("workspace files/tests missing: %#v", handoff.Workspace)
+	}
+	if handoff.ResumePoint == "" || handoff.Summary == "" || handoff.RecommendedAction == "" {
+		t.Fatalf("handoff should include resume context: %#v", handoff)
+	}
+}
+
+func TestPrepareStateForResumeAppliesHandoffPatch(t *testing.T) {
+	controller := NewDeepAgentController(NewMemoryWorkflowStore(), NoopWorkflowEventSink{}, nil, nil, nil)
+	state := &DeepAgentState{
+		Goal:          "resume code task",
+		Status:        DeepAgentRunStatusBlocked,
+		WorkingMemory: map[string]any{},
+		Handoff: LoopHandoff{
+			Type:        "workspace",
+			ResumePoint: "old step",
+		},
+	}
+
+	controller.prepareStateForResume(DeepAgentResumeRequest{
+		HandoffPatch: LoopHandoff{
+			Type:        "workspace",
+			ResumePoint: "fix: rerun tests",
+			Workspace: WorkspaceHandoff{
+				ChangedFiles: []string{"internal/app.go"},
+				TestCommands: []string{"go test ./internal/..."},
+			},
+		},
+	}, state)
+
+	if state.Handoff.ResumePoint != "fix: rerun tests" {
+		t.Fatalf("handoff patch not applied: %#v", state.Handoff)
+	}
+	if !deepAgentStringSliceContains(state.Handoff.Workspace.ChangedFiles, "internal/app.go") {
+		t.Fatalf("handoff changed files missing: %#v", state.Handoff)
+	}
+	if stored := loopHandoffFromAny(state.WorkingMemory["loop_handoff"]); stored.ResumePoint != state.Handoff.ResumePoint {
+		t.Fatalf("handoff not stored in working memory: %#v", state.WorkingMemory["loop_handoff"])
+	}
+}
+
 func TestParallelJoinTreatsSupplementalFailureAsNonBlocking(t *testing.T) {
 	registry := NewRuntimeDeepAgentExecutorRegistry(testRuntime(t), nil)
 	evidence, err := registry.ExecuteStep(context.Background(), DeepAgentStepRoute{StepID: "research", Mode: DeepAgentToolModeMulti, Executor: deepAgentRouteExecutorSubPlan}, DeepAgentAction{
@@ -2734,6 +3023,53 @@ func TestDeepAgentRouterRoutesExplicitParallelResearchToParallel(t *testing.T) {
 	}
 	if route.Mode != DeepAgentToolModeMulti || route.Executor != deepAgentRouteExecutorSubPlan {
 		t.Fatalf("expected multi route, got %#v", route)
+	}
+}
+
+func TestRuntimePlannerMultiRouteUsesSingleScopedBranchByDefault(t *testing.T) {
+	planner := NewRuntimeDeepAgentPlanner(testRuntime(t))
+	state := &DeepAgentState{Goal: "使用 multi-agent 调研 Crushie AI 产品"}
+	step := DeepAgentStep{
+		ID:            "reviews",
+		Title:         "Reviews, risks, and uncertainty",
+		Intent:        "搜集并整理 Crushie AI 产品的公司背景、创始团队、融资历史、公司愿景等信息 Focus on user reviews, risks, contradictions, gaps, and uncertain claims.",
+		DoneCondition: "收集来源证据，支撑后续报告写作",
+	}
+	action, err := planner.actionForRoute(state, step, DeepAgentStepRoute{
+		StepID:       step.ID,
+		Mode:         DeepAgentToolModeMulti,
+		Executor:     deepAgentRouteExecutorSubPlan,
+		AllowedTools: []string{"WebSearch", "WebFetch"},
+	})
+	if err != nil {
+		t.Fatalf("actionForRoute() error = %v", err)
+	}
+	specs := decodeDeepAgentParallelBranchSpecs(action.Args["branch_specs"])
+	if len(specs) != 1 {
+		t.Fatalf("expected one scoped branch, got %d: %#v", len(specs), specs)
+	}
+	if specs[0].Title != step.Title {
+		t.Fatalf("branch title = %q, want %q", specs[0].Title, step.Title)
+	}
+	if strings.Contains(specs[0].Task, "Focus on pricing") || strings.Contains(specs[0].Task, "Source verification") {
+		t.Fatalf("branch task still contains default fan-out focus text: %q", specs[0].Task)
+	}
+	if got := deepAgentAnyInt(action.Args["max_concurrency"], 0); got != 1 {
+		t.Fatalf("max_concurrency = %d, want 1", got)
+	}
+}
+
+func TestParallelBranchSpecsFromActionUsesSingleBranchFallback(t *testing.T) {
+	specs := deepAgentParallelBranchSpecsFromAction(DeepAgentAction{
+		Args: map[string]any{
+			"task": "搜集并整理 Crushie AI 产品的公司背景与团队信息",
+		},
+	}, nil)
+	if len(specs) != 1 {
+		t.Fatalf("expected one fallback branch, got %d: %#v", len(specs), specs)
+	}
+	if specs[0].ID != "primary" || specs[0].Title != "Primary objective" {
+		t.Fatalf("unexpected fallback branch identity: %#v", specs[0])
 	}
 }
 
@@ -3818,6 +4154,41 @@ func TestDeepAgentObservabilityMetricsTimelineAndReplay(t *testing.T) {
 	if replay.TaskType != "research_report" || len(replay.PlannerDecisions) == 0 || len(replay.ExecutorDecisions) == 0 {
 		t.Fatalf("unexpected replay: %#v", replay)
 	}
+	if replay.TraceSummary.FinalStatus == "" || replay.TraceSummary.RootCause == "" {
+		t.Fatalf("expected replay trace summary, got %#v", replay.TraceSummary)
+	}
+}
+
+func TestDeepAgentTraceSummaryClassifiesGateFailure(t *testing.T) {
+	state := &DeepAgentState{
+		Status:  DeepAgentRunStatusBlocked,
+		Blocker: "source coverage below threshold",
+		GateDecisions: []GateDecision{{
+			Gate:         DeepAgentGateVerify,
+			Allow:        false,
+			Category:     "source_quality",
+			BlockReason:  "source coverage below threshold",
+			RepairHint:   "Collect stronger primary sources.",
+			EvidenceRefs: []string{"source_policy.min_source_score"},
+		}},
+		WorkingMemory: map[string]any{
+			"final_verification": map[string]any{
+				"checks": []any{
+					map[string]any{"name": "sources", "passed": false, "reason": "missing source URL"},
+				},
+			},
+		},
+	}
+	summary := deepAgentTraceSummaryForRun(&WorkflowRun{ID: "run-1", Status: "failed"}, state, DeepAgentReplayReport{})
+	if summary.Category != "source_quality" || summary.FailedGate != DeepAgentGateVerify {
+		t.Fatalf("unexpected summary category/gate: %#v", summary)
+	}
+	if summary.RootCause != "source coverage below threshold" || summary.SuggestedRepair != "Collect stronger primary sources." {
+		t.Fatalf("unexpected summary repair path: %#v", summary)
+	}
+	if len(summary.TopEvidence) == 0 || summary.TopEvidence[0] != "source_policy.min_source_score" {
+		t.Fatalf("expected top evidence from gate decision: %#v", summary.TopEvidence)
+	}
 }
 
 func TestEvaluationEngineSupportsDeepAgentSubject(t *testing.T) {
@@ -4555,7 +4926,7 @@ func TestRuntimeDeepAgentPersistsLearningCandidateMemory(t *testing.T) {
 		t.Fatalf("expected learning candidate in state, got %#v", result.State)
 	}
 	learning := result.State.Learnings[0]
-	if learning.Status != deepAgentLearningStatusPending || !learning.RequiresUserConfirmation || learning.MemoryItemID == "" || learning.RunID == "" || learning.StepID != "finish" || learning.EvidenceID == "" {
+	if learning.Status != deepAgentLearningStatusPending || !learning.RequiresUserConfirmation || learning.MemoryItemID == "" || learning.RunID == "" || learning.StepID != "finish" || learning.EvidenceID == "" || learning.Confidence == 0 || len(learning.EvidenceRefs) == 0 || learning.Owner != "alice" {
 		t.Fatalf("learning should be governed before entering state, got %#v", learning)
 	}
 	items, err := runtime.ListMemoryItems(context.Background(), "alice", MemoryItemFilter{Status: MemoryStatusPendingConfirm})
@@ -4570,6 +4941,9 @@ func TestRuntimeDeepAgentPersistsLearningCandidateMemory(t *testing.T) {
 	}
 	if items[0].Metadata["review_status"] != deepAgentLearningStatusPending || items[0].Metadata["workflow_run_id"] == "" || items[0].Metadata["step_id"] != "finish" || items[0].Metadata["evidence_id"] == "" || len(items[0].SourceRefs) < 2 {
 		t.Fatalf("learning candidate should carry review provenance, got %#v", items[0])
+	}
+	if items[0].Metadata["owner"] != "alice" || items[0].Metadata["confidence"] == nil || items[0].Metadata["evidence_refs"] == nil {
+		t.Fatalf("learning candidate should carry governance metadata, got %#v", items[0].Metadata)
 	}
 	_, err = runtime.ExecuteDeepAgentTask(context.Background(), DeepAgentTaskRequest{
 		UserID: "alice",
@@ -4652,6 +5026,49 @@ func TestRuntimeDeepAgentLearningGovernancePolicy(t *testing.T) {
 	}
 }
 
+func TestRuntimeDeepAgentFailedLearningIsShortTerm(t *testing.T) {
+	memory := NewFileMemoryService(t.TempDir())
+	runtime := NewRuntime(
+		RuntimeConfig{},
+		NewFileSessionStore(t.TempDir()),
+		memory,
+		nil,
+		func(Scope) Runner { return echoRunner{} },
+	)
+	baseTime := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+	controller := &DeepAgentController{learningSink: NewRuntimeDeepAgentLearningSink(runtime), clock: fixedClock{at: baseTime}}
+	state := &DeepAgentState{
+		Goal:          "recover blocked loop",
+		Status:        DeepAgentRunStatusBlocked,
+		Blocker:       "missing source evidence",
+		FailedSteps:   []string{"research"},
+		WorkingMemory: map[string]any{"user_id": "alice", "session_id": "sess-1", "job_id": "job-1"},
+		Plan: DeepAgentPlan{Steps: []DeepAgentStep{{
+			ID:     "research",
+			Title:  "Research",
+			Status: DeepAgentStepStatusFailed,
+		}}},
+	}
+	run := &WorkflowRun{ID: "run-1", UserID: "alice", State: map[string]any{}}
+	candidates := controller.buildLearningCandidates(run, state)
+	if len(candidates) == 0 || candidates[0].Type != deepAgentLearningTypeBadcase {
+		t.Fatalf("expected failed learning candidate, got %#v", candidates)
+	}
+	if err := controller.persistLearnings(context.Background(), run, state, candidates); err != nil {
+		t.Fatalf("persistLearnings() error = %v", err)
+	}
+	items, err := runtime.ListMemoryItems(context.Background(), "alice", MemoryItemFilter{Status: MemoryStatusActive})
+	if err != nil {
+		t.Fatalf("ListMemoryItems(active) error = %v", err)
+	}
+	if len(items) != 1 || items[0].Metadata["review_status"] != deepAgentLearningStatusAccepted || items[0].ExpiresAt == nil || items[0].Metadata["source_job"] != "job-1" {
+		t.Fatalf("failed learning should be active short-term memory with provenance, got %#v", items)
+	}
+	if items[0].ExpiresAt.Sub(baseTime) > 15*24*time.Hour {
+		t.Fatalf("failed learning expiry should be short-term, got %v", items[0].ExpiresAt)
+	}
+}
+
 func TestRuntimeReviewDeepAgentLearningCandidate(t *testing.T) {
 	memory := NewFileMemoryService(t.TempDir())
 	runtime := NewRuntime(
@@ -4706,6 +5123,20 @@ func TestRuntimeReviewDeepAgentLearningCandidate(t *testing.T) {
 	if rejected.Status != MemoryStatusArchived || rejected.Metadata["review_status"] != deepAgentLearningStatusRejected || rejected.Metadata["review_reason"] != "not useful" {
 		t.Fatalf("reject should archive candidate, got %#v", rejected)
 	}
+
+	expireCandidate := candidate
+	expireCandidate.ID = "expire-me"
+	expireCandidate.Content = "DeepAgent candidate to expire."
+	if err := sink.PersistDeepAgentLearnings(context.Background(), nil, &DeepAgentState{}, []DeepAgentLearningCandidate{expireCandidate}); err != nil {
+		t.Fatalf("PersistDeepAgentLearnings(expire) error = %v", err)
+	}
+	expired, err := runtime.ReviewDeepAgentLearningCandidate(context.Background(), "alice", expireCandidate.ID, "expire", "alice", "stale")
+	if err != nil {
+		t.Fatalf("ReviewDeepAgentLearningCandidate(expire) error = %v", err)
+	}
+	if expired.Status != MemoryStatusArchived || expired.Metadata["review_status"] != deepAgentLearningStatusExpired || expired.ExpiresAt == nil || expired.Metadata["review_reason"] != "stale" {
+		t.Fatalf("expire should archive candidate with expiry metadata, got %#v", expired)
+	}
 }
 
 func TestRuntimeDeepAgentLearningSinkFiltersUnsafeOrLowConfidenceCandidates(t *testing.T) {
@@ -4756,12 +5187,13 @@ func TestDeepAgentWorkflowSummaryFromRun(t *testing.T) {
 		store,
 		NoopWorkflowEventSink{},
 		staticDeepAgentPlanner{plan: DeepAgentPlan{Steps: []DeepAgentStep{{ID: "only", Title: "Only", DoneCondition: "done"}}}},
-		completingDeepAgentExecutor{},
+		wordArtifactCompletingDeepAgentExecutor{},
 		nil,
 	)
 	result, err := controller.Execute(context.Background(), DeepAgentTaskRequest{
 		UserID: "alice",
-		Goal:   "summarize admin state",
+		JobID:  "job-contract-1",
+		Goal:   "summarize admin state as a Word file",
 	})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -4774,13 +5206,177 @@ func TestDeepAgentWorkflowSummaryFromRun(t *testing.T) {
 	if !ok || summary == nil || !summary.Present {
 		t.Fatalf("expected deep agent summary, got %#v ok=%t", summary, ok)
 	}
-	if summary.Goal != "summarize admin state" || summary.ActionCount != 1 || len(summary.Plan.Steps) != 1 {
+	if summary.Goal != "summarize admin state as a Word file" || summary.ActionCount != 1 || len(summary.Plan.Steps) != 1 {
 		t.Fatalf("unexpected summary: %#v", summary)
+	}
+	if summary.LoopContract.ID != "loop-job-contract-1" {
+		t.Fatalf("loop contract id = %q", summary.LoopContract.ID)
+	}
+	if summary.LoopContract.Version != LoopContractVersion {
+		t.Fatalf("loop contract version = %q", summary.LoopContract.Version)
+	}
+	if summary.LoopContract.Deliverable.Format != "docx" {
+		t.Fatalf("loop contract deliverable = %#v", summary.LoopContract.Deliverable)
+	}
+	if summary.LoopContract.Budget.MaxActions == 0 {
+		t.Fatalf("expected loop contract budget to be populated: %#v", summary.LoopContract.Budget)
+	}
+	if got, _ := loaded.State["loop_contract_id"].(string); got != "loop-job-contract-1" {
+		t.Fatalf("workflow loop_contract_id = %q", got)
+	}
+	loadedState, stateErr := deepAgentStateFromWorkflowRun(loaded)
+	if stateErr != nil {
+		t.Fatalf("deepAgentStateFromWorkflowRun() error = %v", stateErr)
+	}
+	if loadedState.LoopContract.ID != "loop-job-contract-1" {
+		t.Fatalf("replayed loop contract id = %q", loadedState.LoopContract.ID)
+	}
+	if _, ok := loadedState.WorkingMemory["loop_contract"]; !ok {
+		t.Fatalf("expected loop contract in working memory")
 	}
 	blocked := DeepAgentRecoveryState{BlockedReason: "source evidence is missing", MissingInfo: []string{"source"}}
 	if got := deepAgentBlockedCategory(&DeepAgentState{Status: DeepAgentRunStatusBlocked, Blocker: blocked.BlockedReason}, blocked); got != "missing_user_info" {
 		t.Fatalf("blocked category = %q", got)
 	}
+}
+
+func TestDeepAgentPlanGateBlocksUnknownTool(t *testing.T) {
+	store := NewMemoryWorkflowStore()
+	controller := NewDeepAgentController(
+		store,
+		NoopWorkflowEventSink{},
+		staticDeepAgentPlanner{plan: DeepAgentPlan{Steps: []DeepAgentStep{{
+			ID:            "unsafe",
+			Title:         "Use unknown tool",
+			DoneCondition: "done",
+			Metadata:      map[string]any{"tool": "mystery_tool"},
+		}}}},
+		completingDeepAgentExecutor{},
+		nil,
+	)
+	var events []Event
+	ctx := withJobEventEmitter(context.Background(), func(_ context.Context, event Event) error {
+		events = append(events, event)
+		return nil
+	})
+	result, err := controller.Execute(ctx, DeepAgentTaskRequest{
+		UserID:    "alice",
+		SessionID: "session-1",
+		JobID:     "job-plan-gate",
+		Goal:      "exercise plan gate",
+		Policy:    DeepAgentPolicy{MaxSteps: 2, MaxActions: 2, NoProgressLimit: 1, MaxDuration: time.Minute},
+	})
+	if !errors.Is(err, ErrDeepAgentBlocked) {
+		t.Fatalf("Execute() error = %v, want blocked", err)
+	}
+	decision := lastDeepAgentGateDecision(result.State)
+	if decision.Gate != DeepAgentGatePlan || decision.Category != "tool" || decision.Allow {
+		t.Fatalf("unexpected plan gate decision: %#v", decision)
+	}
+	eventDecision := lastDeepAgentGateDecisionFromEvents(t, events)
+	if eventDecision.Gate != DeepAgentGatePlan || !strings.Contains(eventDecision.BlockReason, "mystery_tool") || eventDecision.RepairHint == "" {
+		t.Fatalf("unexpected plan gate event: %#v", eventDecision)
+	}
+}
+
+func TestDeepAgentExecutionGateRequiresConnectorAuthorization(t *testing.T) {
+	route := DeepAgentStepRoute{
+		StepID:       "github",
+		Mode:         DeepAgentToolModeConnector,
+		Executor:     deepAgentRouteExecutorConnector,
+		SearchScope:  "github",
+		AllowedTools: []string{"github_repo_reader"},
+	}
+	store := NewMemoryWorkflowStore()
+	controller := NewDeepAgentController(
+		store,
+		NoopWorkflowEventSink{},
+		staticDeepAgentPlanner{plan: DeepAgentPlan{Steps: []DeepAgentStep{{
+			ID:            "github",
+			Title:         "Read GitHub issue",
+			DoneCondition: "issue read",
+			Metadata: map[string]any{
+				"tool": DeepAgentToolModeConnector,
+				"args": map[string]any{"step_route": deepAgentStepRouteMap(route)},
+			},
+		}}}},
+		completingDeepAgentExecutor{},
+		nil,
+	)
+	result, err := controller.Execute(context.Background(), DeepAgentTaskRequest{
+		UserID:    "alice",
+		SessionID: "session-1",
+		JobID:     "job-exec-gate",
+		Goal:      "read GitHub issue",
+		Policy:    DeepAgentPolicy{MaxSteps: 2, MaxActions: 2, NoProgressLimit: 1, MaxDuration: time.Minute},
+	})
+	if !errors.Is(err, ErrDeepAgentReviewRequired) {
+		t.Fatalf("Execute() error = %v, want review required", err)
+	}
+	decision := lastDeepAgentGateDecision(result.State)
+	if decision.Gate != DeepAgentGateExecution || decision.Category != "auth" || !decision.RequiresReview {
+		t.Fatalf("unexpected execution gate decision: %#v", decision)
+	}
+	if result.State.Status != DeepAgentRunStatusReviewPending || !strings.Contains(decision.RepairHint, "Reconnect") {
+		t.Fatalf("unexpected review state decision=%#v state=%#v", decision, result.State)
+	}
+}
+
+func TestDeepAgentVerifyGateReportsMissingArtifact(t *testing.T) {
+	store := NewMemoryWorkflowStore()
+	controller := NewDeepAgentController(
+		store,
+		NoopWorkflowEventSink{},
+		staticDeepAgentPlanner{plan: DeepAgentPlan{Steps: []DeepAgentStep{{
+			ID:            "write",
+			Title:         "Draft answer",
+			DoneCondition: "done",
+		}}}},
+		completingDeepAgentExecutor{},
+		nil,
+	)
+	result, err := controller.Execute(context.Background(), DeepAgentTaskRequest{
+		UserID:    "alice",
+		SessionID: "session-1",
+		JobID:     "job-verify-gate",
+		Goal:      "generate a Word document",
+		Policy:    DeepAgentPolicy{MaxSteps: 2, MaxActions: 2, NoProgressLimit: 1, MaxDuration: time.Minute},
+	})
+	if !errors.Is(err, ErrDeepAgentBlocked) {
+		t.Fatalf("Execute() error = %v, want blocked", err)
+	}
+	decision := lastDeepAgentGateDecision(result.State)
+	if decision.Gate != DeepAgentGateVerify || decision.Category != "artifact" || decision.Allow {
+		t.Fatalf("unexpected verify gate decision: %#v", decision)
+	}
+	if !strings.Contains(decision.RepairHint, "artifact") {
+		t.Fatalf("expected artifact repair hint, got %#v", decision)
+	}
+}
+
+func lastDeepAgentGateDecision(state *DeepAgentState) GateDecision {
+	if state == nil || len(state.GateDecisions) == 0 {
+		return GateDecision{}
+	}
+	return state.GateDecisions[len(state.GateDecisions)-1]
+}
+
+func lastDeepAgentGateDecisionFromEvents(t *testing.T, events []Event) GateDecision {
+	t.Helper()
+	for idx := len(events) - 1; idx >= 0; idx-- {
+		if events[idx].Type != "deep_agent_gate_decision" {
+			continue
+		}
+		var payload struct {
+			GateDecision GateDecision `json:"gate_decision"`
+		}
+		if err := json.Unmarshal(events[idx].Data, &payload); err != nil {
+			t.Fatalf("unmarshal gate decision: %v", err)
+		}
+		return payload.GateDecision
+	}
+	t.Fatalf("no gate decision event in %#v", events)
+	return GateDecision{}
 }
 
 type staticDeepAgentPlanner struct {
@@ -4847,6 +5443,55 @@ func (completingDeepAgentExecutor) ExecuteDeepAgentAction(_ context.Context, act
 		Status:    DeepAgentActionStatusSucceeded,
 		Output:    fmt.Sprintf("completed %s", action.StepID),
 		Completed: true,
+	}, nil
+}
+
+type failingDeepAgentEvaluator struct{}
+
+func (failingDeepAgentEvaluator) EvaluateProgress(context.Context, DeepAgentEvaluatorInput) (DeepAgentEvaluatorVerdict, error) {
+	return deepAgentEvaluatorPassVerdict("progress ok", nil), nil
+}
+
+func (failingDeepAgentEvaluator) EvaluateFinal(context.Context, DeepAgentEvaluatorInput) (DeepAgentEvaluatorVerdict, error) {
+	return deepAgentEvaluatorRepairVerdict("evaluator requires repair", []string{"missing independent proof"}, "Add independent proof and rerun final evaluation."), nil
+}
+
+func (failingDeepAgentEvaluator) EvaluateSources(context.Context, DeepAgentEvaluatorInput) (DeepAgentEvaluatorVerdict, error) {
+	return deepAgentEvaluatorPassVerdict("sources ok", nil), nil
+}
+
+func (failingDeepAgentEvaluator) EvaluateArtifact(context.Context, DeepAgentEvaluatorInput) (DeepAgentEvaluatorVerdict, error) {
+	return deepAgentEvaluatorPassVerdict("artifact ok", nil), nil
+}
+
+func (failingDeepAgentEvaluator) EvaluateConflicts(context.Context, DeepAgentEvaluatorInput) (DeepAgentEvaluatorVerdict, error) {
+	return deepAgentEvaluatorPassVerdict("conflicts ok", nil), nil
+}
+
+type wordArtifactCompletingDeepAgentExecutor struct{}
+
+func (wordArtifactCompletingDeepAgentExecutor) ExecuteDeepAgentAction(_ context.Context, action DeepAgentAction, _ *DeepAgentState) (DeepAgentActionResult, error) {
+	evidence := DeepAgentStepEvidence{
+		StepID:  action.StepID,
+		Output:  "Word artifact created.",
+		Summary: "Created a Word document artifact.",
+		Artifacts: []DeepAgentArtifactRef{{
+			ID:          "artifact-docx-1",
+			Filename:    "admin-summary.docx",
+			ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+			SizeBytes:   2048,
+			StepID:      action.StepID,
+		}},
+	}
+	return DeepAgentActionResult{
+		Status:    DeepAgentActionStatusSucceeded,
+		Output:    evidence.Summary,
+		Completed: true,
+		Metadata: map[string]any{
+			"step_id":       action.StepID,
+			"step_evidence": evidence,
+			"artifact_refs": evidence.Artifacts,
+		},
 	}, nil
 }
 

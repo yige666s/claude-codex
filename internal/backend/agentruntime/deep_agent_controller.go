@@ -24,6 +24,7 @@ type DeepAgentController struct {
 	planner       DeepAgentPlanner
 	executor      DeepAgentExecutor
 	verifier      DeepAgentVerifier
+	evaluator     DeepAgentEvaluator
 	contextLoader DeepAgentContextLoader
 	evidenceStore DeepAgentEvidenceStore
 	evidenceRepo  DeepAgentEvidenceRepository
@@ -54,6 +55,7 @@ func NewDeepAgentController(store WorkflowStore, events WorkflowEventSink, plann
 		planner:       planner,
 		executor:      executor,
 		verifier:      verifier,
+		evaluator:     newRuleDeepAgentEvaluator(verifier),
 		contextLoader: noopDeepAgentContextLoader{},
 		evidenceStore: deepAgentDefaultEvidenceStore(),
 		clock:         systemClock{},
@@ -63,6 +65,12 @@ func NewDeepAgentController(store WorkflowStore, events WorkflowEventSink, plann
 func (c *DeepAgentController) SetContextLoader(loader DeepAgentContextLoader) {
 	if c != nil && loader != nil {
 		c.contextLoader = loader
+	}
+}
+
+func (c *DeepAgentController) SetEvaluator(evaluator DeepAgentEvaluator) {
+	if c != nil && evaluator != nil {
+		c.evaluator = evaluator
 	}
 }
 
@@ -96,6 +104,15 @@ func (c *DeepAgentController) Execute(ctx context.Context, req DeepAgentTaskRequ
 	}
 	req = applyDeepAgentTaskTemplateToTaskRequest(req)
 	req.Policy = normalizeDeepAgentPolicy(req.Policy)
+	contract := BuildLoopContractFromDeepAgentRequest(req, firstNonEmptyString(req.JobID, jobIDFromContext(ctx)), requestIDFromContext(ctx), c.now())
+	req.LoopContract = contract
+	if req.State == nil {
+		req.State = map[string]any{}
+	}
+	req.State["loop_contract"] = contract
+	req.State["loop_contract_id"] = contract.ID
+	req.State["loop_contract_version"] = contract.Version
+	req.State["loop_goal_id"] = firstNonEmptyString(deepAgentWorkflowString(req.State, "loop_goal_id"), contract.ID)
 	engine := NewWorkflowEngine(c.store, c.events)
 	var state *DeepAgentState
 	engine.RegisterStepHandler("initialize_task", func(ctx context.Context, run *WorkflowRun, input map[string]any) (map[string]any, error) {
@@ -103,6 +120,8 @@ func (c *DeepAgentController) Execute(ctx context.Context, req DeepAgentTaskRequ
 		state = &DeepAgentState{
 			Goal:           strings.TrimSpace(req.Goal),
 			Rubric:         normalizeDeepAgentRubric(req.Rubric),
+			LoopContract:   contract,
+			Handoff:        LoopHandoff{},
 			TriedActions:   map[string]int{},
 			Status:         DeepAgentRunStatusRunning,
 			StartedAt:      now,
@@ -124,13 +143,35 @@ func (c *DeepAgentController) Execute(ctx context.Context, req DeepAgentTaskRequ
 		if !deepAgentRubricEmpty(state.Rubric) {
 			state.WorkingMemory["rubric"] = state.Rubric
 		}
+		hydrateLoopContractWorkingMemory(state.WorkingMemory, contract)
+		updateDeepAgentHandoff(state, now)
+		emitJobEventFromContext(ctx, Event{
+			Type:      "deep_agent_loop_contract",
+			SessionID: req.SessionID,
+			JobID:     firstNonEmptyString(req.JobID, jobIDFromContext(ctx)),
+			Role:      "workflow",
+			Content:   "Loop contract established",
+			Data: deepAgentEventData(map[string]any{
+				"event_group":           "run",
+				"loop_contract":         contract,
+				"loop_contract_id":      contract.ID,
+				"loop_contract_version": contract.Version,
+				"task_type":             contract.TaskType,
+				"deliverable":           contract.Deliverable,
+				"budget":                contract.Budget,
+				"stop_policy":           contract.StopPolicy,
+			}),
+		})
 		c.persistState(ctx, run, state)
 		return map[string]any{
-			"goal":             state.Goal,
-			"deep_agent_state": state,
-			"max_steps":        req.Policy.MaxSteps,
-			"max_actions":      req.Policy.MaxActions,
-			"max_duration_ms":  req.Policy.MaxDuration.Milliseconds(),
+			"goal":                  state.Goal,
+			"deep_agent_state":      state,
+			"loop_contract":         contract,
+			"loop_contract_id":      contract.ID,
+			"loop_contract_version": contract.Version,
+			"max_steps":             req.Policy.MaxSteps,
+			"max_actions":           req.Policy.MaxActions,
+			"max_duration_ms":       req.Policy.MaxDuration.Milliseconds(),
 		}, nil
 	})
 	engine.RegisterStepHandler("load_context", func(ctx context.Context, run *WorkflowRun, input map[string]any) (map[string]any, error) {
@@ -183,13 +224,26 @@ func (c *DeepAgentController) Execute(ctx context.Context, req DeepAgentTaskRequ
 		if len(plan.Steps) == 0 {
 			return nil, fmt.Errorf("deep agent plan has no steps")
 		}
-		if len(plan.Steps) > req.Policy.MaxSteps {
-			state.Status = DeepAgentRunStatusBudgetExceeded
-			state.Blocker = fmt.Sprintf("plan has %d steps, max is %d", len(plan.Steps), req.Policy.MaxSteps)
-			c.persistState(ctx, run, state)
-			return nil, fmt.Errorf("%w: %s", ErrDeepAgentBudgetExceeded, state.Blocker)
-		}
 		state.Plan = plan
+		decision := c.planGateDecision(state, plan, req.Policy)
+		c.recordGateDecision(ctx, run, state, decision)
+		if !decision.Allow {
+			state.Status = DeepAgentRunStatusBudgetExceeded
+			if decision.RequiresReview {
+				state.Status = DeepAgentRunStatusReviewPending
+			} else if decision.Category != "budget" {
+				state.Status = DeepAgentRunStatusBlocked
+			}
+			state.Blocker = decision.BlockReason
+			c.persistState(ctx, run, state)
+			if decision.RequiresReview {
+				return map[string]any{"deep_agent_state": state, "gate_decision": decision}, fmt.Errorf("%w: %s", ErrDeepAgentReviewRequired, state.Blocker)
+			}
+			if decision.Category == "budget" {
+				return map[string]any{"deep_agent_state": state, "gate_decision": decision}, fmt.Errorf("%w: %s", ErrDeepAgentBudgetExceeded, state.Blocker)
+			}
+			return map[string]any{"deep_agent_state": state, "gate_decision": decision}, fmt.Errorf("%w: %s", ErrDeepAgentBlocked, state.Blocker)
+		}
 		plannedConnectors := deepAgentPlannedConnectors(req, state, plan)
 		if len(plannedConnectors) > 0 {
 			state.WorkingMemory["planned_connectors"] = plannedConnectors
@@ -227,28 +281,7 @@ func (c *DeepAgentController) Execute(ctx context.Context, req DeepAgentTaskRequ
 		return output, nil
 	})
 	engine.RegisterStepHandler("verify_final_result", func(ctx context.Context, run *WorkflowRun, input map[string]any) (map[string]any, error) {
-		verification, err := c.verifier.CheckFinal(ctx, state)
-		if err != nil {
-			return nil, err
-		}
-		recordDeepAgentFinalVerification(state, verification)
-		if !verification.Done {
-			state.Status = DeepAgentRunStatusBlocked
-			state.Blocker = firstNonEmptyString(verification.Reason, "final verification did not pass")
-			state.UpdatedAt = c.now()
-			c.persistState(ctx, run, state)
-			return map[string]any{"deep_agent_state": state, "final_verification": verification}, fmt.Errorf("%w: %s", ErrDeepAgentBlocked, state.Blocker)
-		}
-		state.Status = DeepAgentRunStatusSucceeded
-		state.UpdatedAt = c.now()
-		c.persistState(ctx, run, state)
-		return map[string]any{
-			"final_status":        state.Status,
-			"verification":        verification.Reason,
-			"final_verification":  verification,
-			"final_artifact_refs": state.WorkingMemory["final_artifact_refs"],
-			"deep_agent_state":    state,
-		}, nil
+		return c.evaluateFinalResult(ctx, run, state)
 	})
 	engine.RegisterStepHandler("persist_learnings", func(ctx context.Context, run *WorkflowRun, input map[string]any) (map[string]any, error) {
 		candidates := c.buildLearningCandidates(run, state)
@@ -268,8 +301,13 @@ func (c *DeepAgentController) Execute(ctx context.Context, req DeepAgentTaskRequ
 		SessionID:  req.SessionID,
 		JobID:      firstNonEmptyString(req.JobID, jobIDFromContext(ctx)),
 		State: map[string]any{
-			"goal":       strings.TrimSpace(req.Goal),
-			"request_id": requestIDFromContext(ctx),
+			"goal":                  strings.TrimSpace(req.Goal),
+			"request_id":            requestIDFromContext(ctx),
+			"loop_contract":         contract,
+			"loop_contract_id":      contract.ID,
+			"loop_contract_version": contract.Version,
+			"task_type":             contract.TaskType,
+			"deliverable":           contract.Deliverable,
 		},
 	})
 	result := &DeepAgentTaskResult{Run: run, State: state}
@@ -335,29 +373,7 @@ func (c *DeepAgentController) Resume(ctx context.Context, req DeepAgentResumeReq
 		return c.finishResume(ctx, run, state, loopErr)
 	}
 	verifyErr := c.recordDeepAgentResumeStep(ctx, run, "resume_verify_final_result", func(step *WorkflowStepRun) (map[string]any, error) {
-		verification, err := c.verifier.CheckFinal(ctx, state)
-		if err != nil {
-			return nil, err
-		}
-		recordDeepAgentFinalVerification(state, verification)
-		if !verification.Done {
-			state.Status = DeepAgentRunStatusBlocked
-			state.Blocker = firstNonEmptyString(verification.Reason, "final verification did not pass")
-			state.UpdatedAt = c.now()
-			c.persistState(ctx, run, state)
-			return map[string]any{"deep_agent_state": state, "final_verification": verification}, fmt.Errorf("%w: %s", ErrDeepAgentBlocked, state.Blocker)
-		}
-		state.Status = DeepAgentRunStatusSucceeded
-		state.Blocker = ""
-		state.UpdatedAt = c.now()
-		c.persistState(ctx, run, state)
-		return map[string]any{
-			"final_status":        state.Status,
-			"verification":        verification.Reason,
-			"final_verification":  verification,
-			"final_artifact_refs": state.WorkingMemory["final_artifact_refs"],
-			"deep_agent_state":    state,
-		}, nil
+		return c.evaluateFinalResult(ctx, run, state)
 	})
 	if verifyErr != nil {
 		return c.finishResume(ctx, run, state, verifyErr)
@@ -411,6 +427,13 @@ func (c *DeepAgentController) prepareStateForResume(req DeepAgentResumeRequest, 
 	}
 	for key, value := range req.StatePatch {
 		state.WorkingMemory[key] = value
+	}
+	if !loopHandoffEmpty(req.HandoffPatch) {
+		state.Handoff = mergeDeepAgentHandoffPatch(state.Handoff, req.HandoffPatch)
+		state.WorkingMemory["loop_handoff"] = state.Handoff
+	}
+	if raw := state.WorkingMemory["loop_handoff"]; raw != nil && loopHandoffEmpty(state.Handoff) {
+		state.Handoff = loopHandoffFromAny(raw)
 	}
 	applyDeepAgentReviewDecision(state, deepAgentReviewDecisionFromResume(req, state))
 	resumeCount := deepAgentAnyInt(state.WorkingMemory["resume_count"], 0) + 1
@@ -611,6 +634,87 @@ func recordDeepAgentFinalVerification(state *DeepAgentState, verification DeepAg
 	state.WorkingMemory["final_verification"] = record
 }
 
+func stateSessionID(run *WorkflowRun) string {
+	if run == nil {
+		return ""
+	}
+	return run.SessionID
+}
+
+func stateJobID(run *WorkflowRun) string {
+	if run == nil {
+		return ""
+	}
+	return run.JobID
+}
+
+func (c *DeepAgentController) evaluateFinalResult(ctx context.Context, run *WorkflowRun, state *DeepAgentState) (map[string]any, error) {
+	verification, err := c.verifier.CheckFinal(ctx, state)
+	if err != nil {
+		return nil, err
+	}
+	recordDeepAgentFinalVerification(state, verification)
+	input := deepAgentEvaluatorInputFromState(state)
+	input.TraceSummary.VerifierChecks = append([]DeepAgentVerificationCheck(nil), verification.Checks...)
+	verdict, err := c.evaluator.EvaluateFinal(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	recordDeepAgentEvaluatorVerdict(state, verdict)
+	emitJobEventFromContext(ctx, Event{
+		Type:      "deep_agent_evaluator_verdict",
+		SessionID: stateSessionID(run),
+		JobID:     stateJobID(run),
+		Role:      "workflow",
+		Content:   firstNonEmptyString(verdict.Reason, verdict.Verdict),
+		Data: deepAgentEventData(map[string]any{
+			"event_group":       "run",
+			"evaluator_verdict": verdict,
+			"verdict":           verdict.Verdict,
+			"passed":            verdict.Passed,
+			"failed_criteria":   verdict.FailedCriteria,
+			"repair_plan":       verdict.RepairPlan,
+			"source_coverage":   verdict.SourceCoverage,
+			"rubric_coverage":   verdict.RubricCoverage,
+		}),
+	})
+	decision := c.verifyGateDecision(state, verification)
+	if !verdict.Passed && decision.Allow {
+		decision = blockGateDecision(
+			DeepAgentGateVerify,
+			"evaluator",
+			firstNonEmptyString(verdict.Reason, "final evaluator did not pass"),
+			strings.Join(verdict.RepairPlan, " "),
+			"evaluator_verdict",
+		)
+	}
+	c.recordGateDecision(ctx, run, state, decision)
+	if !decision.Allow || !verdict.Passed {
+		state.Status = DeepAgentRunStatusBlocked
+		state.Blocker = firstNonEmptyString(decision.BlockReason, verdict.Reason, verification.Reason, "final evaluator did not pass")
+		state.UpdatedAt = c.now()
+		c.persistState(ctx, run, state)
+		return map[string]any{
+			"deep_agent_state":   state,
+			"final_verification": verification,
+			"evaluator_verdict":  verdict,
+			"gate_decision":      decision,
+		}, fmt.Errorf("%w: %s", ErrDeepAgentBlocked, state.Blocker)
+	}
+	state.Status = DeepAgentRunStatusSucceeded
+	state.Blocker = ""
+	state.UpdatedAt = c.now()
+	c.persistState(ctx, run, state)
+	return map[string]any{
+		"final_status":        state.Status,
+		"verification":        verification.Reason,
+		"final_verification":  verification,
+		"evaluator_verdict":   verdict,
+		"final_artifact_refs": state.WorkingMemory["final_artifact_refs"],
+		"deep_agent_state":    state,
+	}, nil
+}
+
 func (c *DeepAgentController) recordDeepAgentResumeStep(ctx context.Context, run *WorkflowRun, name string, handler func(*WorkflowStepRun) (map[string]any, error)) error {
 	now := c.now()
 	stepIndex := 0
@@ -729,6 +833,30 @@ func (c *DeepAgentController) executeLoop(ctx context.Context, run *WorkflowRun,
 		action.Hash = firstNonEmptyString(action.Hash, deepAgentActionHash(action))
 		if state.TriedActions == nil {
 			state.TriedActions = map[string]int{}
+		}
+		decision := c.executionGateDecision(state, step, action, policy)
+		c.recordGateDecision(ctx, run, state, decision)
+		if !decision.Allow {
+			state.Plan.Steps[stepIndex].Status = DeepAgentStepStatusFailed
+			state.FailedSteps = appendUniqueString(state.FailedSteps, step.ID)
+			state.Status = DeepAgentRunStatusBlocked
+			if decision.RequiresReview {
+				state.Status = DeepAgentRunStatusReviewPending
+				recordDeepAgentPendingReview(state, step, action, decision.BlockReason, c.now())
+			}
+			if decision.Category == "budget" {
+				state.Status = DeepAgentRunStatusBudgetExceeded
+			}
+			state.Blocker = decision.BlockReason
+			state.UpdatedAt = c.now()
+			c.persistState(ctx, run, state)
+			if decision.RequiresReview {
+				return fmt.Errorf("%w: %s", ErrDeepAgentReviewRequired, state.Blocker)
+			}
+			if decision.Category == "budget" {
+				return fmt.Errorf("%w: %s", ErrDeepAgentBudgetExceeded, state.Blocker)
+			}
+			return fmt.Errorf("%w: %s", ErrDeepAgentBlocked, state.Blocker)
 		}
 		if err := c.reviewActionRisk(ctx, run, state, step, action); err != nil {
 			if errors.Is(err, ErrDeepAgentPolicyBlocked) {
@@ -1646,13 +1774,38 @@ func (c *DeepAgentController) persistState(ctx context.Context, run *WorkflowRun
 	if run.State == nil {
 		run.State = map[string]any{}
 	}
+	previousHandoff := loopHandoffFromAny(run.State["loop_handoff"])
+	handoff := updateDeepAgentHandoff(state, c.now())
 	run.State["deep_agent_state"] = state
 	run.State["deep_agent_status"] = state.Status
+	run.State["loop_handoff"] = handoff
 	run.State["deep_agent_action_count"] = state.ActionCount
 	run.State["deep_agent_recovery"] = deepAgentRecoveryStateForSummary(state)
 	run.State["deep_agent_metrics"] = deepAgentLoopMetricsForRun(run, state)
 	run.State["deep_agent_timeline"] = deepAgentTimelineForState(state)
 	run.State["deep_agent_governance"] = deepAgentGovernanceStateForRun(state)
+	run.State["deep_agent_gate_decisions"] = append([]GateDecision(nil), state.GateDecisions...)
+	if len(state.GateDecisions) > 0 {
+		run.State["last_gate_decision"] = state.GateDecisions[len(state.GateDecisions)-1]
+	}
+	if !loopHandoffEmpty(handoff) && handoff.Summary != previousHandoff.Summary {
+		emitJobEventFromContext(ctx, Event{
+			Type:    "deep_agent_handoff",
+			Role:    "workflow",
+			Content: handoff.Summary,
+			Data: deepAgentEventData(map[string]any{
+				"event_group":  "run",
+				"loop_handoff": handoff,
+				"handoff":      handoff,
+				"resume_point": handoff.ResumePoint,
+			}),
+		})
+	}
+	if state.LoopContract.ID != "" {
+		run.State["loop_contract"] = state.LoopContract
+		run.State["loop_contract_id"] = state.LoopContract.ID
+		run.State["loop_contract_version"] = state.LoopContract.Version
+	}
 	run.UpdatedAt = c.now()
 	if c.evidenceRepo != nil {
 		if err := c.evidenceRepo.UpsertRunEvidence(ctx, run, state); err != nil {

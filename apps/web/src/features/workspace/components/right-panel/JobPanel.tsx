@@ -1,10 +1,11 @@
 import { ChevronDown, Copy, Download, Filter } from "lucide-react";
 import { useMemo, useState } from "react";
+import { userFacingErrorMessage } from "../../../../api/errorMessages";
 import { Button } from "../../../../components/ui/button";
 import { MotionPanel } from "../../../../components/motion";
-import type { Job, JobEvent, JobStatus, RuntimeEvent } from "../../../../types";
+import type { DeepAgentTraceSummary, GateDecision, Job, JobEvent, JobStatus, LoopContract, LoopHandoff, RuntimeEvent } from "../../../../types";
 import type { JobStreamStatus } from "../../workspaceTypes";
-import { buildParallelGroupsFromJobEvents, formatParallelDuration, type ParallelGroupTrace } from "../parallelTrace";
+import { buildParallelGroupsFromJobEvents, formatParallelDuration, type ParallelBranchBudget, type ParallelGroupTrace } from "../parallelTrace";
 
 export const terminalJobs = new Set(["succeeded", "failed", "cancelled"]);
 
@@ -72,6 +73,10 @@ export function JobEventTimeline({ events }: { events: JobEvent[] }) {
   const visibleEvents = useMemo(() => visibleJobEvents(events), [events]);
   const filteredEvents = useMemo(() => visibleEvents.filter((event) => eventMatchesFilter(event, filter)), [visibleEvents, filter]);
   const parallelGroups = useMemo(() => buildParallelGroupsFromJobEvents(visibleEvents), [visibleEvents]);
+  const loopContract = useMemo(() => loopContractFromEvents(visibleEvents), [visibleEvents]);
+  const handoff = useMemo(() => loopHandoffFromEvents(visibleEvents), [visibleEvents]);
+  const gateDecision = useMemo(() => latestBlockingGateDecision(visibleEvents), [visibleEvents]);
+  const traceSummary = useMemo(() => traceSummaryFromEvents(visibleEvents), [visibleEvents]);
   const groups = groupJobEvents(filteredEvents);
   if (!visibleEvents.length) return <div className="empty-small">No job events yet</div>;
   return (
@@ -101,6 +106,10 @@ export function JobEventTimeline({ events }: { events: JobEvent[] }) {
           </button>
         </div>
       </div>
+      {loopContract && <LoopContractOverview contract={loopContract} />}
+      {traceSummary && <TraceSummaryCard summary={traceSummary} />}
+      {handoff && <HandoffOverview handoff={handoff} />}
+      {gateDecision && <GateDecisionNotice decision={gateDecision} />}
       {parallelGroups.length > 0 && <ParallelJobOverview groups={parallelGroups} />}
       <div className="timeline">
         {groups.map((group) => (
@@ -117,6 +126,93 @@ export function JobEventTimeline({ events }: { events: JobEvent[] }) {
         {!groups.length && <div className="empty-small">No trace events match this filter</div>}
       </div>
     </>
+  );
+}
+
+function LoopContractOverview({ contract }: { contract: LoopContract }) {
+  const deliverable = contract.deliverable;
+  const stopConditions = contract.stop_policy?.done_when?.filter(Boolean).slice(0, 2) || [];
+  return (
+    <section className="loop-contract-overview" aria-label="Loop contract summary">
+      <header>
+        <strong>Loop Contract</strong>
+        <span>{contract.version || "loop-contract/v1"}</span>
+      </header>
+      <dl>
+        <div>
+          <dt>Objective</dt>
+          <dd>{contract.objective || "Current task"}</dd>
+        </div>
+        <div>
+          <dt>Task type</dt>
+          <dd>{humanizeToken(contract.task_type || "general_task")}</dd>
+        </div>
+        <div>
+          <dt>Deliverable</dt>
+          <dd>{formatLoopDeliverable(deliverable)}</dd>
+        </div>
+        <div>
+          <dt>Budget</dt>
+          <dd>{formatLoopBudget(contract.budget)}</dd>
+        </div>
+        {stopConditions.length > 0 && (
+          <div>
+            <dt>Done when</dt>
+            <dd>{stopConditions.join(" · ")}</dd>
+          </div>
+        )}
+      </dl>
+    </section>
+  );
+}
+
+function HandoffOverview({ handoff }: { handoff: LoopHandoff }) {
+  const workspace = handoff.workspace || {};
+  const artifact = handoff.artifact || {};
+  const connector = handoff.connector || {};
+  const artifactLabel = artifact.final_artifact
+    ? stringValue(artifact.final_artifact.filename || artifact.final_artifact.id)
+    : artifact.source_artifacts?.length ? `${artifact.source_artifacts.length} artifact(s)` : "";
+  const rows = compactRows([
+    ["Type", humanizeToken(handoff.type || "handoff")],
+    ["Resume point", handoff.resume_point],
+    ["Summary", handoff.summary],
+    ["Workspace", [workspace.repo, workspace.branch, workspace.worktree].filter(Boolean).join(" · ")],
+    ["Changed files", previewInlineList(workspace.changed_files || [], 3, "; ")],
+    ["Tests", previewInlineList(workspace.test_commands || [], 2, "; ")],
+    ["Artifacts", artifactLabel],
+    ["Connector", [connector.provider, connector.risk_level].filter(Boolean).join(" · ")],
+    ["Review", handoff.review_state],
+    ["Next", handoff.recommended_action]
+  ]);
+  return (
+    <section className="loop-contract-overview handoff-overview" aria-label="Handoff summary">
+      <header>
+        <strong>Handoff</strong>
+        <span>{handoff.resume_available ? "Resume available" : humanizeToken(handoff.review_state || "current state")}</span>
+      </header>
+      <dl>
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+function GateDecisionNotice({ decision }: { decision: GateDecision }) {
+  return (
+    <section className="gate-decision-notice" aria-label="Gate decision">
+      <header>
+        <strong>{humanizeToken(decision.gate || "gate")} gate</strong>
+        <span>{gateRecoveryLabel(decision)}</span>
+      </header>
+      <p>{decision.block_reason || "Execution is waiting for a gate decision."}</p>
+      {decision.repair_hint && <small>{decision.repair_hint}</small>}
+    </section>
   );
 }
 
@@ -146,14 +242,32 @@ function ParallelJobOverview({ groups }: { groups: ParallelGroupTrace[] }) {
                     <dt>Objective</dt>
                     <dd>{branch.objective || branch.id}</dd>
                   </div>
+                  {(branch.kind || branch.coverageDimension) && (
+                    <div>
+                      <dt>Scope</dt>
+                      <dd>{[branch.kind, branch.coverageDimension].filter(Boolean).join(" · ")}</dd>
+                    </div>
+                  )}
                   <div>
                     <dt>Evidence</dt>
                     <dd>{branch.sourceCount} sources · {branch.artifactCount} artifacts · {branch.toolCallCount} tools</dd>
                   </div>
+                  {branch.budget && (
+                    <div>
+                      <dt>Budget</dt>
+                      <dd>{formatBranchBudget(branch.budget)}</dd>
+                    </div>
+                  )}
                   {branch.durationMs && (
                     <div>
                       <dt>Duration</dt>
                       <dd>{formatParallelDuration(branch.durationMs)}</dd>
+                    </div>
+                  )}
+                  {branch.recommendedNextAction && (
+                    <div>
+                      <dt>Next</dt>
+                      <dd>{branch.recommendedNextAction}</dd>
                     </div>
                   )}
                   {branch.error && (
@@ -163,15 +277,7 @@ function ParallelJobOverview({ groups }: { groups: ParallelGroupTrace[] }) {
                     </div>
                   )}
                 </dl>
-                {branch.sources.length > 0 && (
-                  <div className="parallel-source-chips">
-                    {branch.sources.slice(0, 6).map((source, index) => source.url ? (
-                      <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.title || source.provider || `Source ${index + 1}`}</a>
-                    ) : (
-                      <span key={`${source.title || source.provider}-${index}`}>{source.title || source.provider || `Source ${index + 1}`}</span>
-                    ))}
-                  </div>
-                )}
+                {branch.sources.length > 0 && <ParallelSourceChips sources={branch.sources} />}
               </details>
             ))}
           </div>
@@ -179,6 +285,212 @@ function ParallelJobOverview({ groups }: { groups: ParallelGroupTrace[] }) {
       ))}
     </section>
   );
+}
+
+function ParallelSourceChips({ sources }: { sources: ParallelGroupTrace["sources"] }) {
+  const [expanded, setExpanded] = useState(false);
+  const visibleSources = expanded ? sources : sources.slice(0, 6);
+  const hiddenCount = sources.length - visibleSources.length;
+  return (
+    <div className="parallel-source-chips">
+      {visibleSources.map((source, index) => {
+        const label = source.title || source.provider || source.domain || `Source ${index + 1}`;
+        return source.url ? (
+          <a key={source.url} href={source.url} target="_blank" rel="noreferrer" title={source.url}>{label}</a>
+        ) : (
+          <span key={`${label}-${index}`}>{label}</span>
+        );
+      })}
+      {sources.length > 6 && (
+        <button type="button" onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "Show fewer sources" : `Show ${hiddenCount} more sources`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function loopContractFromEvents(events: JobEvent[]): LoopContract | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const data = eventData(events[index]);
+    const contract = recordValue(data?.loop_contract);
+    if (contract && stringValue(contract.id)) return contract as LoopContract;
+  }
+  return null;
+}
+
+function loopHandoffFromEvents(events: JobEvent[]): LoopHandoff | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const data = eventData(events[index]);
+    const handoff = recordValue(data?.handoff || data?.loop_handoff);
+    if (handoff && (stringValue(handoff.type) || stringValue(handoff.summary) || stringValue(handoff.resume_point))) return handoff as LoopHandoff;
+    const state = recordValue(data?.deep_agent_state);
+    const stateHandoff = recordValue(state?.handoff);
+    if (stateHandoff && (stringValue(stateHandoff.type) || stringValue(stateHandoff.summary) || stringValue(stateHandoff.resume_point))) return stateHandoff as LoopHandoff;
+  }
+  return null;
+}
+
+function traceSummaryFromEvents(events: JobEvent[]): DeepAgentTraceSummary | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const data = eventData(events[index]);
+    const summary = recordValue(data?.trace_summary);
+    if (summary && (stringValue(summary.root_cause) || stringValue(summary.final_status))) {
+      return summary as DeepAgentTraceSummary;
+    }
+  }
+  const gate = latestBlockingGateDecision(events);
+  if (gate) {
+    return {
+      final_status: gate.requires_review ? "review_required" : "blocked",
+      root_cause: gate.block_reason || "Execution is waiting on a gate decision.",
+      category: gate.category,
+      failed_phase: gate.gate,
+      failed_gate: gate.gate,
+      suggested_repair: gate.repair_hint || gateRecoveryLabel(gate),
+      top_evidence: gate.evidence_refs
+    };
+  }
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const data = eventData(event);
+    if (event.type === "deep_agent_evaluator_verdict" && data?.passed === false) {
+      return {
+        final_status: "needs_repair",
+        root_cause: stringValue(data.reason) || displayValue(data.failed_criteria) || "Final evaluator failed.",
+        category: "verifier_failed",
+        failed_phase: "verify",
+        suggested_repair: displayValue(data.repair_plan) || "Address failed evaluator criteria and rerun final verification.",
+        top_evidence: stringArrayValue(data.failed_criteria)
+      };
+    }
+    if (event.event?.error || event.type.endsWith("_failed")) {
+      return {
+        final_status: "failed",
+        root_cause: event.event?.error || event.event?.content || "Job event failed.",
+        category: traceCategoryFromText(`${event.type} ${event.event?.error || ""} ${JSON.stringify(data || {})}`),
+        failed_phase: eventGroupForType(event.type),
+        failed_tool: stringValue(data?.tool || data?.tool_name || data?.provider),
+        suggested_repair: "Inspect the top evidence and resume from the latest safe checkpoint.",
+        top_evidence: [event.type, stringValue(data?.step_id || data?.action_id || data?.run_id)].filter(Boolean)
+      };
+    }
+  }
+  return null;
+}
+
+function TraceSummaryCard({ summary }: { summary: DeepAgentTraceSummary }) {
+  const rows = compactRows([
+    ["Status", humanizeToken(summary.final_status || "unknown")],
+    ["Category", humanizeToken(summary.category || "")],
+    ["Phase", humanizeToken(summary.failed_phase || "")],
+    ["Gate", humanizeToken(summary.failed_gate || "")],
+    ["Tool", summary.failed_tool],
+    ["Repair", summary.suggested_repair],
+    ["Evidence", previewInlineList(summary.top_evidence || [], 4, " · ")]
+  ]);
+  return (
+    <section className="loop-contract-overview trace-summary-card" aria-label="Root cause summary">
+      <header>
+        <strong>Root Cause</strong>
+        <span>{humanizeToken(summary.category || summary.final_status || "trace summary")}</span>
+      </header>
+      <p>{summary.root_cause || "No root cause available yet."}</p>
+      {rows.length > 0 && (
+        <dl>
+          {rows.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </section>
+  );
+}
+
+function formatBranchBudget(budget: ParallelBranchBudget): string {
+  const parts = [
+    budget.timeout_ms ? `${formatParallelDuration(budget.timeout_ms)} timeout` : "",
+    budget.max_tool_calls ? `${budget.max_tool_calls} tools` : "",
+    budget.max_sources ? `${budget.max_sources} sources` : "",
+    budget.max_tokens ? `${budget.max_tokens} tokens` : ""
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "Default";
+}
+
+function stringArrayValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => stringValue(item)).filter(Boolean);
+}
+
+function traceCategoryFromText(text: string): string {
+  const lower = text.toLowerCase();
+  if (/auth|oauth|permission|unauthorized|forbidden|reconnect/.test(lower)) return "auth";
+  if (/timeout|deadline|timed out/.test(lower)) return "timeout";
+  if (/budget|max actions|max duration|quota|rate limit/.test(lower)) return "budget";
+  if (/source|citation|coverage|low score/.test(lower)) return "source_quality";
+  if (/empty|model_empty|no output/.test(lower)) return "model_empty";
+  if (/schema|json|invalid argument|tool_result/.test(lower)) return "tool_schema";
+  if (/artifact|file missing|missing file/.test(lower)) return "artifact_missing";
+  if (/connector|mcp|unavailable/.test(lower)) return "connector_unavailable";
+  if (/verifier|verification|evaluator/.test(lower)) return "verifier_failed";
+  return "unknown";
+}
+
+function latestBlockingGateDecision(events: JobEvent[]): GateDecision | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const data = eventData(events[index]);
+    const decision = recordValue(data?.gate_decision);
+    if (!decision) continue;
+    if (decision.allow === false || decision.requires_review === true) return decision as GateDecision;
+  }
+  return null;
+}
+
+function gateRecoveryLabel(decision: GateDecision): string {
+  if (decision.requires_review) {
+    if (decision.category === "auth") return "Reconnect required";
+    return "Review required";
+  }
+  switch (decision.category) {
+    case "auth":
+      return "Reconnect required";
+    case "budget":
+      return "Increase budget";
+    case "source":
+      return "Needs sources";
+    case "artifact":
+      return "Needs artifact";
+    case "tool":
+      return "Retry with another tool";
+    default:
+      return "Needs repair";
+  }
+}
+
+function formatLoopDeliverable(deliverable?: LoopContract["deliverable"]): string {
+  const parts = [
+    humanizeToken(deliverable?.type || ""),
+    deliverable?.format,
+    deliverable?.filename_hint
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "Answer";
+}
+
+function formatLoopBudget(budget?: LoopContract["budget"]): string {
+  if (!budget) return "Default";
+  const parts = [
+    budget.max_steps ? `${budget.max_steps} steps` : "",
+    budget.max_actions ? `${budget.max_actions} actions` : "",
+    budget.max_duration_ms ? formatDuration(budget.max_duration_ms) : ""
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "Default";
+}
+
+function humanizeToken(value?: string): string {
+  return value ? value.replace(/[_-]+/g, " ") : "";
 }
 
 function ParallelQualityPanel({ group }: { group: ParallelGroupTrace }) {
@@ -244,7 +556,7 @@ function eventMatchesFilter(event: JobEvent, filter: TraceFilter): boolean {
   if (filter === "tool") return /tool|skill|mcp|connector|sandbox/.test(text);
   if (filter === "artifact") return /artifact|document|docx|image|file/.test(text);
   if (filter === "browser") return /browser|web|fetch|search|url|http/.test(text);
-  if (filter === "verifier") return /verif|test|check|review/.test(text);
+  if (filter === "verifier") return /verif|evaluat|test|check|review|gate/.test(text);
   if (filter === "parallel") return /parallel|branch|fan-out|fan out/.test(text);
   return true;
 }
@@ -269,6 +581,7 @@ function jobTracePayload(events: JobEvent[]) {
   return {
     job_id: events[0]?.job_id || "",
     event_count: events.length,
+    trace_summary: traceSummaryFromEvents(events),
     events
   };
 }
@@ -312,6 +625,7 @@ function groupJobEvents(events: JobEvent[]): JobEventGroup[] {
 }
 
 function eventGroupForType(type: string): string {
+  if (type === "gate" || type === "deep_agent_gate_decision") return "run";
   if (type === "artifact_output" || type === "deep_agent_artifact_output" || type.startsWith("artifact")) return "outputs";
   if (type.startsWith("deep_agent_parallel_") || type === "parallel_workflow") return "parallel";
   if (type === "workflow_step" || type === "deep_agent_action" || type === "child_skill_job") return "steps";
@@ -327,6 +641,7 @@ function JobEventDetail({ event }: { event: JobEvent }) {
   const resultMetadata = recordValue(data?.result_metadata);
   const diagnostics = recordValue(data?.diagnostics) || recordValue(resultMetadata?.diagnostic_details);
   const evidence = recordValue(data?.evidence);
+  const gateDecision = recordValue(data?.gate_decision);
   const evidenceDiagnostics = recordValue(evidence?.diagnostics);
   const routeRows = compactRows([
     ["Mode", stringValue(route?.mode)],
@@ -364,7 +679,7 @@ function JobEventDetail({ event }: { event: JobEvent }) {
     ["Child job", stringValue(resultMetadata?.job_id)],
     ["Tool valid", boolString(resultMetadata?.tool_result_valid)],
     ["Error class", stringValue(data?.error_class || resultMetadata?.error_class)],
-    ["Error", event.event?.error || stringValue(data?.error)]
+    ["Error", displayError(event.event?.error || stringValue(data?.error))]
   ]);
   const evidenceRows = compactRows([
     ["Evidence ID", stringValue(data?.evidence_id || evidence?.action_id)],
@@ -373,6 +688,33 @@ function JobEventDetail({ event }: { event: JobEvent }) {
     ["Artifacts", displayListPreview(data?.artifact_refs, "artifact")],
     ["Child jobs", displayListPreview(data?.child_jobs, "child job")],
     ["Evidence summary", stringValue(evidence?.summary)]
+  ]);
+  const handoff = recordValue(data?.handoff || data?.loop_handoff);
+  const handoffWorkspace = recordValue(handoff?.workspace);
+  const handoffRows = compactRows([
+    ["Type", humanizeToken(stringValue(handoff?.type))],
+    ["Resume point", stringValue(handoff?.resume_point)],
+    ["Summary", stringValue(handoff?.summary)],
+    ["Changed files", displayValue(handoffWorkspace?.changed_files)],
+    ["Rollback", stringValue(handoffWorkspace?.rollback_plan)],
+    ["Next", stringValue(handoff?.recommended_action)]
+  ]);
+  const gateRows = compactRows([
+    ["Gate", humanizeToken(stringValue(gateDecision?.gate || data?.gate))],
+    ["Category", humanizeToken(stringValue(gateDecision?.category || data?.category))],
+    ["Allowed", boolString(gateDecision?.allow ?? data?.allow)],
+    ["Needs review", boolString(gateDecision?.requires_review ?? data?.requires_review)],
+    ["Reason", stringValue(gateDecision?.block_reason || data?.block_reason)],
+    ["Recovery", stringValue(gateDecision?.repair_hint || data?.repair_hint)],
+    ["Evidence", displayValue(gateDecision?.evidence_refs || data?.evidence_refs)]
+  ]);
+  const evaluatorRows = compactRows([
+    ["Verdict", humanizeToken(stringValue(data?.verdict))],
+    ["Passed", boolString(data?.passed)],
+    ["Failed criteria", displayValue(data?.failed_criteria)],
+    ["Repair plan", displayValue(data?.repair_plan)],
+    ["Source coverage", displayValue(data?.source_coverage)],
+    ["Rubric coverage", displayValue(data?.rubric_coverage)]
   ]);
   const metricRows = compactRows([
     ["Duration", formatDuration(data?.duration_ms || resultMetadata?.duration_ms || evidenceDiagnostics?.duration_ms)],
@@ -390,6 +732,9 @@ function JobEventDetail({ event }: { event: JobEvent }) {
         {routeRows.length > 0 && <DetailGroup title="Route" rows={routeRows} />}
         {actionRows.length > 0 && <DetailGroup title="Action" rows={actionRows} />}
         {resultRows.length > 0 && <DetailGroup title="Result" rows={resultRows} />}
+        {gateRows.length > 0 && <DetailGroup title="Gate" rows={gateRows} />}
+        {evaluatorRows.length > 0 && <DetailGroup title="Evaluator" rows={evaluatorRows} />}
+        {handoffRows.length > 0 && <DetailGroup title="Handoff" rows={handoffRows} />}
         {evidenceRows.length > 0 && <DetailGroup title="Evidence" rows={evidenceRows} />}
         {diagnostics && <DetailJSON title="Diagnostics" value={diagnostics} />}
         {metricRows.length > 0 && <DetailGroup title="Metrics" rows={metricRows} />}
@@ -434,6 +779,9 @@ function eventData(event: JobEvent): Record<string, unknown> | null {
 }
 
 function eventTitle(event: JobEvent, data: Record<string, unknown> | null): string {
+  if (event.type === "deep_agent_loop_contract") return "Loop contract";
+  if (event.type === "deep_agent_evaluator_verdict") return `Evaluator · ${humanizeToken(stringValue(data?.verdict) || "verdict")}`;
+  if (event.type === "deep_agent_gate_decision") return `${humanizeToken(stringValue(data?.gate) || "gate")} gate`;
   if (event.type === "deep_agent_artifact_output") {
     const artifact = recordValue(data?.artifact);
     return ["artifact", stringValue(artifact?.filename || artifact?.id)].filter(Boolean).join(" · ");
@@ -463,6 +811,7 @@ function eventTitle(event: JobEvent, data: Record<string, unknown> | null): stri
   const workflow = stringValue(data?.workflow_name);
   const step = stringValue(data?.step_name);
   if (workflow && step) return `${workflow}.${step}`;
+  if (stringValue(data?.title)) return stringValue(data?.title);
   return event.type;
 }
 
@@ -476,10 +825,26 @@ function connectorNames(data: Record<string, unknown> | null): string {
 }
 
 function eventSubtitle(event: JobEvent, data: Record<string, unknown> | null): string {
-  return event.event?.error || event.event?.content || event.event?.job_reason || stringValue(data?.status) || event.id;
+  if (event.type === "deep_agent_loop_contract") {
+    const contract = recordValue(data?.loop_contract);
+    const deliverable = recordValue(contract?.deliverable);
+    return [
+      humanizeToken(stringValue(contract?.task_type)),
+      stringValue(deliverable?.format || deliverable?.type)
+    ].filter(Boolean).join(" · ") || "Execution contract established";
+  }
+  if (event.type === "deep_agent_gate_decision") {
+    return stringValue(data?.block_reason) || (data?.allow === true ? "Allowed" : "Blocked");
+  }
+  if (event.type === "deep_agent_evaluator_verdict") {
+    const failed = data?.failed_criteria;
+    return data?.passed === true ? "Final evaluator passed" : displayValue(failed) || stringValue(data?.repair_plan) || "Final evaluator requires repair";
+  }
+  return event.event?.error || stringValue(data?.detail) || event.event?.content || event.event?.job_reason || stringValue(data?.status) || event.id;
 }
 
 function eventStatus(event: JobEvent, data: Record<string, unknown> | null): string {
+  if (event.type === "deep_agent_gate_decision" && data?.allow === false) return "failed";
   const status = stringValue(data?.result_status || data?.status).toLowerCase();
   if (status) return status;
   if (event.type.endsWith("_failed")) return "failed";
@@ -508,6 +873,11 @@ function stringValue(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return "";
+}
+
+function displayError(value: unknown): string {
+  const message = stringValue(value);
+  return message ? userFacingErrorMessage(message) : "";
 }
 
 function boolString(value: unknown): string {

@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +159,18 @@ func TestBuildLLMConfigNVIDIAUsesNIMEnv(t *testing.T) {
 	}
 }
 
+func TestBuildLLMConfigNVIDIAPrefersLLMKeyOverGenericNVIDIAKey(t *testing.T) {
+	t.Setenv("NVIDIA_API_KEY", "generic-nvidia-key")
+	t.Setenv("AGENT_API_LLM_API_KEY", "llm-nvidia-key")
+	cfg, err := bootstrap.BuildLLMConfig("nvidia", "", "", "", "", 30)
+	if err != nil {
+		t.Fatalf("build nvidia config: %v", err)
+	}
+	if cfg.APIKey != "llm-nvidia-key" {
+		t.Fatalf("expected LLM-specific NVIDIA key, got %#v", cfg)
+	}
+}
+
 func TestApplyRuntimeLLMConfigReloadsProviderCredentials(t *testing.T) {
 	t.Setenv("SHORTAPI_KEY", "shortapi-key")
 	base := bootstrap.LLMConfig{
@@ -180,6 +193,41 @@ func TestApplyRuntimeLLMConfigReloadsProviderCredentials(t *testing.T) {
 	}
 	if got.VertexLocation != "" || got.Timeout != 45 {
 		t.Fatalf("unexpected runtime provider details: %#v", got)
+	}
+}
+
+func TestRuntimeLLMGovernanceConfigValidatorRejectsMissingProviderCredential(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("AGENT_API_LLM_API_KEY", "")
+	t.Setenv("AGENT_API_LLM_TOKEN", "")
+	validator := runtimeLLMGovernanceConfigValidator(bootstrap.LLMConfig{
+		Provider: "simple",
+		Model:    "simple",
+		Timeout:  45,
+	})
+	err := validator(context.Background(), agentruntime.LLMGovernanceConfig{
+		Provider:    "deepseek",
+		Model:       "deepseek-chat",
+		ModelRoutes: "default=deepseek-chat,chat=deepseek-chat",
+	})
+	if err == nil || !strings.Contains(err.Error(), "credential") {
+		t.Fatalf("expected missing credential error, got %v", err)
+	}
+}
+
+func TestRuntimeLLMGovernanceConfigValidatorAllowsSimpleProvider(t *testing.T) {
+	validator := runtimeLLMGovernanceConfigValidator(bootstrap.LLMConfig{
+		Provider: "simple",
+		Model:    "simple",
+		Timeout:  45,
+	})
+	err := validator(context.Background(), agentruntime.LLMGovernanceConfig{
+		Provider:    "simple",
+		Model:       "simple",
+		ModelRoutes: "default=simple,chat=simple",
+	})
+	if err != nil {
+		t.Fatalf("expected simple runtime config to be valid: %v", err)
 	}
 }
 
@@ -329,6 +377,43 @@ func TestSkillScopedRegistryCanExposeSandboxBashWithoutDangerousTools(t *testing
 		if names[hidden] {
 			t.Fatalf("skill-scoped sandbox registry exposed dangerous tool %s: %#v", hidden, names)
 		}
+	}
+}
+
+func TestSkillScopedRegistryCanExposeLocalSandboxBashWithoutDangerousTools(t *testing.T) {
+	root := t.TempDir()
+	scope := agentruntime.Scope{
+		SkillScoped:       true,
+		SkillRoot:         root,
+		SkillShell:        skills.ShellBash,
+		AllowedTools:      []string{"Artifact", "Bash(printf *)"},
+		SkillShellSandbox: agentruntime.SkillShellSandboxConfig{Runner: "local"},
+	}
+	allowed := effectiveAllowedToolNames(allowedToolNames(false), scope)
+	sandboxBash := buildSandboxBashRuntime(agentruntime.SkillShellSandboxConfig{}, root, scope)
+	if sandboxBash == nil {
+		t.Fatal("expected local sandbox Bash runtime")
+	}
+	registry := buildRegistry(root, skills.NewSkillManager(), false, nil, 0, nil, allowed, sandboxBash)
+	names := descriptorNameSet(registry)
+
+	if !names["Bash"] {
+		t.Fatalf("skill-scoped registry should expose local sandbox Bash: %#v", names)
+	}
+	for _, hidden := range []string{"Write", "Edit"} {
+		if names[hidden] {
+			t.Fatalf("skill-scoped local sandbox registry exposed dangerous tool %s: %#v", hidden, names)
+		}
+	}
+	result, err := sandboxBash.Execute(context.Background(), json.RawMessage(`{"command":"printf local-ok"}`))
+	if err != nil {
+		t.Fatalf("local sandbox Bash execute: %v", err)
+	}
+	if strings.TrimSpace(result.Output) != "local-ok" {
+		t.Fatalf("local sandbox Bash output = %q", result.Output)
+	}
+	if _, err := sandboxBash.Execute(context.Background(), json.RawMessage(`{"command":"echo blocked"}`)); err == nil {
+		t.Fatal("expected local sandbox Bash to reject commands outside allowed-tools")
 	}
 }
 

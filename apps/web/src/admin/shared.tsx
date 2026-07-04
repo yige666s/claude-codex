@@ -25,6 +25,21 @@ export function llmConfigDraftFromConfig(config: LLMGovernanceConfig): Record<st
     "retry_backoff_ms",
     "chat_timeout_ms",
     "skill_timeout_ms",
+    "max_loop_duration_ms",
+    "max_loop_actions",
+    "max_branch_count",
+    "max_branch_concurrency",
+    "max_parallel_branches",
+    "parallel_branch_timeout_ms",
+    "parallel_max_tool_calls",
+    "parallel_max_sources",
+    "parallel_max_tokens",
+    "evaluator_timeout_ms",
+    "conflict_reconciliation_timeout_ms",
+    "max_sources_per_branch",
+    "search_quality_threshold",
+    "automatic_trigger_enabled",
+    "risky_write_approval_mode",
     "daily_token_quota",
     "daily_request_quota",
     "api_rate_limit_per_minute",
@@ -38,13 +53,25 @@ export function llmConfigDraftFromConfig(config: LLMGovernanceConfig): Record<st
 }
 
 export function llmConfigFromDraft(draft: Record<string, string>): LLMGovernanceConfig {
-  type IntegerLLMConfigKey = "max_attempts" | "retry_backoff_ms" | "chat_timeout_ms" | "skill_timeout_ms" | "daily_token_quota" | "daily_request_quota" | "api_rate_limit_per_minute" | "failure_threshold" | "circuit_cooldown_seconds";
-  type DecimalLLMConfigKey = "daily_cost_quota_usd" | "input_cost_per_million" | "output_cost_per_million";
+  type IntegerLLMConfigKey = "max_attempts" | "retry_backoff_ms" | "chat_timeout_ms" | "skill_timeout_ms" | "max_loop_duration_ms" | "max_loop_actions" | "max_branch_count" | "max_branch_concurrency" | "max_parallel_branches" | "parallel_branch_timeout_ms" | "parallel_max_tool_calls" | "parallel_max_sources" | "parallel_max_tokens" | "evaluator_timeout_ms" | "conflict_reconciliation_timeout_ms" | "max_sources_per_branch" | "daily_token_quota" | "daily_request_quota" | "api_rate_limit_per_minute" | "failure_threshold" | "circuit_cooldown_seconds";
+  type DecimalLLMConfigKey = "daily_cost_quota_usd" | "input_cost_per_million" | "output_cost_per_million" | "search_quality_threshold";
   const integerKeys: IntegerLLMConfigKey[] = [
     "max_attempts",
     "retry_backoff_ms",
     "chat_timeout_ms",
     "skill_timeout_ms",
+    "max_loop_duration_ms",
+    "max_loop_actions",
+    "max_branch_count",
+    "max_branch_concurrency",
+    "max_parallel_branches",
+    "parallel_branch_timeout_ms",
+    "parallel_max_tool_calls",
+    "parallel_max_sources",
+    "parallel_max_tokens",
+    "evaluator_timeout_ms",
+    "conflict_reconciliation_timeout_ms",
+    "max_sources_per_branch",
     "daily_token_quota",
     "daily_request_quota",
     "api_rate_limit_per_minute",
@@ -54,11 +81,16 @@ export function llmConfigFromDraft(draft: Record<string, string>): LLMGovernance
   const decimalKeys: DecimalLLMConfigKey[] = [
     "daily_cost_quota_usd",
     "input_cost_per_million",
-    "output_cost_per_million"
+    "output_cost_per_million",
+    "search_quality_threshold"
   ];
   const next: LLMGovernanceConfig = {};
   const model = String(draft.model || "").trim();
   if (model) next.model = model;
+  const riskyWriteApprovalMode = String(draft.risky_write_approval_mode || "").trim();
+  if (riskyWriteApprovalMode) next.risky_write_approval_mode = riskyWriteApprovalMode;
+  const automaticTriggerRaw = String(draft.automatic_trigger_enabled || "").trim();
+  if (automaticTriggerRaw) next.automatic_trigger_enabled = automaticTriggerRaw === "true";
   for (const key of integerKeys) {
     const raw = String(draft[key] || "").trim();
     if (!raw) continue;

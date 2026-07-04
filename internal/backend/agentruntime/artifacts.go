@@ -83,6 +83,9 @@ func (s *ArtifactService) CreateWithJob(ctx context.Context, kind, userID, sessi
 	if s == nil || s.Store == nil || s.Objects == nil {
 		return nil, fmt.Errorf("artifact service is not configured")
 	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("artifact content is empty")
+	}
 	kind = normalizeAssetKind(kind)
 	if strings.TrimSpace(userID) == "" {
 		return nil, fmt.Errorf("user ID is required")

@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	agenticTaskWorkflowName    = "agentic_task"
-	agenticTaskWorkflowVersion = "v1"
+	agenticTaskWorkflowName     = "agentic_task"
+	agenticTaskWorkflowVersion  = "v1"
+	longRunningSkillTurnTimeout = 15 * time.Minute
 )
 
 func agenticTaskWorkflowDefinition(timeout time.Duration) WorkflowDefinition {
@@ -27,12 +28,12 @@ func agenticTaskWorkflowDefinition(timeout time.Duration) WorkflowDefinition {
 	}
 }
 
-func (r *Runtime) executeAgenticTaskWorkflow(ctx context.Context, req ChatRequest, session *state.Session, onToken func(string)) (runnerResult, error) {
+func (r *Runtime) executeAgenticTaskWorkflow(ctx context.Context, req ChatRequest, session *state.Session, sink EventSink, onToken func(string)) (runnerResult, error) {
 	if r == nil {
 		return runnerResult{}, nil
 	}
 	if r.workflowStore == nil {
-		return r.run(ctx, req, session, onToken)
+		return r.run(ctx, req, session, sink, onToken)
 	}
 	engine := NewWorkflowEngine(r.workflowStore, ContextWorkflowEventSink{})
 	var result runnerResult
@@ -79,7 +80,7 @@ func (r *Runtime) executeAgenticTaskWorkflow(ctx context.Context, req ChatReques
 		}, nil
 	})
 	engine.RegisterStepHandler("execute_agent_turn", func(ctx context.Context, run *WorkflowRun, input map[string]any) (map[string]any, error) {
-		result, runErr = r.run(ctx, req, session, onToken)
+		result, runErr = r.run(ctx, req, session, sink, onToken)
 		output := map[string]any{
 			"output_length": len(result.Output),
 			"has_session":   result.Session != nil,
@@ -103,7 +104,7 @@ func (r *Runtime) executeAgenticTaskWorkflow(ctx context.Context, req ChatReques
 		}, nil
 	})
 	_, err := engine.Execute(ctx, WorkflowRequest{
-		Definition: agenticTaskWorkflowDefinition(r.config.TurnTimeout),
+		Definition: agenticTaskWorkflowDefinition(r.agenticTaskTurnTimeout(req)),
 		UserID:     req.UserID,
 		SessionID:  session.ID,
 		JobID:      jobIDFromContext(ctx),
@@ -117,4 +118,26 @@ func (r *Runtime) executeAgenticTaskWorkflow(ctx context.Context, req ChatReques
 		return result, err
 	}
 	return result, runErr
+}
+
+func (r *Runtime) agenticTaskTurnTimeout(req ChatRequest) time.Duration {
+	timeout := r.config.TurnTimeout
+	if r == nil || r.skills == nil {
+		return timeout
+	}
+	content := strings.TrimSpace(req.Content)
+	if !strings.HasPrefix(content, "/") {
+		return timeout
+	}
+	name := strings.TrimPrefix(strings.Fields(content)[0], "/")
+	skill, ok := r.skills.GetSkill(name)
+	if !ok || skill == nil {
+		return timeout
+	}
+	if skill.RunAsJob || skillProducesArtifacts(skill) || boolMetadataDeep(skill.Metadata, "long_running") {
+		if timeout < longRunningSkillTurnTimeout {
+			return longRunningSkillTurnTimeout
+		}
+	}
+	return timeout
 }

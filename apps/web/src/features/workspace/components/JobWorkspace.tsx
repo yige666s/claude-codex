@@ -1,4 +1,5 @@
 import { Briefcase, X } from "lucide-react";
+import { userFacingErrorMessage } from "../../../api/errorMessages";
 import { Button } from "../../../components/ui/button";
 import type { Job, JobEvent } from "../../../types";
 import type { JobStreamStatus } from "../workspaceTypes";
@@ -56,7 +57,7 @@ export function JobWorkspace({
                 {jobStreamNotice && !terminalJobs.has(job.status) && (
                   <div className={`job-stream-state ${jobStreamStatus}`}>{jobStreamNotice}</div>
                 )}
-                {job.error && <div className="job-workspace-error">{job.error}</div>}
+                {job.error && <div className="job-workspace-error">{userFacingErrorMessage(job.error)}</div>}
                 <header>
                   <div>
                     <strong>Events</strong>

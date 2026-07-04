@@ -217,9 +217,26 @@ func (p *RuntimeDeepAgentPlanner) actionForRoute(state *DeepAgentState, step Dee
 		args["provider"] = firstNonEmptyString(deepAgentWorkflowString(args, "provider"), "github")
 	case DeepAgentToolModeMulti:
 		args["task"] = p.modelPromptForStep(state, step)
-		args["branch_specs"] = defaultDeepAgentParallelBranchSpecs(firstNonEmptyString(step.Intent, step.Title, stateGoal(state)))
-		args["max_concurrency"] = deepAgentParallelDefaultMaxConcurrency
-		args["min_successful_branches"] = 1
+		branchBudget := p.deepAgentParallelBranchBudget()
+		maxBranches := p.deepAgentParallelMaxBranches()
+		if deepAgentStepRequestsCoverageFanout(step) {
+			args["branch_specs"] = deepAgentParallelCoverageBranchSpecs(firstNonEmptyString(step.Intent, step.Title, stateGoal(state)), maxBranches)
+			args["max_concurrency"] = maxBranches
+			args["min_successful_branches"] = 1
+		} else {
+			args["branch_specs"] = singleDeepAgentParallelBranchSpec(
+				firstNonEmptyString(step.ID, "primary"),
+				firstNonEmptyString(step.Title, step.Intent, "Primary objective"),
+				firstNonEmptyString(step.Intent, step.Title, stateGoal(state)),
+			)
+			args["max_concurrency"] = 1
+			args["min_successful_branches"] = 1
+		}
+		args["max_branches"] = maxBranches
+		args["branch_timeout_ms"] = branchBudget.TimeoutMS
+		args["branch_max_tool_calls"] = branchBudget.MaxToolCalls
+		args["branch_max_sources"] = branchBudget.MaxSources
+		args["branch_max_tokens"] = branchBudget.MaxTokens
 		if len(route.AllowedTools) == 0 {
 			route.AllowedTools = []string{"WebSearch", "WebFetch"}
 		}
@@ -248,6 +265,22 @@ func (p *RuntimeDeepAgentPlanner) actionForRoute(state *DeepAgentState, step Dee
 		}
 		if jobID := deepAgentWorkflowString(state.WorkingMemory, "job_id"); jobID != "" {
 			args["job_id"] = firstNonEmptyString(deepAgentWorkflowString(args, "job_id"), jobID)
+		}
+		if args["source_policy"] == nil {
+			if raw := state.WorkingMemory["source_policy"]; raw != nil {
+				args["source_policy"] = normalizeLoopContractSourcePolicy(deepAgentSourcePolicyFromAny(raw), stateGoal(state))
+			}
+		}
+	}
+	if args["source_policy"] == nil && state != nil && state.LoopContract.ID != "" {
+		args["source_policy"] = normalizeLoopContractSourcePolicy(state.LoopContract.SourcePolicy, stateGoal(state))
+	}
+	if normalizeDeepAgentRouteMode(mode) == DeepAgentToolModeModel && strings.EqualFold(strings.TrimSpace(route.SearchScope), "web") {
+		sourcePolicy := deepAgentSourcePolicyFromAny(args["source_policy"])
+		sourcePolicy = normalizeLoopContractSourcePolicy(sourcePolicy, stateGoal(state))
+		args["source_policy"] = sourcePolicy
+		if prompt := deepAgentWorkflowString(args, "prompt"); prompt != "" && !strings.Contains(prompt, "Source policy:") {
+			args["prompt"] = strings.TrimSpace(prompt + "\n\n" + deepAgentSourcePolicyPrompt(sourcePolicy))
 		}
 	}
 	attempt := deepAgentStepAttemptCount(state, step.ID) + 1
@@ -278,6 +311,44 @@ func (p *RuntimeDeepAgentPlanner) actionForRoute(state *DeepAgentState, step Dee
 			"route_version":     route.Version,
 		}),
 	}, nil
+}
+
+func (p *RuntimeDeepAgentPlanner) deepAgentParallelMaxBranches() int {
+	if p != nil && p.runtime != nil && p.runtime.config.LLMGovernanceProvider != nil {
+		cfg := p.runtime.config.LLMGovernanceProvider().normalized()
+		if cfg.MaxBranchCount > 0 {
+			return cfg.MaxBranchCount
+		}
+	}
+	return deepAgentParallelDefaultPrimaryBranches
+}
+
+func (p *RuntimeDeepAgentPlanner) deepAgentParallelBranchBudget() DeepAgentParallelBranchBudget {
+	budget := DeepAgentParallelBranchBudget{
+		TimeoutMS:    deepAgentParallelDefaultBranchTimeout.Milliseconds(),
+		MaxToolCalls: deepAgentParallelDefaultMaxToolCalls,
+		MaxSources:   deepAgentParallelMaxSourcesPerBranch,
+		MaxTokens:    deepAgentParallelDefaultMaxTokens,
+	}
+	if p != nil && p.runtime != nil && p.runtime.config.LLMGovernanceProvider != nil {
+		cfg := p.runtime.config.LLMGovernanceProvider().normalized()
+		budget.TimeoutMS = cfg.ParallelBranchTimeout.Milliseconds()
+		budget.MaxToolCalls = cfg.ParallelMaxToolCalls
+		budget.MaxSources = cfg.MaxSourcesPerBranch
+		budget.MaxTokens = cfg.ParallelMaxTokens
+	}
+	return budget
+}
+
+func deepAgentStepRequestsCoverageFanout(step DeepAgentStep) bool {
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{step.Title, step.Intent, step.DoneCondition}, "\n")))
+	if !deepAgentContainsAny(text,
+		"多方向", "多路", "多分支", "多个子任务", "拆成多个子任务", "拆分子任务",
+		"fan-out", "fan out", "parallel branches", "multiple branches", "multiple subtopics", "coverage dimensions",
+	) {
+		return false
+	}
+	return len(deepAgentParallelCoverageDimensionsForText(text)) > 1
 }
 
 func (p *RuntimeDeepAgentPlanner) keywordRouteStep(step DeepAgentStep) string {
@@ -713,7 +784,8 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 		"prompt_mode":         "hidden_user_turn",
 		"hidden_user_prompts": hiddenPromptCount,
 	}
-	for key, value := range deepAgentModelActionEvidenceMetadata(result.Output, resultSession, startMessageCount) {
+	sourcePolicy := deepAgentSourcePolicyFromAction(action)
+	for key, value := range deepAgentModelActionEvidenceMetadata(result.Output, resultSession, startMessageCount, sourcePolicy) {
 		metadata[key] = value
 	}
 	if len(newArtifactRefs) > 0 {
@@ -868,7 +940,7 @@ func runDeepAgentExecutionPrompt(ctx context.Context, runner Runner, session *st
 	return result, hiddenCount, err
 }
 
-func deepAgentModelActionEvidenceMetadata(output string, session *state.Session, startIndex int) map[string]any {
+func deepAgentModelActionEvidenceMetadata(output string, session *state.Session, startIndex int, sourcePolicy LoopContractSourcePolicy) map[string]any {
 	metadata := map[string]any{}
 	details := deepAgentModelActionDiagnostics(output, session, startIndex)
 	metadata["diagnostic_details"] = details
@@ -878,13 +950,16 @@ func deepAgentModelActionEvidenceMetadata(output string, session *state.Session,
 	if names := deepAgentStringSlice(details["tool_result_names"]); len(names) > 0 {
 		metadata["tool_result_names"] = names
 	}
-	if sources := deepAgentModelActionSourceRefs(output, session, startIndex); len(sources) > 0 {
+	sources, sourcePolicyReport := deepAgentModelActionSourceRefs(output, session, startIndex, sourcePolicy)
+	metadata["source_policy"] = normalizeLoopContractSourcePolicy(sourcePolicy, "")
+	metadata["source_policy_report"] = sourcePolicyReport
+	if len(sources) > 0 {
 		metadata["sources"] = sources
 	}
 	return metadata
 }
 
-func deepAgentModelActionSourceRefs(output string, session *state.Session, startIndex int) []DeepAgentSourceRef {
+func deepAgentModelActionSourceRefs(output string, session *state.Session, startIndex int, sourcePolicy LoopContractSourcePolicy) ([]DeepAgentSourceRef, deepAgentSourcePolicyReport) {
 	seen := map[string]struct{}{}
 	out := make([]DeepAgentSourceRef, 0)
 	appendRefs := func(refs []DeepAgentSourceRef) {
@@ -902,7 +977,7 @@ func deepAgentModelActionSourceRefs(output string, session *state.Session, start
 	}
 	appendRefs(deepAgentSourceRefsFromText(output))
 	if session == nil {
-		return curateDeepAgentSourceRefs(out, deepAgentModelActionMaxSources)
+		return curateDeepAgentSourceRefsWithPolicy(out, deepAgentModelActionMaxSources, sourcePolicy)
 	}
 	if startIndex < 0 || startIndex > len(session.Messages) {
 		startIndex = 0
@@ -916,7 +991,7 @@ func deepAgentModelActionSourceRefs(output string, session *state.Session, start
 		}
 		appendRefs(deepAgentSourceRefsFromText(message.ToolOutput))
 	}
-	return curateDeepAgentSourceRefs(out, deepAgentModelActionMaxSources)
+	return curateDeepAgentSourceRefsWithPolicy(out, deepAgentModelActionMaxSources, sourcePolicy)
 }
 
 func hideDeepAgentExecutionUserPrompts(session *state.Session, startMessageCount int, prompt string) int {

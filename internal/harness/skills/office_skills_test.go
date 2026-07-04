@@ -1,7 +1,9 @@
 package skills
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -29,5 +31,25 @@ func TestProjectOfficeSkillsLoad(t *testing.T) {
 		if produces, _ := agentapi["produces_artifacts"].(bool); !produces {
 			t.Fatalf("expected office skill %q to produce artifacts", name)
 		}
+	}
+
+	documents := byName["documents"]
+	if documents == nil {
+		t.Fatal("expected documents skill to load")
+	}
+	for _, want := range []string{
+		"Artifact` tool is only for final user-facing deliverables",
+		"Do not use `Artifact` for intermediate Python scripts",
+		"create it in a writable workspace or temp directory with the `Bash` tool",
+		"call `Artifact` with `file_path` for the final `.docx` only",
+		"Simple DOCX Creation Fast Path",
+		"scripts/create_docx_artifact.py",
+	} {
+		if !strings.Contains(documents.Content, want) {
+			t.Fatalf("documents skill content missing %q", want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, ".claude", "skills", "documents", "scripts", "create_docx_artifact.py")); err != nil {
+		t.Fatalf("expected documents create_docx_artifact.py helper: %v", err)
 	}
 }

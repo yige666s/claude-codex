@@ -337,6 +337,75 @@ export function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; admi
                 <Input inputMode="numeric" value={configDraft.skill_timeout_ms || ""} onChange={(event) => updateConfigDraft("skill_timeout_ms", event.currentTarget.value)} placeholder="90000" />
               </label>
               <label className="admin-field">
+                <span>Max loop duration ms</span>
+                <Input inputMode="numeric" value={configDraft.max_loop_duration_ms || ""} onChange={(event) => updateConfigDraft("max_loop_duration_ms", event.currentTarget.value)} placeholder="600000" />
+              </label>
+              <label className="admin-field">
+                <span>Max actions per loop</span>
+                <Input inputMode="numeric" value={configDraft.max_loop_actions || ""} onChange={(event) => updateConfigDraft("max_loop_actions", event.currentTarget.value)} placeholder="12" />
+              </label>
+              <label className="admin-field">
+                <span>Max branch count</span>
+                <Input inputMode="numeric" value={configDraft.max_branch_count || ""} onChange={(event) => updateConfigDraft("max_branch_count", event.currentTarget.value)} placeholder="4" />
+              </label>
+              <label className="admin-field">
+                <span>Branch concurrency</span>
+                <Input inputMode="numeric" value={configDraft.max_branch_concurrency || ""} onChange={(event) => updateConfigDraft("max_branch_concurrency", event.currentTarget.value)} placeholder="4" />
+              </label>
+              <label className="admin-field">
+                <span>Max parallel branches</span>
+                <Input inputMode="numeric" value={configDraft.max_parallel_branches || ""} onChange={(event) => updateConfigDraft("max_parallel_branches", event.currentTarget.value)} placeholder="4" />
+              </label>
+              <label className="admin-field">
+                <span>Branch timeout ms</span>
+                <Input inputMode="numeric" value={configDraft.parallel_branch_timeout_ms || ""} onChange={(event) => updateConfigDraft("parallel_branch_timeout_ms", event.currentTarget.value)} placeholder="90000" />
+              </label>
+              <label className="admin-field">
+                <span>Branch max tools</span>
+                <Input inputMode="numeric" value={configDraft.parallel_max_tool_calls || ""} onChange={(event) => updateConfigDraft("parallel_max_tool_calls", event.currentTarget.value)} placeholder="8" />
+              </label>
+              <label className="admin-field">
+                <span>Branch max sources</span>
+                <Input inputMode="numeric" value={configDraft.parallel_max_sources || ""} onChange={(event) => updateConfigDraft("parallel_max_sources", event.currentTarget.value)} placeholder="12" />
+              </label>
+              <label className="admin-field">
+                <span>Branch max tokens</span>
+                <Input inputMode="numeric" value={configDraft.parallel_max_tokens || ""} onChange={(event) => updateConfigDraft("parallel_max_tokens", event.currentTarget.value)} placeholder="4000" />
+              </label>
+              <label className="admin-field">
+                <span>Evaluator timeout ms</span>
+                <Input inputMode="numeric" value={configDraft.evaluator_timeout_ms || ""} onChange={(event) => updateConfigDraft("evaluator_timeout_ms", event.currentTarget.value)} placeholder="90000" />
+              </label>
+              <label className="admin-field">
+                <span>Conflict timeout ms</span>
+                <Input inputMode="numeric" value={configDraft.conflict_reconciliation_timeout_ms || ""} onChange={(event) => updateConfigDraft("conflict_reconciliation_timeout_ms", event.currentTarget.value)} placeholder="90000" />
+              </label>
+              <label className="admin-field">
+                <span>Max sources / branch</span>
+                <Input inputMode="numeric" value={configDraft.max_sources_per_branch || ""} onChange={(event) => updateConfigDraft("max_sources_per_branch", event.currentTarget.value)} placeholder="12" />
+              </label>
+              <label className="admin-field">
+                <span>Search quality threshold</span>
+                <Input inputMode="decimal" value={configDraft.search_quality_threshold || ""} onChange={(event) => updateConfigDraft("search_quality_threshold", event.currentTarget.value)} placeholder="0.30" />
+              </label>
+              <label className="admin-field">
+                <span>Automatic triggers</span>
+                <select value={configDraft.automatic_trigger_enabled || "false"} onChange={(event) => updateConfigDraft("automatic_trigger_enabled", event.currentTarget.value)}>
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
+                </select>
+                <small className="muted-text">Dangerous: enabled triggers can start loop jobs without manual submission.</small>
+              </label>
+              <label className="admin-field">
+                <span>Risky write mode</span>
+                <select value={configDraft.risky_write_approval_mode || "review"} onChange={(event) => updateConfigDraft("risky_write_approval_mode", event.currentTarget.value)}>
+                  <option value="review">Review required</option>
+                  <option value="block">Block</option>
+                  <option value="allow">Allow</option>
+                </select>
+                <small className="muted-text">Dangerous: allow bypasses the risky-write review gate.</small>
+              </label>
+              <label className="admin-field">
                 <span>Input cost / 1M</span>
                 <Input inputMode="decimal" value={configDraft.input_cost_per_million || ""} onChange={(event) => updateConfigDraft("input_cost_per_million", event.currentTarget.value)} placeholder="0.30" />
               </label>

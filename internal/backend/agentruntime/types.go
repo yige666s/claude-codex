@@ -366,15 +366,25 @@ type EventSink interface {
 }
 
 type Event struct {
-	Type      string          `json:"type"`
-	SessionID string          `json:"session_id,omitempty"`
-	JobID     string          `json:"job_id,omitempty"`
-	Job       *Job            `json:"job,omitempty"`
-	JobReason string          `json:"job_reason,omitempty"`
-	Role      string          `json:"role,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	Error     string          `json:"error,omitempty"`
-	Data      json.RawMessage `json:"data,omitempty"`
+	Type       string          `json:"type"`
+	ID         string          `json:"id,omitempty"`
+	SessionID  string          `json:"session_id,omitempty"`
+	RunID      string          `json:"run_id,omitempty"`
+	JobID      string          `json:"job_id,omitempty"`
+	Job        *Job            `json:"job,omitempty"`
+	JobReason  string          `json:"job_reason,omitempty"`
+	Role       string          `json:"role,omitempty"`
+	Content    string          `json:"content,omitempty"`
+	Text       string          `json:"text,omitempty"`
+	Tool       string          `json:"tool,omitempty"`
+	Input      any             `json:"input,omitempty"`
+	Summary    string          `json:"summary,omitempty"`
+	Sources    []any           `json:"sources,omitempty"`
+	SourceID   string          `json:"source_id,omitempty"`
+	AnswerSpan string          `json:"answer_span,omitempty"`
+	Message    string          `json:"message,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Data       json.RawMessage `json:"data,omitempty"`
 }
 
 type LiveRequest struct {
@@ -478,6 +488,76 @@ type JobStore interface {
 	PruneBefore(ctx context.Context, cutoff time.Time) (int, error)
 }
 
+type JobEventStreamStore interface {
+	AppendJobEvent(ctx context.Context, event *JobEvent) error
+	BlockReadJobEvents(ctx context.Context, userID, jobID, afterID string, limit int, block time.Duration) ([]*JobEvent, error)
+}
+
+const (
+	LoopDiscoveryManual         = "manual"
+	LoopDiscoverySchedule       = "schedule"
+	LoopDiscoveryWebhook        = "webhook"
+	LoopDiscoveryMonitor        = "monitor"
+	LoopDiscoveryEvalFailure    = "eval_failure"
+	LoopDiscoveryConnectorEvent = "connector_event"
+
+	LoopTriggerStatusStarted = "started"
+	LoopTriggerStatusSkipped = "skipped"
+	LoopTriggerStatusBlocked = "blocked"
+	LoopTriggerStatusFailed  = "failed"
+)
+
+type LoopDiscoveryConfig struct {
+	AutomationEnabled         bool
+	ScheduleTriggersEnabled   bool
+	WebhookTriggersEnabled    bool
+	MonitorTriggersEnabled    bool
+	EvalRepairTriggersEnabled bool
+	ConnectorTriggersEnabled  bool
+	TriggerTTL                time.Duration
+}
+
+type LoopDiscoveryEvent struct {
+	UserID      string         `json:"user_id,omitempty"`
+	SessionID   string         `json:"session_id,omitempty"`
+	TriggerType string         `json:"trigger_type"`
+	Source      string         `json:"source,omitempty"`
+	DedupeKey   string         `json:"dedupe_key,omitempty"`
+	Objective   string         `json:"objective,omitempty"`
+	Payload     map[string]any `json:"payload,omitempty"`
+}
+
+type LoopTriggerRecord struct {
+	ID            string         `json:"id"`
+	UserID        string         `json:"user_id,omitempty"`
+	SessionID     string         `json:"session_id,omitempty"`
+	DedupeKey     string         `json:"dedupe_key"`
+	TriggerType   string         `json:"trigger_type"`
+	Source        string         `json:"source,omitempty"`
+	Payload       map[string]any `json:"payload,omitempty"`
+	JobID         string         `json:"job_id,omitempty"`
+	LoopGoalID    string         `json:"loop_goal_id,omitempty"`
+	Status        string         `json:"status"`
+	FailureReason string         `json:"failure_reason,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	ExpiresAt     time.Time      `json:"expires_at"`
+}
+
+type LoopDiscoveryResult struct {
+	Trigger   LoopTriggerRecord `json:"trigger"`
+	Job       *Job              `json:"job,omitempty"`
+	Duplicate bool              `json:"duplicate"`
+}
+
+type LoopTriggerStore interface {
+	Init(ctx context.Context) error
+	CreateTrigger(ctx context.Context, trigger LoopTriggerRecord) (LoopTriggerRecord, bool, error)
+	UpdateTriggerJob(ctx context.Context, userID, triggerID, sessionID, jobID, loopGoalID, status, failureReason string) error
+	ListTriggers(ctx context.Context, userID, sessionID string, limit int) ([]LoopTriggerRecord, error)
+	DeleteSession(ctx context.Context, userID, sessionID string) error
+	DeleteUser(ctx context.Context, userID string) error
+}
+
 type UserDataExport struct {
 	ExportedAt      time.Time                  `json:"exported_at"`
 	User            *UserProfile               `json:"user,omitempty"`
@@ -507,6 +587,7 @@ type RuntimeConfig struct {
 	TurnTimeout           time.Duration
 	SkillShellTimeout     time.Duration
 	DeepAgent             DeepAgentRuntimeConfig
+	LoopDiscovery         LoopDiscoveryConfig
 	SkillShellSandbox     SkillShellSandboxConfig
 	MessageSearch         MessageSearchConfig
 	MemoryVector          MemoryVectorConfig

@@ -48,6 +48,14 @@ func (p *DeepSeekProvider) CreateMessage(ctx context.Context, request MessageReq
 	return p.OpenAIProvider.CreateMessage(ctx, request)
 }
 
+func (p *DeepSeekProvider) StreamMessage(ctx context.Context, request MessageRequest, onChunk func(string)) (*MessageResponse, error) {
+	if strings.TrimSpace(request.Model) == "" {
+		request.Model = defaultDeepSeekModel
+	}
+	request.Tools = deepSeekCompatibleTools(request.Tools)
+	return p.OpenAIProvider.StreamMessage(ctx, request, onChunk)
+}
+
 func (p *DeepSeekProvider) Name() string {
 	return "deepseek"
 }

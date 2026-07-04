@@ -41,6 +41,13 @@ func (p *NVIDIAProvider) CreateMessage(ctx context.Context, request MessageReque
 	return p.OpenAIProvider.CreateMessage(ctx, request)
 }
 
+func (p *NVIDIAProvider) StreamMessage(ctx context.Context, request MessageRequest, onChunk func(string)) (*MessageResponse, error) {
+	if strings.TrimSpace(request.Model) == "" {
+		request.Model = defaultNVIDIAModel
+	}
+	return p.OpenAIProvider.StreamMessage(ctx, request, onChunk)
+}
+
 func (p *NVIDIAProvider) Name() string {
 	return "nvidia"
 }

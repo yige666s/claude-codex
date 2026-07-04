@@ -48,6 +48,7 @@ type Server struct {
 	evaluation       EvaluationStore
 	evaluationJudge  GoldenJudge
 	promptStore      PromptStore
+	chatStreams      ChatStreamStore
 	instrumentHTTP   func(http.Handler) http.Handler
 	operationLimiter *OperationRateLimiter
 	adminToken       string
@@ -67,11 +68,12 @@ func NewServerWithLogger(runtime *Runtime, auth Authenticator, limiter RateLimit
 		limiter = NewRateLimiter(60, defaultRateLimitWindow)
 	}
 	server := &Server{
-		runtime: runtime,
-		auth:    auth,
-		limiter: limiter,
-		logger:  componentLogger(logger, "http_server"),
-		metrics: NewMetricsRegistry(),
+		runtime:     runtime,
+		auth:        auth,
+		limiter:     limiter,
+		logger:      componentLogger(logger, "http_server"),
+		metrics:     NewMetricsRegistry(),
+		chatStreams: NewMemoryChatStreamStore(),
 		upgrader: websocket.Upgrader{
 			CheckOrigin:  sameHostOrigin,
 			Subprotocols: []string{"agentapi.bearer"},
@@ -81,6 +83,13 @@ func NewServerWithLogger(runtime *Runtime, auth Authenticator, limiter RateLimit
 	}
 	server.router = server.buildRouter()
 	return server
+}
+
+func (s *Server) SetChatStreamStore(store ChatStreamStore) {
+	if s == nil || store == nil {
+		return
+	}
+	s.chatStreams = store
 }
 
 func (s *Server) SetHTTPInstrumentation(instrument func(http.Handler) http.Handler) {
@@ -582,6 +591,60 @@ func (s *Server) handleAdminOpsListJobs(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": out})
 }
 
+func (s *Server) handleAdminOpsListLoopTriggers(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.adminOpsUserID(w, r)
+	if !ok {
+		return
+	}
+	triggers, err := s.runtime.ListLoopTriggers(r.Context(), userID, r.URL.Query().Get("session_id"), parseBoundedInt(r.URL.Query().Get("limit"), 50, 1, 200))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"triggers": triggers})
+}
+
+func (s *Server) handleAdminOpsSubmitLoopDiscovery(w http.ResponseWriter, r *http.Request, user User) {
+	userID, ok := s.adminOpsUserID(w, r)
+	if !ok {
+		return
+	}
+	var body LoopDiscoveryEvent
+	if err := readJSON(r, &body); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	body.UserID = userID
+	if strings.TrimSpace(body.TriggerType) == "" {
+		body.TriggerType = LoopDiscoveryManual
+	}
+	s.scanAndRecordRisk(r, RiskScanTarget{
+		Kind:      "loop_discovery",
+		UserID:    userID,
+		SessionID: body.SessionID,
+		Content:   firstNonEmptyString(body.Objective, objectiveFromLoopPayload(body.Payload)),
+	})
+	result, err := s.runtime.SubmitLoopDiscoveryEvent(r.Context(), body)
+	if err != nil {
+		if errors.Is(err, ErrLoopDiscoveryBlocked) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSONError(w, err)
+		return
+	}
+	s.auditEvent(r, "admin_loop_discovery", user, map[string]any{
+		"user_id":      userID,
+		"trigger_id":   result.Trigger.ID,
+		"trigger_type": result.Trigger.TriggerType,
+		"source":       result.Trigger.Source,
+		"dedupe_key":   result.Trigger.DedupeKey,
+		"job_id":       result.Trigger.JobID,
+		"duplicate":    result.Duplicate,
+	})
+	writeJSON(w, http.StatusAccepted, result)
+}
+
 func (s *Server) handleAdminOpsGetJob(w http.ResponseWriter, r *http.Request, jobID string) {
 	userID, ok := s.adminOpsUserID(w, r)
 	if !ok {
@@ -728,7 +791,7 @@ func (s *Server) handleAdminOpsReviewDeepAgentLearning(w http.ResponseWriter, r 
 		return
 	}
 	var body struct {
-		Action string `json:"action" validate:"oneof=accept reject rollback"`
+		Action string `json:"action" validate:"oneof=accept reject expire rollback"`
 		Reason string `json:"reason,omitempty"`
 	}
 	if err := readJSON(r, &body); err != nil {
@@ -2096,11 +2159,11 @@ func (s *Server) handlePreviewArtifact(w http.ResponseWriter, r *http.Request, u
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "artifact not found"})
 		return
 	}
-	if !isDOCXAsset(artifact) {
+	if !isOfficePreviewAsset(artifact) {
 		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "preview is not available for this artifact type"})
 		return
 	}
-	preview, err := renderDOCXPreviewHTML(artifact, data)
+	preview, err := renderOfficePreviewHTML(artifact, data)
 	if err != nil {
 		writeJSONError(w, err)
 		return
@@ -2205,6 +2268,52 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request, user Use
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
 }
 
+func (s *Server) handleSubmitLoopDiscovery(w http.ResponseWriter, r *http.Request, user User) {
+	var body LoopDiscoveryEvent
+	if err := readJSON(r, &body); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	body.UserID = user.ID
+	if strings.TrimSpace(body.TriggerType) == "" {
+		body.TriggerType = LoopDiscoveryManual
+	}
+	s.scanAndRecordRisk(r, RiskScanTarget{
+		Kind:      "loop_discovery",
+		UserID:    user.ID,
+		SessionID: body.SessionID,
+		Content:   firstNonEmptyString(body.Objective, objectiveFromLoopPayload(body.Payload)),
+	})
+	result, err := s.runtime.SubmitLoopDiscoveryEvent(r.Context(), body)
+	if err != nil {
+		if errors.Is(err, ErrLoopDiscoveryBlocked) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSONError(w, err)
+		return
+	}
+	s.auditEvent(r, "loop_discovery", user, map[string]any{
+		"trigger_id":   result.Trigger.ID,
+		"trigger_type": result.Trigger.TriggerType,
+		"source":       result.Trigger.Source,
+		"dedupe_key":   result.Trigger.DedupeKey,
+		"job_id":       result.Trigger.JobID,
+		"duplicate":    result.Duplicate,
+	})
+	writeJSON(w, http.StatusAccepted, result)
+}
+
+func (s *Server) handleListLoopTriggers(w http.ResponseWriter, r *http.Request, user User) {
+	limit := parseBoundedInt(r.URL.Query().Get("limit"), 50, 1, 200)
+	triggers, err := s.runtime.ListLoopTriggers(r.Context(), user.ID, r.URL.Query().Get("session_id"), limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"triggers": triggers})
+}
+
 func (s *Server) handleTaskInbox(w http.ResponseWriter, r *http.Request, user User) {
 	inbox, err := s.runtime.TaskInbox(r.Context(), user.ID, TaskInboxOptions{
 		SessionID: r.URL.Query().Get("session_id"),
@@ -2266,8 +2375,6 @@ func (s *Server) streamJobEvents(w http.ResponseWriter, r *http.Request, user Us
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})
 		return
 	}
-	updates, unsubscribe := s.runtime.subscribeJobEvents(jobID)
-	defer unsubscribe()
 	sink, err := newSSEEventSink(w)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -2275,6 +2382,13 @@ func (s *Server) streamJobEvents(w http.ResponseWriter, r *http.Request, user Us
 	}
 	afterID := jobEventCursor(r)
 	seen := make(map[string]struct{})
+	useStreamBuffer := s.runtime != nil && s.runtime.jobEventStream != nil
+	var updates <-chan *JobEvent
+	var unsubscribe func()
+	if !useStreamBuffer {
+		updates, unsubscribe = s.runtime.subscribeJobEvents(jobID)
+		defer unsubscribe()
+	}
 	sendRecord := func(record *JobEvent) error {
 		if record == nil {
 			return nil
@@ -2300,6 +2414,10 @@ func (s *Server) streamJobEvents(w http.ResponseWriter, r *http.Request, user Us
 		if len(events) < 500 {
 			break
 		}
+	}
+	if useStreamBuffer {
+		s.streamJobEventsFromBuffer(r, user, jobID, sink, sendRecord, &afterID)
+		return
 	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -2350,11 +2468,69 @@ func (s *Server) streamJobEvents(w http.ResponseWriter, r *http.Request, user Us
 	}
 }
 
+func (s *Server) streamJobEventsFromBuffer(r *http.Request, user User, jobID string, sink *sseEventSink, sendRecord func(*JobEvent) error, afterID *string) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	lastKeepAlive := time.Now()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-s.shutdownDone():
+			_ = sink.Send(r.Context(), Event{Type: "error", JobID: jobID, Error: "server is shutting down"})
+			return
+		case <-ticker.C:
+			if time.Since(lastKeepAlive) >= 10*time.Second {
+				if err := sink.KeepAlive(r.Context()); err != nil {
+					return
+				}
+				lastKeepAlive = time.Now()
+			}
+			events, err := s.runtime.jobEventStream.BlockReadJobEvents(r.Context(), user.ID, jobID, *afterID, 500, time.Second)
+			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return
+				}
+				_ = sink.Send(r.Context(), Event{Type: "error", JobID: jobID, Error: err.Error()})
+				return
+			}
+			for _, record := range events {
+				if err := sendRecord(record); err != nil {
+					return
+				}
+			}
+			if len(events) > 0 {
+				continue
+			}
+			job, err := s.runtime.GetJob(r.Context(), user.ID, jobID)
+			if err != nil {
+				_ = sink.Send(r.Context(), Event{Type: "error", JobID: jobID, Error: err.Error()})
+				return
+			}
+			if isTerminalJobStatus(job.Status) {
+				events, err := s.runtime.ListJobEvents(r.Context(), user.ID, jobID, *afterID, 500)
+				if err != nil {
+					_ = sink.Send(r.Context(), Event{Type: "error", JobID: jobID, Error: err.Error()})
+					return
+				}
+				for _, record := range events {
+					if err := sendRecord(record); err != nil {
+						return
+					}
+				}
+				if len(events) == 0 {
+					return
+				}
+			}
+		}
+	}
+}
+
 func jobEventCursor(r *http.Request) string {
-	if value := strings.TrimSpace(r.URL.Query().Get("after_id")); value != "" {
+	if value := strings.TrimSpace(r.Header.Get("Last-Event-ID")); value != "" {
 		return value
 	}
-	return strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+	return strings.TrimSpace(r.URL.Query().Get("after_id"))
 }
 
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request, user User, jobID string) {
@@ -2433,16 +2609,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, user Us
 			running = true
 			chatMu.Unlock()
 			req := ChatRequest{UserID: user.ID, SessionID: sessionID, Content: msg.Content, AttachmentIDs: msg.AttachmentIDs, AttachmentURLs: msg.AttachmentURLs, ThinkingMode: msg.ThinkingMode, AgentMode: msg.AgentMode, ConnectorContext: msg.ConnectorContext}
-			decision := s.runtime.RouteChat(req)
-			if decision.RunAsJob {
-				if _, err := s.startRoutedJob(r, ctx, user, req, decision, sink); err != nil {
-					_ = sink.Send(ctx, Event{Type: "error", SessionID: sessionID, Error: err.Error()})
-				}
-				chatMu.Lock()
-				running = false
-				chatMu.Unlock()
-				continue
-			}
 			go func(req ChatRequest) {
 				defer func() {
 					chatMu.Lock()
@@ -3339,7 +3505,7 @@ func (s *Server) handleReviewDeepAgentLearning(w http.ResponseWriter, r *http.Re
 		return
 	}
 	var body struct {
-		Action string `json:"action" validate:"oneof=accept reject rollback"`
+		Action string `json:"action" validate:"oneof=accept reject expire rollback"`
 		Reason string `json:"reason,omitempty"`
 	}
 	if err := readJSON(r, &body); err != nil {
@@ -3476,16 +3642,75 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request, user User
 	}
 	s.logEvent("chat_start", map[string]any{"user_id": user.ID, "session_id": sessionID, "chars": len(body.Content), "request_id": requestIDFromContext(r.Context())})
 	req := ChatRequest{UserID: user.ID, SessionID: sessionID, Content: body.Content, AttachmentIDs: body.AttachmentIDs, AttachmentURLs: body.AttachmentURLs, ThinkingMode: body.ThinkingMode, AgentMode: body.AgentMode, ConnectorContext: body.ConnectorContext}
-	decision := s.runtime.RouteChat(req)
-	if decision.RunAsJob {
-		if _, err := s.startRoutedJob(r, r.Context(), user, req, decision, sink); err != nil && !errors.Is(err, context.Canceled) {
-			s.logEvent("job_route_error", map[string]any{"user_id": user.ID, "session_id": sessionID, "error": err.Error(), "request_id": requestIDFromContext(r.Context())})
-		}
+	run, err := s.chatStreams.CreateRun(r.Context(), user.ID, sessionID)
+	if err != nil {
+		_ = sink.Send(r.Context(), Event{Type: "error", SessionID: sessionID, Error: err.Error()})
 		return
 	}
-	err = s.runtime.Chat(r.Context(), req, sink)
-	if err != nil && !errors.Is(err, context.Canceled) {
-		s.logEvent("chat_error", map[string]any{"user_id": user.ID, "session_id": sessionID, "error": err.Error(), "request_id": requestIDFromContext(r.Context())})
+	runID := run.RunID
+	runCtx := context.WithoutCancel(r.Context())
+	resumableSink := &resumableChatSink{runID: runID, userID: user.ID, sessionID: sessionID, store: s.chatStreams, client: sink}
+	if err := s.runtime.Chat(runCtx, req, resumableSink); err != nil && !errors.Is(err, context.Canceled) {
+		s.logEvent("chat_error", map[string]any{"user_id": user.ID, "session_id": sessionID, "run_id": runID, "error": err.Error(), "request_id": requestIDFromContext(r.Context())})
+		if !resumableSink.terminal {
+			_ = resumableSink.Send(runCtx, Event{Type: "error", SessionID: sessionID, RunID: runID, Error: err.Error()})
+		}
+	}
+}
+
+func (s *Server) handleGetActiveChatRun(w http.ResponseWriter, r *http.Request, user User, sessionID string) {
+	if s.chatStreams == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"run": nil})
+		return
+	}
+	run, err := s.chatStreams.LatestActiveForSession(r.Context(), user.ID, sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"run": run})
+}
+
+func (s *Server) handleChatRunEvents(w http.ResponseWriter, r *http.Request, user User, runID string) {
+	if s.chatStreams == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "chat stream recovery is not configured"})
+		return
+	}
+	sink, err := newSSEEventSink(w)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	afterID := jobEventCursor(r)
+	for {
+		events, terminal, err := s.chatStreams.BlockRead(r.Context(), user.ID, runID, afterID, DefaultChatStreamEventLimit, DefaultChatStreamBlockRead)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
+			_ = sink.Send(r.Context(), Event{Type: "error", RunID: runID, Error: err.Error()})
+			return
+		}
+		for _, event := range events {
+			if afterID != "" && event.ID <= afterID {
+				continue
+			}
+			afterID = event.ID
+			if err := sink.send(r.Context(), event.ID, event.Event); err != nil {
+				return
+			}
+			if chatStreamTerminal(event.Type) {
+				return
+			}
+		}
+		if terminal {
+			return
+		}
+		if len(events) == 0 {
+			if err := sink.KeepAlive(r.Context()); err != nil {
+				return
+			}
+		}
 	}
 }
 

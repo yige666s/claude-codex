@@ -28,6 +28,15 @@ func TestOperationRateLimiterUsesOperationSpecificBuckets(t *testing.T) {
 	}
 }
 
+func TestOperationRateLimiterAllowsWhenNoLimitsConfigured(t *testing.T) {
+	limiter := NewOperationRateLimiter(nil)
+	for i := 0; i < 200; i++ {
+		if !limiter.Allow(RiskOperationChatMessage, "user:one") {
+			t.Fatalf("empty operation limits should allow request %d", i+1)
+		}
+	}
+}
+
 func TestMemoryRiskStoreAggregatesUserAndIPScore(t *testing.T) {
 	store := NewMemoryRiskStore()
 	if err := store.Init(context.Background()); err != nil {

@@ -1,6 +1,7 @@
 package agentruntime
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/hmac"
@@ -21,6 +22,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -218,6 +220,60 @@ func TestRuntimeChatUsesMessageWriteServiceForNewMessages(t *testing.T) {
 		t.Fatalf("expected one event per written message, events=%d messages=%d", len(publisher.events), len(messages))
 	}
 	if got := messages[len(messages)-1].Content; got != "assistant: hello" {
+		t.Fatalf("unexpected assistant message: %q", got)
+	}
+}
+
+func TestRuntimeChatPersistsUserMessageBeforeRunnerCompletes(t *testing.T) {
+	store := newRuntimeMessageWriteStore(t.TempDir())
+	runner := &releaseRunner{started: make(chan struct{}), release: make(chan struct{})}
+	runtime := NewRuntime(RuntimeConfig{TurnTimeout: time.Minute}, store, nil, nil, func(Scope) Runner { return runner })
+	session, err := store.Create(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	chatErr := make(chan error, 1)
+	go func() {
+		chatErr <- runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "first message"}, &collectSink{})
+	}()
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
+	messages, err := store.LoadSessionMessages(context.Background(), "alice", session.ID, SessionLoadOptions{MaxMessages: 10, IncludeSystem: true})
+	if err != nil {
+		t.Fatalf("load messages while runner is blocked: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != state.MessageRoleUser || messages[0].Content != "first message" {
+		t.Fatalf("expected only the prewritten user message while runner is blocked, got %#v", messages)
+	}
+
+	close(runner.release)
+	select {
+	case err := <-chatErr:
+		if err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("chat did not complete")
+	}
+	messages, err = store.LoadSessionMessages(context.Background(), "alice", session.ID, SessionLoadOptions{MaxMessages: 10, IncludeSystem: true})
+	if err != nil {
+		t.Fatalf("load messages after completion: %v", err)
+	}
+	var visibleUsers []string
+	for _, message := range messages {
+		if message.Role == state.MessageRoleUser && !message.Hidden {
+			visibleUsers = append(visibleUsers, message.Content)
+		}
+	}
+	if len(visibleUsers) != 1 || visibleUsers[0] != "first message" {
+		t.Fatalf("expected no duplicate visible user message, got %#v in %#v", visibleUsers, messages)
+	}
+	if got := messages[len(messages)-1].Content; got != "assistant: first message" {
 		t.Fatalf("unexpected assistant message: %q", got)
 	}
 }
@@ -1677,6 +1733,40 @@ func TestRuntimeAutomaticallyCreatesImageArtifactInsight(t *testing.T) {
 	}
 }
 
+func TestRuntimeImageAssetInsightDisablesTools(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	var captured Scope
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(root),
+		NewFileMemoryService(root),
+		nil,
+		func(scope Scope) Runner {
+			captured = scope
+			return memoryJSONRunner{output: `{"summary":"white dog photo","visual_type":"photo","tags":["dog"],"confidence":0.9}`}
+		},
+	)
+	insight, err := runtime.buildAssetInsight(ctx, &Artifact{
+		ID:          "asset-1",
+		Kind:        AssetKindArtifact,
+		UserID:      "alice",
+		SessionID:   "session-1",
+		Filename:    "dog.png",
+		ContentType: "image/png",
+		SizeBytes:   int64(len("png-bytes")),
+	}, []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("build asset insight: %v", err)
+	}
+	if insight.Summary != "white dog photo" {
+		t.Fatalf("unexpected insight: %#v", insight)
+	}
+	if got := strings.Join(captured.AllowedTools, ","); got != "__asset_insight_no_tools__" {
+		t.Fatalf("asset insight allowed tools = %q", got)
+	}
+}
+
 func TestRuntimeExtractMemoryFromImageAssetStoresInsightOnly(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -2460,9 +2550,15 @@ func TestSkillShellEnvironmentOnlyPassesAllowedEnv(t *testing.T) {
 	t.Setenv("UNLISTED_SECRET", "do-not-pass")
 	runtime := NewRuntime(RuntimeConfig{}, nil, nil, nil, nil)
 
-	env := runtime.skillShellEnvironment("/tmp/workspace", []string{"VERTEX_PROJECT_ID", "MISSING_ENV"})
+	env := runtime.skillShellEnvironment("/tmp/workspace", "/tmp/skill", []string{"VERTEX_PROJECT_ID", "MISSING_ENV"})
 	if env["AGENT_WORKSPACE_DIR"] != "/tmp/workspace" {
 		t.Fatalf("expected workspace env, got %#v", env)
+	}
+	if env["CLAUDE_SKILL_DIR"] != "/tmp/skill" || env["SKILL_DIR"] != "/tmp/skill" {
+		t.Fatalf("expected skill dir aliases, got %#v", env)
+	}
+	if env["TMP_DIR"] != "/tmp/workspace/tmp" || env["TMPDIR"] != "/tmp/workspace/tmp" {
+		t.Fatalf("expected temp dir aliases, got %#v", env)
 	}
 	if env["VERTEX_PROJECT_ID"] != "project-1" {
 		t.Fatalf("expected allowed env to pass, got %#v", env)
@@ -2486,7 +2582,7 @@ func TestSkillShellEnvironmentRefreshesAllowedVertexAccessToken(t *testing.T) {
 	}
 	runtime := NewRuntime(RuntimeConfig{}, nil, nil, nil, nil)
 
-	env := runtime.skillShellEnvironment("/tmp/workspace", []string{"VERTEX_ACCESS_TOKEN"})
+	env := runtime.skillShellEnvironment("/tmp/workspace", "/tmp/skill", []string{"VERTEX_ACCESS_TOKEN"})
 	if env["VERTEX_ACCESS_TOKEN"] != "fresh-token" {
 		t.Fatalf("expected refreshed Vertex access token, got %#v", env)
 	}
@@ -2503,7 +2599,7 @@ func TestSkillShellEnvironmentFallsBackToConfiguredVertexAccessToken(t *testing.
 	}
 	runtime := NewRuntime(RuntimeConfig{}, nil, nil, nil, nil)
 
-	env := runtime.skillShellEnvironment("/tmp/workspace", []string{"VERTEX_ACCESS_TOKEN"})
+	env := runtime.skillShellEnvironment("/tmp/workspace", "/tmp/skill", []string{"VERTEX_ACCESS_TOKEN"})
 	if env["VERTEX_ACCESS_TOKEN"] != "configured-token" {
 		t.Fatalf("expected configured Vertex access token fallback, got %#v", env)
 	}
@@ -3384,7 +3480,9 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 		AccessTTL:  time.Minute,
 		RefreshTTL: time.Hour,
 	}
-	server := NewServer(testRuntime(t), JWTAuthenticator{Secret: "secret"}, NewRateLimiter(40, time.Minute), nil)
+	runtime := testRuntime(t)
+	runtime.SetJobStore(NewMemoryJobStore())
+	server := NewServer(runtime, JWTAuthenticator{Secret: "secret"}, NewRateLimiter(40, time.Minute), nil)
 	server.SetAuthService(authService)
 
 	authSession := registerTestUser(t, server, "life@example.com")
@@ -3475,6 +3573,26 @@ func TestServerDataLifecycleRoutes(t *testing.T) {
 	server.ServeHTTP(msgRec, msgReq)
 	if msgRec.Code != http.StatusOK {
 		t.Fatalf("message status = %d body=%s", msgRec.Code, msgRec.Body.String())
+	}
+	seenDone := false
+	for _, line := range strings.Split(msgRec.Body.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var event Event
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+			t.Fatalf("decode message event: %v body=%s", err, msgRec.Body.String())
+		}
+		if event.JobID != "" || event.Type == "job" {
+			t.Fatalf("ordinary message should stream synchronously, got job event: %#v body=%s", event, msgRec.Body.String())
+		}
+		if event.Type == "done" {
+			seenDone = true
+		}
+	}
+	if !seenDone {
+		t.Fatalf("message did not complete synchronously: %s", msgRec.Body.String())
 	}
 
 	exportReq := httptest.NewRequest(http.MethodGet, "/v1/data/export", nil)
@@ -4245,6 +4363,179 @@ func TestArtifactToolWritesThroughScopedWriter(t *testing.T) {
 	}
 }
 
+func TestArtifactToolDescriptionSeparatesFinalArtifactsFromWorkspaceScratchFiles(t *testing.T) {
+	description := NewArtifactTool(nil).Description()
+	for _, want := range []string{
+		"final, user-facing artifact",
+		"Do not use this for intermediate scripts",
+		"create those in the workspace with Bash",
+		"For DOCX, PPTX, and XLSX deliverables",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("artifact tool description missing %q in %q", want, description)
+		}
+	}
+}
+
+func TestArtifactToolRejectsInlineOfficeDocumentBytes(t *testing.T) {
+	tool := NewArtifactTool(testArtifactWriter{})
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"filename":"report.docx","content_type":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","content_base64":"UEsDBAo="}`))
+	if err == nil {
+		t.Fatal("expected inline docx artifact to be rejected")
+	}
+	for _, want := range []string{"must be submitted with file_path", "instead of content or content_base64"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("inline office artifact error missing %q in %q", want, err.Error())
+		}
+	}
+}
+
+func TestArtifactToolRejectsEmptyArtifactContent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "empty.png"), nil, 0o644); err != nil {
+		t.Fatalf("write empty artifact file: %v", err)
+	}
+	tool := NewArtifactTool(testArtifactWriter{}, root)
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"filename":"empty.png","content_type":"image/png","file_path":"empty.png"}`))
+	if err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("expected empty artifact content error, got %v", err)
+	}
+}
+
+func TestArtifactServiceRejectsEmptyArtifactContent(t *testing.T) {
+	service := NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts")
+	_, err := service.Create(context.Background(), AssetKindArtifact, "alice", "session-1", "empty.png", "image/png", nil)
+	if err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("expected empty artifact content error, got %v", err)
+	}
+}
+
+func TestTruncateSkillExecutionStringPreservesUTF8(t *testing.T) {
+	got := truncateSkillExecutionString("中文输入摘要", 5)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated string is invalid UTF-8: %q", got)
+	}
+	if len(got) > 5 {
+		t.Fatalf("truncated string length = %d, want <= 5", len(got))
+	}
+}
+
+func TestArtifactToolConvertsTextDocxArtifactToValidDocx(t *testing.T) {
+	writer := &captureArtifactWriter{}
+	tool := NewArtifactTool(writer)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"filename":"report.docx","content_type":"text/markdown","content":"# 测试标题\n\n第一段。\n\n第二段。"}`))
+	if err != nil {
+		t.Fatalf("execute text docx artifact conversion: %v", err)
+	}
+	var output struct {
+		ContentType string `json:"content_type"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &output); err != nil {
+		t.Fatalf("decode artifact output: %v", err)
+	}
+	if output.ContentType != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
+		t.Fatalf("content type = %q", output.ContentType)
+	}
+	if writer.contentType != output.ContentType {
+		t.Fatalf("writer content type = %q", writer.contentType)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(writer.data), int64(len(writer.data)))
+	if err != nil {
+		t.Fatalf("converted docx is not a zip: %v", err)
+	}
+	names := make(map[string]bool)
+	var documentXML string
+	for _, file := range reader.File {
+		names[file.Name] = true
+		if file.Name == "word/document.xml" {
+			rc, err := file.Open()
+			if err != nil {
+				t.Fatalf("open document.xml: %v", err)
+			}
+			data, err := io.ReadAll(rc)
+			_ = rc.Close()
+			if err != nil {
+				t.Fatalf("read document.xml: %v", err)
+			}
+			documentXML = string(data)
+		}
+	}
+	if !names["[Content_Types].xml"] || !names["word/document.xml"] || !strings.Contains(documentXML, "测试标题") {
+		t.Fatalf("converted docx missing required content names=%v document=%q", names, documentXML)
+	}
+}
+
+func TestArtifactToolRejectsDocxGenerationRequestContent(t *testing.T) {
+	tool := NewArtifactTool(testArtifactWriter{})
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"filename":"最后一盏纸灯笼.docx","content_type":"text/markdown","content":"这是小说《最后一盏纸灯笼》的内容。请将它们生成为一个 .docx 文件，保持中文排版风格。输出文件名为 最后一盏纸灯笼.docx"}`))
+	if err == nil {
+		t.Fatal("expected docx generation request content to be rejected")
+	}
+	for _, want := range []string{"generation request", "final document body", "file_path"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("docx request rejection missing %q in %q", want, err.Error())
+		}
+	}
+}
+
+func TestArtifactToolSavesIntermediateScriptsToWorkspace(t *testing.T) {
+	root := t.TempDir()
+	tool := NewArtifactTool(testArtifactWriter{}, root)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"filename":"build_doc.py","content_type":"text/x-python","content":"print('ok')\n"}`))
+	if err != nil {
+		t.Fatalf("execute script artifact compatibility path: %v", err)
+	}
+	var output struct {
+		Kind                 string `json:"kind"`
+		FilePath             string `json:"file_path"`
+		AssistantInstruction string `json:"assistant_instruction"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &output); err != nil {
+		t.Fatalf("decode workspace file output: %v", err)
+	}
+	if output.Kind != "workspace_file" || output.FilePath != "build_doc.py" || !strings.Contains(output.AssistantInstruction, "Run or inspect it with Bash") {
+		t.Fatalf("unexpected workspace file output: %#v", output)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "build_doc.py"))
+	if err != nil {
+		t.Fatalf("read workspace script: %v", err)
+	}
+	if string(data) != "print('ok')\n" {
+		t.Fatalf("workspace script = %q", string(data))
+	}
+}
+
+type captureArtifactWriter struct {
+	filename    string
+	contentType string
+	data        []byte
+}
+
+func (w *captureArtifactWriter) Write(_ context.Context, filename, contentType string, data []byte) (*Artifact, error) {
+	w.filename = filename
+	w.contentType = contentType
+	w.data = append([]byte(nil), data...)
+	return &Artifact{
+		ID:          "artifact-capture",
+		Kind:        AssetKindArtifact,
+		Filename:    filename,
+		ContentType: contentType,
+		SizeBytes:   int64(len(data)),
+	}, nil
+}
+
+type testArtifactWriter struct{}
+
+func (testArtifactWriter) Write(_ context.Context, filename, contentType string, data []byte) (*Artifact, error) {
+	return &Artifact{
+		ID:          "artifact-test",
+		Kind:        AssetKindArtifact,
+		Filename:    filename,
+		ContentType: contentType,
+		SizeBytes:   int64(len(data)),
+	}, nil
+}
+
 func TestArtifactWriterRejectsDisallowedSkillContentType(t *testing.T) {
 	root := t.TempDir()
 	var captured Scope
@@ -4268,6 +4559,12 @@ func TestArtifactWriterRejectsDisallowedSkillContentType(t *testing.T) {
 	tool := NewArtifactTool(captured.Artifacts)
 	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"filename":"note.txt","content_type":"text/plain","content":"hello"}`)); err == nil {
 		t.Fatal("expected text artifact to be rejected by skill policy")
+	} else {
+		for _, want := range []string{"Artifact is only for final user-facing deliverables", "create files in the workspace with Bash"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("rejection error missing %q in %q", want, err.Error())
+			}
+		}
 	}
 	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"filename":"chart.png","content_type":"image/png","content_base64":"cG5n"}`)); err != nil {
 		t.Fatalf("expected image artifact to pass: %v", err)
@@ -4313,6 +4610,48 @@ func TestRuntimeChatPassesAttachmentAsContentBlock(t *testing.T) {
 	source := capture.blocks[1].Source
 	if capture.blocks[1].Type != "image" || source["media_type"] != "image/png" || source["data"] != base64.StdEncoding.EncodeToString([]byte("png-bytes")) {
 		t.Fatalf("unexpected attachment block: %#v", capture.blocks[1])
+	}
+}
+
+func TestRuntimeChatAllowsUserAttachmentFromAnotherSession(t *testing.T) {
+	root := t.TempDir()
+	capture := &captureContentRunner{}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(root),
+		NewFileMemoryService(root),
+		nil,
+		func(Scope) Runner { return capture },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+
+	ctx := context.Background()
+	sourceSession, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create source session: %v", err)
+	}
+	targetSession, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create target session: %v", err)
+	}
+	attachment, err := runtime.CreateAttachment(ctx, "alice", sourceSession.ID, "photo.png", "image/png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+
+	if err := runtime.Chat(ctx, ChatRequest{
+		UserID:        "alice",
+		SessionID:     targetSession.ID,
+		Content:       "use this library attachment",
+		AttachmentIDs: []string{attachment.ID},
+	}, &collectSink{}); err != nil {
+		t.Fatalf("chat with cross-session attachment: %v", err)
+	}
+	if len(capture.blocks) != 2 {
+		t.Fatalf("captured blocks = %#v", capture.blocks)
+	}
+	if !strings.Contains(capture.blocks[0].Text, "Attached files: photo.png") {
+		t.Fatalf("expected attached filename in prompt, got %#v", capture.blocks[0])
 	}
 }
 
@@ -4623,8 +4962,48 @@ func TestRuntimeChatInlinesTextAttachmentAsPromptText(t *testing.T) {
 	}
 }
 
-func TestServerStreamsChatEvents(t *testing.T) {
-	server := NewServer(testRuntime(t), HeaderAuthenticator{}, NewRateLimiter(10, time.Minute), nil)
+func TestRuntimeTextAttachmentContextAllowsUserAttachmentFromAnotherSession(t *testing.T) {
+	root := t.TempDir()
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(root),
+		NewFileMemoryService(root),
+		nil,
+		nil,
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+
+	ctx := context.Background()
+	sourceSession, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create source session: %v", err)
+	}
+	targetSession, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create target session: %v", err)
+	}
+	attachment, err := runtime.CreateAttachment(ctx, "alice", sourceSession.ID, "notes.md", "text/markdown", []byte("# Title\n\nhello text attachment"))
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+
+	prompt, err := runtime.textAttachmentContext(ctx, ChatRequest{
+		UserID:        "alice",
+		SessionID:     targetSession.ID,
+		AttachmentIDs: []string{attachment.ID},
+	})
+	if err != nil {
+		t.Fatalf("text attachment context: %v", err)
+	}
+	if !strings.Contains(prompt, "Attached text file: notes.md") || !strings.Contains(prompt, "hello text attachment") {
+		t.Fatalf("unexpected text attachment prompt: %q", prompt)
+	}
+}
+
+func TestServerStreamsChatMessagesSynchronouslyAndRecordsRunEvents(t *testing.T) {
+	runtime := testRuntime(t)
+	runtime.SetJobStore(NewMemoryJobStore())
+	server := NewServer(runtime, HeaderAuthenticator{}, NewRateLimiter(10, time.Minute), nil)
 
 	createBody := bytes.NewBufferString(`{"working_dir":"` + t.TempDir() + `"}`)
 	createReq := httptest.NewRequest(http.MethodPost, "/v1/sessions", createBody)
@@ -4647,10 +5026,100 @@ func TestServerStreamsChatEvents(t *testing.T) {
 		t.Fatalf("message status = %d body=%s", msgRec.Code, msgRec.Body.String())
 	}
 	body := msgRec.Body.String()
-	for _, want := range []string{"event: start", "event: delta", "event: message", "assistant: hello", "event: done"} {
+	if strings.Contains(body, "event: job") || strings.Contains(body, `"job_id"`) {
+		t.Fatalf("ordinary chat POST should not route to a background job, got %s", body)
+	}
+	for _, want := range []string{"event: start", "event: delta", "event: message", "event: done"} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("SSE body missing %q: %s", want, body)
+			t.Fatalf("chat POST missing %q in %s", want, body)
 		}
+	}
+	var first Event
+	eventIDs := make([]string, 0)
+	var currentID string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "id: ") {
+			currentID = strings.TrimSpace(strings.TrimPrefix(line, "id: "))
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		if currentID != "" {
+			eventIDs = append(eventIDs, currentID)
+		}
+		var event Event
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+			t.Fatalf("decode chat event: %v body=%s", err, body)
+		}
+		if first.Type == "" {
+			first = event
+		}
+	}
+	if first.RunID == "" {
+		t.Fatalf("start event missing run id: %#v body=%s", first, body)
+	}
+	if len(eventIDs) < 2 {
+		t.Fatalf("expected SSE ids for chat events, got %#v in %s", eventIDs, body)
+	}
+
+	streamReq := httptest.NewRequest(http.MethodGet, "/v1/chat/runs/"+first.RunID+"/events?stream=1", nil)
+	streamReq.Header.Set("X-User-ID", "alice")
+	streamReq.Header.Set("Last-Event-ID", eventIDs[0])
+	streamRec := httptest.NewRecorder()
+	server.ServeHTTP(streamRec, streamReq)
+	if streamRec.Code != http.StatusOK {
+		t.Fatalf("stream status = %d body=%s", streamRec.Code, streamRec.Body.String())
+	}
+	streamBody := streamRec.Body.String()
+	if strings.Contains(streamBody, "id: "+eventIDs[0]+"\n") {
+		t.Fatalf("chat stream replay ignored Last-Event-ID: %s", streamBody)
+	}
+	if !strings.Contains(streamBody, "event: done") {
+		t.Fatalf("chat stream replay should include terminal event: %s", streamBody)
+	}
+}
+
+func TestResumableChatSinkPersistsAfterClientWriteFailure(t *testing.T) {
+	runtime := testRuntime(t)
+	session, err := runtime.CreateSession(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	store := NewMemoryChatStreamStore()
+	run, err := store.CreateRun(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("create chat run: %v", err)
+	}
+	sink := &resumableChatSink{
+		runID:     run.RunID,
+		userID:    "alice",
+		sessionID: session.ID,
+		store:     store,
+		client:    &alwaysFailSink{},
+	}
+	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "hello"}, sink); err != nil {
+		t.Fatalf("chat should continue after client write failure: %v", err)
+	}
+	events, terminal, err := store.ListAfter(context.Background(), "alice", run.RunID, "", 100)
+	if err != nil {
+		t.Fatalf("list chat stream events: %v", err)
+	}
+	if !terminal {
+		t.Fatalf("chat stream should be terminal after successful chat: %#v", events)
+	}
+	seenDone := false
+	for _, event := range events {
+		if event.Type == "done" {
+			seenDone = true
+		}
+		if event.RunID != run.RunID || event.Event.RunID != run.RunID {
+			t.Fatalf("event missing run id: %#v", event)
+		}
+	}
+	if !seenDone {
+		t.Fatalf("missing done event after client write failure: %#v", events)
 	}
 }
 
@@ -4747,7 +5216,7 @@ func TestServerJobRuntimePersistsEvents(t *testing.T) {
 	}
 }
 
-func TestServerRoutesLongRunningChatToJob(t *testing.T) {
+func TestServerStreamsRunAsJobSkillInline(t *testing.T) {
 	runtime := testRuntime(t)
 	runtime.SetJobStore(NewMemoryJobStore())
 	runtime.skills = fakeSkillCatalog{skills: []*skills.SkillDefinition{{
@@ -4780,37 +5249,53 @@ func TestServerRoutesLongRunningChatToJob(t *testing.T) {
 		t.Fatalf("message status = %d body=%s", msgRec.Code, msgRec.Body.String())
 	}
 	body := msgRec.Body.String()
-	if !strings.Contains(body, "event: job") || !strings.Contains(body, `"job_id"`) {
-		t.Fatalf("expected routed job event, got %s", body)
+	for _, want := range []string{"event: start", "event: job", "event: tool_call_start", "event: tool_call_result", "event: message", "event: done"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("synchronous trace skill stream missing %q in %s", want, body)
+		}
 	}
 	if strings.Contains(body, "event: delta") {
-		t.Fatalf("expected request to return after job routing, got direct chat events: %s", body)
+		t.Fatalf("skill execution progress should not stream as answer delta: %s", body)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		jobs, err := runtime.ListJobs(context.Background(), "alice", session.ID)
-		if err != nil {
-			t.Fatalf("list jobs: %v", err)
-		}
-		if len(jobs) > 0 && jobs[0].Status == JobStatusSucceeded {
-			updated, err := runtime.GetSession(context.Background(), "alice", session.ID)
-			if err != nil {
-				t.Fatalf("get session: %v", err)
-			}
-			visibleUsers := 0
-			for _, message := range updated.Messages {
-				if message.Role == "user" && !message.Hidden && message.Content == "/long-skill make a deck" {
-					visibleUsers++
-				}
-			}
-			if visibleUsers != 1 {
-				t.Fatalf("expected one persisted visible skill user message, got %d in %#v", visibleUsers, updated.Messages)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if strings.Contains(body, "<command-message>") {
+		t.Fatalf("skill internals should not leak into public stream: %s", body)
 	}
-	t.Fatal("routed job did not finish")
+	jobs, err := runtime.ListJobs(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].Status != JobStatusSucceeded {
+		t.Fatalf("chat should create one completed trace job, got %#v", jobs)
+	}
+	jobEvents, err := runtime.ListJobEvents(context.Background(), "alice", jobs[0].ID, "", 100)
+	if err != nil {
+		t.Fatalf("list job events: %v", err)
+	}
+	var sawStart, sawDone bool
+	for _, event := range jobEvents {
+		if event.Type == "sync_job_started" {
+			sawStart = true
+		}
+		if event.Type == "done" {
+			sawDone = true
+		}
+	}
+	if !sawStart || !sawDone {
+		t.Fatalf("missing synchronous trace events start=%t done=%t events=%#v", sawStart, sawDone, jobEvents)
+	}
+	updated, err := runtime.GetSession(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	visibleUsers := 0
+	for _, message := range updated.Messages {
+		if message.Role == "user" && !message.Hidden && message.Content == "/long-skill make a deck" {
+			visibleUsers++
+		}
+	}
+	if visibleUsers != 1 {
+		t.Fatalf("expected one persisted visible skill user message, got %d in %#v", visibleUsers, updated.Messages)
+	}
 }
 
 func TestRuntimeRoutesPlanExecuteModeToDeepAgentJob(t *testing.T) {
@@ -5036,6 +5521,49 @@ func TestRuntimeChatDoesNotDuplicateFailedUserMessage(t *testing.T) {
 	}
 	if userMessages != 1 {
 		t.Fatalf("expected one visible user message, got %d in %#v", userMessages, loaded.Messages)
+	}
+}
+
+func TestRuntimeSkillHidesIntermediateAssistantMessages(t *testing.T) {
+	store := NewFileSessionStore(t.TempDir())
+	session, err := store.Create(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: session.WorkingDir, TurnTimeout: time.Minute},
+		store,
+		NewFileMemoryService(t.TempDir()),
+		fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+			Name:          "docx",
+			UserInvocable: true,
+			GetPrompt: func(_ string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+				return []skills.ContentBlock{{Type: "text", Text: "docx prompt"}}, nil
+			},
+		}}},
+		func(Scope) Runner { return intermediateSkillRunner{} },
+	)
+	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "/docx make a report"}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	loaded, err := store.Get(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	visible := visibleMessages(loaded.Messages)
+	if len(visible) != 2 {
+		t.Fatalf("expected visible user and final assistant only, got %#v", visible)
+	}
+	if visible[0].Role != "user" || visible[0].Content != "/docx make a report" {
+		t.Fatalf("expected visible user command, got %#v", visible[0])
+	}
+	if visible[1].Role != "assistant" || visible[1].Content != "已生成 report.docx" {
+		t.Fatalf("expected visible final assistant, got %#v", visible[1])
+	}
+	for _, message := range loaded.Messages {
+		if message.Role == "assistant" && strings.Contains(message.Content, "different approach") && !message.Hidden {
+			t.Fatalf("intermediate assistant message should be hidden: %#v", message)
+		}
 	}
 }
 
@@ -5602,6 +6130,205 @@ func TestArtifactProducingSkillRegistersGeneratedArtifactFile(t *testing.T) {
 	}
 }
 
+func TestArtifactProducingSkillRejectsEmptyGeneratedArtifactFile(t *testing.T) {
+	root := t.TempDir()
+	storeRoot := t.TempDir()
+	executions := NewMemorySkillExecutionStore()
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "image",
+		UserInvocable: true,
+		Metadata: map[string]any{
+			"agentapi": map[string]any{"produces_artifacts": true},
+		},
+		GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+			return []skills.ContentBlock{{Type: "text", Text: "create image for " + args}}, nil
+		},
+	}}}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(storeRoot),
+		NewFileMemoryService(storeRoot),
+		catalog,
+		func(scope Scope) Runner { return emptyGeneratedArtifactFileRunner{workspace: scope.WorkingDir} },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	runtime.SetSkillExecutionStore(executions)
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	err = runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "/image make a dog"}, &collectSink{})
+	if err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("expected empty generated artifact error, got %v", err)
+	}
+	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("empty generated artifact should not be stored: %#v", artifacts)
+	}
+	records, err := executions.ListSkillExecutions(context.Background(), SkillExecutionFilter{SkillName: "image"})
+	if err != nil {
+		t.Fatalf("list executions: %v", err)
+	}
+	if len(records) != 1 || records[0].Status != SkillExecutionStatusFailed || records[0].ArtifactCount != 0 {
+		t.Fatalf("unexpected execution record: %#v", records)
+	}
+}
+
+func TestDocumentSkillInjectsRecentTextArtifactAsSourceBody(t *testing.T) {
+	root := t.TempDir()
+	storeRoot := t.TempDir()
+	capture := &captureContentRunner{}
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "documents",
+		UserInvocable: true,
+		GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+			return []skills.ContentBlock{{Type: "text", Text: "documents prompt:\n" + args}}, nil
+		},
+	}}}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(storeRoot),
+		NewFileMemoryService(storeRoot),
+		catalog,
+		func(Scope) Runner { return capture },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	sourceBody := "# 最后一盏纸灯笼\n\n夜色落下来，纸灯笼还亮着。"
+	if _, err := runtime.CreateArtifact(context.Background(), "alice", session.ID, "最后一盏纸灯笼.md", "text/markdown", []byte(sourceBody)); err != nil {
+		t.Fatalf("create source artifact: %v", err)
+	}
+	err = runtime.Chat(context.Background(), ChatRequest{
+		UserID:    "alice",
+		SessionID: session.ID,
+		Content:   "/documents 基于这篇小说准备一个排版方案",
+	}, &collectSink{})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	for _, want := range []string{
+		"Source artifact for document generation",
+		"最后一盏纸灯笼.md",
+		"夜色落下来，纸灯笼还亮着。",
+	} {
+		if !strings.Contains(capture.prompt, want) {
+			t.Fatalf("generated prompt missing %q:\n%s", want, capture.prompt)
+		}
+	}
+}
+
+func TestDocumentSkillDocxRequestRunsSkillWithSourceArtifact(t *testing.T) {
+	root := t.TempDir()
+	storeRoot := t.TempDir()
+	capture := &captureContentRunner{}
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "documents",
+		UserInvocable: true,
+		GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+			return []skills.ContentBlock{{Type: "text", Text: "documents prompt:\n" + args}}, nil
+		},
+	}}}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(storeRoot),
+		NewFileMemoryService(storeRoot),
+		catalog,
+		func(Scope) Runner { return capture },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	sourceBody := "# 最后一盏纸灯笼\n\n夜色落下来，纸灯笼还亮着。"
+	if _, err := runtime.CreateArtifact(context.Background(), "alice", session.ID, "最后一盏纸灯笼.md", "text/markdown", []byte(sourceBody)); err != nil {
+		t.Fatalf("create source artifact: %v", err)
+	}
+	err = runtime.Chat(context.Background(), ChatRequest{
+		UserID:    "alice",
+		SessionID: session.ID,
+		Content:   "/documents 将这篇小说渲染为 Word (.docx) 文件，保持小说的中文格式和排版。输出文件名为 最后一盏纸灯笼.docx",
+	}, &collectSink{})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	for _, want := range []string{
+		"Source artifact for document generation",
+		"最后一盏纸灯笼.md",
+		"夜色落下来，纸灯笼还亮着。",
+		"最后一盏纸灯笼.docx",
+	} {
+		if !strings.Contains(capture.prompt, want) {
+			t.Fatalf("generated prompt missing %q:\n%s", want, capture.prompt)
+		}
+	}
+	artifacts, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	for _, artifact := range artifacts {
+		if strings.EqualFold(filepath.Ext(artifact.Filename), ".docx") {
+			t.Fatalf("runtime should not create docx directly; got %#v", artifact)
+		}
+	}
+}
+
+func TestSkillCommandSkipsTextAttachmentAlreadyInSessionContext(t *testing.T) {
+	root := t.TempDir()
+	storeRoot := t.TempDir()
+	capture := &captureContentRunner{}
+	catalog := fakeSkillCatalog{skills: []*skills.SkillDefinition{{
+		Name:          "presentations",
+		UserInvocable: true,
+		GetPrompt: func(args string, _ *skills.SkillContext) ([]skills.ContentBlock, error) {
+			return []skills.ContentBlock{{Type: "text", Text: "presentations prompt:\n" + args}}, nil
+		},
+	}}}
+	runtime := NewRuntime(
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		NewFileSessionStore(storeRoot),
+		NewFileMemoryService(storeRoot),
+		catalog,
+		func(Scope) Runner { return capture },
+	)
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	ctx := context.Background()
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	body := "# PostgreSQL RLS\n\n租户隔离正文"
+	attachment, err := runtime.CreateAttachment(ctx, "alice", session.ID, "RLS_技术实现文档.md", "text/markdown", []byte(body))
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+	session.AddUserContentMessage("根据这份文档生成一个ppt", []publictypes.ContentBlock{
+		{Type: "text", Text: "根据这份文档生成一个ppt\n\nAttached files: RLS_技术实现文档.md"},
+		{Type: "text", Text: formatTextAttachmentPrompt(attachment.Filename, attachment.ContentType, []byte(body))},
+	})
+
+	if _, err := runtime.runSkillCommand(ctx, ChatRequest{
+		UserID:        "alice",
+		SessionID:     session.ID,
+		Content:       "/presentations 生成一份简洁 PPT",
+		AttachmentIDs: []string{attachment.ID},
+	}, "alice", session, "/presentations 生成一份简洁 PPT", nil); err != nil {
+		t.Fatalf("run skill command: %v", err)
+	}
+	if strings.Contains(capture.prompt, "Attached text file: RLS_技术实现文档.md") {
+		t.Fatalf("generated skill prompt duplicated text attachment:\n%s", capture.prompt)
+	}
+	if !strings.Contains(capture.prompt, "presentations prompt:") || !strings.Contains(capture.prompt, "生成一份简洁 PPT") {
+		t.Fatalf("generated skill prompt missing skill args:\n%s", capture.prompt)
+	}
+}
+
 func TestArtifactProducingSkillRegistersPromptGeneratedArtifactFile(t *testing.T) {
 	root := t.TempDir()
 	storeRoot := t.TempDir()
@@ -5695,7 +6422,7 @@ func TestArtifactProducingSkillRegistersPromptGeneratedArtifactFile(t *testing.T
 	}
 }
 
-func TestRuntimeRoutesLLMSelectedRunAsJobSkillToJob(t *testing.T) {
+func TestRuntimeExecutesLLMSelectedRunAsJobSkillInline(t *testing.T) {
 	root := t.TempDir()
 	storeRoot := t.TempDir()
 	jobs := NewMemoryJobStore()
@@ -5731,34 +6458,44 @@ func TestRuntimeRoutesLLMSelectedRunAsJobSkillToJob(t *testing.T) {
 	sink.mu.Lock()
 	events := append([]Event(nil), sink.events...)
 	sink.mu.Unlock()
-	var routedJob *Job
+	assistantMessages := 0
 	for _, event := range events {
 		if event.Type == "message" && event.Role == "assistant" {
-			t.Fatalf("run_as_job skill should not produce inline assistant message: %#v", event)
+			assistantMessages++
 		}
-		if event.Type == "job" {
-			routedJob = event.Job
+		if event.Type == "job" && event.Job != nil {
+			if event.Job.Status != JobStatusRunning {
+				t.Fatalf("expected running trace job event, got %#v", event)
+			}
 		}
 	}
-	if routedJob == nil {
-		t.Fatalf("expected job event, got %#v", events)
+	if assistantMessages == 0 {
+		t.Fatalf("expected inline assistant message, got %#v", events)
 	}
-	if routedJob.Type != "skill" || routedJob.Content != "/vertex-image-artifact Cute little kitty --ar 3:4" {
-		t.Fatalf("unexpected routed job: %#v", routedJob)
+	storedJobs, err := jobs.ListJobs(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		stored, err := jobs.GetJob(context.Background(), "alice", routedJob.ID)
-		if err != nil {
-			t.Fatalf("get job: %v", err)
+	if len(storedJobs) != 1 || storedJobs[0].Status != JobStatusSucceeded {
+		t.Fatalf("chat should create one completed trace job, got %#v", storedJobs)
+	}
+	jobEvents, err := jobs.ListJobEvents(context.Background(), "alice", storedJobs[0].ID, "", 100)
+	if err != nil {
+		t.Fatalf("list job events: %v", err)
+	}
+	var sawJob, sawStart, sawDone bool
+	for _, event := range jobEvents {
+		switch event.Type {
+		case "job":
+			sawJob = true
+		case "sync_job_started":
+			sawStart = true
+		case "done":
+			sawDone = true
 		}
-		if stored.Status == JobStatusSucceeded {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("job did not complete: %#v", stored)
-		}
-		time.Sleep(10 * time.Millisecond)
+	}
+	if !sawJob || !sawStart || !sawDone {
+		t.Fatalf("missing synchronous trace events job=%t start=%t done=%t events=%#v", sawJob, sawStart, sawDone, jobEvents)
 	}
 	updated, err := runtime.GetSession(context.Background(), "alice", session.ID)
 	if err != nil {
@@ -6425,6 +7162,27 @@ func (r generatedArtifactFileRunner) RunGeneratedPrompt(_ context.Context, sessi
 	return engine.Result{Output: "created docx file", Session: session}, nil
 }
 
+type emptyGeneratedArtifactFileRunner struct {
+	workspace string
+}
+
+func (r emptyGeneratedArtifactFileRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return r.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (r emptyGeneratedArtifactFileRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	dir := filepath.Join(r.workspace, generatedArtifactStagingDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return engine.Result{}, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "empty.png"), nil, 0o644); err != nil {
+		return engine.Result{}, err
+	}
+	session.AddSystemContext(prompt)
+	session.AddAssistantMessage("created empty image file")
+	return engine.Result{Output: "created empty image file", Session: session}, nil
+}
+
 type skillDiagnosticRunner struct{}
 
 func (skillDiagnosticRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
@@ -6488,6 +7246,20 @@ func (r memoryJSONRunner) RunGeneratedPrompt(_ context.Context, session *state.S
 	session.AddSystemContext(prompt)
 	session.AddAssistantMessage(r.output)
 	return engine.Result{Output: r.output, Session: session}, nil
+}
+
+type intermediateSkillRunner struct{}
+
+func (intermediateSkillRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return intermediateSkillRunner{}.RunGeneratedPrompt(ctx, session, prompt)
+}
+
+func (intermediateSkillRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	session.AddSystemContext(prompt)
+	session.AddAssistantMessage("I notice I've been going in circles. Let me try a different approach.")
+	session.AddAssistantMessage("抱歉，刚才误操作了。让我重新生成正确的 Word 文档。")
+	session.AddAssistantMessage("已生成 report.docx")
+	return engine.Result{Output: "已生成 report.docx", Session: session}, nil
 }
 
 func (echoRunner) RunStream(ctx context.Context, session *state.Session, prompt string, onToken func(string)) (engine.Result, error) {
@@ -6658,6 +7430,35 @@ func (r blockingRunner) RunGeneratedPromptStream(ctx context.Context, session *s
 	return r.Run(ctx, session, prompt)
 }
 
+type releaseRunner struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *releaseRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	close(r.started)
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		return engine.Result{Session: session}, ctx.Err()
+	}
+	session.AddUserMessage(prompt)
+	session.AddAssistantMessage("assistant: " + prompt)
+	return engine.Result{Output: "assistant: " + prompt, Session: session}, nil
+}
+
+func (r *releaseRunner) RunGeneratedPrompt(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return r.Run(ctx, session, prompt)
+}
+
+func (r *releaseRunner) RunStream(ctx context.Context, session *state.Session, prompt string, onToken func(string)) (engine.Result, error) {
+	return r.Run(ctx, session, prompt)
+}
+
+func (r *releaseRunner) RunGeneratedPromptStream(ctx context.Context, session *state.Session, prompt string, onToken func(string)) (engine.Result, error) {
+	return r.Run(ctx, session, prompt)
+}
+
 type failingRunner struct {
 	err     error
 	addUser bool
@@ -6744,6 +7545,12 @@ func (streamingTextPlanner) StreamNext(_ context.Context, _ *state.Session, _ []
 type collectSink struct {
 	mu     sync.Mutex
 	events []Event
+}
+
+type alwaysFailSink struct{}
+
+func (s *alwaysFailSink) Send(context.Context, Event) error {
+	return fmt.Errorf("client disconnected")
 }
 
 type blockingMemoryService struct {

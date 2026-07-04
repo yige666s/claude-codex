@@ -257,7 +257,7 @@ services:
       AGENT_API_MEMORY_VECTOR_RERANK_TRUNCATE: ${AGENT_API_MEMORY_VECTOR_RERANK_TRUNCATE:-END}
       AGENT_API_EPISODIC_MEMORY_INJECT_LIMIT: ${AGENT_API_EPISODIC_MEMORY_INJECT_LIMIT:-5}
       AGENT_API_LOCAL_ARTIFACT_STAGING_RETENTION: ${AGENT_API_LOCAL_ARTIFACT_STAGING_RETENTION:-24h}
-      AGENT_API_RATE_LIMIT_BACKEND: ${AGENT_API_RATE_LIMIT_BACKEND:-redis}
+      AGENT_API_RATE_LIMIT_BACKEND: ${AGENT_API_RATE_LIMIT_BACKEND:-none}
       AGENT_API_RATE_LIMIT: ${AGENT_API_RATE_LIMIT:-60}
       AGENT_API_REDIS_URL: redis://redis:6379/0?prefix=agentapi
       AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND: ${AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND:-redis}
@@ -304,10 +304,10 @@ services:
       AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_BACKEND: ${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_BACKEND:-redis}
       AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL: ${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:processed}
       AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL: ${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL:-24h}
-      AGENT_API_OPERATION_RATE_LIMITS: ${AGENT_API_OPERATION_RATE_LIMITS:-auth_login=20/m,auth_register=10/h,chat_message=60/m,job_create=20/m,attachment_upload=30/m,asset_download=120/m,memory_extract=30/h,data_export=5/h,account_delete=3/h,admin_action=120/m}
+      AGENT_API_OPERATION_RATE_LIMITS: ${AGENT_API_OPERATION_RATE_LIMITS:-}
       AGENT_API_CORS_ALLOWED_ORIGINS: ${AGENT_API_CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:8081,http://127.0.0.1:8081,http://localhost:5173,http://127.0.0.1:5173}
       AGENT_API_STORE_BACKEND: ${AGENT_API_STORE_BACKEND:-sql}
-      AGENT_API_LLM_PROVIDER: ${AGENT_API_LLM_PROVIDER:-nvidia}
+      AGENT_API_LLM_PROVIDER: ${AGENT_API_LLM_PROVIDER:-simple}
       AGENT_API_EVAL_JUDGE_ENABLED: ${AGENT_API_EVAL_JUDGE_ENABLED:-false}
       AGENT_API_EVAL_JUDGE_MODEL: ${AGENT_API_EVAL_JUDGE_MODEL:-}
       AGENT_API_EVAL_JUDGE_PROMPT_VERSION: ${AGENT_API_EVAL_JUDGE_PROMPT_VERSION:-ragas-json-v1}
@@ -325,7 +325,7 @@ services:
       SHORTAPI_BASE_URL: ${SHORTAPI_BASE_URL:-}
       SHORTAPI_IMAGE_MODEL: ${SHORTAPI_IMAGE_MODEL:-google/nano-banana-2/text-to-image}
       SHORTAPI_IMAGE_ASPECT_RATIO: ${SHORTAPI_IMAGE_ASPECT_RATIO:-1:1}
-      SHORTAPI_IMAGE_RESOLUTION: ${SHORTAPI_IMAGE_RESOLUTION:-2K}
+      SHORTAPI_IMAGE_RESOLUTION: ${SHORTAPI_IMAGE_RESOLUTION:-1K}
       SHORTAPI_IMAGE_NUM_IMAGES: ${SHORTAPI_IMAGE_NUM_IMAGES:-1}
       SHORTAPI_IMAGE_TIMEOUT: ${SHORTAPI_IMAGE_TIMEOUT:-5m}
       SHORTAPI_IMAGE_POLL_INTERVAL: ${SHORTAPI_IMAGE_POLL_INTERVAL:-2s}
@@ -422,7 +422,7 @@ services:
       - -artifact-store
       - "${AGENT_API_ARTIFACT_STORE:-s3}"
       - -rate-limit-backend
-      - "${AGENT_API_RATE_LIMIT_BACKEND:-redis}"
+      - "${AGENT_API_RATE_LIMIT_BACKEND:-none}"
       - -redis-url
       - redis://redis:6379/0?prefix=agentapi
       - -message-context-cache-backend
@@ -456,6 +456,15 @@ services:
       - -job-queue-lock-ttl
       - "${AGENT_API_JOB_QUEUE_LOCK_TTL:-2m}"
       - "-job-worker-enabled=${AGENT_API_JOB_WORKER_ENABLED:-true}"
+      - "-chat-event-stream-enabled=${AGENT_API_CHAT_EVENT_STREAM_ENABLED:-true}"
+      - -chat-event-stream-prefix
+      - "${AGENT_API_CHAT_EVENT_STREAM_PREFIX:-agentapi:chat-events}"
+      - -chat-event-stream-ttl
+      - "${AGENT_API_CHAT_EVENT_STREAM_TTL:-24h}"
+      - -chat-event-stream-max-len
+      - "${AGENT_API_CHAT_EVENT_STREAM_MAX_LEN:-10000}"
+      - -chat-event-stream-block
+      - "${AGENT_API_CHAT_EVENT_STREAM_BLOCK:-10s}"
       - "-job-event-fanout-enabled=${AGENT_API_JOB_EVENT_FANOUT_ENABLED:-true}"
       - -job-event-fanout-channel
       - "${AGENT_API_JOB_EVENT_FANOUT_CHANNEL:-agentapi:job-events}"
@@ -527,7 +536,7 @@ services:
       - -message-events-processed-lock-ttl
       - "${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL:-24h}"
       - -operation-rate-limits
-      - "${AGENT_API_OPERATION_RATE_LIMITS:-auth_login=20/m,auth_register=10/h,chat_message=60/m,job_create=20/m,attachment_upload=30/m,asset_download=120/m,memory_extract=30/h,data_export=5/h,account_delete=3/h,admin_action=120/m}"
+      - "${AGENT_API_OPERATION_RATE_LIMITS:-}"
       - -skill-dirs
       - "${AGENT_API_SKILL_DIRS:-/workspace/.claude/skills}"
       - -skill-shell-runner
@@ -549,11 +558,11 @@ services:
       - -skill-sandbox-warm-pool-size
       - "${AGENT_API_SKILL_SANDBOX_WARM_POOL_SIZE:-1}"
       - -llm-provider
-      - "${AGENT_API_LLM_PROVIDER:-nvidia}"
+      - "${AGENT_API_LLM_PROVIDER:-simple}"
       - -model
-      - "${AGENT_API_MODEL:-nvidia/nemotron-3-ultra-550b-a55b}"
+      - "${AGENT_API_MODEL:-simple}"
       - -llm-model-routes
-      - "${AGENT_API_LLM_MODEL_ROUTES:-default=nvidia/nemotron-3-ultra-550b-a55b,chat=deepseek-chat,chat:normal=deepseek-chat,chat:search=deepseek-chat,chat:complex=deepseek-reasoner,skill=nvidia/nemotron-3-ultra-550b-a55b,skill:memory-recall-trigger=deepseek-chat,judge=nvidia/nemotron-3-ultra-550b-a55b}"
+      - "${AGENT_API_LLM_MODEL_ROUTES:-default=simple,chat=simple,chat:normal=simple,chat:search=simple,chat:complex=simple,skill=simple,skill:memory-recall-trigger=simple,judge=simple}"
       - -llm-max-attempts
       - "${AGENT_API_LLM_MAX_ATTEMPTS:-2}"
       - -llm-chat-timeout

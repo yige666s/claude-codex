@@ -1,10 +1,11 @@
 import { ReactNode } from "react";
-import { Briefcase, FileUp, Image, Search, Sparkles, X } from "lucide-react";
+import { Briefcase, FileUp, Image, Plug, Search, Sparkles, X } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../../components/ui/dialog";
 import { Input } from "../../../components/ui/input";
-import type { Asset, Job, JobEvent, Skill } from "../../../types";
+import type { Asset, ConnectorPolicy, ConnectorStatus, Job, JobEvent, Skill } from "../../../types";
 import type { JobStreamStatus, RightPanelTab } from "../workspaceTypes";
+import { ApplicationPanel } from "./right-panel/ApplicationPanel";
 import { AssetPanel } from "./right-panel/AssetPanel";
 import { JobPanel } from "./right-panel/JobPanel";
 import { SkillPanel } from "./right-panel/SkillPanel";
@@ -18,6 +19,9 @@ type WorkspaceResourceDialogProps = {
   skills: Skill[];
   recentSkillNames: string[];
   jobs: Job[];
+  applications: ConnectorStatus[];
+  applicationBusy: string;
+  applicationNotice?: string;
   selectedJobId: string;
   jobEvents: JobEvent[];
   jobStreamNotice: string;
@@ -34,6 +38,9 @@ type WorkspaceResourceDialogProps = {
   onLoadMore: () => void;
   onInsertSkill: (skill: Skill) => void;
   onSkillDetails: (skill: Skill) => void;
+  onConnectApplication: (provider: string) => void;
+  onUpdateApplicationPolicy: (provider: string, policy: ConnectorPolicy) => void;
+  onDisconnectApplication: (provider: string) => void;
   onToggleJob: (jobId: string) => void;
   onCancelJob: () => void;
   onPreviewAttachment: (asset: Asset) => void;
@@ -53,7 +60,8 @@ const resourceTabs: Array<{ tab: RightPanelTab; label: string; icon: ReactNode }
   { tab: "skills", label: "Skills", icon: <Sparkles size={17} /> },
   { tab: "jobs", label: "Jobs", icon: <Briefcase size={17} /> },
   { tab: "attachments", label: "Attachments", icon: <FileUp size={17} /> },
-  { tab: "artifacts", label: "Artifacts", icon: <Image size={17} /> }
+  { tab: "artifacts", label: "Artifacts", icon: <Image size={17} /> },
+  { tab: "applications", label: "Applications", icon: <Plug size={17} /> }
 ];
 
 export function WorkspaceResourceDialog({
@@ -65,6 +73,9 @@ export function WorkspaceResourceDialog({
   skills,
   recentSkillNames,
   jobs,
+  applications,
+  applicationBusy,
+  applicationNotice,
   selectedJobId,
   jobEvents,
   jobStreamNotice,
@@ -81,6 +92,9 @@ export function WorkspaceResourceDialog({
   onLoadMore,
   onInsertSkill,
   onSkillDetails,
+  onConnectApplication,
+  onUpdateApplicationPolicy,
+  onDisconnectApplication,
   onToggleJob,
   onCancelJob,
   onPreviewAttachment,
@@ -163,6 +177,17 @@ export function WorkspaceResourceDialog({
               onToggleJob={onToggleJob}
               onCancelJob={onCancelJob}
               formatTime={formatTime}
+            />
+          )}
+          {activeTab === "applications" && (
+            <ApplicationPanel
+              connectors={applications}
+              busyProvider={applicationBusy}
+              notice={applicationNotice}
+              emptyLabel={searchValue ? "No matching applications" : "No applications"}
+              onConnect={onConnectApplication}
+              onPolicyChange={onUpdateApplicationPolicy}
+              onDisconnect={onDisconnectApplication}
             />
           )}
           {activeTab === "attachments" && (

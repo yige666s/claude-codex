@@ -836,15 +836,15 @@ func TestRuntimeExecuteLiveToolFunctionCallRunsWebResearch(t *testing.T) {
 	}
 	var sawStart, sawResult bool
 	for _, event := range sink.events {
-		if event.Type == "live_tool_start" {
+		if event.Type == "tool_call_start" && event.Tool == "web_research" {
 			sawStart = true
 		}
-		if event.Type == "live_tool_result" {
+		if event.Type == "tool_call_result" && event.Tool == "web_research" {
 			sawResult = true
 		}
 	}
 	if !sawStart || !sawResult {
-		t.Fatalf("expected live tool events, got %#v", sink.events)
+		t.Fatalf("expected structured tool call events, got %#v", sink.events)
 	}
 }
 
@@ -1021,7 +1021,10 @@ func TestRuntimeExecuteLiveSkillFunctionCallRunsArtifactJob(t *testing.T) {
 			},
 		},
 	}}
-	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, catalog, func(Scope) Runner { return echoRunner{} })
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, store, nil, catalog, func(scope Scope) Runner {
+		return generatedArtifactFileRunner{workspace: scope.WorkingDir}
+	})
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
 	runtime.SetJobStore(jobs)
 	session, err := runtime.CreateSession(context.Background(), "alice", root)
 	if err != nil {
@@ -1037,7 +1040,7 @@ func TestRuntimeExecuteLiveSkillFunctionCallRunsArtifactJob(t *testing.T) {
 	if !handled {
 		t.Fatal("expected live function artifact request to be handled")
 	}
-	if !strings.Contains(output, "Skill job started.") {
+	if !strings.Contains(output, "created docx file") {
 		t.Fatalf("output = %q", output)
 	}
 	var routedJob *Job
@@ -1242,10 +1245,14 @@ func TestRuntimeExecuteLiveSkillCommandRunsExplicitSlashSkill(t *testing.T) {
 	var sawStart, sawResult, sawAssistant bool
 	for _, event := range sink.events {
 		switch event.Type {
-		case "live_skill_start":
-			sawStart = true
-		case "live_skill_result":
-			sawResult = true
+		case "tool_call_start":
+			if strings.HasPrefix(event.Tool, "/diagram ") {
+				sawStart = true
+			}
+		case "tool_call_result":
+			if strings.HasPrefix(event.Tool, "/diagram ") && strings.Contains(event.Summary, "diagram prompt: 画一个登录流程") {
+				sawResult = true
+			}
 		case "message":
 			if event.Role == state.MessageRoleAssistant && strings.Contains(event.Content, "diagram prompt: 画一个登录流程") {
 				sawAssistant = true

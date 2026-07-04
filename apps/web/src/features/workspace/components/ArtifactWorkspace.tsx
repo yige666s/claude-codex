@@ -203,10 +203,11 @@ function ArtifactPreviewSurface({
   const isImage = isImageAsset(asset);
   const isPDF = isPDFAsset(asset);
   const isText = isPreviewableTextAsset(asset);
-  const isDocx = isDOCXAsset(asset);
+  const isOfficePreview = isOfficePreviewAsset(asset);
   const isOffice = ["ppt", "pptx", "doc", "docx", "xls", "xlsx"].includes(ext);
   const [assetPreview, setAssetPreview] = useState<BlobPreviewState>({ status: "idle", url: "" });
   const [docxPreview, setDocxPreview] = useState<BlobPreviewState>({ status: "idle", url: "" });
+  const [docxFrameHeight, setDocxFrameHeight] = useState(360);
 
   useEffect(() => {
     let cancelled = false;
@@ -228,7 +229,7 @@ function ArtifactPreviewSurface({
   }, [asset.id, isText]);
 
   useEffect(() => {
-    if (!isDocx) {
+    if (!isOfficePreview) {
       setDocxPreview({ status: "idle", url: "" });
       return;
     }
@@ -247,17 +248,34 @@ function ArtifactPreviewSurface({
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [asset.id, isDocx]);
+  }, [asset.id, isOfficePreview]);
+
+  useEffect(() => {
+    setDocxFrameHeight(360);
+  }, [asset.id]);
+
+  function resizeDocxFrame(frame: HTMLIFrameElement) {
+    const nextHeight = docxFrameContentHeight(frame);
+    if (nextHeight > 0) setDocxFrameHeight(nextHeight);
+  }
 
   return (
-    <div className="artifact-preview-surface">
-      {assetPreview.status === "loading" && !isText && !isDocx && <PreviewFallback>Loading preview...</PreviewFallback>}
-      {assetPreview.status === "error" && !isText && !isDocx && <PreviewFallback>{assetPreview.error || "Preview failed"}</PreviewFallback>}
+    <div className={`artifact-preview-surface ${isOfficePreview ? "office" : ""}`.trim()}>
+      {assetPreview.status === "loading" && !isText && !isOfficePreview && <PreviewFallback>Loading preview...</PreviewFallback>}
+      {assetPreview.status === "error" && !isText && !isOfficePreview && <PreviewFallback>{assetPreview.error || "Preview failed"}</PreviewFallback>}
       {isImage && assetPreview.status === "loaded" && <img src={assetPreview.url} alt={asset.filename} />}
       {isPDF && assetPreview.status === "loaded" && <iframe src={assetPreview.url} title={asset.filename} />}
-      {isDocx && docxPreview.status === "loading" && <PreviewFallback>Loading preview...</PreviewFallback>}
-      {isDocx && docxPreview.status === "error" && <PreviewFallback>{docxPreview.error || "Preview failed"}</PreviewFallback>}
-      {isDocx && docxPreview.status === "loaded" && <iframe src={docxPreview.url} title={`${asset.filename} preview`} />}
+      {isOfficePreview && docxPreview.status === "loading" && <PreviewFallback>Loading preview...</PreviewFallback>}
+      {isOfficePreview && docxPreview.status === "error" && <PreviewFallback>{docxPreview.error || "Preview failed"}</PreviewFallback>}
+      {isOfficePreview && docxPreview.status === "loaded" && (
+        <iframe
+          className="docx-preview-frame"
+          src={docxPreview.url}
+          style={{ height: `${docxFrameHeight}px` }}
+          title={`${asset.filename} preview`}
+          onLoad={(event) => resizeDocxFrame(event.currentTarget)}
+        />
+      )}
       {isText && (
         <div className="artifact-text-preview" role="document" aria-label={asset.filename}>
           {assetPreview.status === "loading" && <PreviewFallback>Loading preview...</PreviewFallback>}
@@ -265,14 +283,14 @@ function ArtifactPreviewSurface({
           {assetPreview.status === "loaded" && <DataPreview text={assetPreview.text || ""} filename={asset.filename} contentType={asset.content_type} />}
         </div>
       )}
-      {isOffice && !isDocx && (
+      {isOffice && !isOfficePreview && (
         <PreviewFallback>
           <FileUp size={30} />
           <strong>{asset.filename}</strong>
           <span>Use download or expanded preview for this file.</span>
         </PreviewFallback>
       )}
-      {!isImage && !isPDF && !isText && !isDocx && !isOffice && (
+      {!isImage && !isPDF && !isText && !isOfficePreview && !isOffice && (
         <PreviewFallback>
           <FileUp size={30} />
           <strong>{asset.filename}</strong>
@@ -280,6 +298,14 @@ function ArtifactPreviewSurface({
       )}
     </div>
   );
+}
+
+function docxFrameContentHeight(frame: HTMLIFrameElement): number {
+  const doc = frame.contentDocument;
+  if (!doc) return 0;
+  const body = doc.body;
+  const root = doc.documentElement;
+  return Math.ceil(Math.max(body?.scrollHeight || 0, body?.offsetHeight || 0, root?.scrollHeight || 0, root?.offsetHeight || 0)) + 2;
 }
 
 function PreviewFallback({ children }: { children: ReactNode }) {
@@ -295,9 +321,14 @@ function isPDFAsset(asset: Asset): boolean {
   return asset.content_type === "application/pdf" || ext === "pdf";
 }
 
-function isDOCXAsset(asset: Asset): boolean {
+function isOfficePreviewAsset(asset: Asset): boolean {
   const ext = asset.filename.split(".").pop()?.toLowerCase() || "";
-  return asset.content_type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || ext === "docx";
+  return (
+    asset.content_type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    asset.content_type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    asset.content_type === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+    ["docx", "xlsx", "pptx"].includes(ext)
+  );
 }
 
 function errorMessage(error: unknown): string {

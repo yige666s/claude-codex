@@ -1,6 +1,8 @@
 package agentruntime
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -49,6 +51,15 @@ type artifactToolOutput struct {
 	AssistantInstruction string `json:"assistant_instruction,omitempty"`
 }
 
+type workspaceFileToolOutput struct {
+	Kind                 string `json:"kind"`
+	Filename             string `json:"filename"`
+	ContentType          string `json:"content_type"`
+	SizeBytes            int64  `json:"size_bytes"`
+	FilePath             string `json:"file_path"`
+	AssistantInstruction string `json:"assistant_instruction"`
+}
+
 func NewArtifactTool(writer ArtifactWriter, rootDir ...string) toolkit.Tool {
 	tool := &ArtifactTool{writer: writer, maxBytes: DefaultMaxArtifactSize}
 	if len(rootDir) > 0 {
@@ -70,7 +81,7 @@ func (t *ArtifactTool) Name() string {
 }
 
 func (t *ArtifactTool) Description() string {
-	return "Create a generated artifact for the current user session. Use this for outputs produced by the agent or a skill, such as images, reports, slides, CSV files, or other generated files. Do not use it for user-uploaded input files."
+	return "Create a final, user-facing artifact for the current user session, such as an image, report, slide deck, CSV, PDF, DOCX, or other deliverable the user should download or view in the Artifacts panel. Do not use this for intermediate scripts, scratch files, helper inputs, temporary logs, or user-uploaded input files; create those in the workspace with Bash or the appropriate file tool, then call Artifact only for the final deliverable file. For DOCX, PPTX, and XLSX deliverables, first generate a real file in the workspace and pass it with file_path; do not inline Office document bytes with content or content_base64."
 }
 
 func (t *ArtifactTool) InputSchema() json.RawMessage {
@@ -91,11 +102,11 @@ func (t *ArtifactTool) InputSchema() json.RawMessage {
 			},
 			"content_base64": {
 				"type": "string",
-				"description": "Base64-encoded bytes for binary artifacts such as images or documents."
+				"description": "Base64-encoded bytes for binary artifacts such as images. Do not use this for DOCX, PPTX, or XLSX; generate those as workspace files and use file_path."
 			},
 			"file_path": {
 				"type": "string",
-				"description": "Path to a generated file under the current workspace. Use this when a skill script already wrote the output file."
+				"description": "Path to a generated file under the current workspace. Required for DOCX, PPTX, and XLSX deliverables, and recommended whenever a skill script already wrote the output file."
 			}
 		},
 		"required": ["filename"]
@@ -126,6 +137,9 @@ func (t *ArtifactTool) Execute(ctx context.Context, raw json.RawMessage) (toolki
 	if err != nil {
 		return toolkit.Result{}, err
 	}
+	if len(data) == 0 {
+		return toolkit.Result{}, fmt.Errorf("artifact content is empty")
+	}
 	maxBytes := t.maxBytes
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxArtifactSize
@@ -138,6 +152,25 @@ func (t *ArtifactTool) Execute(ctx context.Context, raw json.RawMessage) (toolki
 		contentType = mime.TypeByExtension(filepath.Ext(filename))
 	}
 	contentType = normalizeArtifactToolContentType(filename, contentType)
+	convertedTextDocx := false
+	if shouldConvertTextToDocx(filename, contentType, input) {
+		if looksLikeDocxGenerationRequest(string(data)) {
+			return toolkit.Result{}, fmt.Errorf("docx artifact content looks like a generation request rather than final document body; load or compose the actual source text first, generate a real .docx workspace file, then call Artifact with file_path")
+		}
+		converted, err := simpleDocxBytesFromText(string(data))
+		if err != nil {
+			return toolkit.Result{}, err
+		}
+		data = converted
+		contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+		convertedTextDocx = true
+	}
+	if shouldSaveAsWorkspaceIntermediate(filename, contentType) && strings.TrimSpace(input.FilePath) == "" {
+		return t.saveWorkspaceIntermediate(filename, contentType, data)
+	}
+	if !convertedTextDocx && officeArtifactRequiresFilePath(contentType) && strings.TrimSpace(input.FilePath) == "" {
+		return toolkit.Result{}, fmt.Errorf("artifact content type %q must be submitted with file_path; generate the Office document as a real workspace file with Bash or a helper script, then call Artifact with file_path instead of content or content_base64", contentType)
+	}
 	started := time.Now()
 	artifact, err := t.writer.Write(ctx, filename, contentType, data)
 	duration := time.Since(started)
@@ -159,6 +192,237 @@ func (t *ArtifactTool) Execute(ctx context.Context, raw json.RawMessage) (toolki
 		return toolkit.Result{}, err
 	}
 	return toolkit.Result{Output: string(output)}, nil
+}
+
+func (t *ArtifactTool) saveWorkspaceIntermediate(filename, contentType string, data []byte) (toolkit.Result, error) {
+	if strings.TrimSpace(t.rootDir) == "" {
+		return toolkit.Result{}, fmt.Errorf("intermediate workspace files require a workspace root; create scripts with Bash instead of Artifact")
+	}
+	path, err := toolkit.ResolvePath(t.rootDir, filename)
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return toolkit.Result{}, err
+	}
+	output, err := json.Marshal(workspaceFileToolOutput{
+		Kind:                 "workspace_file",
+		Filename:             filename,
+		ContentType:          contentType,
+		SizeBytes:            int64(len(data)),
+		FilePath:             filename,
+		AssistantInstruction: "This is an intermediate workspace file, not a user artifact. Run or inspect it with Bash as needed. When the final user-facing deliverable is generated, call Artifact again with file_path pointing to that final file.",
+	})
+	if err != nil {
+		return toolkit.Result{}, err
+	}
+	return toolkit.Result{Output: string(output)}, nil
+}
+
+func officeArtifactRequiresFilePath(contentType string) bool {
+	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	switch contentType {
+	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldConvertTextToDocx(filename, _ string, input artifactToolInput) bool {
+	if strings.ToLower(filepath.Ext(filename)) != ".docx" {
+		return false
+	}
+	return input.Content != ""
+}
+
+func looksLikeDocxGenerationRequest(text string) bool {
+	clean := strings.ToLower(strings.TrimSpace(text))
+	if clean == "" {
+		return false
+	}
+	if strings.HasPrefix(clean, "/documents") || strings.HasPrefix(clean, "/docx") {
+		return true
+	}
+	hasDocTarget := strings.Contains(clean, ".docx") ||
+		strings.Contains(clean, " docx") ||
+		strings.Contains(clean, "word") ||
+		strings.Contains(clean, "文件名") ||
+		strings.Contains(clean, "输出文件")
+	if !hasDocTarget {
+		return false
+	}
+	requestMarkers := []string{
+		"请将", "请把", "请生成", "请创建", "请输出", "生成为", "渲染为", "转换为", "输出文件名",
+		"please", "generate", "create", "convert", "render", "save as", "filename",
+	}
+	for _, marker := range requestMarkers {
+		if strings.Contains(clean, marker) {
+			return true
+		}
+	}
+	return strings.Contains(clean, "/v1/artifacts/")
+}
+
+func simpleDocxBytesFromText(text string) ([]byte, error) {
+	title, paragraphs := splitSimpleDocxText(text)
+	var buf bytes.Buffer
+	archive := zip.NewWriter(&buf)
+	files := map[string]string{
+		"[Content_Types].xml":          simpleDocxContentTypesXML(),
+		"_rels/.rels":                  simpleDocxRelsXML(),
+		"word/_rels/document.xml.rels": simpleDocxDocumentRelsXML(),
+		"word/styles.xml":              simpleDocxStylesXML(),
+		"word/document.xml":            simpleDocxDocumentXML(title, paragraphs),
+	}
+	for name, content := range files {
+		writer, err := archive.Create(name)
+		if err != nil {
+			_ = archive.Close()
+			return nil, err
+		}
+		if _, err := writer.Write([]byte(content)); err != nil {
+			_ = archive.Close()
+			return nil, err
+		}
+	}
+	if err := archive.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func splitSimpleDocxText(text string) (string, []string) {
+	text = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n"))
+	lines := strings.Split(text, "\n")
+	title := "Word Document"
+	bodyStart := 0
+	for i, line := range lines {
+		clean := cleanSimpleDocxLine(line)
+		if clean == "" {
+			continue
+		}
+		title = clean
+		bodyStart = i + 1
+		break
+	}
+	paragraphs := make([]string, 0)
+	for _, line := range lines[bodyStart:] {
+		clean := cleanSimpleDocxLine(line)
+		if clean != "" && clean != title {
+			paragraphs = append(paragraphs, clean)
+		}
+	}
+	if len(paragraphs) == 0 && title != "" {
+		paragraphs = append(paragraphs, title)
+	}
+	return title, paragraphs
+}
+
+func cleanSimpleDocxLine(line string) string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "#")
+	line = strings.TrimSpace(line)
+	line = strings.Trim(line, "*_`- ")
+	return strings.TrimSpace(line)
+}
+
+func simpleDocxContentTypesXML() string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`
+}
+
+func simpleDocxRelsXML() string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`
+}
+
+func simpleDocxDocumentRelsXML() string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`
+}
+
+func simpleDocxStylesXML() string {
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+    <w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="Microsoft YaHei"/><w:sz w:val="22"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Title">
+    <w:name w:val="Title"/>
+    <w:basedOn w:val="Normal"/>
+    <w:pPr><w:spacing w:after="240"/></w:pPr>
+    <w:rPr><w:b/><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="Microsoft YaHei"/><w:sz w:val="34"/></w:rPr>
+  </w:style>
+</w:styles>`
+}
+
+func simpleDocxDocumentXML(title string, paragraphs []string) string {
+	var body strings.Builder
+	body.WriteString(simpleDocxParagraph(title, "Title"))
+	for _, paragraph := range paragraphs {
+		body.WriteString(simpleDocxParagraph(paragraph, ""))
+	}
+	body.WriteString(`<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>`)
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` + body.String() + `</w:body></w:document>`
+}
+
+func simpleDocxParagraph(text, style string) string {
+	styleXML := ""
+	if style != "" {
+		styleXML = `<w:pPr><w:pStyle w:val="` + style + `"/></w:pPr>`
+	}
+	return `<w:p>` + styleXML + `<w:r><w:t xml:space="preserve">` + escapeSimpleXML(text) + `</w:t></w:r></w:p>`
+}
+
+func escapeSimpleXML(text string) string {
+	var buf bytes.Buffer
+	for _, r := range text {
+		switch r {
+		case '&':
+			buf.WriteString("&amp;")
+		case '<':
+			buf.WriteString("&lt;")
+		case '>':
+			buf.WriteString("&gt;")
+		case '"':
+			buf.WriteString("&quot;")
+		default:
+			buf.WriteRune(r)
+		}
+	}
+	return buf.String()
+}
+
+func shouldSaveAsWorkspaceIntermediate(filename, contentType string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext == "" {
+		return false
+	}
+	switch ext {
+	case ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".rb", ".go":
+		return true
+	}
+	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	switch contentType {
+	case "text/x-python", "application/x-python-code", "application/javascript", "text/javascript":
+		return true
+	default:
+		return false
+	}
 }
 
 func emitArtifactMetric(ctx context.Context, filename, contentType string, sizeBytes int, duration time.Duration, artifactID string, runErr error) {
@@ -253,7 +517,7 @@ func NewArtifactContentTypeWriter(base ArtifactWriter, allowed []string) Artifac
 
 func (w artifactContentTypeWriter) Write(ctx context.Context, filename, contentType string, data []byte) (*Artifact, error) {
 	if !artifactContentTypeAllowed(contentType, w.allowed) {
-		return nil, fmt.Errorf("artifact content type %q is not allowed for this skill", contentType)
+		return nil, fmt.Errorf("artifact content type %q is not allowed for this skill; Artifact is only for final user-facing deliverables allowed by the skill policy. For intermediate scripts, scratch files, helper inputs, or logs, create files in the workspace with Bash and call Artifact only for the final deliverable.", contentType)
 	}
 	return w.base.Write(ctx, filename, contentType, data)
 }

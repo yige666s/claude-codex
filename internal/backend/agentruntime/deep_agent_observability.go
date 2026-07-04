@@ -47,19 +47,26 @@ type DeepAgentTimelineItem struct {
 }
 
 type DeepAgentGovernanceState struct {
-	KillSwitch           bool                    `json:"kill_switch,omitempty"`
-	AllowedHighRiskTools []string                `json:"allowed_high_risk_tools,omitempty"`
-	PolicyBlocked        bool                    `json:"policy_blocked,omitempty"`
-	PolicyBlockReason    string                  `json:"policy_block_reason,omitempty"`
-	HighRiskPolicy       string                  `json:"high_risk_policy,omitempty"`
-	SideEffectAudit      []DeepAgentTimelineItem `json:"side_effect_audit,omitempty"`
-	UserDataAccessAudit  []DeepAgentTimelineItem `json:"user_data_access_audit,omitempty"`
+	KillSwitch              bool                    `json:"kill_switch,omitempty"`
+	AllowedHighRiskTools    []string                `json:"allowed_high_risk_tools,omitempty"`
+	PolicyBlocked           bool                    `json:"policy_blocked,omitempty"`
+	PolicyBlockReason       string                  `json:"policy_block_reason,omitempty"`
+	HighRiskPolicy          string                  `json:"high_risk_policy,omitempty"`
+	RiskyWriteApprovalMode  string                  `json:"risky_write_approval_mode,omitempty"`
+	AutomaticTriggerEnabled bool                    `json:"automatic_trigger_enabled,omitempty"`
+	EvaluatorTimeoutMS      int64                   `json:"evaluator_timeout_ms,omitempty"`
+	ConflictTimeoutMS       int64                   `json:"conflict_reconciliation_timeout_ms,omitempty"`
+	SearchQualityThreshold  float64                 `json:"search_quality_threshold,omitempty"`
+	MaxSourcesPerBranch     int                     `json:"max_sources_per_branch,omitempty"`
+	SideEffectAudit         []DeepAgentTimelineItem `json:"side_effect_audit,omitempty"`
+	UserDataAccessAudit     []DeepAgentTimelineItem `json:"user_data_access_audit,omitempty"`
 }
 
 type DeepAgentReplayReport struct {
 	RunID             string                       `json:"run_id"`
 	Goal              string                       `json:"goal,omitempty"`
 	Status            string                       `json:"status,omitempty"`
+	TraceSummary      DeepAgentTraceSummary        `json:"trace_summary,omitempty"`
 	TaskType          string                       `json:"task_type,omitempty"`
 	TriggerPayload    map[string]any               `json:"trigger_payload,omitempty"`
 	PlannerDecisions  []DeepAgentTimelineItem      `json:"planner_decisions,omitempty"`
@@ -68,6 +75,17 @@ type DeepAgentReplayReport struct {
 	VerifierChecks    []DeepAgentVerificationCheck `json:"verifier_checks,omitempty"`
 	Metrics           DeepAgentLoopMetrics         `json:"metrics,omitempty"`
 	Findings          []EvaluationFinding          `json:"findings,omitempty"`
+}
+
+type DeepAgentTraceSummary struct {
+	FinalStatus     string   `json:"final_status,omitempty"`
+	RootCause       string   `json:"root_cause,omitempty"`
+	Category        string   `json:"category,omitempty"`
+	FailedPhase     string   `json:"failed_phase,omitempty"`
+	FailedGate      string   `json:"failed_gate,omitempty"`
+	FailedTool      string   `json:"failed_tool,omitempty"`
+	SuggestedRepair string   `json:"suggested_repair,omitempty"`
+	TopEvidence     []string `json:"top_evidence,omitempty"`
 }
 
 func deepAgentLoopMetricsForRun(run *WorkflowRun, state *DeepAgentState) DeepAgentLoopMetrics {
@@ -198,9 +216,10 @@ func deepAgentGovernanceStateForRun(state *DeepAgentState) DeepAgentGovernanceSt
 }
 
 type deepAgentGovernanceSettings struct {
-	KillSwitch           bool
-	AllowedHighRiskTools []string
-	HighRiskPolicy       string
+	KillSwitch             bool
+	AllowedHighRiskTools   []string
+	HighRiskPolicy         string
+	RiskyWriteApprovalMode string
 }
 
 func deepAgentGovernanceConfig(state *DeepAgentState) deepAgentGovernanceSettings {
@@ -219,6 +238,10 @@ func deepAgentGovernanceConfig(state *DeepAgentState) deepAgentGovernanceSetting
 		config.KillSwitch = config.KillSwitch || deepAgentBool(raw, "kill_switch", false)
 		config.AllowedHighRiskTools = deepAgentStringSlice(raw["allowed_high_risk_tools"])
 		config.HighRiskPolicy = firstNonEmptyString(deepAgentWorkflowString(raw, "high_risk_policy"), config.HighRiskPolicy)
+		config.RiskyWriteApprovalMode = normalizeRiskyWriteApprovalMode(firstNonEmptyString(deepAgentWorkflowString(raw, "risky_write_approval_mode"), config.HighRiskPolicy))
+	}
+	if config.RiskyWriteApprovalMode == "" {
+		config.RiskyWriteApprovalMode = normalizeRiskyWriteApprovalMode(config.HighRiskPolicy)
 	}
 	return config
 }
@@ -231,7 +254,17 @@ func deepAgentCheckGovernancePolicy(state *DeepAgentState, action DeepAgentActio
 	if len(config.AllowedHighRiskTools) > 0 && !stringInSlice(action.Tool, config.AllowedHighRiskTools) {
 		return deepAgentPolicyBlocked(state, fmt.Sprintf("high-risk tool %q is not allowed by DeepAgent governance policy", action.Tool), action)
 	}
+	if config.RiskyWriteApprovalMode == "block" && deepAgentActionHasWriteRisk(action) {
+		return deepAgentPolicyBlocked(state, "risky write action is blocked by DeepAgent governance policy", action)
+	}
 	return nil
+}
+
+func deepAgentActionHasWriteRisk(action DeepAgentAction) bool {
+	if deepAgentActionRequiresReview(action) {
+		return true
+	}
+	return strings.EqualFold(deepAgentActionString(action, "side_effect_level"), deepAgentSideEffectWrite)
 }
 
 func deepAgentPolicyBlocked(state *DeepAgentState, reason string, action DeepAgentAction) error {
@@ -273,8 +306,160 @@ func deepAgentReplayReportFromRun(run *WorkflowRun, state *DeepAgentState) DeepA
 			report.VerifierChecks = checks
 		}
 	}
+	report.TraceSummary = deepAgentTraceSummaryForRun(run, state, report)
 	report.Findings = deepAgentReplayFindings(report)
 	return report
+}
+
+func deepAgentTraceSummaryForRun(run *WorkflowRun, state *DeepAgentState, report DeepAgentReplayReport) DeepAgentTraceSummary {
+	if state == nil {
+		return DeepAgentTraceSummary{}
+	}
+	summary := DeepAgentTraceSummary{
+		FinalStatus: firstNonEmptyString(state.Status, report.Status),
+		RootCause:   firstNonEmptyString(state.Blocker, report.Metrics.BlockedReason),
+	}
+	if summary.FinalStatus == "" && run != nil {
+		summary.FinalStatus = run.Status
+	}
+	if gate := latestDeepAgentBlockingGate(state); gate != nil {
+		summary.FailedPhase = firstNonEmptyString(gate.Gate, summary.FailedPhase)
+		summary.FailedGate = gate.Gate
+		summary.Category = firstNonEmptyString(gate.Category, summary.Category)
+		summary.RootCause = firstNonEmptyString(gate.BlockReason, summary.RootCause)
+		summary.SuggestedRepair = firstNonEmptyString(gate.RepairHint, summary.SuggestedRepair)
+		summary.TopEvidence = append(summary.TopEvidence, gate.EvidenceRefs...)
+	}
+	if len(report.VerifierChecks) == 0 {
+		if final := deepAgentFinalVerifierForSummary(state); final != nil {
+			report.VerifierChecks = deepAgentVerificationChecksFromAny(final["checks"])
+		}
+	}
+	for _, check := range report.VerifierChecks {
+		if check.Passed {
+			continue
+		}
+		summary.Category = firstNonEmptyString(summary.Category, "verifier_failed")
+		summary.FailedPhase = firstNonEmptyString(summary.FailedPhase, DeepAgentGateVerify)
+		summary.RootCause = firstNonEmptyString(summary.RootCause, check.Reason, check.Name)
+		summary.TopEvidence = append(summary.TopEvidence, firstNonEmptyString(check.Name, check.Reason))
+	}
+	for _, evidence := range deepAgentEvidenceForSummary(state) {
+		status := strings.ToLower(deepAgentWorkflowString(evidence.Diagnostics, "result_status"))
+		if status != "" && status != DeepAgentActionStatusFailed && status != "failed" && evidence.ErrorClass == "" {
+			continue
+		}
+		if evidence.ErrorClass != "" || status == DeepAgentActionStatusFailed || status == "failed" {
+			summary.FailedPhase = firstNonEmptyString(summary.FailedPhase, "execution")
+			summary.FailedTool = firstNonEmptyString(summary.FailedTool, evidence.Route.Mode)
+			summary.Category = firstNonEmptyString(summary.Category, deepAgentTraceCategoryFromText(firstNonEmptyString(evidence.ErrorClass, evidence.Summary, evidence.Output)))
+			summary.RootCause = firstNonEmptyString(summary.RootCause, evidence.Summary, evidence.Output, evidence.ErrorClass)
+			summary.TopEvidence = append(summary.TopEvidence, firstNonEmptyString(evidence.ActionID, evidence.StepID, evidence.Route.Mode))
+		}
+	}
+	if summary.FailedPhase == "" && len(state.FailedSteps) > 0 {
+		summary.FailedPhase = "execution"
+		summary.TopEvidence = append(summary.TopEvidence, state.FailedSteps...)
+	}
+	if summary.Category == "" {
+		summary.Category = deepAgentTraceCategoryFromText(strings.Join([]string{
+			summary.RootCause,
+			summary.FailedPhase,
+			summary.FailedGate,
+			summary.FailedTool,
+			strings.Join(summary.TopEvidence, " "),
+		}, " "))
+	}
+	if summary.Category == "" && report.Metrics.VerifierFailed > 0 {
+		summary.Category = "verifier_failed"
+	}
+	if summary.Category == "" && strings.EqualFold(summary.FinalStatus, DeepAgentRunStatusBudgetExceeded) {
+		summary.Category = "budget"
+	}
+	if summary.RootCause == "" {
+		switch strings.ToLower(summary.FinalStatus) {
+		case DeepAgentRunStatusSucceeded:
+			summary.RootCause = "Run completed successfully"
+		case "":
+			summary.RootCause = "No trace summary available"
+		default:
+			summary.RootCause = "Run did not complete successfully"
+		}
+	}
+	if summary.SuggestedRepair == "" {
+		summary.SuggestedRepair = deepAgentTraceSuggestedRepair(summary.Category)
+	}
+	summary.TopEvidence = cleanStringSlice(summary.TopEvidence)
+	if len(summary.TopEvidence) > 5 {
+		summary.TopEvidence = summary.TopEvidence[:5]
+	}
+	return summary
+}
+
+func latestDeepAgentBlockingGate(state *DeepAgentState) *GateDecision {
+	if state == nil {
+		return nil
+	}
+	for idx := len(state.GateDecisions) - 1; idx >= 0; idx-- {
+		decision := state.GateDecisions[idx]
+		if !decision.Allow || decision.RequiresReview {
+			return &decision
+		}
+	}
+	return nil
+}
+
+func deepAgentTraceCategoryFromText(text string) string {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	switch {
+	case lower == "":
+		return ""
+	case strings.Contains(lower, "auth") || strings.Contains(lower, "oauth") || strings.Contains(lower, "permission") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "forbidden") || strings.Contains(lower, "reconnect"):
+		return "auth"
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline") || strings.Contains(lower, "timed out"):
+		return "timeout"
+	case strings.Contains(lower, "budget") || strings.Contains(lower, "max actions") || strings.Contains(lower, "max duration") || strings.Contains(lower, "quota") || strings.Contains(lower, "rate limit"):
+		return "budget"
+	case strings.Contains(lower, "source") || strings.Contains(lower, "citation") || strings.Contains(lower, "coverage") || strings.Contains(lower, "low score"):
+		return "source_quality"
+	case strings.Contains(lower, "empty") || strings.Contains(lower, "model_empty") || strings.Contains(lower, "no output"):
+		return "model_empty"
+	case strings.Contains(lower, "schema") || strings.Contains(lower, "json") || strings.Contains(lower, "invalid argument") || strings.Contains(lower, "tool_result"):
+		return "tool_schema"
+	case strings.Contains(lower, "artifact") || strings.Contains(lower, "file missing") || strings.Contains(lower, "missing file"):
+		return "artifact_missing"
+	case strings.Contains(lower, "connector") || strings.Contains(lower, "mcp") || strings.Contains(lower, "unavailable"):
+		return "connector_unavailable"
+	case strings.Contains(lower, "verifier") || strings.Contains(lower, "verification") || strings.Contains(lower, "evaluator"):
+		return "verifier_failed"
+	default:
+		return "unknown"
+	}
+}
+
+func deepAgentTraceSuggestedRepair(category string) string {
+	switch category {
+	case "auth":
+		return "Reconnect the required account or adjust connector permissions, then resume the job."
+	case "timeout":
+		return "Increase the relevant timeout or reduce the step scope before retrying."
+	case "budget":
+		return "Increase loop budget or narrow the task scope before resuming."
+	case "source_quality":
+		return "Collect stronger primary sources and rerun the source/evaluator gate."
+	case "model_empty":
+		return "Retry with a stricter prompt or switch the model route."
+	case "tool_schema":
+		return "Regenerate the tool call with valid structured arguments."
+	case "artifact_missing":
+		return "Regenerate or attach the required artifact before final verification."
+	case "connector_unavailable":
+		return "Check connector health and credentials, then retry the tool call."
+	case "verifier_failed":
+		return "Address failed verifier criteria and rerun final evaluation."
+	default:
+		return "Inspect the top evidence and resume from the latest safe checkpoint."
+	}
 }
 
 func deepAgentReplayFindings(report DeepAgentReplayReport) []EvaluationFinding {

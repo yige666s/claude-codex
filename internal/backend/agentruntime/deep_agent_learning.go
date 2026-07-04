@@ -4,20 +4,25 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 )
 
 const (
-	deepAgentLearningTypeSuccessPath = "success_path"
-	deepAgentLearningTypeBadcase     = "badcase"
-	deepAgentLearningStatusCandidate = "candidate"
-	deepAgentLearningStatusPending   = "pending"
-	deepAgentLearningStatusAccepted  = "accepted"
-	deepAgentLearningStatusRejected  = "rejected"
-	deepAgentLearningStatusExpired   = "expired"
-	deepAgentLearningStatusRollback  = "rolled_back"
+	deepAgentLearningTypeSuccessPath       = "successful_pattern"
+	deepAgentLearningTypeBadcase           = "failed_pattern"
+	deepAgentLearningTypeUserPreference    = "user_preference"
+	deepAgentLearningTypeProjectConstraint = "project_constraint"
+	deepAgentLearningTypeToolLimitation    = "tool_limitation"
+	deepAgentLearningTypeSourceQualityRule = "source_quality_rule"
+	deepAgentLearningStatusCandidate       = "candidate"
+	deepAgentLearningStatusPending         = "pending"
+	deepAgentLearningStatusAccepted        = "accepted"
+	deepAgentLearningStatusRejected        = "rejected"
+	deepAgentLearningStatusExpired         = "expired"
+	deepAgentLearningStatusRollback        = "rolled_back"
 
 	deepAgentLearningRiskLow        = "low"
 	deepAgentLearningRiskMedium     = "medium"
@@ -35,58 +40,58 @@ func (c *DeepAgentController) buildLearningCandidates(run *WorkflowRun, state *D
 	now := c.now()
 	userID := deepAgentWorkflowString(state.WorkingMemory, "user_id")
 	sessionID := deepAgentWorkflowString(state.WorkingMemory, "session_id")
+	sourceJob := firstNonEmptyString(deepAgentWorkflowString(state.WorkingMemory, "job_id"), deepAgentWorkflowString(state.WorkingMemory, "workflow_job_id"))
 	stepID := deepAgentLearningStepID(state)
 	evidenceID := deepAgentLearningEvidenceID(runID, stepID, state)
-	candidates := make([]DeepAgentLearningCandidate, 0, 2)
-	if state.Status == DeepAgentRunStatusSucceeded && len(state.CompletedSteps) > 0 {
-		candidates = append(candidates, DeepAgentLearningCandidate{
-			ID:          newDeepAgentLearningID(),
-			Type:        deepAgentLearningTypeSuccessPath,
-			Status:      deepAgentLearningStatusCandidate,
-			Source:      deepAgentTaskWorkflowName,
-			UserID:      userID,
-			SessionID:   sessionID,
-			RunID:       runID,
-			StepID:      stepID,
-			EvidenceID:  evidenceID,
-			RiskLevel:   deepAgentLearningRiskMedium,
-			Sensitivity: deepAgentLearningSensitivityLow,
-			Visibility:  MemoryVisibilityUser,
-			Content:     deepAgentSuccessLearningContent(state),
+	base := func(candidateType, content string, confidence float64) DeepAgentLearningCandidate {
+		return DeepAgentLearningCandidate{
+			ID:           newDeepAgentLearningID(),
+			Type:         candidateType,
+			Status:       deepAgentLearningStatusCandidate,
+			Source:       deepAgentTaskWorkflowName,
+			UserID:       userID,
+			SessionID:    sessionID,
+			RunID:        runID,
+			StepID:       stepID,
+			EvidenceID:   evidenceID,
+			EvidenceRefs: deepAgentLearningEvidenceRefs(runID, stepID, evidenceID, state),
+			SourceJob:    sourceJob,
+			Owner:        firstNonEmptyString(userID, "system"),
+			RiskLevel:    deepAgentLearningRiskMedium,
+			Sensitivity:  deepAgentLearningSensitivityLow,
+			Visibility:   MemoryVisibilityUser,
+			Confidence:   confidence,
+			Content:      content,
 			Metadata: map[string]any{
-				"goal":            state.Goal,
-				"completed_steps": state.CompletedSteps,
-				"action_count":    state.ActionCount,
-				"confidence":      0.72,
+				"goal":       state.Goal,
+				"confidence": confidence,
+				"source_job": sourceJob,
+				"owner":      firstNonEmptyString(userID, "system"),
 			},
 			CreatedAt: now,
-		})
+		}
+	}
+	candidates := make([]DeepAgentLearningCandidate, 0, 6)
+	if state.Status == DeepAgentRunStatusSucceeded && len(state.CompletedSteps) > 0 {
+		candidate := base(deepAgentLearningTypeSuccessPath, deepAgentSuccessLearningContent(state), 0.72)
+		candidate.Metadata["completed_steps"] = state.CompletedSteps
+		candidate.Metadata["action_count"] = state.ActionCount
+		candidates = append(candidates, candidate)
 	}
 	if state.Status == DeepAgentRunStatusBlocked || state.Status == DeepAgentRunStatusBudgetExceeded || state.Status == DeepAgentRunStatusReviewPending {
-		candidates = append(candidates, DeepAgentLearningCandidate{
-			ID:          newDeepAgentLearningID(),
-			Type:        deepAgentLearningTypeBadcase,
-			Status:      deepAgentLearningStatusCandidate,
-			Source:      deepAgentTaskWorkflowName,
-			UserID:      userID,
-			SessionID:   sessionID,
-			RunID:       runID,
-			StepID:      stepID,
-			EvidenceID:  evidenceID,
-			RiskLevel:   deepAgentLearningRiskMedium,
-			Sensitivity: deepAgentLearningSensitivityLow,
-			Visibility:  MemoryVisibilityUser,
-			Content:     deepAgentBadcaseLearningContent(state),
-			Metadata: map[string]any{
-				"goal":              state.Goal,
-				"status":            state.Status,
-				"blocker":           state.Blocker,
-				"failed_steps":      state.FailedSteps,
-				"no_progress_count": state.NoProgressCount,
-				"confidence":        0.68,
-			},
-			CreatedAt: now,
-		})
+		candidate := base(deepAgentLearningTypeBadcase, deepAgentBadcaseLearningContent(state), 0.68)
+		candidate.RiskLevel = deepAgentLearningRiskLow
+		candidate.Metadata["status"] = state.Status
+		candidate.Metadata["blocker"] = state.Blocker
+		candidate.Metadata["failed_steps"] = state.FailedSteps
+		candidate.Metadata["no_progress_count"] = state.NoProgressCount
+		candidates = append(candidates, candidate)
+	}
+	for _, candidate := range deepAgentLearningCandidatesFromWorkingMemory(state, base) {
+		candidates = append(candidates, candidate)
+	}
+	if sourceRule := deepAgentSourceQualityLearningFromState(state, base); sourceRule.Content != "" {
+		candidates = append(candidates, sourceRule)
 	}
 	return candidates
 }
@@ -139,6 +144,66 @@ func deepAgentBadcaseLearningContent(state *DeepAgentState) string {
 	return fmt.Sprintf("DeepAgent badcase for goal %q: status=%s, blocker=%s.", state.Goal, state.Status, firstNonEmptyString(state.Blocker, "unknown"))
 }
 
+func deepAgentLearningCandidatesFromWorkingMemory(state *DeepAgentState, base func(string, string, float64) DeepAgentLearningCandidate) []DeepAgentLearningCandidate {
+	if state == nil || state.WorkingMemory == nil {
+		return nil
+	}
+	type candidateSpec struct {
+		key            string
+		candidateType  string
+		memoryCategory string
+		confidence     float64
+	}
+	specs := []candidateSpec{
+		{key: "learning_user_preference", candidateType: deepAgentLearningTypeUserPreference, memoryCategory: MemoryCategoryPreference, confidence: 0.86},
+		{key: "learning_project_constraint", candidateType: deepAgentLearningTypeProjectConstraint, memoryCategory: MemoryCategoryFact, confidence: 0.86},
+		{key: "learning_tool_limitation", candidateType: deepAgentLearningTypeToolLimitation, memoryCategory: MemoryCategoryFact, confidence: 0.74},
+		{key: "learning_source_quality_rule", candidateType: deepAgentLearningTypeSourceQualityRule, memoryCategory: MemoryCategoryFact, confidence: 0.76},
+	}
+	out := make([]DeepAgentLearningCandidate, 0, len(specs))
+	for _, spec := range specs {
+		for _, content := range deepAgentLearningStringsFromAny(state.WorkingMemory[spec.key]) {
+			candidate := base(spec.candidateType, content, spec.confidence)
+			candidate.Metadata["memory_category"] = spec.memoryCategory
+			candidate.Metadata["working_memory_key"] = spec.key
+			if spec.candidateType == deepAgentLearningTypeUserPreference {
+				candidate.Metadata["preference_level"] = "L3"
+			}
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
+func deepAgentSourceQualityLearningFromState(state *DeepAgentState, base func(string, string, float64) DeepAgentLearningCandidate) DeepAgentLearningCandidate {
+	report := deepAgentSourcePolicyReportFromState(state)
+	if report.InputCount == 0 && report.FilteredCount == 0 && report.TrimmedCount == 0 {
+		return DeepAgentLearningCandidate{}
+	}
+	reasons := make([]string, 0, 4)
+	if report.BlockedDomainCount > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d blocked-domain source(s)", report.BlockedDomainCount))
+	}
+	if report.LowScoreCount > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d low-score source(s)", report.LowScoreCount))
+	}
+	if report.DuplicateDomainCount > 0 || report.DuplicateURLCount > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d duplicate-domain and %d duplicate-url source(s)", report.DuplicateDomainCount, report.DuplicateURLCount))
+	}
+	if report.TrimmedCount > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d source(s) trimmed by max-source policy", report.TrimmedCount))
+	}
+	if len(reasons) == 0 {
+		return DeepAgentLearningCandidate{}
+	}
+	content := fmt.Sprintf("DeepAgent source quality rule for goal %q: future research should account for %s.", state.Goal, strings.Join(reasons, "; "))
+	candidate := base(deepAgentLearningTypeSourceQualityRule, content, 0.76)
+	candidate.RiskLevel = deepAgentLearningRiskLow
+	candidate.Metadata["memory_category"] = MemoryCategoryFact
+	candidate.Metadata["source_policy_report"] = report
+	return candidate
+}
+
 func newDeepAgentLearningID() string {
 	return "dal-" + newSortableID()
 }
@@ -150,6 +215,37 @@ func containsString(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func deepAgentLearningStringsFromAny(value any) []string {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return nil
+		}
+		return []string{strings.TrimSpace(typed)}
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if strings.TrimSpace(item) != "" {
+				out = append(out, strings.TrimSpace(item))
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, deepAgentLearningStringsFromAny(item)...)
+		}
+		return out
+	case map[string]any:
+		if content := strings.TrimSpace(firstNonEmptyString(deepAgentWorkflowString(typed, "content"), deepAgentWorkflowString(typed, "text"), deepAgentWorkflowString(typed, "summary"))); content != "" {
+			return []string{content}
+		}
+	}
+	return nil
 }
 
 type RuntimeDeepAgentLearningSink struct {
@@ -185,7 +281,11 @@ func (s *RuntimeDeepAgentLearningSink) PersistDeepAgentLearnings(ctx context.Con
 		item.Category = MemoryCategoryEvent
 		if candidate.Type == deepAgentLearningTypeSuccessPath {
 			item.Category = MemoryCategorySkill
+		} else if candidate.Type == deepAgentLearningTypeBadcase || candidate.Type == deepAgentLearningTypeToolLimitation || candidate.Type == deepAgentLearningTypeSourceQualityRule {
+			item.Category = MemoryCategoryFact
 		} else if strings.EqualFold(candidate.Type, MemoryCategoryFact) {
+			item.Category = MemoryCategoryFact
+		} else if strings.EqualFold(candidate.Type, deepAgentLearningTypeProjectConstraint) {
 			item.Category = MemoryCategoryFact
 		} else if deepAgentLearningCandidateIsPreference(candidate) {
 			item.Category = MemoryCategoryPreference
@@ -209,6 +309,9 @@ func (s *RuntimeDeepAgentLearningSink) PersistDeepAgentLearnings(ctx context.Con
 			"workflow_run_id":            candidate.RunID,
 			"step_id":                    candidate.StepID,
 			"evidence_id":                candidate.EvidenceID,
+			"evidence_refs":              candidate.EvidenceRefs,
+			"source_job":                 candidate.SourceJob,
+			"owner":                      candidate.Owner,
 			"source":                     candidate.Source,
 			"review_status":              candidate.Status,
 			"review_required":            candidate.RequiresUserConfirmation,
@@ -244,6 +347,9 @@ func deepAgentLearningCandidateGate(candidate DeepAgentLearningCandidate) (bool,
 	if deepAgentLearningCandidateConfidence(candidate) < 0.65 {
 		return false, "confidence below threshold"
 	}
+	if deepAgentLearningRequiresHighConfidenceReview(candidate) && deepAgentLearningCandidateConfidence(candidate) < 0.85 {
+		return false, "high-impact learning below confidence threshold"
+	}
 	if deepAgentLearningContentLooksSensitive(candidate.Content) {
 		return false, "sensitive content filtered"
 	}
@@ -253,10 +359,16 @@ func deepAgentLearningCandidateGate(candidate DeepAgentLearningCandidate) (bool,
 func governDeepAgentLearningCandidate(candidate DeepAgentLearningCandidate) DeepAgentLearningCandidate {
 	candidate.MemoryItemID = deepAgentLearningMemoryItemID(candidate.ID)
 	candidate.Visibility = firstNonEmptyString(candidate.Visibility, MemoryVisibilityUser)
+	candidate.Owner = firstNonEmptyString(candidate.Owner, candidate.UserID, "system")
+	candidate.SourceJob = firstNonEmptyString(candidate.SourceJob, deepAgentWorkflowString(candidate.Metadata, "source_job"))
 	candidate.RiskLevel = firstNonEmptyString(candidate.RiskLevel, deepAgentLearningRiskMedium)
 	candidate.Sensitivity = firstNonEmptyString(candidate.Sensitivity, deepAgentLearningSensitivityLow)
+	candidate.Confidence = deepAgentLearningCandidateConfidence(candidate)
 	if candidate.Metadata == nil {
 		candidate.Metadata = map[string]any{}
+	}
+	if len(candidate.EvidenceRefs) == 0 {
+		candidate.EvidenceRefs = deepAgentLearningEvidenceRefs(candidate.RunID, candidate.StepID, candidate.EvidenceID, nil)
 	}
 	approved, reason := deepAgentLearningCandidateGate(candidate)
 	candidate.PolicyReason = reason
@@ -267,7 +379,20 @@ func governDeepAgentLearningCandidate(candidate DeepAgentLearningCandidate) Deep
 		candidate.Metadata["gate_reason"] = reason
 		return candidate
 	}
-	if deepAgentLearningCanAutoWrite(candidate) {
+	if strings.EqualFold(candidate.Type, deepAgentLearningTypeBadcase) {
+		candidate.Status = deepAgentLearningStatusAccepted
+		candidate.RequiresUserConfirmation = false
+		candidate.UserConfirmed = false
+		if candidate.ExpiresAt == nil {
+			expires := firstNonZeroDeepAgentTime(candidate.CreatedAt, time.Now().UTC()).Add(14 * 24 * time.Hour)
+			candidate.ExpiresAt = &expires
+		}
+		candidate.PolicyReason = "short-term failure learning retained with expiry"
+	} else if deepAgentLearningRequiresHighConfidenceReview(candidate) {
+		candidate.Status = deepAgentLearningStatusPending
+		candidate.RequiresUserConfirmation = true
+		candidate.PolicyReason = "high-impact user preference or project constraint requires explicit review"
+	} else if deepAgentLearningCanAutoWrite(candidate) {
 		candidate.Status = deepAgentLearningStatusAccepted
 		candidate.RequiresUserConfirmation = false
 		candidate.UserConfirmed = false
@@ -281,6 +406,10 @@ func governDeepAgentLearningCandidate(candidate DeepAgentLearningCandidate) Deep
 	candidate.Metadata["risk_level"] = candidate.RiskLevel
 	candidate.Metadata["sensitivity"] = candidate.Sensitivity
 	candidate.Metadata["visibility"] = candidate.Visibility
+	candidate.Metadata["confidence"] = candidate.Confidence
+	candidate.Metadata["evidence_refs"] = candidate.EvidenceRefs
+	candidate.Metadata["source_job"] = candidate.SourceJob
+	candidate.Metadata["owner"] = candidate.Owner
 	candidate.Metadata["memory_item_id"] = candidate.MemoryItemID
 	candidate.Metadata["requires_user_confirmation"] = candidate.RequiresUserConfirmation
 	candidate.Metadata["user_confirmed"] = candidate.UserConfirmed
@@ -298,6 +427,14 @@ func deepAgentLearningCanAutoWrite(candidate DeepAgentLearningCandidate) bool {
 		return false
 	}
 	return strings.EqualFold(candidate.Type, MemoryCategoryFact) || strings.EqualFold(deepAgentWorkflowString(candidate.Metadata, "memory_category"), MemoryCategoryFact)
+}
+
+func deepAgentLearningRequiresHighConfidenceReview(candidate DeepAgentLearningCandidate) bool {
+	switch candidate.Type {
+	case deepAgentLearningTypeUserPreference, deepAgentLearningTypeProjectConstraint:
+		return true
+	}
+	return deepAgentLearningCandidateIsPreference(candidate)
 }
 
 func deepAgentLearningCandidateIsPreference(candidate DeepAgentLearningCandidate) bool {
@@ -344,6 +481,27 @@ func deepAgentLearningSourceRefs(candidate DeepAgentLearningCandidate) []MemoryS
 	return refs
 }
 
+func deepAgentLearningEvidenceRefs(runID, stepID, evidenceID string, state *DeepAgentState) []string {
+	refs := make([]string, 0, 4)
+	if strings.TrimSpace(runID) != "" {
+		refs = append(refs, "workflow_run:"+strings.TrimSpace(runID))
+	}
+	if strings.TrimSpace(stepID) != "" {
+		refs = append(refs, "step:"+strings.TrimSpace(stepID))
+	}
+	if strings.TrimSpace(evidenceID) != "" {
+		refs = append(refs, "evidence:"+strings.TrimSpace(evidenceID))
+	}
+	if state != nil {
+		for _, ref := range deepAgentStringSlice(state.WorkingMemory["learning_evidence_refs"]) {
+			if strings.TrimSpace(ref) != "" {
+				refs = append(refs, strings.TrimSpace(ref))
+			}
+		}
+	}
+	return appendUniqueStrings(nil, refs)
+}
+
 func deepAgentLearningStepID(state *DeepAgentState) string {
 	if state == nil {
 		return ""
@@ -378,6 +536,45 @@ func deepAgentLearningEvidenceID(runID, stepID string, state *DeepAgentState) st
 	return strings.Join(parts, "/")
 }
 
+func deepAgentSourcePolicyReportFromState(state *DeepAgentState) deepAgentSourcePolicyReport {
+	if state == nil {
+		return deepAgentSourcePolicyReport{}
+	}
+	if report := deepAgentSourcePolicyReportFromAny(state.WorkingMemory["source_policy_report"]); report.InputCount > 0 || report.FilteredCount > 0 || report.TrimmedCount > 0 {
+		return report
+	}
+	for _, evidence := range (StateDeepAgentEvidenceStore{}).ListStepEvidence(state) {
+		if evidence.Diagnostics == nil {
+			continue
+		}
+		if report := deepAgentSourcePolicyReportFromAny(evidence.Diagnostics["source_policy_report"]); report.InputCount > 0 || report.FilteredCount > 0 || report.TrimmedCount > 0 {
+			return report
+		}
+	}
+	return deepAgentSourcePolicyReport{}
+}
+
+func deepAgentSourcePolicyReportFromAny(value any) deepAgentSourcePolicyReport {
+	switch typed := value.(type) {
+	case deepAgentSourcePolicyReport:
+		return typed
+	case map[string]any:
+		var report deepAgentSourcePolicyReport
+		data, err := json.Marshal(typed)
+		if err == nil {
+			_ = json.Unmarshal(data, &report)
+		}
+		return report
+	default:
+		var report deepAgentSourcePolicyReport
+		data, err := json.Marshal(value)
+		if err == nil {
+			_ = json.Unmarshal(data, &report)
+		}
+		return report
+	}
+}
+
 func deepAgentLearningEvidenceURI(candidate DeepAgentLearningCandidate) string {
 	if strings.TrimSpace(candidate.RunID) == "" {
 		return ""
@@ -390,6 +587,9 @@ func deepAgentLearningEvidenceURI(candidate DeepAgentLearningCandidate) string {
 }
 
 func deepAgentLearningCandidateConfidence(candidate DeepAgentLearningCandidate) float64 {
+	if candidate.Confidence > 0 {
+		return candidate.Confidence
+	}
 	if candidate.Metadata != nil {
 		switch value := candidate.Metadata["confidence"].(type) {
 		case float64:

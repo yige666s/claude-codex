@@ -423,7 +423,11 @@ func (r *Runtime) runVisionAssetInsight(ctx context.Context, asset *Artifact, co
 			},
 		},
 	}
-	result, err := runWithTokenStreamContent(ctx, r.runnerForScope(Scope{UserID: asset.UserID, SessionID: asset.SessionID}), state.NewSession(""), blocks, false, nil)
+	result, err := runWithTokenStreamContent(ctx, r.runnerForScope(Scope{
+		UserID:       asset.UserID,
+		SessionID:    asset.SessionID,
+		AllowedTools: []string{"__asset_insight_no_tools__"},
+	}), state.NewSession(""), blocks, false, nil)
 	if err != nil {
 		return "", err
 	}

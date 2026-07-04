@@ -96,6 +96,7 @@ async function mockBaselineAPI(page: Page) {
     user: { id: "baseline-user", email: "baseline@example.com", display_name: "Baseline User", status: "active", email_verified: true, created_at: now }
   }));
   await page.route("**/v1/sessions?**", (route) => json(route, [session]));
+  await page.route("**/v1/sessions/baseline-session/active-run", (route) => json(route, { run: null }));
   await page.route("**/v1/sessions/baseline-session", (route) => json(route, session));
   await page.route("**/v1/skills", (route) => json(route, {
     skills: [

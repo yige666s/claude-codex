@@ -53,7 +53,7 @@ type OperationRateLimiter struct {
 }
 
 func NewOperationRateLimiter(limits map[string]OperationLimit) *OperationRateLimiter {
-	merged := DefaultOperationLimits()
+	merged := map[string]OperationLimit{}
 	for operation, limit := range limits {
 		operation = strings.TrimSpace(operation)
 		if operation == "" || limit.Limit <= 0 || limit.Window <= 0 {
@@ -62,9 +62,8 @@ func NewOperationRateLimiter(limits map[string]OperationLimit) *OperationRateLim
 		merged[operation] = limit
 	}
 	return &OperationRateLimiter{
-		limits:       merged,
-		defaultLimit: OperationLimit{Limit: 120, Window: time.Minute},
-		hits:         make(map[string][]time.Time),
+		limits: merged,
+		hits:   make(map[string][]time.Time),
 	}
 }
 

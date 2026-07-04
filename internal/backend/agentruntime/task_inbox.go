@@ -34,6 +34,7 @@ type TaskInboxItem struct {
 	Title             string                 `json:"title"`
 	Status            string                 `json:"status"`
 	SessionID         string                 `json:"session_id,omitempty"`
+	SessionAvailable  bool                   `json:"session_available"`
 	JobID             string                 `json:"job_id,omitempty"`
 	ArtifactID        string                 `json:"artifact_id,omitempty"`
 	Trigger           string                 `json:"trigger,omitempty"`
@@ -72,6 +73,10 @@ func (r *Runtime) TaskInbox(ctx context.Context, userID string, opts TaskInboxOp
 	if err != nil {
 		return nil, err
 	}
+	sessionAvailable, err := r.taskInboxSessionAvailability(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
 
 	artifactsByJob := make(map[string][]*Artifact)
 	artifactSeen := make(map[string]struct{})
@@ -93,7 +98,7 @@ func (r *Runtime) TaskInbox(ctx context.Context, userID string, opts TaskInboxOp
 		for _, artifact := range jobArtifacts {
 			artifactSeen[artifact.ID] = struct{}{}
 		}
-		item := taskInboxItemFromJob(ctx, r, userID, job, jobArtifacts)
+		item := taskInboxItemFromJob(ctx, r, userID, job, jobArtifacts, taskInboxSessionAvailable(sessionAvailable, job.SessionID))
 		items = append(items, item)
 	}
 	for _, artifact := range artifacts {
@@ -103,7 +108,7 @@ func (r *Runtime) TaskInbox(ctx context.Context, userID string, opts TaskInboxOp
 		if _, ok := artifactSeen[artifact.ID]; ok {
 			continue
 		}
-		items = append(items, taskInboxItemFromArtifact(artifact))
+		items = append(items, taskInboxItemFromArtifact(artifact, taskInboxSessionAvailable(sessionAvailable, artifact.SessionID)))
 	}
 
 	sort.SliceStable(items, func(i, j int) bool {
@@ -126,12 +131,39 @@ func (r *Runtime) TaskInbox(ctx context.Context, userID string, opts TaskInboxOp
 	return &TaskInboxResponse{Items: items, Groups: groups, GeneratedAt: time.Now().UTC()}, nil
 }
 
-func taskInboxItemFromJob(ctx context.Context, r *Runtime, userID string, job *Job, artifacts []*Artifact) TaskInboxItem {
+func (r *Runtime) taskInboxSessionAvailability(ctx context.Context, userID string) (map[string]bool, error) {
+	if r.sessions == nil {
+		return map[string]bool{}, nil
+	}
+	sessions, err := r.ListSessions(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	available := make(map[string]bool, len(sessions))
+	for _, session := range sessions {
+		if session == nil {
+			continue
+		}
+		available[session.ID] = true
+	}
+	return available, nil
+}
+
+func taskInboxSessionAvailable(available map[string]bool, sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return true
+	}
+	return available[sessionID]
+}
+
+func taskInboxItemFromJob(ctx context.Context, r *Runtime, userID string, job *Job, artifacts []*Artifact, sessionAvailable bool) TaskInboxItem {
 	group := taskInboxGroupForJob(job)
 	lastEvent, lastEventAt := taskInboxLastJobEvent(ctx, r, userID, job)
 	if lastEvent == "" {
 		lastEvent = taskInboxJobLastEvent(job)
 	}
+	lastEvent = taskInboxSanitizedLastEvent(lastEvent, sessionAvailable)
 	item := TaskInboxItem{
 		ID:                "job:" + job.ID,
 		Kind:              "job",
@@ -139,13 +171,14 @@ func taskInboxItemFromJob(ctx context.Context, r *Runtime, userID string, job *J
 		Title:             taskInboxTitle(job.Content, job.Type+" job"),
 		Status:            job.Status,
 		SessionID:         job.SessionID,
+		SessionAvailable:  sessionAvailable,
 		JobID:             job.ID,
 		Trigger:           job.Type,
 		LastEvent:         lastEvent,
 		LastEventAt:       lastEventAt,
 		ArtifactCount:     len(artifacts),
 		PrimaryArtifactID: taskInboxPrimaryArtifactID(artifacts),
-		NextAction:        taskInboxNextAction(group, len(artifacts) > 0),
+		NextAction:        taskInboxNextAction(group, len(artifacts) > 0, sessionAvailable),
 		NotificationType:  taskInboxNotificationType(group),
 		CreatedAt:         job.CreatedAt,
 		UpdatedAt:         job.UpdatedAt,
@@ -156,7 +189,18 @@ func taskInboxItemFromJob(ctx context.Context, r *Runtime, userID string, job *J
 	return item
 }
 
-func taskInboxItemFromArtifact(artifact *Artifact) TaskInboxItem {
+func taskInboxSanitizedLastEvent(message string, sessionAvailable bool) string {
+	if sessionAvailable {
+		return message
+	}
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "session not found") || strings.Contains(lower, "no rows in result set") {
+		return "Source chat was deleted."
+	}
+	return message
+}
+
+func taskInboxItemFromArtifact(artifact *Artifact, sessionAvailable bool) TaskInboxItem {
 	return TaskInboxItem{
 		ID:                "artifact:" + artifact.ID,
 		Kind:              "artifact",
@@ -164,6 +208,7 @@ func taskInboxItemFromArtifact(artifact *Artifact) TaskInboxItem {
 		Title:             taskInboxTitle(artifact.Filename, "Artifact"),
 		Status:            "created",
 		SessionID:         artifact.SessionID,
+		SessionAvailable:  sessionAvailable,
 		JobID:             artifact.JobID,
 		ArtifactID:        artifact.ID,
 		LastEvent:         "Artifact created",
@@ -231,7 +276,10 @@ func taskInboxJobLastEvent(job *Job) string {
 	}
 }
 
-func taskInboxNextAction(group string, hasArtifact bool) string {
+func taskInboxNextAction(group string, hasArtifact, sessionAvailable bool) string {
+	if !sessionAvailable {
+		return ""
+	}
 	switch group {
 	case TaskInboxGroupNeedsReview:
 		return "Review"

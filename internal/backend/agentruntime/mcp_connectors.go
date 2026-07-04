@@ -696,7 +696,7 @@ func (r *Runtime) CallConnectorMCPTool(ctx context.Context, call MCPConnectorToo
 			return mcpcore.ToolResult{Output: started.Output}, server, *policy, nil
 		}
 	}
-	emitJobEventFromContext(ctx, Event{Type: "mcp_connector_tool_call_started", Role: "tool", Content: call.ToolName, Data: deepAgentEventData(entry.Metadata)})
+	emitJobEventFromContext(ctx, toolCallStartEvent("", call.ToolName, idempotencyKey, call.Args, entry.Metadata))
 	result, err := r.connectorMCPHost().CallTool(ctx, cfg, call.ToolName, call.Args)
 	if err != nil {
 		if fallback, ok, fallbackErr := r.callGmailRESTMCPFallback(ctx, call, server, err); ok {
@@ -704,7 +704,7 @@ func (r *Runtime) CallConnectorMCPTool(ctx context.Context, call MCPConnectorToo
 				if ledger != nil {
 					_ = ledger.CompleteToolCall(ctx, idempotencyKey, fallback.Output, map[string]any{"server_id": server.ID, "provider": call.Provider, "tool_name": call.ToolName, "fallback": "gmail_rest"})
 				}
-				emitJobEventFromContext(ctx, Event{Type: "mcp_connector_tool_call_succeeded", Role: "tool", Content: call.ToolName, Data: deepAgentEventData(map[string]any{"server_id": server.ID, "provider": call.Provider, "tool_name": call.ToolName, "fallback": "gmail_rest"})})
+				emitJobEventFromContext(ctx, toolCallResultEvent("", call.ToolName, idempotencyKey, call.Args, fallback.Output, nil, map[string]any{"server_id": server.ID, "provider": call.Provider, "tool_name": call.ToolName, "fallback": "gmail_rest"}))
 				return fallback, server, *policy, nil
 			}
 			err = fallbackErr
@@ -712,13 +712,13 @@ func (r *Runtime) CallConnectorMCPTool(ctx context.Context, call MCPConnectorToo
 		if ledger != nil {
 			_ = ledger.FailToolCall(ctx, idempotencyKey, err.Error(), map[string]any{"server_id": server.ID, "provider": call.Provider, "tool_name": call.ToolName})
 		}
-		emitJobEventFromContext(ctx, Event{Type: "mcp_connector_tool_call_failed", Role: "tool", Content: call.ToolName, Error: err.Error(), Data: deepAgentEventData(entry.Metadata)})
+		emitJobEventFromContext(ctx, toolCallResultEvent("", call.ToolName, idempotencyKey, call.Args, "", err, entry.Metadata))
 		return mcpcore.ToolResult{}, server, *policy, err
 	}
 	if ledger != nil {
 		_ = ledger.CompleteToolCall(ctx, idempotencyKey, result.Output, map[string]any{"server_id": server.ID, "provider": call.Provider, "tool_name": call.ToolName})
 	}
-	emitJobEventFromContext(ctx, Event{Type: "mcp_connector_tool_call_succeeded", Role: "tool", Content: call.ToolName, Data: deepAgentEventData(map[string]any{"server_id": server.ID, "provider": call.Provider, "tool_name": call.ToolName})})
+	emitJobEventFromContext(ctx, toolCallResultEvent("", call.ToolName, idempotencyKey, call.Args, result.Output, nil, map[string]any{"server_id": server.ID, "provider": call.Provider, "tool_name": call.ToolName}))
 	return result, server, *policy, nil
 }
 

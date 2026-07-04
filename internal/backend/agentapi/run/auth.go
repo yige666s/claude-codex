@@ -83,17 +83,17 @@ func buildAuthenticator(cfg authConfig) agentruntime.Authenticator {
 	}
 	switch mode {
 	case "jwt":
-		return jwt
-	case "cookie", "session-cookie":
-		return agentruntime.SessionCookieAuthenticator{
-			CookieName: cfg.sessionCookieName,
-			JWTAuthenticator: agentruntime.JWTAuthenticator{
-				Secret:    startupconfig.FirstNonEmpty(cfg.sessionCookieSecret, cfg.jwtSecret),
-				UserClaim: cfg.jwtUserClaim,
-				Issuer:    cfg.jwtIssuer,
-				Audience:  cfg.jwtAudience,
-			},
+		var chain agentruntime.CompositeAuthenticator
+		chain = append(chain, jwt)
+		if cookie := sessionCookieAuthenticator(cfg); cookie != nil {
+			chain = append(chain, cookie)
 		}
+		return chain
+	case "cookie", "session-cookie":
+		if cookie := sessionCookieAuthenticator(cfg); cookie != nil {
+			return cookie
+		}
+		return agentruntime.SessionCookieAuthenticator{CookieName: cfg.sessionCookieName}
 	case "trusted-header", "gateway":
 		return agentruntime.TrustedHeaderAuthenticator{
 			UserHeader:     cfg.trustedUserHeader,
@@ -109,11 +109,8 @@ func buildAuthenticator(cfg authConfig) agentruntime.Authenticator {
 		if cfg.jwtSecret != "" {
 			chain = append(chain, jwt)
 		}
-		if cfg.sessionCookieSecret != "" {
-			chain = append(chain, agentruntime.SessionCookieAuthenticator{
-				CookieName:       cfg.sessionCookieName,
-				JWTAuthenticator: agentruntime.JWTAuthenticator{Secret: cfg.sessionCookieSecret, UserClaim: cfg.jwtUserClaim, Issuer: cfg.jwtIssuer, Audience: cfg.jwtAudience},
-			})
+		if cookie := sessionCookieAuthenticator(cfg); cookie != nil {
+			chain = append(chain, cookie)
 		}
 		if cfg.trustedSecretHeader != "" && cfg.trustedSecret != "" {
 			chain = append(chain, agentruntime.TrustedHeaderAuthenticator{
@@ -124,6 +121,22 @@ func buildAuthenticator(cfg authConfig) agentruntime.Authenticator {
 		}
 		chain = append(chain, agentruntime.HeaderAuthenticator{UserHeader: cfg.userHeader, BearerToken: cfg.authToken})
 		return chain
+	}
+}
+
+func sessionCookieAuthenticator(cfg authConfig) agentruntime.Authenticator {
+	secret := startupconfig.FirstNonEmpty(cfg.sessionCookieSecret, cfg.jwtSecret)
+	if secret == "" {
+		return nil
+	}
+	return agentruntime.SessionCookieAuthenticator{
+		CookieName: cfg.sessionCookieName,
+		JWTAuthenticator: agentruntime.JWTAuthenticator{
+			Secret:    secret,
+			UserClaim: cfg.jwtUserClaim,
+			Issuer:    cfg.jwtIssuer,
+			Audience:  cfg.jwtAudience,
+		},
 	}
 }
 

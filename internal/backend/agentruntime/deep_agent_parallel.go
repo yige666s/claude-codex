@@ -14,16 +14,19 @@ import (
 )
 
 const (
-	deepAgentParallelDefaultMaxBranches    = 6
-	deepAgentParallelDefaultMinSuccess     = 1
-	deepAgentParallelDefaultBranchTimeout  = 90 * time.Second
-	deepAgentParallelMaxBranchTimeout      = 30 * time.Minute
-	deepAgentParallelDefaultMaxConcurrency = 4
-	deepAgentParallelDefaultMaxSupplement  = 1
-	deepAgentParallelMaxSourcesPerBranch   = 12
-	deepAgentParallelMaxSourcesPerGroup    = 40
-	deepAgentModelActionMaxSources         = 24
-	deepAgentSourceMaxPerHost              = 2
+	deepAgentParallelDefaultMaxBranches     = 6
+	deepAgentParallelDefaultPrimaryBranches = 4
+	deepAgentParallelDefaultMinSuccess      = 1
+	deepAgentParallelDefaultBranchTimeout   = 90 * time.Second
+	deepAgentParallelMaxBranchTimeout       = 30 * time.Minute
+	deepAgentParallelDefaultMaxConcurrency  = 4
+	deepAgentParallelDefaultMaxSupplement   = 1
+	deepAgentParallelMaxSourcesPerBranch    = 12
+	deepAgentParallelMaxSourcesPerGroup     = 40
+	deepAgentParallelDefaultMaxToolCalls    = 8
+	deepAgentParallelDefaultMaxTokens       = 4000
+	deepAgentModelActionMaxSources          = 24
+	deepAgentSourceMaxPerHost               = 2
 )
 
 type deepAgentParallelCoverageDimension struct {
@@ -83,13 +86,9 @@ func (e *runtimeDeepAgentSubplanExecutor) executeParallelStep(ctx context.Contex
 			"side_effect_level": deepAgentSideEffectReadonly,
 		}), err
 	}
-	maxBranches := deepAgentActionInt(action, "max_branches", deepAgentParallelDefaultMaxBranches)
-	if maxBranches <= 0 || maxBranches > deepAgentParallelDefaultMaxBranches {
-		maxBranches = deepAgentParallelDefaultMaxBranches
-	}
-	if len(specs) > maxBranches {
-		specs = specs[:maxBranches]
-	}
+	maxBranches := e.deepAgentParallelMaxBranches(action)
+	action = e.withDeepAgentParallelBudgetDefaults(action)
+	specs = deepAgentParallelPlanBranchSpecs(specs, action, maxBranches)
 	if direct := deepAgentParallelBranchResultsFromAction(action); len(direct) > 0 {
 		return deepAgentParallelJoinEvidence(ctx, route, action, specs, direct, nil)
 	}
@@ -108,11 +107,15 @@ func (e *runtimeDeepAgentSubplanExecutor) executeParallelStep(ctx context.Contex
 	emitDeepAgentParallelEvent(ctx, "deep_agent_parallel_group_started", action, route, map[string]any{
 		"parallel_group_id": groupID,
 		"branch_count":      len(specs),
+		"max_branches":      maxBranches,
 	})
 	results := make([]DeepAgentParallelBranchResult, len(specs))
 	concurrency := deepAgentActionInt(action, "max_concurrency", deepAgentParallelDefaultMaxConcurrency)
 	if concurrency <= 0 || concurrency > deepAgentParallelDefaultMaxBranches {
 		concurrency = deepAgentParallelDefaultMaxConcurrency
+	}
+	if concurrency > maxBranches {
+		concurrency = maxBranches
 	}
 	if concurrency > len(specs) {
 		concurrency = len(specs)
@@ -168,12 +171,15 @@ func (e *runtimeDeepAgentSubplanExecutor) executeParallelBranchWithEvents(ctx co
 		failedEvent = "deep_agent_parallel_supplemental_branch_failed"
 	}
 	emitDeepAgentParallelEvent(ctx, startEvent, action, route, map[string]any{
-		"parallel_group_id": groupID,
-		"branch_id":         spec.ID,
-		"branch_title":      spec.Title,
-		"branch_index":      branchIndex,
-		"objective":         spec.Task,
-		"supplemental":      supplemental,
+		"parallel_group_id":  groupID,
+		"branch_id":          spec.ID,
+		"branch_title":       spec.Title,
+		"branch_kind":        deepAgentParallelSpecKind(spec),
+		"coverage_dimension": spec.CoverageDimension,
+		"branch_budget":      spec.Budget,
+		"branch_index":       branchIndex,
+		"objective":          spec.Task,
+		"supplemental":       supplemental,
 	})
 	result, err := e.executeParallelBranch(ctx, parent, route, action, spec, agentState)
 	if err != nil {
@@ -186,17 +192,27 @@ func (e *runtimeDeepAgentSubplanExecutor) executeParallelBranchWithEvents(ctx co
 		eventType = failedEvent
 		errorText = result.Error
 	}
+	timedOut := deepAgentParallelErrorTimedOut(errorText)
+	if result.Metadata != nil {
+		if value, ok := deepAgentMetadataBool(result.Metadata, "timed_out"); ok && value {
+			timedOut = true
+		}
+	}
 	emitDeepAgentParallelEvent(ctx, eventType, action, route, map[string]any{
-		"parallel_group_id": groupID,
-		"branch_id":         result.ID,
-		"branch_title":      result.Title,
-		"result_status":     result.Status,
-		"source_count":      len(result.Sources),
-		"artifact_count":    len(result.Artifacts),
-		"tool_call_count":   len(result.ToolCalls),
-		"duration_ms":       time.Since(startedAt).Milliseconds(),
-		"error":             errorText,
-		"supplemental":      supplemental,
+		"parallel_group_id":  groupID,
+		"branch_id":          result.ID,
+		"branch_title":       result.Title,
+		"branch_kind":        deepAgentParallelSpecKind(spec),
+		"coverage_dimension": spec.CoverageDimension,
+		"branch_budget":      spec.Budget,
+		"result_status":      result.Status,
+		"source_count":       len(result.Sources),
+		"artifact_count":     len(result.Artifacts),
+		"tool_call_count":    len(result.ToolCalls),
+		"duration_ms":        time.Since(startedAt).Milliseconds(),
+		"error":              errorText,
+		"timed_out":          timedOut,
+		"supplemental":       supplemental,
 	})
 	return result
 }
@@ -209,19 +225,41 @@ func (e *runtimeDeepAgentSubplanExecutor) executeParallelBranch(ctx context.Cont
 	branchTool := deepAgentParallelBranchTool(spec)
 	branchAllowedTools := deepAgentParallelBranchAllowedTools(spec, action)
 	branchRoute := deepAgentParallelBranchRoute(firstNonEmptyString(action.StepID, route.StepID)+"/"+spec.ID, branchTool, branchAllowedTools)
+	sourcePolicy := deepAgentSourcePolicyFromAction(action)
+	if action.Args == nil || action.Args["source_policy"] == nil {
+		if raw := stateWorkingMemory(agentState)["source_policy"]; raw != nil {
+			sourcePolicy = normalizeLoopContractSourcePolicy(deepAgentSourcePolicyFromAny(raw), deepAgentActionString(action, "goal"))
+		}
+	}
 	branchAction := DeepAgentAction{
 		StepID: firstNonEmptyString(action.StepID, route.StepID) + "/" + spec.ID,
 		Tool:   branchTool,
 		Args: mergeDeepAgentActionArgs(cloneWorkflowMap(spec.Metadata), map[string]any{
-			"goal":             deepAgentActionString(action, "goal"),
-			"prompt":           deepAgentParallelPromptForBranch(action, spec),
-			"step_id":          firstNonEmptyString(action.StepID, route.StepID) + "/" + spec.ID,
-			"step_title":       spec.Title,
-			"done_condition":   strings.Join(spec.SuccessCriteria, "\n"),
-			"success_criteria": spec.SuccessCriteria,
-			"allowed_tools":    branchAllowedTools,
-			"parallel_branch":  true,
+			"goal":               deepAgentActionString(action, "goal"),
+			"prompt":             deepAgentParallelPromptForBranch(action, spec),
+			"step_id":            firstNonEmptyString(action.StepID, route.StepID) + "/" + spec.ID,
+			"step_title":         spec.Title,
+			"done_condition":     strings.Join(spec.SuccessCriteria, "\n"),
+			"success_criteria":   spec.SuccessCriteria,
+			"allowed_tools":      branchAllowedTools,
+			"parallel_branch":    true,
+			"branch_kind":        deepAgentParallelSpecKind(spec),
+			"coverage_dimension": spec.CoverageDimension,
+			"branch_budget":      spec.Budget,
+			"source_policy":      sourcePolicy,
 		}),
+	}
+	if spec.Budget.TimeoutMS > 0 {
+		branchAction.Args["timeout_ms"] = spec.Budget.TimeoutMS
+	}
+	if spec.Budget.MaxToolCalls > 0 {
+		branchAction.Args["max_tool_calls"] = spec.Budget.MaxToolCalls
+	}
+	if spec.Budget.MaxSources > 0 {
+		branchAction.Args["max_sources"] = spec.Budget.MaxSources
+	}
+	if spec.Budget.MaxTokens > 0 {
+		branchAction.Args["max_tokens"] = spec.Budget.MaxTokens
 	}
 	branchAction.Args["step_route"] = deepAgentStepRouteMap(branchRoute)
 	branchAction.Args["route_version"] = branchRoute.Version
@@ -232,12 +270,21 @@ func (e *runtimeDeepAgentSubplanExecutor) executeParallelBranch(ctx context.Cont
 	if result.Status == "" {
 		result.Status = DeepAgentActionStatusSucceeded
 	}
-	branchSources := curateDeepAgentSourceRefs(deepAgentSourceRefsFromAny(result.Metadata["sources"]), deepAgentParallelMaxSourcesPerBranch)
+	branchSources, sourcePolicyReport := curateDeepAgentSourceRefsWithPolicy(deepAgentSourceRefsFromAny(result.Metadata["sources"]), deepAgentParallelMaxSourcesForSpec(action, spec), sourcePolicy)
+	branchToolCalls := limitDeepAgentToolCallRefs(deepAgentToolCallRefsFromMetadata(result.Metadata), deepAgentParallelMaxToolCallsForSpec(action, spec))
 	branchMetadata := cloneWorkflowMap(result.Metadata)
+	if branchMetadata == nil {
+		branchMetadata = map[string]any{}
+	}
+	branchMetadata["branch_kind"] = deepAgentParallelSpecKind(spec)
+	branchMetadata["coverage_dimension"] = spec.CoverageDimension
+	branchMetadata["branch_budget"] = spec.Budget
+	branchMetadata["source_policy"] = sourcePolicy
+	branchMetadata["source_policy_report"] = sourcePolicyReport
+	if deepAgentParallelErrorTimedOut(result.Error) {
+		branchMetadata["timed_out"] = true
+	}
 	if len(branchSources) > 0 {
-		if branchMetadata == nil {
-			branchMetadata = map[string]any{}
-		}
 		branchMetadata["sources"] = branchSources
 	} else if branchMetadata != nil {
 		delete(branchMetadata, "sources")
@@ -250,7 +297,7 @@ func (e *runtimeDeepAgentSubplanExecutor) executeParallelBranch(ctx context.Cont
 		Error:     result.Error,
 		Sources:   branchSources,
 		Artifacts: deepAgentArtifactRefsFromMetadata(result.Metadata),
-		ToolCalls: deepAgentToolCallRefsFromMetadata(result.Metadata),
+		ToolCalls: branchToolCalls,
 		Metadata:  branchMetadata,
 	}
 	if supplemental, ok := deepAgentMetadataBool(spec.Metadata, "supplemental"); ok && supplemental {
@@ -273,11 +320,15 @@ func (e *runtimeDeepAgentSubplanExecutor) deepAgentParallelBranchTimeout(action 
 	timeout := deepAgentParallelDefaultBranchTimeout
 	if e != nil && e.runtime != nil && e.runtime.config.LLMGovernanceProvider != nil {
 		cfg := e.runtime.config.LLMGovernanceProvider().normalized()
-		if cfg.SkillTimeout > timeout {
-			timeout = cfg.SkillTimeout
-		}
-		if cfg.ChatTimeout > timeout {
-			timeout = cfg.ChatTimeout
+		if cfg.ParallelBranchTimeout > 0 {
+			timeout = cfg.ParallelBranchTimeout
+		} else {
+			if cfg.SkillTimeout > timeout {
+				timeout = cfg.SkillTimeout
+			}
+			if cfg.ChatTimeout > timeout {
+				timeout = cfg.ChatTimeout
+			}
 		}
 	}
 	if requested := deepAgentActionDurationMS(action, "branch_timeout_ms"); requested > 0 {
@@ -326,6 +377,197 @@ func deepAgentActionDurationMS(action DeepAgentAction, key string) time.Duration
 	return 0
 }
 
+func (e *runtimeDeepAgentSubplanExecutor) deepAgentParallelMaxBranches(action DeepAgentAction) int {
+	if requested := deepAgentActionInt(action, "max_branches", 0); requested > 0 {
+		if requested > deepAgentParallelDefaultMaxBranches {
+			return deepAgentParallelDefaultMaxBranches
+		}
+		return requested
+	}
+	if e != nil && e.runtime != nil && e.runtime.config.LLMGovernanceProvider != nil {
+		cfg := e.runtime.config.LLMGovernanceProvider().normalized()
+		if cfg.MaxBranchConcurrency > 0 {
+			return cfg.MaxBranchConcurrency
+		}
+	}
+	return deepAgentParallelDefaultPrimaryBranches
+}
+
+func (e *runtimeDeepAgentSubplanExecutor) withDeepAgentParallelBudgetDefaults(action DeepAgentAction) DeepAgentAction {
+	if action.Args == nil {
+		action.Args = map[string]any{}
+	}
+	budget := DeepAgentParallelBranchBudget{
+		TimeoutMS:    deepAgentParallelDefaultBranchTimeout.Milliseconds(),
+		MaxToolCalls: deepAgentParallelDefaultMaxToolCalls,
+		MaxSources:   deepAgentParallelMaxSourcesPerBranch,
+		MaxTokens:    deepAgentParallelDefaultMaxTokens,
+	}
+	if e != nil && e.runtime != nil && e.runtime.config.LLMGovernanceProvider != nil {
+		cfg := e.runtime.config.LLMGovernanceProvider().normalized()
+		budget.TimeoutMS = cfg.ParallelBranchTimeout.Milliseconds()
+		budget.MaxToolCalls = cfg.ParallelMaxToolCalls
+		budget.MaxSources = cfg.MaxSourcesPerBranch
+		budget.MaxTokens = cfg.ParallelMaxTokens
+	}
+	if _, ok := action.Args["branch_timeout_ms"]; !ok {
+		action.Args["branch_timeout_ms"] = budget.TimeoutMS
+	}
+	if _, ok := action.Args["branch_max_tool_calls"]; !ok {
+		action.Args["branch_max_tool_calls"] = budget.MaxToolCalls
+	}
+	if _, ok := action.Args["branch_max_sources"]; !ok {
+		action.Args["branch_max_sources"] = budget.MaxSources
+	}
+	if _, ok := action.Args["branch_max_tokens"]; !ok {
+		action.Args["branch_max_tokens"] = budget.MaxTokens
+	}
+	return action
+}
+
+func deepAgentParallelPlanBranchSpecs(specs []DeepAgentParallelBranchSpec, action DeepAgentAction, maxBranches int) []DeepAgentParallelBranchSpec {
+	specs = normalizeDeepAgentParallelBranchSpecs(specs)
+	if maxBranches <= 0 {
+		maxBranches = deepAgentParallelDefaultPrimaryBranches
+	}
+	if maxBranches > deepAgentParallelDefaultMaxBranches {
+		maxBranches = deepAgentParallelDefaultMaxBranches
+	}
+	budget := deepAgentParallelBranchBudgetFromAction(action)
+	out := make([]DeepAgentParallelBranchSpec, 0, len(specs))
+	seenPrimaryDimension := map[string]int{}
+	for _, spec := range specs {
+		spec = deepAgentParallelSpecWithBudget(spec, budget)
+		if !deepAgentParallelSpecIsSupplemental(spec) {
+			dim := firstNonEmptyString(spec.CoverageDimension, "primary")
+			if existingIdx, ok := seenPrimaryDimension[dim]; ok {
+				out[existingIdx] = mergeDeepAgentParallelBranchSpecs(out[existingIdx], spec)
+				continue
+			}
+			seenPrimaryDimension[dim] = len(out)
+		}
+		out = append(out, spec)
+	}
+	if len(out) <= maxBranches {
+		return out
+	}
+	trimmed := make([]DeepAgentParallelBranchSpec, 0, maxBranches)
+	for _, spec := range out {
+		if len(trimmed) >= maxBranches {
+			break
+		}
+		trimmed = append(trimmed, spec)
+	}
+	return trimmed
+}
+
+func deepAgentParallelSpecWithBudget(spec DeepAgentParallelBranchSpec, fallback DeepAgentParallelBranchBudget) DeepAgentParallelBranchSpec {
+	if spec.Budget.TimeoutMS <= 0 {
+		spec.Budget.TimeoutMS = fallback.TimeoutMS
+	}
+	if spec.Budget.MaxToolCalls <= 0 {
+		spec.Budget.MaxToolCalls = fallback.MaxToolCalls
+	}
+	if spec.Budget.MaxSources <= 0 {
+		spec.Budget.MaxSources = fallback.MaxSources
+	}
+	if spec.Budget.MaxTokens <= 0 {
+		spec.Budget.MaxTokens = fallback.MaxTokens
+	}
+	return spec
+}
+
+func mergeDeepAgentParallelBranchSpecs(base, extra DeepAgentParallelBranchSpec) DeepAgentParallelBranchSpec {
+	if strings.TrimSpace(extra.Task) != "" && !strings.Contains(base.Task, extra.Task) {
+		base.Task = strings.TrimSpace(base.Task + "\n\nMerged related branch objective:\n" + extra.Task)
+	}
+	base.SuccessCriteria = appendUniqueDeepAgentParallelStrings(base.SuccessCriteria, extra.SuccessCriteria...)
+	base.AllowedTools = appendUniqueDeepAgentParallelStrings(base.AllowedTools, extra.AllowedTools...)
+	if base.Metadata == nil {
+		base.Metadata = map[string]any{}
+	}
+	merged := deepAgentStringSlice(base.Metadata["merged_branch_ids"])
+	merged = appendUniqueDeepAgentParallelStrings(merged, extra.ID)
+	base.Metadata["merged_branch_ids"] = merged
+	base.Metadata["merged_branch_count"] = len(merged) + 1
+	return base
+}
+
+func appendUniqueDeepAgentParallelStrings(base []string, values ...string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(base)+len(values))
+	for _, item := range append(append([]string(nil), base...), values...) {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		key := strings.ToLower(item)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func deepAgentParallelBranchBudgetFromAction(action DeepAgentAction) DeepAgentParallelBranchBudget {
+	budget := DeepAgentParallelBranchBudget{
+		TimeoutMS:    deepAgentParallelDefaultBranchTimeout.Milliseconds(),
+		MaxToolCalls: deepAgentParallelDefaultMaxToolCalls,
+		MaxSources:   deepAgentParallelMaxSourcesPerBranch,
+		MaxTokens:    deepAgentParallelDefaultMaxTokens,
+	}
+	if timeout := deepAgentActionDurationMS(action, "branch_timeout_ms"); timeout > 0 {
+		budget.TimeoutMS = timeout.Milliseconds()
+	}
+	if value := deepAgentActionInt(action, "branch_max_tool_calls", 0); value > 0 {
+		budget.MaxToolCalls = value
+	}
+	if value := deepAgentActionInt(action, "branch_max_sources", 0); value > 0 {
+		budget.MaxSources = value
+	}
+	if value := deepAgentActionInt(action, "branch_max_tokens", 0); value > 0 {
+		budget.MaxTokens = value
+	}
+	return budget
+}
+
+func deepAgentParallelMaxSourcesForSpec(action DeepAgentAction, spec DeepAgentParallelBranchSpec) int {
+	if spec.Budget.MaxSources > 0 {
+		return spec.Budget.MaxSources
+	}
+	if value := deepAgentActionInt(action, "branch_max_sources", 0); value > 0 {
+		return value
+	}
+	return deepAgentParallelMaxSourcesPerBranch
+}
+
+func deepAgentParallelMaxToolCallsForSpec(action DeepAgentAction, spec DeepAgentParallelBranchSpec) int {
+	if spec.Budget.MaxToolCalls > 0 {
+		return spec.Budget.MaxToolCalls
+	}
+	if value := deepAgentActionInt(action, "branch_max_tool_calls", 0); value > 0 {
+		return value
+	}
+	return deepAgentParallelDefaultMaxToolCalls
+}
+
+func limitDeepAgentToolCallRefs(refs []DeepAgentToolCallRef, max int) []DeepAgentToolCallRef {
+	if max <= 0 || len(refs) <= max {
+		return refs
+	}
+	return append([]DeepAgentToolCallRef(nil), refs[:max]...)
+}
+
+func deepAgentParallelErrorTimedOut(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(text, "context deadline exceeded") ||
+		strings.Contains(text, "deadline") ||
+		strings.Contains(text, "timeout") ||
+		strings.Contains(text, "timed out")
+}
+
 func deepAgentParallelJoinEvidence(ctx context.Context, route DeepAgentStepRoute, action DeepAgentAction, specs []DeepAgentParallelBranchSpec, results []DeepAgentParallelBranchResult, extra map[string]any) (DeepAgentStepEvidence, error) {
 	succeeded := 0
 	failed := 0
@@ -372,6 +614,12 @@ func deepAgentParallelJoinEvidence(ctx context.Context, route DeepAgentStepRoute
 		minSuccess = primaryCount
 	}
 	quality := deepAgentParallelQualityReportFor(specs, results)
+	contributions := deepAgentParallelBranchContributions(specs, results, quality)
+	for idx := range results {
+		if idx < len(contributions) {
+			results[idx].Contribution = contributions[idx]
+		}
+	}
 	output := fmt.Sprintf("Parallel group completed: %d/%d primary branch(es) succeeded; %d/%d total branch(es) succeeded.\n\n%s", primarySucceeded, primaryCount, succeeded, len(results), strings.Join(parts, "\n\n"))
 	if coverageText := deepAgentParallelQualitySummary(quality); coverageText != "" {
 		output += "\n\n" + coverageText
@@ -381,7 +629,11 @@ func deepAgentParallelJoinEvidence(ctx context.Context, route DeepAgentStepRoute
 	if len(results) == 0 {
 		toolResultValid = false
 	}
-	curatedSources := curateDeepAgentSourceRefs(sources, deepAgentParallelMaxSourcesPerGroup)
+	groupSourcePolicy := deepAgentSourcePolicyFromAction(action)
+	if groupSourcePolicy.MaxSourcesPerBranch < deepAgentParallelMaxSourcesPerGroup {
+		groupSourcePolicy.MaxSourcesPerBranch = deepAgentParallelMaxSourcesPerGroup
+	}
+	curatedSources, sourcePolicyReport := curateDeepAgentSourceRefsWithPolicy(sources, deepAgentParallelMaxSourcesPerGroup, groupSourcePolicy)
 	metadata := map[string]any{
 		"parallel":                  true,
 		"branch_count":              len(results),
@@ -393,7 +645,10 @@ func deepAgentParallelJoinEvidence(ctx context.Context, route DeepAgentStepRoute
 		"min_successful_branches":   minSuccess,
 		"branch_specs":              specs,
 		"branch_results":            results,
+		"branch_contributions":      contributions,
 		"sources":                   curatedSources,
+		"source_policy":             groupSourcePolicy,
+		"source_policy_report":      sourcePolicyReport,
 		"artifact_refs":             artifacts,
 		"tool_calls":                toolCalls,
 		"side_effect_level":         deepAgentSideEffectReadonly,
@@ -442,6 +697,7 @@ func deepAgentParallelJoinEvidence(ctx context.Context, route DeepAgentStepRoute
 		"missing_coverage":        quality.Coverage.Missing,
 		"parallel_claims":         quality.Claims,
 		"parallel_conflicts":      quality.Conflicts,
+		"branch_contributions":    contributions,
 		"conflict_count":          len(quality.Conflicts),
 		"uncertainty_notes":       quality.Uncertainty,
 		"partial_synthesis":       metadata["partial_synthesis"],
@@ -903,6 +1159,109 @@ func deepAgentParallelQualitySummary(report deepAgentParallelQualityReport) stri
 	return strings.TrimSpace(b.String())
 }
 
+func deepAgentParallelBranchContributions(specs []DeepAgentParallelBranchSpec, results []DeepAgentParallelBranchResult, quality deepAgentParallelQualityReport) []DeepAgentBranchContribution {
+	specByID := map[string]DeepAgentParallelBranchSpec{}
+	for _, spec := range specs {
+		specByID[spec.ID] = spec
+	}
+	out := make([]DeepAgentBranchContribution, 0, len(results))
+	for _, result := range results {
+		spec := specByID[result.ID]
+		contribution := DeepAgentBranchContribution{
+			BranchID:          result.ID,
+			Title:             firstNonEmptyString(result.Title, spec.Title, result.ID),
+			Kind:              firstNonEmptyString(deepAgentWorkflowString(result.Metadata, "branch_kind"), deepAgentParallelSpecKind(spec)),
+			CoverageDimension: firstNonEmptyString(deepAgentWorkflowString(result.Metadata, "coverage_dimension"), spec.CoverageDimension),
+			Status:            result.Status,
+			Findings:          deepAgentParallelContributionFindings(result.Output),
+			Sources:           result.Sources,
+			Confidence:        deepAgentParallelContributionConfidence(result),
+			Conflicts:         deepAgentParallelContributionConflicts(result, quality.Conflicts),
+		}
+		if contribution.CoverageDimension != "" && containsDeepAgentParallelString(quality.Coverage.Missing, contribution.CoverageDimension) {
+			contribution.MissingCoverage = []string{contribution.CoverageDimension}
+		}
+		contribution.RecommendedNextAction = deepAgentParallelContributionNextAction(contribution, result)
+		out = append(out, contribution)
+	}
+	return out
+}
+
+func deepAgentParallelContributionFindings(output string) []string {
+	sentences := deepAgentParallelSentences(output)
+	if len(sentences) > 4 {
+		sentences = sentences[:4]
+	}
+	out := make([]string, 0, len(sentences))
+	for _, sentence := range sentences {
+		sentence = truncateDeepAgentDiagnosticText(strings.TrimSpace(sentence), 180)
+		if sentence != "" {
+			out = append(out, sentence)
+		}
+	}
+	return out
+}
+
+func deepAgentParallelContributionConfidence(result DeepAgentParallelBranchResult) string {
+	if result.Status == DeepAgentActionStatusFailed {
+		return "low"
+	}
+	if len(result.Sources) >= 2 {
+		return "high"
+	}
+	if len(result.Sources) == 1 || strings.TrimSpace(result.Output) != "" {
+		return "medium"
+	}
+	return "low"
+}
+
+func deepAgentParallelContributionConflicts(result DeepAgentParallelBranchResult, conflicts []deepAgentParallelConflict) []string {
+	if len(conflicts) == 0 {
+		return nil
+	}
+	branchID := firstNonEmptyString(result.ID, result.Title)
+	var out []string
+	for _, conflict := range conflicts {
+		if !containsDeepAgentParallelString(conflict.Branches, branchID) {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s/%s: %s", conflict.Field, firstNonEmptyString(conflict.Subject, "default"), strings.Join(conflict.Values, " vs ")))
+	}
+	return out
+}
+
+func deepAgentParallelContributionNextAction(contribution DeepAgentBranchContribution, result DeepAgentParallelBranchResult) string {
+	if result.Status == DeepAgentActionStatusFailed {
+		if deepAgentParallelErrorTimedOut(result.Error) {
+			return "Retry this branch with a larger timeout or narrower source budget."
+		}
+		return "Retry or replace this branch before trusting the joined synthesis."
+	}
+	if len(contribution.MissingCoverage) > 0 {
+		return "Launch one supplemental branch for the missing coverage dimension."
+	}
+	if len(contribution.Conflicts) > 0 {
+		return "Reconcile conflicting claims against primary or high-quality sources."
+	}
+	if contribution.Confidence == "low" {
+		return "Collect at least one stronger source before final synthesis."
+	}
+	return "Use this contribution in the final synthesis."
+}
+
+func containsDeepAgentParallelString(values []string, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func emitDeepAgentParallelCoverageEvent(ctx context.Context, action DeepAgentAction, route DeepAgentStepRoute, groupID string, quality deepAgentParallelQualityReport) {
 	emitDeepAgentParallelEvent(ctx, "deep_agent_parallel_coverage_checked", action, route, map[string]any{
 		"parallel_group_id":  groupID,
@@ -1061,7 +1420,7 @@ func deepAgentParallelBranchSpecsFromAction(action DeepAgentAction, agentState *
 	if strings.TrimSpace(task) == "" {
 		return nil
 	}
-	return normalizeDeepAgentParallelBranchSpecs(defaultDeepAgentParallelBranchSpecs(task))
+	return normalizeDeepAgentParallelBranchSpecs(singleDeepAgentParallelBranchSpec("primary", "Primary objective", task))
 }
 
 func decodeDeepAgentParallelBranchSpecs(raw any) []DeepAgentParallelBranchSpec {
@@ -1123,18 +1482,111 @@ func normalizeDeepAgentParallelBranchSpecs(specs []DeepAgentParallelBranchSpec) 
 		if len(spec.AllowedTools) == 0 && spec.Tool == DeepAgentToolModeModel {
 			spec.AllowedTools = []string{"WebSearch", "WebFetch"}
 		}
+		spec.Kind = firstNonEmptyString(spec.Kind, deepAgentWorkflowString(spec.Metadata, "branch_kind"), deepAgentWorkflowString(spec.Metadata, "kind"))
+		if spec.Kind == "" {
+			if deepAgentParallelSpecIsSupplemental(spec) {
+				spec.Kind = "supplemental"
+			} else {
+				spec.Kind = "primary"
+			}
+		}
+		spec.CoverageDimension = firstNonEmptyString(spec.CoverageDimension, deepAgentWorkflowString(spec.Metadata, "coverage_dimension"), deepAgentParallelInferCoverageDimension(strings.Join([]string{spec.ID, spec.Title, spec.Task}, "\n")))
+		if spec.Metadata == nil {
+			spec.Metadata = map[string]any{}
+		}
+		spec.Metadata["branch_kind"] = spec.Kind
+		if spec.CoverageDimension != "" {
+			spec.Metadata["coverage_dimension"] = spec.CoverageDimension
+		}
 		out = append(out, spec)
 	}
 	return out
 }
 
-func defaultDeepAgentParallelBranchSpecs(task string) []DeepAgentParallelBranchSpec {
-	return []DeepAgentParallelBranchSpec{
-		{ID: "overview", Title: "Core facts and positioning", Task: task + "\nFocus on factual overview, company/team, product positioning, and primary claims."},
-		{ID: "market", Title: "Market, pricing, and competitors", Task: task + "\nFocus on pricing, availability, competitors, market traction, and differentiation."},
-		{ID: "evidence", Title: "Reviews, risks, and uncertainty", Task: task + "\nFocus on user reviews, risks, contradictions, gaps, and uncertain claims."},
-		{ID: "verification", Title: "Source verification", Task: task + "\nFocus on primary sources, citation quality, claim reconciliation, and facts that should not be trusted without corroboration."},
+func singleDeepAgentParallelBranchSpec(id, title, task string) []DeepAgentParallelBranchSpec {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		id = "primary"
 	}
+	title = firstNonEmptyString(title, "Primary objective")
+	task = strings.TrimSpace(task)
+	if task == "" {
+		task = title
+	}
+	return []DeepAgentParallelBranchSpec{{
+		ID:                id,
+		Title:             title,
+		Task:              task,
+		Kind:              "primary",
+		CoverageDimension: deepAgentParallelInferCoverageDimension(strings.Join([]string{id, title, task}, "\n")),
+		SuccessCriteria: []string{
+			"Complete this scoped objective with concise evidence and source URLs.",
+		},
+	}}
+}
+
+func defaultDeepAgentParallelBranchSpecs(task string) []DeepAgentParallelBranchSpec {
+	return deepAgentParallelCoverageBranchSpecs(task, deepAgentParallelDefaultPrimaryBranches)
+}
+
+func deepAgentParallelCoverageBranchSpecs(task string, maxBranches int) []DeepAgentParallelBranchSpec {
+	task = strings.TrimSpace(task)
+	if task == "" {
+		return nil
+	}
+	if maxBranches <= 0 {
+		maxBranches = deepAgentParallelDefaultPrimaryBranches
+	}
+	dimensions := deepAgentParallelCoverageDimensionsForText(task)
+	if len(dimensions) == 0 {
+		dimensions = deepAgentParallelCoverageDimensions()
+	}
+	if len(dimensions) > maxBranches {
+		dimensions = dimensions[:maxBranches]
+	}
+	out := make([]DeepAgentParallelBranchSpec, 0, len(dimensions))
+	for _, dim := range dimensions {
+		out = append(out, DeepAgentParallelBranchSpec{
+			ID:                deepAgentParallelDimensionSlug(dim.ID),
+			Title:             dim.Label,
+			Task:              fmt.Sprintf("%s\n\nFocus only on coverage dimension: %s. Avoid repeating other branch scopes unless needed for context.", task, dim.Label),
+			Kind:              "primary",
+			CoverageDimension: dim.ID,
+			AllowedTools:      []string{"WebSearch", "WebFetch"},
+			SuccessCriteria: []string{
+				"Return concise findings for this coverage dimension.",
+				"Include source URLs or source titles when available.",
+				"Call out conflicts, gaps, and uncertainty instead of over-claiming.",
+			},
+			Metadata: map[string]any{
+				"branch_kind":        "primary",
+				"coverage_dimension": dim.ID,
+			},
+		})
+	}
+	return out
+}
+
+func deepAgentParallelCoverageDimensionsForText(text string) []deepAgentParallelCoverageDimension {
+	corpus := strings.ToLower(strings.TrimSpace(text))
+	if corpus == "" {
+		return nil
+	}
+	var out []deepAgentParallelCoverageDimension
+	for _, dim := range deepAgentParallelCoverageDimensions() {
+		if deepAgentContainsAny(corpus, dim.Keywords...) || strings.Contains(corpus, strings.ToLower(dim.ID)) {
+			out = append(out, dim)
+		}
+	}
+	return out
+}
+
+func deepAgentParallelInferCoverageDimension(text string) string {
+	dimensions := deepAgentParallelCoverageDimensionsForText(text)
+	if len(dimensions) == 0 {
+		return ""
+	}
+	return dimensions[0].ID
 }
 
 func deepAgentStepLooksParallelizable(step DeepAgentStep) bool {
@@ -1257,10 +1709,26 @@ func deepAgentParallelBranchPrompt(action DeepAgentAction, spec DeepAgentParalle
 	}
 	b.WriteString("\n\nThis is already one isolated branch inside a parallel research group. Do not create another multi-agent plan, do not fan out into more branches, and do not defer to a separate parallel executor. Complete only this branch task directly.")
 	b.WriteString("\n\nSource budget and quality:\n")
+	budget := spec.Budget
+	if budget.MaxSources <= 0 {
+		budget.MaxSources = deepAgentParallelMaxSourcesPerBranch
+	}
+	if budget.MaxToolCalls <= 0 {
+		budget.MaxToolCalls = deepAgentParallelDefaultMaxToolCalls
+	}
+	if budget.MaxTokens <= 0 {
+		budget.MaxTokens = deepAgentParallelDefaultMaxTokens
+	}
+	sourcePolicy := deepAgentSourcePolicyFromAction(action)
+	if budget.MaxSources > 0 && sourcePolicy.MaxSourcesPerBranch > budget.MaxSources {
+		sourcePolicy.MaxSourcesPerBranch = budget.MaxSources
+	}
 	b.WriteString("- Start with WebSearch; use WebFetch only for the best source URLs when snippets are insufficient.\n")
 	b.WriteString("- Use at most 3 search queries and fetch at most 4 pages for this branch.\n")
-	b.WriteString("- Keep at most 10-12 unique sources; avoid duplicate URLs and repeated domains.\n")
-	b.WriteString("- Prefer official/company pages, docs, pricing, changelog, GitHub, credible news, or established review sources. Use social/video/forums/listicles only when they directly answer this branch.\n")
+	b.WriteString(fmt.Sprintf("- Keep at most %d tool calls for this branch.\n", budget.MaxToolCalls))
+	b.WriteString(fmt.Sprintf("- Keep the branch answer within roughly %d tokens.\n", budget.MaxTokens))
+	b.WriteString(deepAgentSourcePolicyPrompt(sourcePolicy))
+	b.WriteString("\n")
 	b.WriteString("- Stop searching once branch criteria are covered; summarize low-confidence gaps instead of collecting more links.")
 	b.WriteString("\n\nReturn concise evidence with source URLs or titles when available. Extract key factual claims as field/value evidence when possible, call out contradictions, and mark weak or unverifiable evidence. Do not create final deliverable artifacts in this branch and do not perform writes.")
 	return b.String()
@@ -1379,6 +1847,28 @@ func deepAgentParallelResultIsSupplemental(result DeepAgentParallelBranchResult)
 	return strings.HasPrefix(id, "supplement-") || strings.Contains(title, "supplement") || strings.Contains(title, "reconciliation")
 }
 
+func deepAgentParallelSpecIsSupplemental(spec DeepAgentParallelBranchSpec) bool {
+	if strings.EqualFold(strings.TrimSpace(spec.Kind), "supplemental") {
+		return true
+	}
+	if supplemental, ok := deepAgentMetadataBool(spec.Metadata, "supplemental"); ok && supplemental {
+		return true
+	}
+	id := strings.ToLower(strings.TrimSpace(spec.ID))
+	title := strings.ToLower(strings.TrimSpace(spec.Title))
+	return strings.HasPrefix(id, "supplement-") || strings.Contains(title, "supplement") || strings.Contains(title, "reconciliation")
+}
+
+func deepAgentParallelSpecKind(spec DeepAgentParallelBranchSpec) string {
+	if kind := strings.ToLower(strings.TrimSpace(spec.Kind)); kind != "" {
+		return kind
+	}
+	if deepAgentParallelSpecIsSupplemental(spec) {
+		return "supplemental"
+	}
+	return "primary"
+}
+
 func cloneDeepAgentStateForParallelBranch(state *DeepAgentState) *DeepAgentState {
 	if state == nil {
 		return &DeepAgentState{WorkingMemory: map[string]any{}}
@@ -1411,67 +1901,6 @@ func dedupeDeepAgentSourceRefs(refs []DeepAgentSourceRef) []DeepAgentSourceRef {
 		}
 		seen[key] = struct{}{}
 		out = append(out, ref)
-	}
-	return out
-}
-
-func curateDeepAgentSourceRefs(refs []DeepAgentSourceRef, max int) []DeepAgentSourceRef {
-	deduped := dedupeDeepAgentSourceRefs(refs)
-	if len(deduped) == 0 {
-		return nil
-	}
-	if max <= 0 || len(deduped) <= max {
-		return deduped
-	}
-	type scoredSource struct {
-		ref   DeepAgentSourceRef
-		score float64
-		index int
-		host  string
-	}
-	scored := make([]scoredSource, 0, len(deduped))
-	for idx, ref := range deduped {
-		scored = append(scored, scoredSource{
-			ref:   ref,
-			score: deepAgentSourceRefScore(ref),
-			index: idx,
-			host:  deepAgentSourceRefHost(ref),
-		})
-	}
-	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].score == scored[j].score {
-			return scored[i].index < scored[j].index
-		}
-		return scored[i].score > scored[j].score
-	})
-	hostCounts := map[string]int{}
-	selected := make([]scoredSource, 0, max)
-	deferred := make([]scoredSource, 0)
-	for _, item := range scored {
-		if len(selected) >= max {
-			break
-		}
-		if item.host != "" && hostCounts[item.host] >= deepAgentSourceMaxPerHost {
-			deferred = append(deferred, item)
-			continue
-		}
-		selected = append(selected, item)
-		if item.host != "" {
-			hostCounts[item.host]++
-		}
-	}
-	for _, item := range deferred {
-		if len(selected) >= max {
-			break
-		}
-		selected = append(selected, item)
-	}
-	sort.SliceStable(selected, func(i, j int) bool {
-		return selected[i].index < selected[j].index
-	})
-	out := make([]DeepAgentSourceRef, 0, len(selected))
-	for _, item := range selected {
-		out = append(out, item.ref)
 	}
 	return out
 }
@@ -1516,66 +1945,6 @@ func normalizeDeepAgentSourceURL(raw string) string {
 		normalized = strings.TrimRight(normalized, "/")
 	}
 	return strings.ToLower(normalized)
-}
-
-func deepAgentSourceRefHost(ref DeepAgentSourceRef) string {
-	raw := strings.TrimSpace(ref.URL)
-	if raw == "" {
-		return ""
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" {
-		return ""
-	}
-	host := strings.ToLower(parsed.Hostname())
-	return strings.TrimPrefix(host, "www.")
-}
-
-func deepAgentSourceRefScore(ref DeepAgentSourceRef) float64 {
-	score := ref.QualityScore
-	if score <= 0 {
-		score = 0.5
-	}
-	text := strings.ToLower(strings.Join([]string{
-		ref.URL,
-		ref.Title,
-		ref.Provider,
-		ref.Quality,
-		ref.SourceKind,
-	}, " "))
-	host := deepAgentSourceRefHost(ref)
-	if host != "" {
-		text += " " + host
-	}
-	if deepAgentContainsAny(text,
-		"official", "primary", "docs", "documentation", "developer", "api", "pricing", "changelog", "release", "github.com", ".gov", ".edu",
-		"/docs", "/documentation", "/developers", "/api", "/pricing", "/about", "/company", "/blog", "/customers", "/case-studies", "/press", "/news",
-	) {
-		score += 0.25
-	}
-	if strings.EqualFold(ref.Provider, "WebFetch") || strings.EqualFold(ref.Provider, "WebSearch") {
-		score += 0.10
-	}
-	if deepAgentContainsAny(text, "webfetch", "source_kind=primary", "sourcekind=primary") {
-		score += 0.08
-	}
-	if deepAgentContainsAny(host,
-		"youtube.com", "youtu.be", "facebook.com", "twitter.com", "x.com", "linkedin.com", "reddit.com", "tiktok.com", "instagram.com",
-		"medium.com", "substack.com", "producthunt.com", "g2.com", "capterra.com", "trustpilot.com", "getlatka.com", "saasworthy.com",
-		"alternativeto.net", "futuretools.io", "theresanaiforthat.com",
-	) {
-		score -= 0.25
-	}
-	if deepAgentContainsAny(text, "sponsored", "advertorial", "listicle", "top 10", "best tools") {
-		score -= 0.15
-	}
-	if score < 0.05 {
-		return 0.05
-	}
-	if score > 1 {
-		return 1
-	}
-	return score
 }
 
 func emitDeepAgentParallelEvent(ctx context.Context, eventType string, action DeepAgentAction, route DeepAgentStepRoute, payload map[string]any) {

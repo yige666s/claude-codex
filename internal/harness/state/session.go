@@ -183,7 +183,7 @@ func (s *Session) AddHiddenAssistantMessage(content string) {
 func (s *Session) AddAssistantMessageWithTools(content string, toolCalls []ToolCall) {
 	message := newTextMessage(MessageRoleAssistant, content, false)
 	message.ContentType = MessageContentTypeToolCall
-	message.ToolCalls = toolCalls
+	message.ToolCalls = normalizeToolCalls(toolCalls)
 	s.append(message)
 	s.Usage.RecordOutput(content)
 }
@@ -196,7 +196,7 @@ func (s *Session) AddToolResult(callID, toolName string, input json.RawMessage, 
 		ContentType:   MessageContentTypeToolResult,
 		ToolCallID:    callID,
 		ToolName:      toolName,
-		ToolInput:     input,
+		ToolInput:     normalizeToolInput(input),
 		ToolOutput:    output,
 		Status:        MessageStatusNormal,
 		IsContextUsed: true,
@@ -288,6 +288,25 @@ func LoadLatestSession(home string) (*Session, error) {
 	})
 
 	return LoadSession(home, trimSessionFilename(candidates[0].name))
+}
+
+func normalizeToolInput(input json.RawMessage) json.RawMessage {
+	if len(input) == 0 || !json.Valid(input) {
+		return json.RawMessage(`{}`)
+	}
+	return input
+}
+
+func normalizeToolCalls(calls []ToolCall) []ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]ToolCall, len(calls))
+	copy(out, calls)
+	for i := range out {
+		out[i].Input = normalizeToolInput(out[i].Input)
+	}
+	return out
 }
 
 func (s *Session) append(message Message) {

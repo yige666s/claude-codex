@@ -107,13 +107,35 @@ function applyMemorySettingsPatch(
 
 const terminalJobs = new Set(["succeeded", "failed", "cancelled"]);
 const serviceStatusPollMs = 10_000;
-const activeJobStorageKey = "agentapi.activeJob";
+const activeChatRunStorageKey = "agentapi.activeChatRun";
 const recentSkillsStorageKey = "agentapi.recentSkills";
 const adminTokenStorageKey = "agentapi.adminToken";
 const jobReconnectBaseMs = 1_000;
 const jobReconnectMaxMs = 10_000;
+const chatRunEventTypes = [
+  "start", "message", "delta", "job", "error", "done", "cancelled", "progress",
+  "thinking_start", "thinking_delta", "thinking_end",
+  "tool_call_start", "tool_call_result", "tool_call_error",
+  "answer_delta", "citation", "checkpoint",
+  "deep_agent_started", "deep_agent_completed", "deep_agent_connectors_planned", "deep_agent_artifact_output", "deep_agent_child_job",
+  "deep_agent_gate_decision", "deep_agent_evaluator_verdict", "deep_agent_evidence_store_error", "deep_agent_model_fallback",
+  "deep_agent_policy_blocked", "deep_agent_loop_contract", "deep_agent_handoff", "deep_agent_human_review", "deep_agent_recovery", "deep_agent_no_progress",
+  "deep_agent_action_started", "deep_agent_action_succeeded", "deep_agent_action_failed",
+  "deep_agent_parallel_started", "deep_agent_parallel_group_started", "deep_agent_parallel_group_joined", "deep_agent_parallel_coverage_checked",
+  "deep_agent_parallel_branch_started", "deep_agent_parallel_branch_succeeded", "deep_agent_parallel_branch_failed",
+  "deep_agent_parallel_supplemental_branch_started", "deep_agent_parallel_supplemental_branch_succeeded", "deep_agent_parallel_supplemental_branch_failed",
+  "deep_agent_parallel_succeeded", "deep_agent_parallel_failed",
+  "structured_output_validation", "structured_output_repair", "structured_output_fallback",
+  "workflow_run_started", "workflow_run_resumed", "workflow_run_succeeded", "workflow_run_failed",
+  "workflow_step_started", "workflow_step_reused", "workflow_step_succeeded", "workflow_step_failed",
+  "connector_tool_call_started", "connector_tool_call_succeeded", "connector_tool_call_failed",
+  "mcp_connector_tool_call_started", "mcp_connector_tool_call_succeeded", "mcp_connector_tool_call_failed",
+  "live_tool_start", "live_tool_result", "live_tool_error", "live_tool_fallback",
+  "live_skill_start", "live_skill_result",
+  "sandbox_metric", "artifact_metric"
+];
 const resourcePageSize = 10;
-const resourceTabs: RightPanelTab[] = ["skills", "jobs", "attachments", "artifacts"];
+const resourceTabs: RightPanelTab[] = ["skills", "jobs", "attachments", "artifacts", "applications"];
 const layoutSidebarDefaultWidth = 312;
 const layoutSidebarCollapsedWidth = 72;
 const layoutSidebarMinWidth = layoutSidebarDefaultWidth;
@@ -128,7 +150,7 @@ type PendingConnectorOAuth = {
   createdAt: number;
 };
 
-type SettingsSection = "personalization" | "connectors" | "data" | "account";
+type SettingsSection = "personalization" | "data" | "account";
 
 function clampLayoutWidth(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
@@ -233,7 +255,8 @@ function emptyResourceNotices(): Record<RightPanelTab, boolean> {
     skills: false,
     jobs: false,
     attachments: false,
-    artifacts: false
+    artifacts: false,
+    applications: false
   };
 }
 
@@ -242,7 +265,8 @@ function emptyResourceIdSets(): Record<RightPanelTab, Set<string>> {
     skills: new Set(),
     jobs: new Set(),
     attachments: new Set(),
-    artifacts: new Set()
+    artifacts: new Set(),
+    applications: new Set()
   };
 }
 
@@ -334,13 +358,15 @@ export function AgentWorkspace() {
     skills: "",
     jobs: "",
     attachments: "",
-    artifacts: ""
+    artifacts: "",
+    applications: ""
   });
   const [resourceVisibleCount, setResourceVisibleCount] = useState<Record<RightPanelTab, number>>({
     skills: resourcePageSize,
     jobs: resourcePageSize,
     attachments: resourcePageSize,
-    artifacts: resourcePageSize
+    artifacts: resourcePageSize,
+    applications: resourcePageSize
   });
   const [resourceNotices, setResourceNotices] = useState<Record<RightPanelTab, boolean>>(emptyResourceNotices);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
@@ -351,6 +377,13 @@ export function AgentWorkspace() {
   const jobReconnectAttemptRef = useRef(0);
   const jobStreamClosedRef = useRef(false);
   const activeJobStreamIdRef = useRef("");
+  const chatRunAbortRef = useRef<AbortController | null>(null);
+  const chatRunEventSourceRef = useRef<EventSource | null>(null);
+  const chatRunReconnectTimerRef = useRef<number | null>(null);
+  const chatRunReconnectAttemptRef = useRef(0);
+  const chatRunClosedRef = useRef(false);
+  const activeChatRunIdRef = useRef("");
+  const lastChatRunEventRef = useRef("");
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const selectedSessionIdRef = useRef("");
   const deletedSessionIdsRef = useRef<Set<string>>(new Set());
@@ -428,21 +461,36 @@ export function AgentWorkspace() {
     () => artifacts.filter((asset) => fuzzyMatch(resourceSearch.artifacts, [asset.filename, asset.id, asset.content_type, asset.job_id])),
     [artifacts, resourceSearch.artifacts]
   );
+  const filteredApplications = useMemo(
+    () => connectors.filter((item) => fuzzyMatch(resourceSearch.applications, [
+      item.provider.id,
+      item.provider.name,
+      item.provider.description,
+      item.provider.category,
+      item.connection?.status,
+      item.connection?.external_account_label,
+      item.mcp_server?.display_name,
+      item.mcp_server?.status,
+      ...(item.context.task_types || []),
+      ...(item.provider.scopes || [])
+    ])),
+    [connectors, resourceSearch.applications]
+  );
   const visibleResourceSkills = filteredSkills.slice(0, resourceVisibleCount.skills);
   const visibleResourceJobs = filteredJobs.slice(0, resourceVisibleCount.jobs);
   const visibleResourceAttachments = filteredAttachments.slice(0, resourceVisibleCount.attachments);
   const visibleResourceArtifacts = filteredArtifacts.slice(0, resourceVisibleCount.artifacts);
+  const visibleResourceApplications = filteredApplications.slice(0, resourceVisibleCount.applications);
   const activeResourceTotalCount = resourceDialogTab ? resourceTotalCount(resourceDialogTab, {
     skills: filteredSkills.length,
     jobs: filteredJobs.length,
     attachments: filteredAttachments.length,
-    artifacts: filteredArtifacts.length
+    artifacts: filteredArtifacts.length,
+    applications: filteredApplications.length
   }) : 0;
   const recoveryBanner: { tone: "busy" | "error"; text: string } | null = !online
     ? { tone: "error", text: "Network connection lost. New messages may fail until the browser is back online." }
-    : selectedJobId && (jobStreamStatus === "reconnecting" || jobStreamStatus === "failed")
-      ? { tone: jobStreamStatus === "failed" ? "error" : "busy", text: jobStreamNotice || "Restoring live job updates..." }
-      : null;
+    : null;
 
   useEffect(() => () => {
     document.body.classList.remove("workspace-pane-resizing");
@@ -631,6 +679,10 @@ export function AgentWorkspace() {
   }, [artifacts]);
 
   useEffect(() => {
+    trackResourceIds("applications", connectors.map((item) => item.provider.id));
+  }, [connectors]);
+
+  useEffect(() => {
     resizeComposerInput(composerInputRef.current);
   }, [draft]);
 
@@ -647,25 +699,43 @@ export function AgentWorkspace() {
   }, [selectedJobId]);
 
   useEffect(() => {
-    if (!latestJobId || autoExpandedJobId === latestJobId) return;
-    setSelectedJobId(latestJobId);
-    setAutoExpandedJobId(latestJobId);
-    if (latestJob && !terminalJobs.has(latestJob.status) && (!sessionId || latestJob.session_id === sessionId)) {
-      setStatus({ tone: "busy", text: "Restoring job" });
-    }
-  }, [autoExpandedJobId, latestJob, latestJobId, sessionId]);
-
-  useEffect(() => {
-    if (!selectedJobId) return;
-    const job = jobs.find((item) => item.id === selectedJobId);
-    if (!job) return;
-    const status = terminalJobStatusFromEvents(jobEvents, selectedJobId) || job.status;
-    if (terminalJobs.has(status)) {
-      clearActiveJob(selectedJobId);
+    if (!sessionId) {
+      closeChatRunStream();
       return;
     }
-    saveActiveJob(job.id, job.session_id || sessionId);
-  }, [jobEvents, jobs, selectedJobId, sessionId]);
+    let cancelled = false;
+    const restoreActiveRun = async () => {
+      const active = loadActiveChatRun();
+      try {
+        const run = await api.activeChatRun(sessionId);
+        if (cancelled) return;
+        if (!run || run.terminal) {
+          if (active?.sessionId === sessionId) clearActiveChatRun(active.runId);
+          return;
+        }
+        if (active?.sessionId === sessionId && active.runId !== run.run_id) {
+          clearActiveChatRun(active.runId);
+        }
+        openChatRunStream(run.run_id, "", true);
+      } catch {
+        if (active?.sessionId === sessionId) clearActiveChatRun(active.runId);
+        // Missing active-run metadata should not block normal chat history loading.
+      }
+    };
+    void restoreActiveRun();
+    return () => {
+      cancelled = true;
+      closeChatRunStream();
+    };
+  }, [api, sessionId]);
+
+  useEffect(() => {
+    if (!latestJobId || autoExpandedJobId === latestJobId) return;
+    setAutoExpandedJobId(latestJobId);
+    if (latestJob && !terminalJobs.has(latestJob.status) && (!sessionId || latestJob.session_id === sessionId)) {
+      setStatus({ tone: "busy", text: "Running in background" });
+    }
+  }, [autoExpandedJobId, latestJob, latestJobId, sessionId]);
 
   useEffect(() => {
     const node = messagesRef.current;
@@ -905,9 +975,11 @@ export function AgentWorkspace() {
   async function openTaskInboxItem(item: TaskInboxItem) {
     setTaskInboxError("");
     try {
-      await ensureTaskSession(item);
+      const sessionUnavailable = Boolean(item.session_id) && item.session_available === false;
+      if (sessionUnavailable) return;
       if (item.kind === "artifact" || item.primary_artifact_id || item.artifact_id) {
         const artifactID = item.primary_artifact_id || item.artifact_id || "";
+        await ensureTaskSession(item);
         let artifact = artifactsRef.current.find((asset) => asset.id === artifactID);
         if (!artifact) {
           const loadedArtifacts = await api.artifacts(item.session_id || sessionId || undefined);
@@ -922,6 +994,7 @@ export function AgentWorkspace() {
         }
       }
       if (item.job_id) {
+        await ensureTaskSession(item);
         setTaskInboxOpen(false);
         openJobWorkspace(item.job_id);
         return;
@@ -1026,6 +1099,7 @@ export function AgentWorkspace() {
 
   function closeResourceDialog(open: boolean) {
     if (!open) {
+      if (resourceDialogTab === "applications") setConnectorNotice("");
       setResourceDialogTab(null);
       return;
     }
@@ -1153,7 +1227,7 @@ export function AgentWorkspace() {
     try {
       await api.deleteSession(targetSessionId);
       deletedSessionIdsRef.current.add(targetSessionId);
-      clearActiveJobForSession(targetSessionId);
+      clearActiveChatRunForSession(targetSessionId);
       setSessions((current) => current.filter((item) => item.id !== targetSessionId));
       if (targetSessionId === sessionId) {
         stopLiveMode(false, false);
@@ -1265,8 +1339,8 @@ export function AgentWorkspace() {
       const completed = consumePendingConnectorOAuth(state);
       window.history.replaceState({}, "", safeConnectorOAuthReturnPath(completed?.returnTo || pending?.returnTo));
       setSettingsOpen(false);
-      setSettingsInitialSection("connectors");
-      setSettingsModalOpen(true);
+      setSettingsModalOpen(false);
+      setResourceDialogTab("applications");
       setConnectorNotice(`${providerLabel(provider)} connected successfully`);
       setStatus({ tone: "ok", text: "Connector linked" });
     } catch (error) {
@@ -1294,8 +1368,7 @@ export function AgentWorkspace() {
           external_account_label: `${provider} local connection`,
           scopes: authStart.scopes
         });
-        setSettingsInitialSection("connectors");
-        setSettingsModalOpen(true);
+        setResourceDialogTab("applications");
         setConnectorNotice(`${providerLabel(provider)} connected successfully`);
         setStatus({ tone: "ok", text: "Connector linked for local development" });
       }
@@ -1569,8 +1642,8 @@ export function AgentWorkspace() {
     chatTurnRef.current = requestTurn;
     const attachmentIds = pendingAttachments.map((asset) => asset.id);
     const abort = new AbortController();
-    let routedToJob = false;
     let sawRuntimeError = false;
+    let sawTerminalEvent = false;
     let postChatRefreshStarted = false;
     let firstTokenSeen = false;
     const sentAt = performance.now();
@@ -1581,6 +1654,8 @@ export function AgentWorkspace() {
     setAssistantDraft("");
     setResponseTiming(null);
     setRuntimeError("");
+    closeChatRunStream();
+    clearActiveChatRunForSession(requestSessionId);
     const displayContent = content || "Please analyze the attached file(s).";
     const agentMode = composerAgentMode(selectedComposerTool, displayContent);
     const requestContent = composerToolContent(selectedComposerTool, displayContent);
@@ -1608,7 +1683,7 @@ export function AgentWorkspace() {
         setAssistantDraft("");
       };
       const startPostChatRefresh = () => {
-        if (routedToJob || postChatRefreshStarted) return;
+        if (postChatRefreshStarted) return;
         postChatRefreshStarted = true;
         setPendingAttachments([]);
         releaseChatControls();
@@ -1628,12 +1703,24 @@ export function AgentWorkspace() {
           return next;
         });
       };
-      await readSSEStream(response, ({ data }) => {
+      await readSSEStream(response, ({ id, data }) => {
         if (data.type === "start") {
           streamStartedAt = performance.now();
         }
-        if (data.type === "job") routedToJob = true;
+        if (data.run_id) {
+          lastChatRunEventRef.current = id || lastChatRunEventRef.current;
+          saveActiveChatRun(data.run_id, requestSessionId, lastChatRunEventRef.current);
+        }
+        if (id && data.run_id) {
+          lastChatRunEventRef.current = id;
+          saveActiveChatRun(data.run_id, requestSessionId, id);
+        }
         if (data.type === "error") sawRuntimeError = true;
+        if (data.type === "done" || data.type === "error" || data.type === "cancelled") sawTerminalEvent = true;
+        if (data.type === "done" || data.type === "error" || data.type === "cancelled") {
+          if (data.run_id) clearActiveChatRun(data.run_id);
+          else clearActiveChatRunForSession(requestSessionId);
+        }
         if (data.type === "done") startPostChatRefresh();
         if (!firstTokenSeen && data.type === "delta" && data.content) {
           firstTokenSeen = true;
@@ -1657,6 +1744,7 @@ export function AgentWorkspace() {
         }
       });
       finishAgentActivity(requestSessionId);
+      if (!sawTerminalEvent) clearActiveChatRunForSession(requestSessionId);
       if (selectedSessionIdRef.current === requestSessionId && lastVisibleAssistantAt !== null) {
         setResponseTiming((current) => current?.sessionId === requestSessionId ? { ...current, totalMs: timingElapsed(lastVisibleAssistantAt as number) } : current);
       }
@@ -1686,15 +1774,20 @@ export function AgentWorkspace() {
   }
 
   async function cancelChat() {
+    const targetSessionId = sessionId;
     abortRef.current?.abort();
-    if (sessionId) {
+    closeChatRunStream();
+    if (targetSessionId) {
+      clearActiveChatRunForSession(targetSessionId);
+      finishAgentActivity(targetSessionId, { type: "cancelled", session_id: targetSessionId });
       try {
-        await api.cancelSession(sessionId);
+        await api.cancelSession(targetSessionId);
       } catch {
         // The server may have already completed the request.
       }
     }
     setBusyChat(false);
+    setAssistantDraft("");
     setStatus({ tone: "idle", text: "Cancelled" });
   }
 
@@ -1922,8 +2015,8 @@ export function AgentWorkspace() {
       setMessages((current) => appendRuntimeMessage(current, message));
       appendSessionMessage(event.session_id || sessionId, message);
     }
-    if (event.type === "delta") {
-      setAssistantDraft((current) => current + (event.content || ""));
+    if (event.type === "delta" || event.type === "answer_delta") {
+      setAssistantDraft((current) => current + runtimeEventText(event));
     }
     if (event.type === "message" && event.role === "assistant") {
       const message = runtimeEventMessage(event, "assistant");
@@ -1933,9 +2026,7 @@ export function AgentWorkspace() {
     }
     if (event.type === "job" && event.job_id) {
       if (event.job) setJobs((current) => upsertJob(current, event.job as Job));
-      openJobWorkspace(event.job_id);
-      setStatus({ tone: "busy", text: "Job started" });
-      saveActiveJob(event.job_id, event.job?.session_id || event.session_id || sessionId);
+      setStatus({ tone: "busy", text: "Running in background" });
       const submitted = event.job?.content || "";
       if (submitted && shouldDisplayJobSubmittedContent(event)) {
         const now = new Date().toISOString();
@@ -1954,15 +2045,21 @@ export function AgentWorkspace() {
     if (event.type === "done") {
       setStatus({ tone: "ok", text: "Done" });
     }
+    if (chatActivityTerminalStatus(event)) {
+      const targetSessionId = event.session_id || sessionId;
+      if (targetSessionId) finishAgentActivity(targetSessionId, event);
+    }
   }
 
   function startAgentActivity(targetSessionId: string) {
+    setResourceDialogTab(null);
     setAgentActivity({
       session_id: targetSessionId,
       running: true,
       items: [{
         id: `activity-${Date.now()}-start`,
         type: "start",
+        channel: "thinking",
         title: "Preparing response",
         detail: "Waiting for the model and available tools.",
         status: "running",
@@ -1976,7 +2073,7 @@ export function AgentWorkspace() {
     if (!item) return;
     const targetSessionId = event.session_id || fallbackSessionId;
     if (!targetSessionId) return;
-    const terminal = Boolean(terminalJobStatusFromRuntimeEvent(event));
+    const terminal = Boolean(chatActivityTerminalStatus(event));
     setAgentActivity((current) => {
       const sameActivity = current && current.session_id === targetSessionId;
       const items = sameActivity ? current.items : [];
@@ -1992,20 +2089,26 @@ export function AgentWorkspace() {
     });
   }
 
-  function finishAgentActivity(targetSessionId: string) {
+  function finishAgentActivity(targetSessionId: string, terminalEvent?: RuntimeEvent) {
     setAgentActivity((current) => {
       if (!current || current.session_id !== targetSessionId || !current.running) return current;
-      const completeItem: AgentActivityItem = {
-        id: `activity-${Date.now()}-stream-complete`,
-        type: "done",
-        title: "Response completed",
-        status: "succeeded",
-        created_at: new Date().toISOString()
-      };
+      const completeItem: AgentActivityItem = terminalEvent
+        ? agentActivityItemFromRuntimeEvent(terminalEvent) || fallbackTerminalAgentActivityItem(terminalEvent)
+        : {
+          id: `activity-${Date.now()}-stream-complete`,
+          type: "done",
+          channel: "thinking",
+          title: "Response completed",
+          status: "succeeded",
+          created_at: new Date().toISOString()
+        };
+      const items = current.items.some((item) => item.id === completeItem.id)
+        ? current.items
+        : [...current.items, completeItem].slice(-32);
       return {
         ...current,
         running: false,
-        items: [...current.items, completeItem].slice(-32)
+        items
       };
     });
   }
@@ -2022,30 +2125,132 @@ export function AgentWorkspace() {
     }));
   }
 
+  function closeChatRunStream() {
+    chatRunClosedRef.current = true;
+    chatRunEventSourceRef.current?.close();
+    chatRunEventSourceRef.current = null;
+    chatRunAbortRef.current?.abort();
+    chatRunAbortRef.current = null;
+    if (chatRunReconnectTimerRef.current) {
+      window.clearTimeout(chatRunReconnectTimerRef.current);
+      chatRunReconnectTimerRef.current = null;
+    }
+    activeChatRunIdRef.current = "";
+  }
+
+  function openChatRunStream(runId: string, afterId = "", restoring = false) {
+    if (!runId || activeChatRunIdRef.current === runId) return;
+    closeChatRunStream();
+    activeChatRunIdRef.current = runId;
+    lastChatRunEventRef.current = afterId;
+    chatRunClosedRef.current = false;
+    chatRunReconnectAttemptRef.current = 0;
+    if (restoring) setStatus({ tone: "busy", text: "Restoring stream" });
+    startAgentActivity(sessionId);
+    if (typeof EventSource === "undefined") {
+      void openChatRunStreamWithFetchFallback(runId);
+      return;
+    }
+    void openChatRunEventSource(runId);
+  }
+
+  async function openChatRunEventSource(runId: string) {
+    try {
+      await api.prepareEventSourceAuth();
+    } catch {
+      // EventSource will surface auth failures through the normal stream error path.
+    }
+    if (chatRunClosedRef.current || activeChatRunIdRef.current !== runId) return;
+    const source = new EventSource(api.chatRunStreamURL(runId, lastChatRunEventRef.current), { withCredentials: true });
+    chatRunEventSourceRef.current = source;
+    const handleMessage = (message: MessageEvent<string>) => {
+      if (activeChatRunIdRef.current !== runId || chatRunClosedRef.current) return;
+      const data = runtimeEventFromEventSourceMessage(message);
+      if (!data) return;
+      handleChatRunEvent(runId, data, message.lastEventId || lastChatRunEventRef.current);
+    };
+    source.onopen = () => {
+      if (activeChatRunIdRef.current !== runId || chatRunClosedRef.current) return;
+      setStatus({ tone: "busy", text: "Streaming response" });
+    };
+    source.onerror = () => {
+      if (activeChatRunIdRef.current !== runId || chatRunClosedRef.current) return;
+      setStatus({ tone: "busy", text: "Streaming response" });
+    };
+    chatRunEventTypes.forEach((type) => source.addEventListener(type, handleMessage as EventListener));
+    source.onmessage = handleMessage;
+  }
+
+  async function openChatRunStreamWithFetchFallback(runId: string) {
+    const abort = new AbortController();
+    chatRunAbortRef.current = abort;
+    try {
+      const response = await api.chatRunStreamResponse(runId, lastChatRunEventRef.current, abort.signal);
+      await readSSEStream(response, ({ id, data }) => {
+        if (activeChatRunIdRef.current !== runId || chatRunClosedRef.current) return;
+        handleChatRunEvent(runId, data, id);
+      });
+      if (!chatRunClosedRef.current && activeChatRunIdRef.current === runId) scheduleChatRunReconnect(runId);
+    } catch (error) {
+      if (abort.signal.aborted || chatRunClosedRef.current || activeChatRunIdRef.current !== runId) return;
+      setStatus({ tone: "busy", text: errorMessage(error) });
+      scheduleChatRunReconnect(runId);
+    } finally {
+      if (chatRunAbortRef.current === abort) chatRunAbortRef.current = null;
+    }
+  }
+
+  function handleChatRunEvent(runId: string, event: RuntimeEvent, eventId = "") {
+    if (eventId) {
+      lastChatRunEventRef.current = eventId;
+      saveActiveChatRun(runId, event.session_id || sessionId, eventId);
+    }
+    recordAgentActivity(event, event.session_id || sessionId, eventId);
+    handleRuntimeEvent(event);
+    if (chatRunTerminalEvent(event)) finishChatRunStream(runId, event);
+  }
+
+  function finishChatRunStream(runId: string, event: RuntimeEvent) {
+    closeChatRunStream();
+    clearActiveChatRun(runId);
+    finishAgentActivity(event.session_id || sessionId, event);
+    if (event.type === "done") setStatus({ tone: "ok", text: "Done" });
+    const targetSession = event.session_id || sessionId;
+    if (targetSession) refreshSessionData(targetSession, { revealNewArtifacts: true, quiet: true }).catch(() => {});
+  }
+
+  function scheduleChatRunReconnect(runId: string) {
+    if (chatRunClosedRef.current || activeChatRunIdRef.current !== runId) return;
+    const delay = Math.min(jobReconnectMaxMs, jobReconnectBaseMs * 2 ** chatRunReconnectAttemptRef.current);
+    chatRunReconnectAttemptRef.current += 1;
+    chatRunReconnectTimerRef.current = window.setTimeout(() => {
+      chatRunReconnectTimerRef.current = null;
+      if (chatRunClosedRef.current || activeChatRunIdRef.current !== runId) return;
+      activeChatRunIdRef.current = "";
+      openChatRunStream(runId, lastChatRunEventRef.current, true);
+    }, delay);
+  }
+
   async function openJobStream(jobId: string, reconnect = false) {
     closeJobStream();
     activeJobStreamIdRef.current = jobId;
     jobStreamClosedRef.current = false;
+    if (!reconnect) {
+      lastJobEventRef.current = "";
+      setJobEvents([]);
+    }
     setJobStreamStatus(reconnect ? "reconnecting" : "connecting");
     setJobStreamNotice(reconnect ? "Reconnecting job stream..." : "Connecting job stream...");
-    try {
-      const events = await api.jobEvents(jobId);
-      if (activeJobStreamIdRef.current !== jobId || jobStreamClosedRef.current) return;
-      setJobEvents(events);
-      events.forEach((event) => recordAgentActivity(event.event, event.session_id || sessionId, event.id));
-      lastJobEventRef.current = events[events.length - 1]?.id || "";
-      const terminal = latestTerminalJobEvent(events, jobId);
-      if (terminal) {
-        finishJobStream(jobId, terminal.status, terminal.event, terminal.created_at);
-        return;
-      }
-    } catch (error) {
-      if (activeJobStreamIdRef.current !== jobId || jobStreamClosedRef.current) return;
-      setJobStreamStatus("failed");
-      setJobStreamNotice(errorMessage(error));
-      scheduleJobReconnect(jobId);
+    const knownStatus = terminalJobStatusFromEvents(jobEvents, jobId) || jobs.find((job) => job.id === jobId)?.status || "";
+    if (terminalJobs.has(knownStatus)) {
+      void loadJobEventReplay(jobId);
+      clearJobReconnectState();
       return;
     }
+    void openJobStreamWithFetchFallback(jobId);
+  }
+
+  async function openJobStreamWithFetchFallback(jobId: string) {
     const abort = new AbortController();
     jobStreamAbortRef.current = abort;
     try {
@@ -2085,20 +2290,31 @@ export function AgentWorkspace() {
     clearJobReconnectTimer();
     setJobStreamStatus("idle");
     setJobStreamNotice("");
-    clearActiveJob(jobId);
     markJobTerminal(jobId, status, event, createdAt);
     api.jobs(sessionId || undefined).then(setJobs).catch(() => {});
     const targetSession = event?.session_id || sessionId;
     if (targetSession) refreshSessionData(targetSession, { revealNewArtifacts: true }).catch(() => {});
   }
 
+  async function loadJobEventReplay(jobId: string): Promise<void> {
+    try {
+      const events = await api.jobEvents(jobId);
+      setJobEvents(events);
+      events.forEach((event) => recordAgentActivity(event.event, event.session_id || sessionId, event.id));
+      const terminal = latestTerminalJobEvent(events, jobId);
+      if (terminal) markJobTerminal(jobId, terminal.status, terminal.event, terminal.created_at);
+    } catch (error) {
+      setJobStreamStatus("failed");
+      setJobStreamNotice(errorMessage(error));
+    }
+  }
+
   function scheduleJobReconnect(jobId: string) {
     clearJobReconnectTimer();
     const knownStatus = terminalJobStatusFromEvents(jobEvents, jobId) || jobs.find((job) => job.id === jobId)?.status || "";
     if (terminalJobs.has(knownStatus)) {
-      clearActiveJob(jobId);
-      setJobStreamStatus("idle");
-      setJobStreamNotice("");
+      void loadJobEventReplay(jobId);
+      clearJobReconnectState();
       return;
     }
     api.jobs(sessionId || undefined).then((jobList) => {
@@ -2106,9 +2322,8 @@ export function AgentWorkspace() {
       setJobs(jobList);
       const freshStatus = jobList.find((job) => job.id === jobId)?.status || "";
       if (terminalJobs.has(freshStatus)) {
-        clearActiveJob(jobId);
-        setJobStreamStatus("idle");
-        setJobStreamNotice("");
+        void loadJobEventReplay(jobId);
+        clearJobReconnectState();
         return;
       }
       armJobReconnect(jobId);
@@ -2146,16 +2361,21 @@ export function AgentWorkspace() {
     jobReconnectTimerRef.current = null;
   }
 
+  function clearJobReconnectState() {
+    clearJobReconnectTimer();
+    jobStreamClosedRef.current = true;
+    jobStreamAbortRef.current?.abort();
+    jobStreamAbortRef.current = null;
+    activeJobStreamIdRef.current = "";
+    setJobStreamStatus("idle");
+    setJobStreamNotice("");
+  }
+
   function closeJobStream() {
     jobStreamClosedRef.current = true;
     clearJobReconnectTimer();
     jobStreamAbortRef.current?.abort();
     jobStreamAbortRef.current = null;
-  }
-
-  function reconnectSelectedJob() {
-    if (!selectedJobId) return;
-    openJobStream(selectedJobId, true);
   }
 
   function showError(error: unknown) {
@@ -2224,7 +2444,7 @@ export function AgentWorkspace() {
 
   function resetSessionResourceNotices() {
     for (const tab of resourceTabs) {
-      if (tab === "skills") continue;
+      if (tab === "skills" || tab === "applications") continue;
       resourceIdsRef.current[tab] = new Set();
       resourceBaselineReadyRef.current[tab] = false;
     }
@@ -2302,7 +2522,8 @@ export function AgentWorkspace() {
             skills: skills.length,
             jobs: jobs.length,
             attachments: attachments.length,
-            artifacts: artifacts.length
+            artifacts: artifacts.length,
+            applications: connectors.length
           }}
           resourceNotices={resourceNotices}
           serviceStatusPill={(nextStatus) => <ServiceStatusPill status={nextStatus} />}
@@ -2342,8 +2563,6 @@ export function AgentWorkspace() {
             activeSession={activeSession}
             status={status}
             recoveryBanner={recoveryBanner}
-            online={online}
-            selectedJobId={selectedJobId}
             userLabel={authSession.user.display_name || authSession.user.email}
             messages={messages}
             liveUserDraft={liveUserDraft}
@@ -2354,7 +2573,6 @@ export function AgentWorkspace() {
             statusLine={(nextStatus) => <StatusLine status={nextStatus} />}
             messageBubble={(props) => <MessageBubble {...props} api={api} />}
             onOpenMobileNav={() => setMobileNav(true)}
-            onReconnectJob={reconnectSelectedJob}
             composer={(
               <MessageComposer
                 runtimeError={runtimeError}
@@ -2443,6 +2661,9 @@ export function AgentWorkspace() {
             skills={visibleResourceSkills}
             recentSkillNames={recentSkillNames}
             jobs={visibleResourceJobs}
+            applications={visibleResourceApplications}
+            applicationBusy={connectorBusy}
+            applicationNotice={connectorNotice}
             selectedJobId={selectedJobId}
             jobEvents={jobEvents}
             jobStreamNotice={jobStreamNotice}
@@ -2459,6 +2680,9 @@ export function AgentWorkspace() {
             onLoadMore={loadMoreResources}
             onInsertSkill={insertSkill}
             onSkillDetails={setSkillDetail}
+            onConnectApplication={connectProvider}
+            onUpdateApplicationPolicy={updateConnectorPolicy}
+            onDisconnectApplication={disconnectProvider}
             onToggleJob={toggleJob}
             onCancelJob={cancelJob}
             onPreviewAttachment={previewAttachment}
@@ -2547,16 +2771,10 @@ export function AgentWorkspace() {
               personalizationSettings={personalizationSettings}
               personalizationSaving={personalizationSaving}
               initialSection={settingsInitialSection}
-              connectors={connectors}
-              connectorBusy={connectorBusy}
-              connectorNotice={connectorNotice}
               hasSession={Boolean(sessionId)}
               onUpdateMemorySettings={updateMemorySettings}
               onUpdatePersonalization={updatePersonalizationSettings}
               onResetPersonalization={resetPersonalizationSettings}
-              onConnectProvider={connectProvider}
-              onUpdateConnectorPolicy={updateConnectorPolicy}
-              onDisconnectProvider={disconnectProvider}
               onManageMemory={() => openMemoryManager("all")}
               onDeleteSessionMemory={deleteSessionMemory}
               onDeleteAllMemory={deleteAllMemory}
@@ -2615,8 +2833,7 @@ async function bootstrap(
     const session = await api.createSession();
     sessionList = [session];
   }
-  const storedJob = loadActiveJob();
-  const currentSummary = sessionList.find((session) => session.id === storedJob?.sessionId) || sessionList[0];
+  const currentSummary = sessionList[0];
   const [current, skills, jobs, attachments, artifacts] = await Promise.all([
     api.getSession(currentSummary.id),
     api.skills(),
@@ -2648,6 +2865,9 @@ function visibleMessages(messages: Message[]): Message[] {
       return;
     }
     if (isConvertedSkillCommandMessage(visible, indexed)) {
+      return;
+    }
+    if (isSkillProcessAssistantMessage(indexed)) {
       return;
     }
     if (indexed.role !== "tool" && !indexed.hidden && (indexed.content || indexed.tool_output)) {
@@ -2686,6 +2906,9 @@ function upsertJob(items: Job[], job: Job): Job[] {
 }
 
 function appendRuntimeMessage(messages: Message[], message: Message): Message[] {
+  if (isSkillProcessAssistantMessage(message)) {
+    return messages;
+  }
   if (isConvertedSkillCommandMessage(messages, message)) {
     return messages;
   }
@@ -2698,16 +2921,39 @@ function appendRuntimeMessage(messages: Message[], message: Message): Message[] 
   return [...messages, message];
 }
 
+function isSkillProcessAssistantMessage(message: Message): boolean {
+  if (message.hidden || message.role !== "assistant") return false;
+  const content = (message.content || message.tool_output || "").trim();
+  if (!content) return false;
+  const normalized = content.toLowerCase();
+  return [
+    "going in circles",
+    "try a different approach",
+    "fast path helper",
+    "artifact generation for binary docx files",
+    "execute the python script directly",
+    "encountering limitations with the artifact generation",
+    "之前生成的 docx 可能没有被正确保存",
+    "重新用正确的方式生成真正的 word 文件",
+    "刚才误操作了",
+    "重新生成正确的 word 文档"
+  ].some((marker) => normalized.includes(marker));
+}
+
+function runtimeEventText(event: RuntimeEvent): string {
+  return event.content || event.text || event.summary || event.message || "";
+}
+
 function runtimeEventMessage(event: RuntimeEvent, role: "user" | "assistant"): Message {
   return {
     role,
-    content: event.content || "",
+    content: runtimeEventText(event),
     created_at: new Date().toISOString()
   };
 }
 
 function agentActivityItemFromRuntimeEvent(event: RuntimeEvent, eventId = ""): AgentActivityItem | null {
-  if (event.type === "delta" || event.type === "message") return null;
+  if (event.type === "delta" || event.type === "answer_delta" || event.type === "message") return null;
   const data = recordFromUnknown(event.data);
   const title = agentActivityTitle(event, data);
   if (!title) return null;
@@ -2715,11 +2961,30 @@ function agentActivityItemFromRuntimeEvent(event: RuntimeEvent, eventId = ""): A
   return {
     id: activityEventID(event, data, eventId),
     type: event.type,
+    channel: agentActivityChannel(event, data),
     title,
     detail,
     status: agentActivityStatus(event, data),
     created_at: new Date().toISOString(),
     metadata: agentActivityMetadata(event, data)
+  };
+}
+
+function fallbackTerminalAgentActivityItem(event: RuntimeEvent): AgentActivityItem {
+  const status = agentActivityStatus(event, recordFromUnknown(event.data));
+  return {
+    id: `activity-${Date.now()}-${event.type || "terminal"}`,
+    type: event.type || "terminal",
+    title: event.type === "cancelled"
+      ? "Request cancelled"
+      : event.type === "error"
+        ? "Stopped with an error"
+        : "Response completed",
+    detail: event.error || event.content,
+    channel: event.type === "error" || event.type === "cancelled" ? "notice" : "thinking",
+    status: status === "default" ? "succeeded" : status,
+    created_at: new Date().toISOString(),
+    metadata: agentActivityMetadata(event, recordFromUnknown(event.data))
   };
 }
 
@@ -2730,6 +2995,14 @@ function agentActivityMetadata(event: RuntimeEvent, data: Record<string, unknown
   if (event.job_id) metadata.job_id = event.job_id;
   if (event.session_id) metadata.session_id = event.session_id;
   if (event.content) metadata.content = event.content;
+  if (event.text) metadata.text = event.text;
+  if (event.tool) metadata.tool = event.tool;
+  if (event.input !== undefined && event.input !== null) metadata.input = event.input;
+  if (event.summary) metadata.summary = event.summary;
+  if (event.sources) metadata.sources = event.sources;
+  if (event.source_id) metadata.source_id = event.source_id;
+  if (event.answer_span) metadata.answer_span = event.answer_span;
+  if (event.message) metadata.message = event.message;
   if (event.error) metadata.error = event.error;
   if (event.job_reason) metadata.job_reason = event.job_reason;
   if (data) {
@@ -2743,6 +3016,7 @@ function agentActivityMetadata(event: RuntimeEvent, data: Record<string, unknown
 function activityEventID(event: RuntimeEvent, data: Record<string, unknown> | null, eventId: string): string {
   return [
     eventId,
+    event.id,
     event.type,
     event.job_id,
     stringFromUnknown(data?.action_id),
@@ -2755,6 +3029,14 @@ function activityEventID(event: RuntimeEvent, data: Record<string, unknown> | nu
 }
 
 function agentActivityTitle(event: RuntimeEvent, data: Record<string, unknown> | null): string {
+  if (event.type === "thinking_start") return "Thinking started";
+  if (event.type === "thinking_delta") return "Thinking";
+  if (event.type === "thinking_end") return "Thinking complete";
+  if (event.type === "tool_call_start") return ["Using tool", stringFromUnknown(event.tool || data?.tool || data?.tool_name)].filter(Boolean).join(" · ");
+  if (event.type === "tool_call_result") return ["Tool finished", stringFromUnknown(event.tool || data?.tool || data?.tool_name)].filter(Boolean).join(" · ");
+  if (event.type === "tool_call_error") return ["Tool failed", stringFromUnknown(event.tool || data?.tool || data?.tool_name)].filter(Boolean).join(" · ");
+  if (event.type === "citation") return ["Source", stringFromUnknown(event.source_id || data?.source_id)].filter(Boolean).join(" ");
+  if (event.type === "checkpoint") return "Action needs confirmation";
   if (event.type === "start") return "Generating response";
   if (event.type === "done") return "Response completed";
   if (event.type === "cancelled") return "Request cancelled";
@@ -2820,7 +3102,7 @@ function agentActivityDetail(event: RuntimeEvent, data: Record<string, unknown> 
     event.error,
     event.job_reason,
     connectorDetail,
-    event.content,
+    runtimeEventText(event),
     stringFromUnknown(data?.summary),
     stringFromUnknown(data?.status),
     stringFromUnknown(data?.result_status),
@@ -2832,6 +3114,26 @@ function agentActivityDetail(event: RuntimeEvent, data: Record<string, unknown> 
     stringFromUnknown(child?.status)
   );
   return detail ? truncateText(detail, 180) : undefined;
+}
+
+function agentActivityChannel(event: RuntimeEvent, data: Record<string, unknown> | null): AgentActivityItem["channel"] {
+  if (event.type.startsWith("thinking_")) return "thinking";
+  if (event.type.startsWith("tool_call_")) return "tool";
+  if (event.type === "citation") return "citation";
+  if (event.type === "checkpoint") return "checkpoint";
+  if (event.type === "error" || event.type === "cancelled") return "notice";
+  if (event.type.startsWith("connector_tool_call_") || event.type.startsWith("mcp_connector_tool_call_")) return "tool";
+  if (event.type.startsWith("live_tool_") || event.type.startsWith("live_skill_")) return "tool";
+  if (event.type === "sandbox_metric" || event.type === "artifact_metric") return "tool";
+  if (event.type.startsWith("deep_agent_action_")) {
+    if (stringFromUnknown(data?.skill_name || data?.tool)) return "tool";
+    return "thinking";
+  }
+  if (event.type.startsWith("workflow_step_")) return "thinking";
+  if (event.type.startsWith("workflow_run_") || event.type.startsWith("deep_agent_") || event.type === "start" || event.type === "done" || event.type === "progress") {
+    return "thinking";
+  }
+  return "notice";
 }
 
 function connectorNamesFromData(data: Record<string, unknown> | null): string {
@@ -2846,8 +3148,9 @@ function connectorNamesFromData(data: Record<string, unknown> | null): string {
 function agentActivityStatus(event: RuntimeEvent, data: Record<string, unknown> | null): AgentActivityItem["status"] {
   const status = firstText(stringFromUnknown(data?.result_status), stringFromUnknown(data?.status), event.job?.status || "").toLowerCase();
   if (event.type === "error" || event.type.endsWith("_failed") || event.type.endsWith("_error") || status === "failed" || status === "error") return "failed";
-  if (event.type === "done" || event.type.endsWith("_succeeded") || event.type.endsWith("_completed") || status === "succeeded" || status === "completed") return "succeeded";
-  if (event.type === "start" || event.type.endsWith("_started") || status === "running" || status === "queued") return "running";
+  if (event.type === "cancelled" || event.type.endsWith("_cancelled") || status === "cancelled") return "cancelled";
+  if (event.type === "done" || event.type === "thinking_end" || event.type === "tool_call_result" || event.type.endsWith("_succeeded") || event.type.endsWith("_completed") || status === "succeeded" || status === "completed") return "succeeded";
+  if (event.type === "start" || event.type === "thinking_start" || event.type === "thinking_delta" || event.type === "tool_call_start" || event.type.endsWith("_started") || status === "running" || status === "queued") return "running";
   return "default";
 }
 
@@ -2965,45 +3268,65 @@ function terminalJobStatusFromRuntimeEvent(event?: RuntimeEvent): JobStatus | ""
       return "cancelled";
     default:
       return "";
-  }
+	}
 }
 
-function loadActiveJob(): { jobId: string; sessionId: string } | null {
+function chatRunTerminalEvent(event?: RuntimeEvent): boolean {
+  return Boolean(chatActivityTerminalStatus(event));
+}
+
+function chatActivityTerminalStatus(event?: RuntimeEvent): AgentActivityItem["status"] | "" {
+  const status = terminalJobStatusFromRuntimeEvent(event);
+  if (status === "succeeded") return "succeeded";
+  if (status === "failed") return "failed";
+  if (status === "cancelled") return "cancelled";
+  return "";
+}
+
+function runtimeEventFromEventSourceMessage(message: MessageEvent<string>): RuntimeEvent | null {
   try {
-    const raw = localStorage.getItem(activeJobStorageKey);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { jobId?: string; sessionId?: string };
-    if (!parsed.jobId || !parsed.sessionId) return null;
-    return { jobId: parsed.jobId, sessionId: parsed.sessionId };
+    return JSON.parse(message.data) as RuntimeEvent;
   } catch {
     return null;
   }
 }
 
-function saveActiveJob(jobId: string, sessionId: string) {
-  if (!jobId || !sessionId) return;
+function loadActiveChatRun(): { runId: string; sessionId: string; lastEventId: string } | null {
   try {
-    localStorage.setItem(activeJobStorageKey, JSON.stringify({ jobId, sessionId }));
+    const raw = localStorage.getItem(activeChatRunStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { runId?: string; sessionId?: string; lastEventId?: string };
+    if (!parsed.runId || !parsed.sessionId) return null;
+    return { runId: parsed.runId, sessionId: parsed.sessionId, lastEventId: parsed.lastEventId || "" };
+  } catch {
+    return null;
+  }
+}
+
+function saveActiveChatRun(runId: string, sessionId: string, lastEventId = "") {
+  if (!runId || !sessionId) return;
+  try {
+    localStorage.setItem(activeChatRunStorageKey, JSON.stringify({ runId, sessionId, lastEventId }));
   } catch {
     // Best-effort recovery hint only.
   }
 }
 
-function clearActiveJob(jobId?: string) {
+function clearActiveChatRun(runId?: string) {
   try {
-    const stored = loadActiveJob();
-    if (jobId && stored?.jobId && stored.jobId !== jobId) return;
-    localStorage.removeItem(activeJobStorageKey);
+    const stored = loadActiveChatRun();
+    if (runId && stored?.runId && stored.runId !== runId) return;
+    localStorage.removeItem(activeChatRunStorageKey);
   } catch {
     // Best-effort recovery hint only.
   }
 }
 
-function clearActiveJobForSession(sessionId: string) {
+function clearActiveChatRunForSession(sessionId: string) {
   try {
-    const stored = loadActiveJob();
+    const stored = loadActiveChatRun();
     if (stored?.sessionId !== sessionId) return;
-    localStorage.removeItem(activeJobStorageKey);
+    localStorage.removeItem(activeChatRunStorageKey);
   } catch {
     // Best-effort recovery hint only.
   }
@@ -3061,12 +3384,12 @@ function ServiceStatusPill({ status }: { status: ServiceStatus }) {
 
 function jobStartedMessage(event: RuntimeEvent): string {
   if (event.job?.type === "deep_agent") {
-    return "已进入计划执行模式，系统会先生成计划再逐步执行。你也可以从 Job 面板查看进度。";
+    return "已进入计划执行模式，系统会先生成计划再逐步执行；任务详情可在 Inbox 查看。";
   }
   if (event.job?.type === "skill") {
-    return "已开始执行工作流，完成后会自动更新结果。你也可以从 Job 面板查看进度。";
+    return "已开始执行工作流，完成后会自动更新结果；任务详情可在 Inbox 查看。";
   }
-  return "已开始后台处理，完成后会自动更新结果。你也可以从 Job 面板查看进度。";
+  return "已开始后台处理，完成后会自动更新结果；任务详情可在 Inbox 查看。";
 }
 
 function shouldDisplayJobSubmittedContent(event: RuntimeEvent): boolean {

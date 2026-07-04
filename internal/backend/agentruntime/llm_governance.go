@@ -23,11 +23,12 @@ import (
 type llmScopeContextKey struct{}
 
 type LLMScope struct {
-	UserID    string
-	SessionID string
-	JobID     string
-	SkillName string
-	RequestID string
+	UserID           string
+	SessionID        string
+	JobID            string
+	SkillName        string
+	SkillLongRunning bool
+	RequestID        string
 }
 
 func WithLLMScope(ctx context.Context, scope LLMScope) context.Context {
@@ -43,22 +44,37 @@ func llmScopeFromContext(ctx context.Context) LLMScope {
 }
 
 type LLMGovernanceConfig struct {
-	Provider               string
-	Model                  string
-	VertexLocation         string
-	ModelRoutes            string
-	MaxAttempts            int
-	RetryBackoff           time.Duration
-	ChatTimeout            time.Duration
-	SkillTimeout           time.Duration
-	DailyTokenQuota        int
-	DailyRequestQuota      int
-	APIRateLimitPerMinute  int
-	DailyCostQuotaUSD      float64
-	InputCostPerMillion    float64
-	OutputCostPerMillion   float64
-	FailureThreshold       int
-	CircuitBreakerCooldown time.Duration
+	Provider                string
+	Model                   string
+	VertexLocation          string
+	ModelRoutes             string
+	MaxAttempts             int
+	RetryBackoff            time.Duration
+	ChatTimeout             time.Duration
+	SkillTimeout            time.Duration
+	MaxLoopDuration         time.Duration
+	MaxLoopActions          int
+	MaxBranchCount          int
+	MaxBranchConcurrency    int
+	MaxParallelBranches     int
+	ParallelBranchTimeout   time.Duration
+	ParallelMaxToolCalls    int
+	ParallelMaxSources      int
+	ParallelMaxTokens       int
+	EvaluatorTimeout        time.Duration
+	ConflictTimeout         time.Duration
+	MaxSourcesPerBranch     int
+	SearchQualityThreshold  float64
+	AutomaticTriggerEnabled bool
+	RiskyWriteApprovalMode  string
+	DailyTokenQuota         int
+	DailyRequestQuota       int
+	APIRateLimitPerMinute   int
+	DailyCostQuotaUSD       float64
+	InputCostPerMillion     float64
+	OutputCostPerMillion    float64
+	FailureThreshold        int
+	CircuitBreakerCooldown  time.Duration
 }
 
 func (c LLMGovernanceConfig) normalized() LLMGovernanceConfig {
@@ -92,6 +108,68 @@ func (c LLMGovernanceConfig) normalizedWithOptions(options []LLMModelOption) LLM
 	if c.SkillTimeout <= 0 {
 		c.SkillTimeout = c.ChatTimeout
 	}
+	defaultPolicy := defaultDeepAgentJobPolicy()
+	if c.MaxLoopDuration <= 0 {
+		c.MaxLoopDuration = defaultPolicy.MaxDuration
+	}
+	if c.MaxLoopActions <= 0 {
+		c.MaxLoopActions = defaultPolicy.MaxActions
+	}
+	if c.MaxParallelBranches <= 0 {
+		c.MaxParallelBranches = deepAgentParallelDefaultPrimaryBranches
+	}
+	if c.MaxParallelBranches > deepAgentParallelDefaultMaxBranches {
+		c.MaxParallelBranches = deepAgentParallelDefaultMaxBranches
+	}
+	if c.MaxBranchCount <= 0 {
+		c.MaxBranchCount = c.MaxParallelBranches
+	}
+	if c.MaxBranchCount > deepAgentParallelDefaultMaxBranches {
+		c.MaxBranchCount = deepAgentParallelDefaultMaxBranches
+	}
+	if c.MaxBranchConcurrency <= 0 {
+		c.MaxBranchConcurrency = c.MaxParallelBranches
+	}
+	if c.MaxBranchConcurrency > deepAgentParallelDefaultMaxBranches {
+		c.MaxBranchConcurrency = deepAgentParallelDefaultMaxBranches
+	}
+	if c.ParallelBranchTimeout <= 0 {
+		c.ParallelBranchTimeout = deepAgentParallelDefaultBranchTimeout
+	}
+	if c.ParallelBranchTimeout > deepAgentParallelMaxBranchTimeout {
+		c.ParallelBranchTimeout = deepAgentParallelMaxBranchTimeout
+	}
+	if c.ParallelMaxToolCalls <= 0 {
+		c.ParallelMaxToolCalls = deepAgentParallelDefaultMaxToolCalls
+	}
+	if c.ParallelMaxSources <= 0 {
+		c.ParallelMaxSources = deepAgentParallelMaxSourcesPerBranch
+	}
+	if c.ParallelMaxSources > deepAgentParallelMaxSourcesPerGroup {
+		c.ParallelMaxSources = deepAgentParallelMaxSourcesPerGroup
+	}
+	if c.MaxSourcesPerBranch <= 0 {
+		c.MaxSourcesPerBranch = c.ParallelMaxSources
+	}
+	if c.MaxSourcesPerBranch > deepAgentParallelMaxSourcesPerGroup {
+		c.MaxSourcesPerBranch = deepAgentParallelMaxSourcesPerGroup
+	}
+	if c.ParallelMaxTokens <= 0 {
+		c.ParallelMaxTokens = deepAgentParallelDefaultMaxTokens
+	}
+	if c.EvaluatorTimeout <= 0 {
+		c.EvaluatorTimeout = c.SkillTimeout
+	}
+	if c.ConflictTimeout <= 0 {
+		c.ConflictTimeout = c.ParallelBranchTimeout
+	}
+	if c.SearchQualityThreshold <= 0 {
+		c.SearchQualityThreshold = deepAgentSourcePolicyDefaultMinScore
+	}
+	if c.SearchQualityThreshold > 1 {
+		c.SearchQualityThreshold = 1
+	}
+	c.RiskyWriteApprovalMode = normalizeRiskyWriteApprovalMode(c.RiskyWriteApprovalMode)
 	if c.FailureThreshold <= 0 {
 		c.FailureThreshold = 3
 	}
@@ -99,6 +177,15 @@ func (c LLMGovernanceConfig) normalizedWithOptions(options []LLMModelOption) LLM
 		c.CircuitBreakerCooldown = time.Minute
 	}
 	return c
+}
+
+func normalizeRiskyWriteApprovalMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "allow", "review", "block":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "review"
+	}
 }
 
 type LLMBackend struct {
@@ -356,11 +443,19 @@ func (p *GovernedPlanner) execute(ctx context.Context, session *state.Session, t
 	return plannerapi.Plan{}, lastErr
 }
 
-func (p *GovernedPlanner) callBackend(ctx context.Context, backend governedBackend, session *state.Session, tools []toolkit.Descriptor, onChunk func(string)) (plannerapi.Plan, int64, int64, error) {
-	timeout := p.config.ChatTimeout
-	if strings.TrimSpace(llmScopeFromContext(ctx).SkillName) != "" {
-		timeout = p.config.SkillTimeout
+func llmCallTimeout(config LLMGovernanceConfig, scope LLMScope) time.Duration {
+	timeout := config.ChatTimeout
+	if strings.TrimSpace(scope.SkillName) != "" {
+		timeout = config.SkillTimeout
+		if scope.SkillLongRunning && timeout < longRunningSkillTurnTimeout {
+			timeout = longRunningSkillTurnTimeout
+		}
 	}
+	return timeout
+}
+
+func (p *GovernedPlanner) callBackend(ctx context.Context, backend governedBackend, session *state.Session, tools []toolkit.Descriptor, onChunk func(string)) (plannerapi.Plan, int64, int64, error) {
+	timeout := llmCallTimeout(p.config, llmScopeFromContext(ctx))
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	started := time.Now()

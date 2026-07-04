@@ -33,7 +33,7 @@ import {
   type AdminTabOption
 } from "../shared";
 import { sessionTitle } from "../../lib/sessionTitle";
-import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, RiskReviewSummary, RiskSummary, Session, WorkflowRun, WorkflowStepRun } from "../../types";
+import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunSummary, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, LoopTriggerRecord, RiskReviewSummary, RiskSummary, Session, WorkflowRun, WorkflowStepRun } from "../../types";
 
 export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken: string }) {
   const [userID, setUserID] = useState("");
@@ -44,6 +44,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
   const [jobs, setJobs] = useState<Job[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [events, setEvents] = useState<JobEvent[]>([]);
+  const [loopTriggers, setLoopTriggers] = useState<LoopTriggerRecord[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStepRun[]>([]);
   const [deepAgentSummary, setDeepAgentSummary] = useState<DeepAgentWorkflowSummary | null>(null);
@@ -57,9 +58,12 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
   const [resumeBudgetActions, setResumeBudgetActions] = useState("");
   const [resumeBudgetDuration, setResumeBudgetDuration] = useState("");
   const [reviewEditPatch, setReviewEditPatch] = useState("");
+  const [triggerObjective, setTriggerObjective] = useState("");
+  const [triggerSource, setTriggerSource] = useState("admin_ops");
+  const [triggerDedupeKey, setTriggerDedupeKey] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [opsTab, setOpsTab] = useState<"session" | "jobs" | "events" | "workflows" | "assets">("jobs");
+  const [opsTab, setOpsTab] = useState<"session" | "jobs" | "events" | "workflows" | "triggers" | "assets">("jobs");
   const token = adminToken.trim();
   const cleanUserID = userID.trim();
   const selectedSession = sessions.find((session) => session.id === selectedSessionID) || null;
@@ -70,6 +74,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
     { id: "jobs", label: "Jobs", icon: <Briefcase size={15} />, count: jobs.length },
     { id: "events", label: "Events", icon: <Activity size={15} />, count: events.length },
     { id: "workflows", label: "Workflows", icon: <Settings size={15} />, count: workflows.length },
+    { id: "triggers", label: "Triggers", icon: <Clock size={15} />, count: loopTriggers.length },
     { id: "assets", label: "Assets", icon: <FileUp size={15} />, count: assets.length }
   ];
 
@@ -81,16 +86,18 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
     setLoading(true);
     setError("");
     try {
-      const [nextSessions, nextJobs, nextAssets, nextWorkflows] = await Promise.all([
+      const [nextSessions, nextJobs, nextAssets, nextWorkflows, nextLoopTriggers] = await Promise.all([
         api.adminOpsSessions(token, cleanUserID, { q: query, limit: 100 }),
         api.adminOpsJobs(token, cleanUserID, { sessionId: sessionID, q: query, status: statusFilter, limit: 100 }),
         api.adminOpsAssets(token, cleanUserID, { sessionId: sessionID, jobId: jobID, q: query, kind: assetKind, limit: 100 }),
-        api.adminOpsWorkflows(token, cleanUserID, { sessionId: sessionID, jobId: jobID, status: statusFilter, limit: 100 })
+        api.adminOpsWorkflows(token, cleanUserID, { sessionId: sessionID, jobId: jobID, status: statusFilter, limit: 100 }),
+        api.adminOpsLoopTriggers(token, cleanUserID, { sessionId: sessionID, limit: 100 })
       ]);
       setSessions(nextSessions);
       setJobs(nextJobs);
       setAssets(nextAssets);
       setWorkflows(nextWorkflows);
+      setLoopTriggers(nextLoopTriggers);
       const nextSessionID = sessionID && nextSessions.some((session) => session.id === sessionID) ? sessionID : "";
       const nextJobID = jobID && nextJobs.some((job) => job.id === jobID) ? jobID : nextJobs[0]?.id || "";
       const nextWorkflowID = selectPrimaryWorkflowID(nextWorkflows, selectedWorkflowID);
@@ -113,7 +120,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
         setDeepAgentSummary(null);
         setDeepAgentReplay(null);
       }
-      setNotice(`Loaded ${nextSessions.length} sessions, ${nextJobs.length} jobs, ${nextWorkflows.length} workflows, ${nextAssets.length} assets`);
+      setNotice(`Loaded ${nextSessions.length} sessions, ${nextJobs.length} jobs, ${nextWorkflows.length} workflows, ${nextLoopTriggers.length} triggers, ${nextAssets.length} assets`);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -189,6 +196,35 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
     }
   };
 
+  const createManualLoopTrigger = async () => {
+    if (!token || !cleanUserID) return;
+    const objective = triggerObjective.trim();
+    if (!objective) {
+      setError("Enter an objective for the manual loop trigger.");
+      return;
+    }
+    setActionBusy("create-loop-trigger");
+    setError("");
+    try {
+      const result = await api.adminOpsSubmitLoopDiscovery(token, cleanUserID, {
+        session_id: selectedSessionID || undefined,
+        trigger_type: "manual",
+        source: triggerSource.trim() || "admin_ops",
+        dedupe_key: triggerDedupeKey.trim() || undefined,
+        objective
+      });
+      setNotice(result.duplicate ? `Duplicate trigger reused ${result.trigger.job_id || result.trigger.id}` : `Created loop job ${result.trigger.job_id}`);
+      setTriggerObjective("");
+      setTriggerDedupeKey("");
+      await loadOps(selectedSessionID, result.trigger.job_id || selectedJobID);
+      if (result.trigger.job_id) setSelectedJobID(result.trigger.job_id);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setActionBusy("");
+    }
+  };
+
   const resumeWorkflow = async (request: DeepAgentResumeRequest = {}) => {
     if (!selectedWorkflow || !token || !cleanUserID) return;
     setActionBusy(request.review_decision?.action ? `resume-${request.review_decision.action}` : "resume-workflow");
@@ -227,7 +263,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
     await resumeWorkflow(request);
   };
 
-  const reviewLearning = async (candidateID: string, action: "accept" | "reject" | "rollback") => {
+  const reviewLearning = async (candidateID: string, action: "accept" | "reject" | "expire" | "rollback") => {
     if (!token || !cleanUserID || !candidateID) return;
     setActionBusy(`learning-${candidateID}-${action}`);
     setError("");
@@ -236,7 +272,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
       setNotice(`Learning ${action}: ${candidateID}`);
       setDeepAgentSummary((summary) => {
         if (!summary?.learnings?.length) return summary;
-        const reviewStatus = typeof updated.metadata?.review_status === "string" ? updated.metadata.review_status : action === "rollback" ? "rolled_back" : action === "accept" ? "accepted" : "rejected";
+        const reviewStatus = typeof updated.metadata?.review_status === "string" ? updated.metadata.review_status : action === "rollback" ? "rolled_back" : action === "expire" ? "expired" : action === "accept" ? "accepted" : "rejected";
         return {
           ...summary,
           learnings: summary.learnings.map((learning) => learning.id === candidateID
@@ -244,6 +280,7 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
                 ...learning,
                 status: reviewStatus,
                 memory_item_id: updated.id,
+                expires_at: updated.expires_at || learning.expires_at,
                 reviewed_by: typeof updated.metadata?.reviewed_by === "string" ? updated.metadata.reviewed_by : learning.reviewed_by,
                 reviewed_at: typeof updated.metadata?.reviewed_at === "string" ? updated.metadata.reviewed_at : learning.reviewed_at,
                 user_confirmed: updated.metadata?.user_confirmed === true
@@ -503,7 +540,17 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
 	                          <SkillFact label="Completed / failed" value={`${deepAgentSummary.completed_count || 0} / ${deepAgentSummary.failed_count || 0}`} />
 	                          <SkillFact label="Blocker" value={deepAgentSummary.blocker || "None"} />
 	                          <SkillFact label="Final verifier" value={formatRecordSummary(deepAgentSummary.final_verifier)} />
+	                          <SkillFact label="Evaluator verdict" value={`${String(deepAgentSummary.evaluator_verdict?.verdict || "unknown")} · ${String(deepAgentSummary.evaluator_verdict?.reason || "No reason")}`} />
 	                        </div>
+	                        {deepAgentSummary.evaluator_verdict && (
+	                          <div className="admin-facts">
+	                            <SkillFact label="Evaluator confidence" value={String(deepAgentSummary.evaluator_verdict.confidence || "unknown")} />
+	                            <SkillFact label="Failed criteria" value={(deepAgentSummary.evaluator_verdict.failed_criteria || []).join(", ") || "None"} />
+	                            <SkillFact label="Repair plan" value={(deepAgentSummary.evaluator_verdict.repair_plan || []).join(" ") || "None"} />
+	                            <SkillFact label="Source coverage" value={formatRecordSummary(deepAgentSummary.evaluator_verdict.source_coverage)} />
+	                            <SkillFact label="Rubric coverage" value={formatRecordSummary(deepAgentSummary.evaluator_verdict.rubric_coverage)} />
+	                          </div>
+	                        )}
 	                        <div className="admin-facts">
 	                          <SkillFact label="Task type" value={String(deepAgentSummary.metrics?.task_type || "unknown")} />
 	                          <SkillFact label="Trigger" value={String(deepAgentSummary.metrics?.trigger_type || "manual")} />
@@ -576,6 +623,13 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
 	                        )}
 	                        {deepAgentReplay && (
 	                          <div className="admin-table compact">
+	                            {deepAgentReplay.trace_summary && (
+	                              <div className="admin-table-row">
+	                                <StatusBadge value={String(deepAgentReplay.trace_summary.category || deepAgentReplay.trace_summary.final_status || "trace")} />
+	                                <span>Root cause<small>{deepAgentReplay.trace_summary.root_cause || "No root cause available"}</small></span>
+	                                <small>{deepAgentReplay.trace_summary.suggested_repair || deepAgentReplay.trace_summary.failed_phase || ""}</small>
+	                              </div>
+	                            )}
 	                            <details className="admin-table-row" open>
 	                              <summary>
 	                                <StatusBadge value={deepAgentReplay.status || "replay"} />
@@ -658,7 +712,14 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
                                     {learning.run_id ? ` · run ${learning.run_id}` : ""}
                                     {learning.step_id ? ` · step ${learning.step_id}` : ""}
                                     {learning.evidence_id ? ` · evidence ${learning.evidence_id}` : ""}
+                                    {typeof learning.confidence === "number" ? ` · conf ${Math.round(learning.confidence * 100)}%` : ""}
+                                    {learning.source_job ? ` · job ${learning.source_job}` : ""}
+                                    {learning.owner ? ` · owner ${learning.owner}` : ""}
+                                    {learning.expires_at ? ` · expires ${new Date(learning.expires_at).toLocaleString()}` : ""}
                                   </small>
+                                  {!!learning.evidence_refs?.length && (
+                                    <small>{learning.evidence_refs.slice(0, 3).join(" · ")}</small>
+                                  )}
                                   {learning.policy_reason && <small>{learning.policy_reason}</small>}
                                 </span>
                                 <div className="admin-inline-actions">
@@ -682,18 +743,38 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
                                       >
                                         Reject
                                       </Button>
+                                      <Button
+                                        type="button"
+                                        size="xs"
+                                        variant="outline"
+                                        disabled={actionBusy === `learning-${learning.id}-expire`}
+                                        onClick={() => void reviewLearning(learning.id, "expire")}
+                                      >
+                                        Expire
+                                      </Button>
                                     </>
                                   )}
                                   {learning.status === "accepted" && (
-                                    <Button
-                                      type="button"
-                                      size="xs"
-                                      variant="destructive"
-                                      disabled={actionBusy === `learning-${learning.id}-rollback`}
-                                      onClick={() => void reviewLearning(learning.id, "rollback")}
-                                    >
-                                      Rollback
-                                    </Button>
+                                    <>
+                                      <Button
+                                        type="button"
+                                        size="xs"
+                                        variant="outline"
+                                        disabled={actionBusy === `learning-${learning.id}-expire`}
+                                        onClick={() => void reviewLearning(learning.id, "expire")}
+                                      >
+                                        Expire
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        size="xs"
+                                        variant="destructive"
+                                        disabled={actionBusy === `learning-${learning.id}-rollback`}
+                                        onClick={() => void reviewLearning(learning.id, "rollback")}
+                                      >
+                                        Rollback
+                                      </Button>
+                                    </>
                                   )}
                                 </div>
                               </div>
@@ -719,6 +800,44 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
                     </div>
                   </>
                 )}
+              </section>}
+              {opsTab === "triggers" && <section className="admin-card wide">
+                <div className="admin-card-head">
+                  <h3>Loop Triggers</h3>
+                  <small>{loopTriggers.length}</small>
+                </div>
+                <div className="admin-filter-row">
+                  <label className="admin-field">
+                    <span>Objective</span>
+                    <Input value={triggerObjective} onChange={(event) => setTriggerObjective(event.currentTarget.value)} placeholder="Run a loop job..." />
+                  </label>
+                  <label className="admin-field">
+                    <span>Source</span>
+                    <Input value={triggerSource} onChange={(event) => setTriggerSource(event.currentTarget.value)} placeholder="admin_ops" />
+                  </label>
+                  <label className="admin-field">
+                    <span>Dedupe key</span>
+                    <Input value={triggerDedupeKey} onChange={(event) => setTriggerDedupeKey(event.currentTarget.value)} placeholder="optional" />
+                  </label>
+                  <Button className="skill-action" onClick={createManualLoopTrigger} disabled={Boolean(actionBusy)}>
+                    <PlayCircle size={15} />
+                    <span>{actionBusy === "create-loop-trigger" ? "Creating" : "Create manual"}</span>
+                  </Button>
+                </div>
+                <div className="admin-table">
+                  {loopTriggers.slice(0, 20).map((trigger) => (
+                    <div key={trigger.id} className="admin-table-row">
+                      <StatusBadge value={trigger.status || trigger.trigger_type} />
+                      <span>
+                        {trigger.trigger_type}<small>{trigger.source || "unknown"} · {trigger.dedupe_key}</small>
+                      </span>
+                      <small>{formatTime(trigger.created_at)}</small>
+                      {trigger.job_id && <em>{trigger.job_id}</em>}
+                      {trigger.failure_reason && <em>{trigger.failure_reason}</em>}
+                    </div>
+                  ))}
+                  {!loopTriggers.length && <p className="muted-text">No loop discovery events found.</p>}
+                </div>
               </section>}
               {opsTab === "assets" && <section className="admin-card wide">
                 <div className="admin-card-head">

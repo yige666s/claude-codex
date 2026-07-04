@@ -162,12 +162,14 @@ func TestLiveBackendE2EExplicitSlashSkillRouting(t *testing.T) {
 	expectLiveEvent(t, conn, func(event Event) bool {
 		return event.Type == "message" && event.Role == state.MessageRoleUser && strings.Contains(event.Content, "/diagram")
 	}, "skill user message")
-	start := expectLiveEvent(t, conn, func(event Event) bool { return event.Type == "live_skill_start" }, "live skill start")
-	if !strings.HasPrefix(start.Content, "/diagram ") {
-		t.Fatalf("skill command = %q, want /diagram", start.Content)
+	start := expectLiveEvent(t, conn, func(event Event) bool {
+		return event.Type == "tool_call_start" && strings.HasPrefix(event.Tool, "/diagram ")
+	}, "live skill start")
+	if !strings.HasPrefix(start.Tool, "/diagram ") {
+		t.Fatalf("skill command = %q, want /diagram", start.Tool)
 	}
 	expectLiveEvent(t, conn, func(event Event) bool {
-		return event.Type == "live_skill_result" && strings.Contains(event.Content, "diagram prompt: 画一个登录流程")
+		return event.Type == "tool_call_result" && strings.Contains(event.Summary, "diagram prompt: 画一个登录流程")
 	}, "live skill result")
 	expectLiveEvent(t, conn, func(event Event) bool {
 		return event.Type == "message" && event.Role == state.MessageRoleAssistant && strings.Contains(event.Content, "diagram prompt: 画一个登录流程")
@@ -245,10 +247,10 @@ func TestLiveBackendE2ENativeFunctionCallingRoutesSkill(t *testing.T) {
 		return event.Type == "live_transcript" && event.Role == state.MessageRoleUser && strings.Contains(event.Content, "中华田园猫")
 	}, "function-call input transcript")
 	start := expectLiveEvent(t, conn, func(event Event) bool {
-		return event.Type == "live_skill_start" && strings.HasPrefix(event.Content, "/vertex-image-artifact ")
+		return event.Type == "tool_call_start" && strings.HasPrefix(event.Tool, "/vertex-image-artifact ")
 	}, "native function live skill start")
-	if !strings.Contains(start.Content, "中华田园猫") {
-		t.Fatalf("skill command lost args: %q", start.Content)
+	if !strings.Contains(start.Tool, "中华田园猫") {
+		t.Fatalf("skill command lost args: %q", start.Tool)
 	}
 	jobEvent := expectLiveEvent(t, conn, func(event Event) bool {
 		return event.Type == "job" && event.Job != nil && event.Job.Type == "skill"
@@ -262,7 +264,7 @@ func TestLiveBackendE2ENativeFunctionCallingRoutesSkill(t *testing.T) {
 		response, _ := responses[0].(map[string]any)
 		body, _ := response["response"].(map[string]any)
 		result, _ := body["result"].(string)
-		return response["id"] == "call-1" && response["name"] == "run_skill" && strings.Contains(result, "Skill job started.")
+		return response["id"] == "call-1" && response["name"] == "run_skill" && strings.Contains(result, "created docx file")
 	})
 	expectLiveEvent(t, conn, func(event Event) bool {
 		return event.Type == "message" && event.Role == state.MessageRoleAssistant && event.Content == "已开始生成图片。"
@@ -519,7 +521,13 @@ func newLiveE2ERuntime(t *testing.T, upstreamURL string, catalog SkillCatalog) (
 			OutputAudioMIMEType:        "audio/pcm;rate=24000",
 			SessionTimeout:             5 * time.Second,
 		},
-	}, store, nil, catalog, func(Scope) Runner { return echoRunner{} })
+	}, store, nil, catalog, func(scope Scope) Runner {
+		if scope.SkillName == "vertex-image-artifact" {
+			return generatedArtifactFileRunner{workspace: scope.WorkingDir}
+		}
+		return echoRunner{}
+	})
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
 	session, err := runtime.CreateSession(context.Background(), "alice", root)
 	if err != nil {
 		t.Fatalf("create session: %v", err)

@@ -57,10 +57,42 @@ them visually.
 
 - Use Codex workspace dependencies for docx artifact work: resolve them through the workspace dependency loader or runtime skill, then treat the returned Node/Python runtimes and package directory as authoritative. Do not use system `node`, system `python`, global npm packages, or repo-local installs.
 - For document creation and deterministic OOXML edits, it is still acceptable to use the bundled Python/OOXML helper scripts in this skill package when the JS surface is incomplete.
+- The `Artifact` tool is only for final user-facing deliverables whose MIME type is allowed by this skill policy: `.docx`, PDF, and PNG render outputs. Do not use `Artifact` for intermediate Python scripts, shell scripts, source code, scratch files, helper inputs, JSON logs, markdown drafts, or QA notes.
+- When you need a one-off Python helper, create it in a writable workspace or temp directory with the `Bash` tool, for example `cat > build_doc.py <<'PY' ... PY`, or run it inline with `python3 - <<'PY' ... PY`. Then run it with `Bash`.
 - Run any builder or helper file from a writable workspace or temp directory, not from the managed dependency directory itself.
+- After the final document file exists, call `Artifact` with `file_path` for the final `.docx` only, unless the user explicitly requested QA intermediates. Do not paste file bytes, base64 ZIP data, or generated source code into `Artifact`.
 - Final user-facing responses should describe only the requested document result
   and link only to the final `.docx`, Word, or Google Docs deliverable unless
   the user explicitly asks for QA intermediates.
+
+### Simple DOCX Creation Fast Path
+
+For a net-new, simple DOCX request with no source file, template, redlines,
+comments, merge, or complex layout requirements, use the bundled deterministic
+helper instead of manually constructing OOXML or ZIP bytes:
+
+```bash
+DOCX_FILENAME="requested-name.docx" python3 "${CLAUDE_SKILL_DIR}/scripts/create_docx_artifact.py" <<'DOCX'
+Document title
+
+Final paragraph one.
+
+Final paragraph two.
+DOCX
+```
+
+If the helper prints `artifact_file_path:`, call `Artifact` exactly once using:
+
+```json
+{
+  "filename": "<printed filename>",
+  "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "file_path": "<printed artifact_file_path>"
+}
+```
+
+The `Artifact` tool rejects inline DOCX bytes for this runtime. Always generate
+the DOCX as a real workspace file and pass `file_path`.
 
 ## Google Docs-targeted output
 

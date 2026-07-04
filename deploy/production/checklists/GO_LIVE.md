@@ -38,7 +38,7 @@
 [ ] API workers are disabled on public API deployment.
 [ ] Worker deployment has job/attachment/archive workers enabled.
 [ ] AGENT_API_ARTIFACT_STORE=s3.
-[ ] AGENT_API_RATE_LIMIT_BACKEND=redis.
+[ ] If API rate limiting is required, set AGENT_API_RATE_LIMIT_BACKEND=redis.
 [ ] AGENT_API_JOB_EVENT_FANOUT_ENABLED=true.
 [ ] AGENT_API_JOB_QUEUE_REDIS_URL points to production Redis.
 [ ] AGENT_API_SQL_MAX_OPEN_CONNS is safe for total replica count.
@@ -66,4 +66,3 @@
 [ ] Restore drill has been completed within the last release cycle.
 [ ] Production smoke tests are ready with a dedicated test account.
 ```
-

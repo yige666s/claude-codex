@@ -11,6 +11,12 @@ export function userFacingErrorMessage(message: string): string {
   if (/failed to fetch|networkerror|load failed/i.test(text)) {
     return "Cannot reach AgentAPI. Check the network connection and try again.";
   }
+  if (/session not found/i.test(text)) {
+    return "关联的聊天会话已删除。";
+  }
+  if (/sql:\s*no rows in result set|record not found/i.test(text)) {
+    return "关联记录不存在或已被删除。";
+  }
   if (isCredentialConfigurationError(text)) {
     return "A service credential is missing or unavailable. Ask an administrator to verify the provider setup.";
   }

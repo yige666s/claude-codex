@@ -202,6 +202,115 @@ func TestOpenAIProviderRetriesRetryableTransportErrors(t *testing.T) {
 	}
 }
 
+func TestOpenAIProviderStreamsChatCompletionChunks(t *testing.T) {
+	provider, err := NewOpenAIProvider(Config{
+		Provider: "openai",
+		APIKey:   "test-key",
+		BaseURL:  "https://api.example.test/v1",
+		Model:    "gpt-4o",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider() error = %v", err)
+	}
+	provider.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read request body: %v", err)
+			}
+			if !strings.Contains(string(body), `"stream":true`) {
+				t.Fatalf("expected stream request body, got %s", string(body))
+			}
+			stream := strings.Join([]string{
+				`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"hel"},"finish_reason":null}]}`,
+				`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+				`data: [DONE]`,
+				``,
+			}, "\n\n")
+			return &http.Response{
+				StatusCode: 200,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(stream)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	var chunks []string
+	resp, err := provider.StreamMessage(context.Background(), MessageRequest{
+		Model: "gpt-4o",
+		Messages: []Message{
+			{Role: "user", Content: "hello"},
+		},
+		MaxTokens: 100,
+	}, func(chunk string) {
+		chunks = append(chunks, chunk)
+	})
+	if err != nil {
+		t.Fatalf("StreamMessage() error = %v", err)
+	}
+	if got := strings.Join(chunks, "|"); got != "hel|lo" {
+		t.Fatalf("chunks = %q", got)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Text != "hello" {
+		t.Fatalf("unexpected response content %#v", resp.Content)
+	}
+	if resp.StopReason != "stop" {
+		t.Fatalf("stop reason = %q", resp.StopReason)
+	}
+	if resp.Usage.InputTokens != 3 || resp.Usage.OutputTokens != 2 {
+		t.Fatalf("usage = %#v", resp.Usage)
+	}
+}
+
+func TestOpenAIProviderStreamsToolCallDeltas(t *testing.T) {
+	provider, err := NewOpenAIProvider(Config{
+		Provider: "openai",
+		APIKey:   "test-key",
+		BaseURL:  "https://api.example.test/v1",
+		Model:    "gpt-4o",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider() error = %v", err)
+	}
+	provider.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			stream := strings.Join([]string{
+				`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"ba","arguments":"{\"command\""}}]},"finish_reason":null}]}`,
+				`data: {"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"sh","arguments":":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}`,
+				`data: [DONE]`,
+				``,
+			}, "\n\n")
+			return &http.Response{
+				StatusCode: 200,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader(stream)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	resp, err := provider.StreamMessage(context.Background(), MessageRequest{
+		Model: "gpt-4o",
+		Messages: []Message{
+			{Role: "user", Content: "run pwd"},
+		},
+		MaxTokens: 100,
+	}, nil)
+	if err != nil {
+		t.Fatalf("StreamMessage() error = %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("expected one tool call, got %#v", resp)
+	}
+	if resp.ToolCalls[0].Name != "bash" || string(resp.ToolCalls[0].Input) != `{"command":"pwd"}` {
+		t.Fatalf("unexpected tool call %#v", resp.ToolCalls[0])
+	}
+	if resp.StopReason != "tool_use" {
+		t.Fatalf("expected stop reason tool_use, got %q", resp.StopReason)
+	}
+}
+
 func TestDeepSeekProviderUsesDefaultHostFailoverTransport(t *testing.T) {
 	deepseek, err := NewDeepSeekProvider(Config{
 		APIKey:  "test-key",

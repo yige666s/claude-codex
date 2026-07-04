@@ -15,4 +15,13 @@ describe("userFacingErrorMessage", () => {
   it("keeps ordinary validation errors", () => {
     expect(userFacingErrorMessage("password must be at least 8 characters")).toBe("password must be at least 8 characters");
   });
+
+  it("explains deleted chat sessions without exposing internal IDs", () => {
+    expect(userFacingErrorMessage("session not found (c564c98a2302/yhpw4XPnBE-000686)"))
+      .toBe("关联的聊天会话已删除。");
+  });
+
+  it("hides low-level missing row errors", () => {
+    expect(userFacingErrorMessage("sql: no rows in result set")).toBe("关联记录不存在或已被删除。");
+  });
 });

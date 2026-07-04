@@ -15,12 +15,16 @@ docker compose -f deploy/local/docker-compose.yml up --build
 ```
 
 The default stack uses SQL storage, S3-compatible artifacts from the configured
-endpoint, Redis rate limiting, Redis message context hot cache, JWT auth, and
+endpoint, rate limiting disabled by default, Redis message context hot cache, JWT auth, and
 the built-in user system.
 Override provider settings with
 environment variables such as `AGENT_API_LLM_PROVIDER`, `NVIDIA_API_KEY`,
 `OPENAI_API_KEY`, `DASHSCOPE_API_KEY`, `GEMINI_API_KEY`, or `VERTEX_*`.
 Runtime model selection is managed from the Admin UI and stored in SQL.
+For deterministic local infrastructure tests that should not call an external
+model provider, set `AGENT_API_LLM_PROVIDER=simple`, `AGENT_API_MODEL=simple`,
+and route models to `simple`; this uses the local simple planner while still
+exercising HTTP, job queue, Redis Streams, SSE, SQL, and the web UI.
 Live voice defaults to xAI Realtime and requires `XAI_API_KEY` plus the
 `XAI_LIVE_*` settings. Vertex Live remains available by setting
 `AGENT_API_LIVE_PROVIDER=vertex`; in that mode prefer `VERTEX_ACCESS_TOKEN` or

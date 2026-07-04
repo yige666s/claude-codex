@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -106,6 +107,39 @@ type openAIChoice struct {
 	FinishReason string        `json:"finish_reason"`
 }
 
+type openAIStreamResponse struct {
+	ID      string               `json:"id"`
+	Object  string               `json:"object"`
+	Created int64                `json:"created"`
+	Model   string               `json:"model"`
+	Choices []openAIStreamChoice `json:"choices"`
+	Usage   openAIUsage          `json:"usage"`
+}
+
+type openAIStreamChoice struct {
+	Index        int               `json:"index"`
+	Delta        openAIStreamDelta `json:"delta"`
+	FinishReason string            `json:"finish_reason"`
+}
+
+type openAIStreamDelta struct {
+	Role      string                      `json:"role"`
+	Content   string                      `json:"content"`
+	ToolCalls []openAIStreamToolCallDelta `json:"tool_calls"`
+}
+
+type openAIStreamToolCallDelta struct {
+	Index    int                           `json:"index"`
+	ID       string                        `json:"id"`
+	Type     string                        `json:"type"`
+	Function openAIStreamToolFunctionDelta `json:"function"`
+}
+
+type openAIStreamToolFunctionDelta struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
 type openAIUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
@@ -148,6 +182,31 @@ func (p *OpenAIProvider) CreateMessage(ctx context.Context, request MessageReque
 	}
 
 	return messageResponseFromOpenAI(openAIResp)
+}
+
+func (p *OpenAIProvider) StreamMessage(ctx context.Context, request MessageRequest, onChunk func(string)) (*MessageResponse, error) {
+	request.Stream = true
+	openAIReq := openAIRequestFromMessageRequest(request)
+	openAIReq.Stream = true
+
+	body, err := json.Marshal(openAIReq)
+	if err != nil {
+		return nil, err
+	}
+
+	url := p.baseURL + "/chat/completions"
+	resp, err := p.doChatCompletionRequest(ctx, url, body, openAIReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("openai request failed: %s: %s", resp.Status, string(data))
+	}
+
+	return p.messageResponseFromOpenAIStream(resp.Body, onChunk)
 }
 
 func (p *OpenAIProvider) doChatCompletionRequest(ctx context.Context, url string, body []byte, openAIReq openAIRequest) (*http.Response, error) {
@@ -329,6 +388,137 @@ func messageResponseFromOpenAI(openAIResp openAIResponse) (*MessageResponse, err
 		Usage: Usage{
 			InputTokens:  openAIResp.Usage.PromptTokens,
 			OutputTokens: openAIResp.Usage.CompletionTokens,
+		},
+	}, nil
+}
+
+func (p *OpenAIProvider) messageResponseFromOpenAIStream(body io.Reader, onChunk func(string)) (*MessageResponse, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
+	var (
+		id          string
+		model       string
+		role        = "assistant"
+		text        strings.Builder
+		stopReason  string
+		usage       openAIUsage
+		toolBuilder = map[int]*openAIStreamToolCallDelta{}
+		sawEvent    bool
+	)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			break
+		}
+		sawEvent = true
+		var event openAIStreamResponse
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			return nil, fmt.Errorf("openai stream parse failed: %w", err)
+		}
+		if event.ID != "" {
+			id = event.ID
+		}
+		if event.Model != "" {
+			model = event.Model
+		}
+		if event.Usage.PromptTokens != 0 || event.Usage.CompletionTokens != 0 || event.Usage.TotalTokens != 0 {
+			usage = event.Usage
+		}
+		for _, choice := range event.Choices {
+			if choice.Delta.Role != "" {
+				role = choice.Delta.Role
+			}
+			if choice.Delta.Content != "" {
+				text.WriteString(choice.Delta.Content)
+				if onChunk != nil {
+					onChunk(choice.Delta.Content)
+				}
+			}
+			for _, delta := range choice.Delta.ToolCalls {
+				builder := toolBuilder[delta.Index]
+				if builder == nil {
+					builder = &openAIStreamToolCallDelta{Index: delta.Index}
+					toolBuilder[delta.Index] = builder
+				}
+				if delta.ID != "" {
+					builder.ID = delta.ID
+				}
+				if delta.Type != "" {
+					builder.Type = delta.Type
+				}
+				if delta.Function.Name != "" {
+					builder.Function.Name += delta.Function.Name
+				}
+				if delta.Function.Arguments != "" {
+					builder.Function.Arguments += delta.Function.Arguments
+				}
+			}
+			if choice.FinishReason != "" {
+				stopReason = choice.FinishReason
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("openai stream read failed: %w", err)
+	}
+	if !sawEvent {
+		return nil, fmt.Errorf("openai request failed: empty stream response body")
+	}
+
+	toolCalls := make([]ToolCall, 0, len(toolBuilder))
+	for idx := 0; idx < len(toolBuilder); idx++ {
+		call := toolBuilder[idx]
+		if call == nil {
+			continue
+		}
+		input := json.RawMessage("{}")
+		if strings.TrimSpace(call.Function.Arguments) != "" {
+			input = json.RawMessage(call.Function.Arguments)
+		}
+		toolCalls = append(toolCalls, ToolCall{
+			ID:    call.ID,
+			Name:  call.Function.Name,
+			Input: input,
+		})
+	}
+	if stopReason == "tool_calls" {
+		stopReason = "tool_use"
+	}
+	if stopReason == "" {
+		if len(toolCalls) > 0 {
+			stopReason = "tool_use"
+		} else {
+			stopReason = "end_turn"
+		}
+	}
+
+	return &MessageResponse{
+		ID:    id,
+		Model: model,
+		Role:  role,
+		Content: []ContentBlock{
+			{
+				Type: "text",
+				Text: text.String(),
+			},
+		},
+		ToolCalls:  toolCalls,
+		StopReason: stopReason,
+		Usage: Usage{
+			InputTokens:  usage.PromptTokens,
+			OutputTokens: usage.CompletionTokens,
 		},
 	}, nil
 }

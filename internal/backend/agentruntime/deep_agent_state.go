@@ -39,5 +39,23 @@ func deepAgentStateFromWorkflowRun(run *WorkflowRun) (*DeepAgentState, error) {
 	if state.Learnings == nil {
 		state.Learnings = []DeepAgentLearningCandidate{}
 	}
+	if state.LoopContract.ID == "" {
+		state.LoopContract = loopContractFromWorkflowValue(run.State["loop_contract"])
+	}
+	if state.LoopContract.ID == "" {
+		state.LoopContract = loopContractFromWorkflowValue(state.WorkingMemory["loop_contract"])
+	}
+	if state.LoopContract.ID != "" {
+		hydrateLoopContractWorkingMemory(state.WorkingMemory, state.LoopContract)
+	}
+	if loopHandoffEmpty(state.Handoff) {
+		state.Handoff = loopHandoffFromAny(state.WorkingMemory["loop_handoff"])
+	}
+	if loopHandoffEmpty(state.Handoff) {
+		state.Handoff = loopHandoffFromAny(run.State["loop_handoff"])
+	}
+	if !loopHandoffEmpty(state.Handoff) {
+		state.WorkingMemory["loop_handoff"] = state.Handoff
+	}
 	return &state, nil
 }

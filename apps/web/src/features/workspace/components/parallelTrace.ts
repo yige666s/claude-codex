@@ -4,6 +4,11 @@ export type ParallelBranchTrace = {
   id: string;
   title: string;
   objective?: string;
+  kind?: string;
+  coverageDimension?: string;
+  budget?: ParallelBranchBudget;
+  recommendedNextAction?: string;
+  missingCoverage: string[];
   status: "queued" | "running" | "succeeded" | "failed" | "timed_out" | "cancelled" | "default";
   sourceCount: number;
   artifactCount: number;
@@ -13,6 +18,13 @@ export type ParallelBranchTrace = {
   sources: ParallelSourceRef[];
   artifacts: ParallelArtifactRef[];
   toolCalls: ParallelToolCallRef[];
+};
+
+export type ParallelBranchBudget = {
+  timeout_ms?: number;
+  max_tool_calls?: number;
+  max_sources?: number;
+  max_tokens?: number;
 };
 
 export type ParallelGroupTrace = {
@@ -55,6 +67,11 @@ export type ParallelSourceRef = {
   url?: string;
   provider?: string;
   snippet?: string;
+  domain?: string;
+  quality?: string;
+  quality_score?: number;
+  source_kind?: string;
+  score_reasons?: string[];
 };
 
 export type ParallelArtifactRef = {
@@ -151,12 +168,17 @@ function buildParallelGroups(events: TraceEventLike[]): ParallelGroupTrace[] {
     }
     const branch = ensureBranch(group, branchID, stringValue(event.data.branch_title));
     branch.objective = stringValue(event.data.objective) || branch.objective;
+    branch.kind = stringValue(event.data.branch_kind) || branch.kind;
+    branch.coverageDimension = stringValue(event.data.coverage_dimension) || branch.coverageDimension;
+    branch.budget = budgetValue(event.data.branch_budget) || branch.budget;
     branch.sourceCount = numberValue(event.data.source_count) || branch.sourceCount;
     branch.artifactCount = numberValue(event.data.artifact_count) || branch.artifactCount;
     branch.toolCallCount = numberValue(event.data.tool_call_count) || branch.toolCallCount;
     branch.durationMs = numberValue(event.data.duration_ms) || branch.durationMs;
     branch.error = stringValue(event.data.error) || branch.error;
-    branch.status = event.type.endsWith("_started")
+    branch.status = booleanValue(event.data.timed_out)
+      ? "timed_out"
+      : event.type.endsWith("_started")
       ? "running"
       : event.type.endsWith("_failed")
         ? "failed"
@@ -211,13 +233,20 @@ function mergeBranchResultsFromRecord(groups: Map<string, ParallelGroupTrace>, r
       const branch = ensureBranch(group, id, stringValue(result.title));
       branch.status = statusValue(result.status) || branch.status;
       branch.error = stringValue(result.error) || branch.error;
+      const contribution = recordValue(result.contribution);
+      const metadata = recordValue(result.metadata);
+      branch.kind = stringValue(contribution?.kind) || stringValue(metadata?.branch_kind) || branch.kind;
+      branch.coverageDimension = stringValue(contribution?.coverage_dimension) || stringValue(metadata?.coverage_dimension) || branch.coverageDimension;
+      branch.budget = budgetValue(metadata?.branch_budget) || branch.budget;
+      branch.recommendedNextAction = stringValue(contribution?.recommended_next_action) || branch.recommendedNextAction;
+      branch.missingCoverage = mergeStringArrays(branch.missingCoverage, stringArray(contribution?.missing_coverage));
+      if (booleanValue(metadata?.timed_out)) branch.status = "timed_out";
       branch.sources = sourceRefs(result.sources);
       branch.artifacts = artifactRefs(result.artifacts);
       branch.toolCalls = toolCallRefs(result.tool_calls);
       branch.sourceCount = Math.max(branch.sourceCount, branch.sources.length);
       branch.artifactCount = Math.max(branch.artifactCount, branch.artifacts.length);
       branch.toolCallCount = Math.max(branch.toolCallCount, branch.toolCalls.length);
-      const metadata = recordValue(result.metadata);
       branch.durationMs = numberValue(metadata?.duration_ms) || branch.durationMs;
     }
   }
@@ -267,6 +296,7 @@ function ensureBranch(group: ParallelGroupTrace, id: string, title?: string): Pa
     sourceCount: 0,
     artifactCount: 0,
     toolCallCount: 0,
+    missingCoverage: [],
     sources: [],
     artifacts: [],
     toolCalls: []
@@ -372,6 +402,18 @@ function statusValue(value: unknown): ParallelBranchTrace["status"] | "" {
     return status;
   }
   return "";
+}
+
+function budgetValue(value: unknown): ParallelBranchBudget | undefined {
+  const record = recordValue(value);
+  if (!record) return undefined;
+  const budget: ParallelBranchBudget = {
+    timeout_ms: numberValue(record.timeout_ms),
+    max_tool_calls: numberValue(record.max_tool_calls),
+    max_sources: numberValue(record.max_sources),
+    max_tokens: numberValue(record.max_tokens)
+  };
+  return Object.values(budget).some((item) => item !== undefined) ? budget : undefined;
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {

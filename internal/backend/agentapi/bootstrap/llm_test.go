@@ -1,10 +1,35 @@
 package bootstrap
 
 import (
+	"context"
 	"testing"
 
 	"claude-codex/internal/backend/agentruntime"
+	"claude-codex/internal/harness/state"
 )
+
+func TestBuildLLMConfigSupportsSimplePlanner(t *testing.T) {
+	cfg, err := BuildLLMConfig("simple", "", "", "", "", 0)
+	if err != nil {
+		t.Fatalf("build simple config: %v", err)
+	}
+	if cfg.Provider != "simple" || cfg.Model != "simple" || cfg.Timeout == 0 {
+		t.Fatalf("unexpected simple config: %#v", cfg)
+	}
+	planner, err := newPlanner(cfg)
+	if err != nil {
+		t.Fatalf("new simple planner: %v", err)
+	}
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("hello")
+	resp, err := planner.Next(context.Background(), session, nil)
+	if err != nil {
+		t.Fatalf("simple planner plan: %v", err)
+	}
+	if resp.AssistantText == "" {
+		t.Fatalf("simple planner returned empty assistant text: %#v", resp)
+	}
+}
 
 func TestApplyRoutedModelForScopeRebindsVertexLocation(t *testing.T) {
 	got := applyRoutedModelForScope(LLMConfig{

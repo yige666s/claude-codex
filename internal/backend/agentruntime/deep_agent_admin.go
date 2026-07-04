@@ -11,6 +11,9 @@ type DeepAgentWorkflowSummary struct {
 	Status         string                       `json:"status,omitempty"`
 	Blocker        string                       `json:"blocker,omitempty"`
 	Recovery       DeepAgentRecoveryState       `json:"recovery,omitempty"`
+	LoopContract   LoopContract                 `json:"loop_contract,omitempty"`
+	Handoff        LoopHandoff                  `json:"handoff,omitempty"`
+	GateDecisions  []GateDecision               `json:"gate_decisions,omitempty"`
 	FinalAnswer    DeepAgentFinalAnswerEvidence `json:"final_answer,omitempty"`
 	Metrics        DeepAgentLoopMetrics         `json:"metrics,omitempty"`
 	Timeline       []DeepAgentTimelineItem      `json:"timeline,omitempty"`
@@ -23,6 +26,7 @@ type DeepAgentWorkflowSummary struct {
 	Evidence       []DeepAgentStepEvidence      `json:"evidence,omitempty"`
 	ArtifactRefs   []DeepAgentArtifactRef       `json:"artifact_refs,omitempty"`
 	FinalVerifier  map[string]any               `json:"final_verifier,omitempty"`
+	Evaluator      map[string]any               `json:"evaluator_verdict,omitempty"`
 	ActionHistory  []DeepAgentAction            `json:"action_history,omitempty"`
 	Learnings      []DeepAgentLearningCandidate `json:"learnings,omitempty"`
 	CompletedCount int                          `json:"completed_count"`
@@ -43,6 +47,8 @@ type DeepAgentRecoveryState struct {
 	BudgetExceeded       bool                  `json:"budget_exceeded,omitempty"`
 	ReviewActionHash     string                `json:"review_action_hash,omitempty"`
 	ReviewStepID         string                `json:"review_step_id,omitempty"`
+	ResumePoint          string                `json:"resume_point,omitempty"`
+	HandoffSummary       string                `json:"handoff_summary,omitempty"`
 	AdditionalBudgetHint DeepAgentResumeBudget `json:"additional_budget_hint,omitempty"`
 }
 
@@ -68,6 +74,9 @@ func DeepAgentSummaryFromWorkflowRun(run *WorkflowRun) (*DeepAgentWorkflowSummar
 		Status:         state.Status,
 		Blocker:        state.Blocker,
 		Recovery:       deepAgentRecoveryStateForSummary(state),
+		LoopContract:   state.LoopContract,
+		Handoff:        state.Handoff,
+		GateDecisions:  append([]GateDecision(nil), state.GateDecisions...),
 		FinalAnswer:    deepAgentFinalAnswerEvidenceForSummary(state),
 		Metrics:        deepAgentLoopMetricsForRun(run, state),
 		Timeline:       deepAgentTimelineForState(state),
@@ -78,6 +87,7 @@ func DeepAgentSummaryFromWorkflowRun(run *WorkflowRun) (*DeepAgentWorkflowSummar
 		Evidence:       deepAgentEvidenceForSummary(state),
 		ArtifactRefs:   deepAgentStateCurrentArtifactRefs(state),
 		FinalVerifier:  deepAgentFinalVerifierForSummary(state),
+		Evaluator:      deepAgentEvaluatorVerdictForSummary(state),
 		ActionHistory:  state.ActionHistory,
 		Learnings:      state.Learnings,
 		CompletedCount: len(state.CompletedSteps),
@@ -123,6 +133,10 @@ func deepAgentRecoveryStateForSummary(state *DeepAgentState) DeepAgentRecoverySt
 	recovery.UserFacingReason = deepAgentUserFacingBlockedReason(state, recovery)
 	recovery.AdditionalBudgetHint = deepAgentAdditionalBudgetHint(state, recovery)
 	recovery.RecommendedNext = deepAgentRecommendedNextAction(state, recovery)
+	if !loopHandoffEmpty(state.Handoff) {
+		recovery.ResumePoint = state.Handoff.ResumePoint
+		recovery.HandoffSummary = state.Handoff.Summary
+	}
 	return recovery
 }
 

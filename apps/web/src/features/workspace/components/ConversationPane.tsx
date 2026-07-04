@@ -15,8 +15,6 @@ type ConversationPaneProps = {
   activeSession?: Session;
   status: Status;
   recoveryBanner: RecoveryBanner;
-  online: boolean;
-  selectedJobId: string;
   userLabel: string;
   messages: Message[];
   liveUserDraft: string;
@@ -28,15 +26,12 @@ type ConversationPaneProps = {
   statusLine: (status: Status) => ReactNode;
   messageBubble: (props: { message: Message; streaming?: boolean; highlighted?: boolean }) => ReactNode;
   onOpenMobileNav: () => void;
-  onReconnectJob: () => void;
 };
 
 export function ConversationPane({
   activeSession,
   status,
   recoveryBanner,
-  online,
-  selectedJobId,
   userLabel,
   messages,
   liveUserDraft,
@@ -47,8 +42,7 @@ export function ConversationPane({
   composer,
   statusLine,
   messageBubble,
-  onOpenMobileNav,
-  onReconnectJob
+  onOpenMobileNav
 }: ConversationPaneProps) {
   const empty = !messages.length && !liveUserDraft && !assistantDraft && !agentActivity;
   const title = activeSession ? sessionTitle(activeSession.messages?.length ? activeSession : { ...activeSession, messages }) : "";
@@ -65,9 +59,6 @@ export function ConversationPane({
         <div className={`recovery-banner ${recoveryBanner.tone}`} role="status">
           <AlertCircle size={16} />
           <span>{recoveryBanner.text}</span>
-          {online && selectedJobId && (
-            <Button className="inline" onClick={onReconnectJob}>Reconnect</Button>
-          )}
         </div>
       )}
       <MessageList

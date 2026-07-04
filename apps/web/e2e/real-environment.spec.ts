@@ -5,7 +5,6 @@ const email = process.env.E2E_EMAIL || "";
 const password = process.env.E2E_PASSWORD || "";
 const generatedEmail = `agentapi-e2e-${Date.now()}@example.com`;
 const generatedPassword = "AgentAPI-e2e-12345";
-const workspaceGreeting = /^(Hello|Hi) /;
 
 test.describe("real environment E2E", () => {
   test.skip(!realE2EEnabled, "Set REAL_E2E=1 and E2E_BASE_URL to run against a real AgentAPI deployment.");
@@ -17,7 +16,7 @@ test.describe("real environment E2E", () => {
 
   test("real login, chat, upload-backed attachment preview, search, and settings", async ({ page }) => {
     await login(page);
-    await expect(page.getByRole("heading", { name: workspaceGreeting })).toBeVisible();
+    await expectWorkspaceReady(page);
 
     await createNewChat(page);
     const prompt = `AgentAPI real E2E smoke ${Date.now()}. Reply with one short sentence.`;
@@ -54,11 +53,16 @@ test.describe("real environment E2E", () => {
     await page.getByRole("button", { name: "Use image generation" }).click();
     await sendMessage(page, process.env.E2E_ARTIFACT_PROMPT || "Create a simple blue square test image with no text.");
 
-    await expect(page.getByRole("button", { name: "资源, new item available" }).or(page.getByRole("button", { name: "资源" }))).toBeVisible({ timeout: 180_000 });
+    const artifactPreview = page.getByRole("complementary", { name: "Artifact preview" });
+    await expect(artifactPreview).toBeVisible({ timeout: 180_000 });
+    await expect(artifactPreview.getByText(/image\/png/i).first()).toBeVisible();
+    await expect(artifactPreview.getByRole("img", { name: /shortapi-image|generated-image|blue-square/i })).toBeVisible();
+
+    await expect(page.getByRole("button", { name: "资源, new item available" }).or(page.getByRole("button", { name: "资源" }))).toBeVisible();
     await page.getByRole("button", { name: /资源/ }).click();
     await page.getByRole("tab", { name: "Artifacts" }).click();
     await expect(page.getByRole("dialog", { name: "Artifacts" })).toBeVisible();
-    await expect(page.locator(".asset-row").first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole("dialog", { name: "Artifacts" }).locator(".asset-row").first()).toBeVisible({ timeout: 60_000 });
   });
 
   test("real Live websocket reaches a user-safe terminal state", async ({ page }) => {
@@ -82,7 +86,7 @@ async function login(page: Page) {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Password").fill(password);
     await page.getByRole("button", { name: "Login" }).last().click();
-    await expect(page.getByRole("heading", { name: workspaceGreeting })).toBeVisible({ timeout: 30_000 });
+    await expectWorkspaceReady(page);
   } else {
     await page.getByRole("button", { name: "Register" }).click();
     await page.getByLabel("Email").fill(generatedEmail);
@@ -91,13 +95,18 @@ async function login(page: Page) {
     await page.getByLabel("Repeat secret").fill(generatedPassword);
     await page.getByRole("button", { name: "Create Account" }).click();
     const registered = await Promise.race([
-      page.getByRole("heading", { name: workspaceGreeting }).waitFor({ state: "visible", timeout: 30_000 }).then(() => true),
+      page.getByRole("textbox", { name: "Message" }).waitFor({ state: "visible", timeout: 30_000 }).then(() => true),
       page.getByText(/Verification email sent|email verification/i).waitFor({ state: "visible", timeout: 30_000 }).then(() => false)
     ]);
     if (!registered) {
       test.skip(true, "Registration requires email verification; set E2E_EMAIL and E2E_PASSWORD for this deployment.");
     }
   }
+}
+
+async function expectWorkspaceReady(page: Page) {
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "新聊天" })).toBeVisible();
 }
 
 async function createNewChat(page: Page) {

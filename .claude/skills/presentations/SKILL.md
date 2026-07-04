@@ -47,7 +47,7 @@ instead:
 - JS authoring option: `node` with global `pptxgenjs`
 - Visual checks: LibreOffice (`soffice`) plus Poppler (`pdftoppm`, `pdfinfo`)
 - Runtime smoke check:
-  `python3 ../../skill-runtimes/office/check_office_runtime.py`
+  `python3 "$CLAUDE_SKILL_DIR/../../skill-runtimes/office/check_office_runtime.py"`
 - Node package path: `${OFFICE_RUNTIME_NODE_MODULES:-/usr/local/lib/node_modules}`
 
 When the reference material below says to use `@oai/artifact-tool`, adapt the
@@ -85,11 +85,34 @@ Contents of the `slides/` skill folder:
 - `artifact_tool/`: API documentation and coding examples for the artifact tool library.
 - `assets/artifact-md/codex-grid-layout-library/`: A private, source-free Artifact.md package with 80 rendered layout previews, a model-facing registry, structured content tokens, and 80 exact plain-JavaScript artifact-tool Compose reconstructions with no JSX.
 
+## AgentAPI Fast Path
+
+For AgentAPI PPTX jobs, default to the fast local authoring path unless the user
+explicitly provides a template/reference deck or asks for a custom visual system.
+This keeps durable skill jobs inside their time budget.
+
+For a normal request such as "generate a PPT from this document":
+
+1. Do not read the Codex Grid layout library, design tokens, template registry,
+   layout previews, or artifact-tool implementation modules.
+2. Do not inspect template-following scripts or private artifact-tool docs.
+3. Use the provided `$SKILL_DIR`, `$CLAUDE_SKILL_DIR`, `$TMP_DIR`, and `$TMPDIR`
+   environment variables. Do not overwrite them with `$PWD` or the workspace.
+4. Create a concise outline directly from the user content, then generate a real
+   PPTX with `python-pptx` in one script.
+5. Use a simple professional business theme: title slide, agenda, 6-10 content
+   slides, and closing slide unless the user requests a different count.
+6. Register only the final `.pptx` with Artifact using `file_path`.
+
 ## Codex Grid Artifact-Tool Compose Layout Reference
 
-This skill variant does not include the Office template file. Use the distilled layout library as initial design and composition guidance when the user has not supplied a stronger template or brand system.
+This skill variant includes a distilled layout library, but AgentAPI must treat
+it as an optional design reference, not the default execution path. Use Codex
+Grid only when the user explicitly asks for advanced layout exploration, a
+specific visual system, or a deck style that cannot be satisfied by the fast
+local `python-pptx` route.
 
-Before planning slides:
+When Codex Grid is explicitly needed, before planning slides:
 
 1. Read `assets/artifact-md/codex-grid-layout-library/ARTIFACT.md`, `design_tokens.json`, and `artifact-tool-compose/template-registry.json`.
 2. Inspect `assets/previews/layout-library.png`, then shortlist layouts by `templateUse`, `layoutFamily`, `slots`, `densityBudget`, and `typographyBudget`. Do not open all 80 implementation modules by default.
@@ -171,9 +194,8 @@ matching route wins:
 2. **Explicit custom formatting**: if there is no reference and the user asks
    for a theme, brand treatment, visual style, mood, or custom formatting,
    create the deck from scratch. Do not use Codex Grid.
-3. **No visual direction**: use the bundled Codex Grid Artifact.md layout
-   library as the composition reference. Select and adapt layouts using the
-   Codex Grid instructions above; do not run PPTX template-following mode.
+3. **No visual direction**: use the AgentAPI Fast Path. Do not read Codex Grid
+   files or run PPTX template-following mode.
 
 User-provided references and explicit visual direction always take precedence
 over Codex Grid.
@@ -199,27 +221,33 @@ net-new Google Slides deliverables.
 
 ## Implementation
 
-You MUST use `@oai/artifact-tool` from JavaScript ES modules to implement the slide deck.
+AgentAPI does not include Codex's private `@oai/artifact-tool` runtime. Do not
+attempt to install, import, or bootstrap `@oai/artifact-tool` for AgentAPI deck
+generation.
 
-Read the local docs before coding:
+Use one of the public local authoring routes instead:
 
-- `artifact_tool/API_QUICK_START.md`
-- `artifact_tool/api/API_DOCS.md`
+- Preferred: create a real `.pptx` under `$TMP_DIR` with `python3` and
+  `python-pptx`, then register the final file with the Artifact tool using
+  `file_path`.
+- Alternative: create a real `.pptx` with Node.js and global `pptxgenjs`, then
+  register the final file with the Artifact tool using `file_path`.
 
-Before running any generated presentation module, initialize its workspace so
-Node.js can resolve the bundled `@oai/artifact-tool` package:
+Before coding, verify the runtime quickly instead of exploring private
+artifact-tool paths:
 
 ```bash
-node "$SKILL_DIR/container_tools/setup_artifact_tool_workspace.mjs" \
-  --workspace "$TMP_DIR"
+python3 "$CLAUDE_SKILL_DIR/../../skill-runtimes/office/check_office_runtime.py"
+python3 - <<'PY'
+import pptx
+print("python-pptx ok")
+PY
 ```
 
-Create the ES module source file (`.mjs`) under `$TMP_DIR` and export the final
-PowerPoint deck (`.pptx`) to `$FINAL_PPTX`. The generated source must be plain
-JavaScript that runs directly with `node`; do not require a transpiler or build
-step.
-
-You MUST NOT use `python-pptx` or the old Python `artifact_tool` API.
+Create all helper scripts, notes, source summaries, and intermediate files under
+`$TMP_DIR`. Export the final PowerPoint deck (`.pptx`) to `$FINAL_PPTX`, render
+or inspect it with LibreOffice/Poppler when possible, then call Artifact only
+for the final user-facing PPTX file.
 
 ## Template Following
 

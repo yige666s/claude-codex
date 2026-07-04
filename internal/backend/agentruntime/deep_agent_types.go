@@ -51,6 +51,8 @@ const (
 	DeepAgentDefaultNoProgressLimit = 3
 
 	DeepAgentRunStatusReviewPending = "review_pending"
+
+	LoopContractVersion = "loop-contract/v1"
 )
 
 type DeepAgentPolicy struct {
@@ -69,6 +71,88 @@ type DeepAgentRubric struct {
 	QualityBar         string   `json:"quality_bar,omitempty"`
 }
 
+type LoopContract struct {
+	ID              string                      `json:"id,omitempty"`
+	Version         string                      `json:"version,omitempty"`
+	Objective       string                      `json:"objective,omitempty"`
+	TaskType        string                      `json:"task_type,omitempty"`
+	Deliverable     LoopContractDeliverable     `json:"deliverable,omitempty"`
+	Rubric          DeepAgentRubric             `json:"rubric,omitempty"`
+	Budget          LoopContractBudget          `json:"budget,omitempty"`
+	ToolPolicy      LoopContractToolPolicy      `json:"tool_policy,omitempty"`
+	SourcePolicy    LoopContractSourcePolicy    `json:"source_policy,omitempty"`
+	RiskPolicy      LoopContractRiskPolicy      `json:"risk_policy,omitempty"`
+	StopPolicy      LoopContractStopPolicy      `json:"stop_policy,omitempty"`
+	EvaluatorPolicy LoopContractEvaluatorPolicy `json:"evaluator_policy,omitempty"`
+	CreatedFrom     string                      `json:"created_from,omitempty"`
+	CreatedAt       time.Time                   `json:"created_at,omitempty"`
+}
+
+type LoopContractDeliverable struct {
+	Type         string `json:"type,omitempty"`
+	Format       string `json:"format,omitempty"`
+	FilenameHint string `json:"filename_hint,omitempty"`
+}
+
+type LoopContractBudget struct {
+	MaxSteps        int   `json:"max_steps,omitempty"`
+	MaxActions      int   `json:"max_actions,omitempty"`
+	MaxDurationMS   int64 `json:"max_duration_ms,omitempty"`
+	StepTimeoutMS   int64 `json:"step_timeout_ms,omitempty"`
+	NoProgressLimit int   `json:"no_progress_limit,omitempty"`
+}
+
+type LoopContractToolPolicy struct {
+	AllowedModes     []string `json:"allowed_modes,omitempty"`
+	ConnectorContext []string `json:"connector_context,omitempty"`
+	WriteMode        string   `json:"write_mode,omitempty"`
+}
+
+type LoopContractSourcePolicy struct {
+	RequiresSources      bool     `json:"requires_sources,omitempty"`
+	MinSourceCount       int      `json:"min_source_count,omitempty"`
+	PreferredSources     []string `json:"preferred_sources,omitempty"`
+	PreferredDomains     []string `json:"preferred_domains,omitempty"`
+	BlockedDomains       []string `json:"blocked_domains,omitempty"`
+	MaxSourcesPerBranch  int      `json:"max_sources_per_branch,omitempty"`
+	MaxDuplicateDomains  int      `json:"max_duplicate_domains,omitempty"`
+	RequirePrimarySource bool     `json:"require_primary_source,omitempty"`
+	RecencyRequirement   string   `json:"recency_requirement,omitempty"`
+	MinSourceScore       float64  `json:"min_source_score,omitempty"`
+	QualityBar           string   `json:"quality_bar,omitempty"`
+}
+
+type LoopContractRiskPolicy struct {
+	RequiresReview   bool     `json:"requires_review,omitempty"`
+	ForbiddenActions []string `json:"forbidden_actions,omitempty"`
+	ReviewPolicy     string   `json:"review_policy,omitempty"`
+}
+
+type LoopContractStopPolicy struct {
+	DoneWhen         []string `json:"done_when,omitempty"`
+	MaxNoProgress    int      `json:"max_no_progress,omitempty"`
+	OnBudgetExceeded string   `json:"on_budget_exceeded,omitempty"`
+}
+
+type LoopContractEvaluatorPolicy struct {
+	RequiresFinalVerification bool     `json:"requires_final_verification,omitempty"`
+	Verifier                  string   `json:"verifier,omitempty"`
+	TimeoutMS                 int64    `json:"timeout_ms,omitempty"`
+	ConflictTimeoutMS         int64    `json:"conflict_reconciliation_timeout_ms,omitempty"`
+	EvidenceRequired          []string `json:"evidence_required,omitempty"`
+	ArtifactRequired          []string `json:"artifact_required,omitempty"`
+}
+
+type GateDecision struct {
+	Gate           string   `json:"gate,omitempty"`
+	Allow          bool     `json:"allow"`
+	BlockReason    string   `json:"block_reason,omitempty"`
+	RequiresReview bool     `json:"requires_review,omitempty"`
+	RepairHint     string   `json:"repair_hint,omitempty"`
+	EvidenceRefs   []string `json:"evidence_refs,omitempty"`
+	Category       string   `json:"category,omitempty"`
+}
+
 type DeepAgentTaskRequest struct {
 	UserID           string          `json:"user_id,omitempty"`
 	SessionID        string          `json:"session_id,omitempty"`
@@ -79,12 +163,14 @@ type DeepAgentTaskRequest struct {
 	Policy           DeepAgentPolicy `json:"policy,omitempty"`
 	Rubric           DeepAgentRubric `json:"rubric,omitempty"`
 	State            map[string]any  `json:"state,omitempty"`
+	LoopContract     LoopContract    `json:"loop_contract,omitempty"`
 }
 
 type DeepAgentResumeRequest struct {
 	RunID            string                  `json:"run_id"`
 	Policy           DeepAgentPolicy         `json:"policy,omitempty"`
 	StatePatch       map[string]any          `json:"state_patch,omitempty"`
+	HandoffPatch     LoopHandoff             `json:"handoff_patch,omitempty"`
 	AdditionalBudget DeepAgentResumeBudget   `json:"additional_budget,omitempty"`
 	ReviewDecision   DeepAgentReviewDecision `json:"review_decision,omitempty"`
 }
@@ -110,6 +196,45 @@ type DeepAgentTaskResult struct {
 	Steps []*WorkflowStepRun `json:"steps,omitempty"`
 }
 
+type LoopHandoff struct {
+	Type              string           `json:"type,omitempty"`
+	Summary           string           `json:"summary,omitempty"`
+	ResumePoint       string           `json:"resume_point,omitempty"`
+	ResumeAvailable   bool             `json:"resume_available"`
+	Workspace         WorkspaceHandoff `json:"workspace,omitempty"`
+	Artifact          ArtifactHandoff  `json:"artifact,omitempty"`
+	Connector         ConnectorHandoff `json:"connector,omitempty"`
+	ReviewState       string           `json:"review_state,omitempty"`
+	BlockingReason    string           `json:"blocking_reason,omitempty"`
+	RecommendedAction string           `json:"recommended_action,omitempty"`
+	Metadata          map[string]any   `json:"metadata,omitempty"`
+	UpdatedAt         time.Time        `json:"updated_at,omitempty"`
+}
+
+type WorkspaceHandoff struct {
+	Repo         string   `json:"repo,omitempty"`
+	Branch       string   `json:"branch,omitempty"`
+	Worktree     string   `json:"worktree,omitempty"`
+	BaseCommit   string   `json:"base_commit,omitempty"`
+	ChangedFiles []string `json:"changed_files,omitempty"`
+	TestCommands []string `json:"test_commands,omitempty"`
+	RollbackPlan string   `json:"rollback_plan,omitempty"`
+}
+
+type ArtifactHandoff struct {
+	SourceArtifacts []DeepAgentArtifactRef `json:"source_artifacts,omitempty"`
+	DraftArtifact   *DeepAgentArtifactRef  `json:"draft_artifact,omitempty"`
+	FinalArtifact   *DeepAgentArtifactRef  `json:"final_artifact,omitempty"`
+	ReviewState     string                 `json:"review_state,omitempty"`
+}
+
+type ConnectorHandoff struct {
+	Provider            string            `json:"provider,omitempty"`
+	Scopes              []string          `json:"scopes,omitempty"`
+	RiskLevel           string            `json:"risk_level,omitempty"`
+	PendingWriteActions []DeepAgentAction `json:"pending_write_actions,omitempty"`
+}
+
 type DeepAgentLearningCandidate struct {
 	ID                       string         `json:"id"`
 	Type                     string         `json:"type"`
@@ -121,10 +246,14 @@ type DeepAgentLearningCandidate struct {
 	RunID                    string         `json:"run_id,omitempty"`
 	StepID                   string         `json:"step_id,omitempty"`
 	EvidenceID               string         `json:"evidence_id,omitempty"`
+	EvidenceRefs             []string       `json:"evidence_refs,omitempty"`
+	SourceJob                string         `json:"source_job,omitempty"`
+	Owner                    string         `json:"owner,omitempty"`
 	MemoryItemID             string         `json:"memory_item_id,omitempty"`
 	RiskLevel                string         `json:"risk_level,omitempty"`
 	Sensitivity              string         `json:"sensitivity,omitempty"`
 	Visibility               string         `json:"visibility,omitempty"`
+	Confidence               float64        `json:"confidence,omitempty"`
 	RequiresUserConfirmation bool           `json:"requires_user_confirmation,omitempty"`
 	PolicyReason             string         `json:"policy_reason,omitempty"`
 	UserConfirmed            bool           `json:"user_confirmed,omitempty"`
@@ -260,14 +389,16 @@ type DeepAgentToolRef struct {
 }
 
 type DeepAgentSourceRef struct {
-	ID           string  `json:"id,omitempty"`
-	URL          string  `json:"url,omitempty"`
-	Title        string  `json:"title,omitempty"`
-	Snippet      string  `json:"snippet,omitempty"`
-	Provider     string  `json:"provider,omitempty"`
-	Quality      string  `json:"quality,omitempty"`
-	QualityScore float64 `json:"quality_score,omitempty"`
-	SourceKind   string  `json:"source_kind,omitempty"`
+	ID           string   `json:"id,omitempty"`
+	URL          string   `json:"url,omitempty"`
+	Title        string   `json:"title,omitempty"`
+	Snippet      string   `json:"snippet,omitempty"`
+	Provider     string   `json:"provider,omitempty"`
+	Quality      string   `json:"quality,omitempty"`
+	QualityScore float64  `json:"quality_score,omitempty"`
+	SourceKind   string   `json:"source_kind,omitempty"`
+	Domain       string   `json:"domain,omitempty"`
+	ScoreReasons []string `json:"score_reasons,omitempty"`
 }
 
 type DeepAgentToolCallRef struct {
@@ -316,25 +447,50 @@ type DeepAgentActionResult struct {
 }
 
 type DeepAgentParallelBranchSpec struct {
-	ID              string         `json:"id"`
-	Title           string         `json:"title"`
-	Task            string         `json:"task"`
-	Tool            string         `json:"tool,omitempty"`
-	AllowedTools    []string       `json:"allowed_tools,omitempty"`
-	SuccessCriteria []string       `json:"success_criteria,omitempty"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
+	ID                string                        `json:"id"`
+	Title             string                        `json:"title"`
+	Task              string                        `json:"task"`
+	Tool              string                        `json:"tool,omitempty"`
+	AllowedTools      []string                      `json:"allowed_tools,omitempty"`
+	SuccessCriteria   []string                      `json:"success_criteria,omitempty"`
+	Kind              string                        `json:"kind,omitempty"`
+	CoverageDimension string                        `json:"coverage_dimension,omitempty"`
+	Budget            DeepAgentParallelBranchBudget `json:"budget,omitempty"`
+	Metadata          map[string]any                `json:"metadata,omitempty"`
 }
 
 type DeepAgentParallelBranchResult struct {
-	ID        string                 `json:"id"`
-	Title     string                 `json:"title,omitempty"`
-	Status    string                 `json:"status"`
-	Output    string                 `json:"output,omitempty"`
-	Error     string                 `json:"error,omitempty"`
-	Sources   []DeepAgentSourceRef   `json:"sources,omitempty"`
-	Artifacts []DeepAgentArtifactRef `json:"artifacts,omitempty"`
-	ToolCalls []DeepAgentToolCallRef `json:"tool_calls,omitempty"`
-	Metadata  map[string]any         `json:"metadata,omitempty"`
+	ID           string                      `json:"id"`
+	Title        string                      `json:"title,omitempty"`
+	Status       string                      `json:"status"`
+	Output       string                      `json:"output,omitempty"`
+	Error        string                      `json:"error,omitempty"`
+	Sources      []DeepAgentSourceRef        `json:"sources,omitempty"`
+	Artifacts    []DeepAgentArtifactRef      `json:"artifacts,omitempty"`
+	ToolCalls    []DeepAgentToolCallRef      `json:"tool_calls,omitempty"`
+	Contribution DeepAgentBranchContribution `json:"contribution,omitempty"`
+	Metadata     map[string]any              `json:"metadata,omitempty"`
+}
+
+type DeepAgentParallelBranchBudget struct {
+	TimeoutMS    int64 `json:"timeout_ms,omitempty"`
+	MaxToolCalls int   `json:"max_tool_calls,omitempty"`
+	MaxSources   int   `json:"max_sources,omitempty"`
+	MaxTokens    int   `json:"max_tokens,omitempty"`
+}
+
+type DeepAgentBranchContribution struct {
+	BranchID              string               `json:"branch_id,omitempty"`
+	Title                 string               `json:"title,omitempty"`
+	Kind                  string               `json:"kind,omitempty"`
+	CoverageDimension     string               `json:"coverage_dimension,omitempty"`
+	Status                string               `json:"status,omitempty"`
+	Findings              []string             `json:"findings,omitempty"`
+	Sources               []DeepAgentSourceRef `json:"sources,omitempty"`
+	Confidence            string               `json:"confidence,omitempty"`
+	Conflicts             []string             `json:"conflicts,omitempty"`
+	MissingCoverage       []string             `json:"missing_coverage,omitempty"`
+	RecommendedNextAction string               `json:"recommended_next_action,omitempty"`
 }
 
 type DeepAgentProgress struct {
@@ -350,6 +506,41 @@ type DeepAgentFinalVerification struct {
 	Missing         []string                        `json:"missing,omitempty"`
 	Confidence      string                          `json:"confidence,omitempty"`
 	ResearchQuality *DeepAgentResearchQualityReport `json:"research_quality,omitempty"`
+}
+
+const (
+	DeepAgentEvaluatorPass        = "pass"
+	DeepAgentEvaluatorFail        = "fail"
+	DeepAgentEvaluatorNeedsRepair = "needs_repair"
+	DeepAgentEvaluatorNeedsReview = "needs_review"
+)
+
+type DeepAgentEvaluatorInput struct {
+	Contract     LoopContract            `json:"contract,omitempty"`
+	Evidence     []DeepAgentStepEvidence `json:"evidence,omitempty"`
+	Artifacts    []DeepAgentArtifactRef  `json:"artifacts,omitempty"`
+	TraceSummary DeepAgentEvaluatorTrace `json:"trace_summary,omitempty"`
+}
+
+type DeepAgentEvaluatorTrace struct {
+	Status         string                       `json:"status,omitempty"`
+	CompletedSteps []string                     `json:"completed_steps,omitempty"`
+	FailedSteps    []string                     `json:"failed_steps,omitempty"`
+	ActionCount    int                          `json:"action_count,omitempty"`
+	Blocker        string                       `json:"blocker,omitempty"`
+	VerifierChecks []DeepAgentVerificationCheck `json:"verifier_checks,omitempty"`
+}
+
+type DeepAgentEvaluatorVerdict struct {
+	Verdict        string                       `json:"verdict"`
+	Passed         bool                         `json:"passed"`
+	FailedCriteria []string                     `json:"failed_criteria,omitempty"`
+	Confidence     string                       `json:"confidence,omitempty"`
+	RepairPlan     []string                     `json:"repair_plan,omitempty"`
+	Reason         string                       `json:"reason,omitempty"`
+	Checks         []DeepAgentVerificationCheck `json:"checks,omitempty"`
+	SourceCoverage map[string]any               `json:"source_coverage,omitempty"`
+	RubricCoverage map[string]any               `json:"rubric_coverage,omitempty"`
 }
 
 type DeepAgentVerificationCheck struct {
@@ -380,6 +571,8 @@ type DeepAgentResearchCoverageReport struct {
 type DeepAgentState struct {
 	Goal             string                       `json:"goal"`
 	Rubric           DeepAgentRubric              `json:"rubric,omitempty"`
+	LoopContract     LoopContract                 `json:"loop_contract,omitempty"`
+	Handoff          LoopHandoff                  `json:"handoff,omitempty"`
 	Plan             DeepAgentPlan                `json:"plan"`
 	CurrentStepIndex int                          `json:"current_step_index"`
 	CompletedSteps   []string                     `json:"completed_steps"`
@@ -394,6 +587,7 @@ type DeepAgentState struct {
 	UpdatedAt        time.Time                    `json:"updated_at"`
 	WorkingMemory    map[string]any               `json:"working_memory,omitempty"`
 	Learnings        []DeepAgentLearningCandidate `json:"learnings,omitempty"`
+	GateDecisions    []GateDecision               `json:"gate_decisions,omitempty"`
 }
 
 type DeepAgentPlanner interface {
@@ -416,6 +610,14 @@ type DeepAgentStepExecutor interface {
 type DeepAgentVerifier interface {
 	CheckProgress(ctx context.Context, state *DeepAgentState, step DeepAgentStep, action DeepAgentAction, result DeepAgentActionResult) (DeepAgentProgress, error)
 	CheckFinal(ctx context.Context, state *DeepAgentState) (DeepAgentFinalVerification, error)
+}
+
+type DeepAgentEvaluator interface {
+	EvaluateProgress(ctx context.Context, input DeepAgentEvaluatorInput) (DeepAgentEvaluatorVerdict, error)
+	EvaluateFinal(ctx context.Context, input DeepAgentEvaluatorInput) (DeepAgentEvaluatorVerdict, error)
+	EvaluateSources(ctx context.Context, input DeepAgentEvaluatorInput) (DeepAgentEvaluatorVerdict, error)
+	EvaluateArtifact(ctx context.Context, input DeepAgentEvaluatorInput) (DeepAgentEvaluatorVerdict, error)
+	EvaluateConflicts(ctx context.Context, input DeepAgentEvaluatorInput) (DeepAgentEvaluatorVerdict, error)
 }
 
 type DeepAgentContextLoader interface {

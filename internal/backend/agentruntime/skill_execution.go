@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -371,8 +372,12 @@ func summarizeSkillExecutions(skillName string, records []SkillExecutionRecord) 
 }
 
 func truncateSkillExecutionString(value string, max int) string {
+	value = strings.ToValidUTF8(value, "")
 	if max <= 0 || len(value) <= max {
 		return value
+	}
+	for max > 0 && !utf8.ValidString(value[:max]) {
+		max--
 	}
 	return value[:max]
 }

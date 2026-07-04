@@ -1,6 +1,6 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
 import { userFacingErrorMessage } from "./errorMessages";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, BrowserPushConfig, BrowserPushSubscriptionResponse, ConnectorAuthStart, ConnectorConnection, ConnectorPolicy, ConnectorStatus, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, TaskInboxResponse, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, BrowserPushConfig, BrowserPushSubscriptionResponse, ChatRunSummary, ConnectorAuthStart, ConnectorConnection, ConnectorPolicy, ConnectorStatus, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, LoopDiscoveryEvent, LoopDiscoveryResult, LoopTriggerRecord, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, TaskInboxResponse, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -121,6 +121,11 @@ export class ApiClient {
     return this.fetchJSON<Session>(`/v1/sessions/${encodeURIComponent(id)}`);
   }
 
+  async activeChatRun(sessionId: string): Promise<ChatRunSummary | null> {
+    const payload = await this.fetchJSON<{ run: ChatRunSummary | null }>(`/v1/sessions/${encodeURIComponent(sessionId)}/active-run`);
+    return payload.run || null;
+  }
+
   async deleteSession(id: string): Promise<void> {
     await this.fetchJSON(`/v1/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
@@ -238,7 +243,7 @@ export class ApiClient {
     });
   }
 
-  async reviewDeepAgentLearning(id: string, action: "accept" | "reject" | "rollback", reason = ""): Promise<MemoryItem> {
+  async reviewDeepAgentLearning(id: string, action: "accept" | "reject" | "expire" | "rollback", reason = ""): Promise<MemoryItem> {
     return this.fetchJSON<MemoryItem>(`/v1/deep-agent/learnings/${encodeURIComponent(id)}/review`, {
       method: "POST",
       body: JSON.stringify({ action, reason })
@@ -445,6 +450,33 @@ export class ApiClient {
     return payload.events || [];
   }
 
+  async adminOpsLoopTriggers(adminToken: string, userId: string, options: { sessionId?: string; limit?: number } = {}): Promise<LoopTriggerRecord[]> {
+    const params = new URLSearchParams({ user_id: userId });
+    if (options.sessionId) params.set("session_id", options.sessionId);
+    if (options.limit) params.set("limit", String(options.limit));
+    const payload = await this.fetchJSON<{ triggers: LoopTriggerRecord[] }>(`/v1/admin/ops/loop/triggers?${params.toString()}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return payload.triggers || [];
+  }
+
+  async adminOpsSubmitLoopDiscovery(adminToken: string, userId: string, event: LoopDiscoveryEvent): Promise<LoopDiscoveryResult> {
+    const params = new URLSearchParams({ user_id: userId });
+    return this.fetchJSON<LoopDiscoveryResult>(`/v1/admin/ops/loop/discovery?${params.toString()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify(event)
+    });
+  }
+
+  async submitLoopDiscovery(event: LoopDiscoveryEvent): Promise<LoopDiscoveryResult> {
+    return this.fetchJSON<LoopDiscoveryResult>("/v1/loop/discovery", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(event)
+    });
+  }
+
   async adminOpsWorkflows(adminToken: string, userId: string, options: { sessionId?: string; jobId?: string; name?: string; status?: string; limit?: number } = {}): Promise<WorkflowRun[]> {
     const params = new URLSearchParams({ user_id: userId });
     if (options.sessionId) params.set("session_id", options.sessionId);
@@ -484,7 +516,7 @@ export class ApiClient {
     return payload.workflow;
   }
 
-  async adminOpsReviewDeepAgentLearning(adminToken: string, userId: string, candidateId: string, action: "accept" | "reject" | "rollback", reason = ""): Promise<MemoryItem> {
+  async adminOpsReviewDeepAgentLearning(adminToken: string, userId: string, candidateId: string, action: "accept" | "reject" | "expire" | "rollback", reason = ""): Promise<MemoryItem> {
     const params = new URLSearchParams({ user_id: userId });
     return this.fetchJSON<MemoryItem>(`/v1/admin/ops/deep-agent/learnings/${encodeURIComponent(candidateId)}/review?${params.toString()}`, {
       method: "POST",
@@ -1131,6 +1163,30 @@ export class ApiClient {
     });
     if (response.status === 401 && retry && await this.refresh({ clearOnFailure: true })) {
       return this.chatResponse(sessionId, content, attachmentIds, signal, options, false);
+    }
+    if (!response.ok) throw await toApiError(response);
+    return response;
+  }
+
+  chatRunStreamURL(runId: string, afterId?: string): string {
+    const params = new URLSearchParams({ stream: "1" });
+    if (afterId) params.set("after_id", afterId);
+    return this.apiURL(`/v1/chat/runs/${encodeURIComponent(runId)}/events?${params.toString()}`);
+  }
+
+  async prepareEventSourceAuth(): Promise<void> {
+    if (this.auth?.refresh_token) await this.refresh({ clearOnFailure: false });
+  }
+
+  async chatRunStreamResponse(runId: string, afterId?: string, signal?: AbortSignal, retry = true): Promise<Response> {
+    await this.ensureFreshAccess();
+    const response = await fetch(this.chatRunStreamURL(runId, afterId), {
+      credentials: "include",
+      headers: this.headers(),
+      signal
+    });
+    if (response.status === 401 && retry && this.auth?.refresh_token) {
+      if (await this.refresh({ clearOnFailure: true })) return this.chatRunStreamResponse(runId, afterId, signal, false);
     }
     if (!response.ok) throw await toApiError(response);
     return response;

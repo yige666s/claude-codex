@@ -40,8 +40,7 @@ func buildRegistry(root string, skillManager *skills.SkillManager, allowDangerou
 	}
 	if enabled("Skill") {
 		toolList = append(toolList, skilltool.NewToolWithOptions(skillManager, skilltool.Options{
-			DefaultDir:    root,
-			RouteRunAsJob: true,
+			DefaultDir: root,
 		}))
 	}
 	if artifactWriter != nil && enabled(agentruntime.ArtifactToolName) {
@@ -133,22 +132,36 @@ func buildSandboxBashRuntime(config agentruntime.SkillShellSandboxConfig, root s
 	if scope.SkillShellSandbox.Runner != "" {
 		config = scope.SkillShellSandbox
 	}
-	if !scope.SkillScoped || !config.DockerEnabled() || !allowsTool(scope.AllowedTools, "Bash") {
+	if !scope.SkillScoped || !allowsTool(scope.AllowedTools, "Bash") {
 		return nil
 	}
 	shell := scope.SkillShell
 	if shell == "" {
 		shell = skills.ShellBash
 	}
-	runtime := agentruntime.NewDockerSkillShellRuntime(
-		config,
-		shell,
-		root,
-		startupconfig.FirstNonEmpty(scope.SkillRoot, root),
-		scope.SkillShellEnv,
-		scope.AllowedTools,
-	)
-	return agentruntime.NewSandboxBashTool(runtime)
+	if config.DockerEnabled() {
+		runtime := agentruntime.NewDockerSkillShellRuntime(
+			config,
+			shell,
+			root,
+			startupconfig.FirstNonEmpty(scope.SkillRoot, root),
+			scope.SkillShellEnv,
+			scope.AllowedTools,
+		)
+		return agentruntime.NewSandboxBashTool(runtime)
+	}
+	if strings.EqualFold(strings.TrimSpace(config.Runner), "local") || strings.TrimSpace(config.Runner) == "" {
+		runtime := agentruntime.NewLocalSkillShellRuntime(
+			config,
+			shell,
+			root,
+			startupconfig.FirstNonEmpty(scope.SkillRoot, root),
+			scope.SkillShellEnv,
+			scope.AllowedTools,
+		)
+		return agentruntime.NewSandboxBashTool(runtime)
+	}
+	return nil
 }
 
 func warmSkillSandboxImages(ctx context.Context, images []string) {

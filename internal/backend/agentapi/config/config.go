@@ -253,6 +253,15 @@ type Config struct {
 	JobQueueClaimIdle                        time.Duration
 	JobQueueLockTTL                          time.Duration
 	JobWorkerEnabled                         bool
+	JobEventStreamEnabled                    bool
+	JobEventStreamPrefix                     string
+	JobEventStreamTTL                        time.Duration
+	JobEventStreamMaxLen                     int
+	ChatEventStreamEnabled                   bool
+	ChatEventStreamPrefix                    string
+	ChatEventStreamTTL                       time.Duration
+	ChatEventStreamMaxLen                    int
+	ChatEventStreamBlock                     time.Duration
 	JobEventFanoutEnabled                    bool
 	JobEventFanoutChannel                    string
 	JobEventFanoutOrigin                     string
@@ -279,6 +288,13 @@ type Config struct {
 	TurnTimeout                              time.Duration
 	DeepAgentV2Enabled                       bool
 	DeepAgentV2ShadowRoute                   bool
+	LoopAutomationEnabled                    bool
+	LoopScheduleTriggersEnabled              bool
+	LoopWebhookTriggersEnabled               bool
+	LoopMonitorTriggersEnabled               bool
+	LoopEvalRepairTriggersEnabled            bool
+	LoopConnectorTriggersEnabled             bool
+	LoopTriggerTTL                           time.Duration
 	SkillShellTimeout                        time.Duration
 	SkillShellRunner                         string
 	SkillSandboxImage                        string
@@ -496,7 +512,7 @@ func Default() Config {
 		AllowDangerousTools:                      false,
 		NetworkAllowlist:                         os.Getenv("AGENT_API_NETWORK_ALLOWLIST"),
 		SkillDirs:                                os.Getenv("AGENT_API_SKILL_DIRS"),
-		RateLimitBackend:                         FirstNonEmpty(os.Getenv("AGENT_API_RATE_LIMIT_BACKEND"), "memory"),
+		RateLimitBackend:                         FirstNonEmpty(os.Getenv("AGENT_API_RATE_LIMIT_BACKEND"), "none"),
 		RateLimit:                                EnvInt("AGENT_API_RATE_LIMIT", 60),
 		OperationRateLimits:                      os.Getenv("AGENT_API_OPERATION_RATE_LIMITS"),
 		CacheBackend:                             FirstNonEmpty(os.Getenv("AGENT_API_CACHE_BACKEND"), "memory"),
@@ -535,6 +551,15 @@ func Default() Config {
 		JobQueueClaimIdle:                        EnvDuration("AGENT_API_JOB_QUEUE_CLAIM_IDLE", agentruntime.DefaultJobQueueClaimIdle),
 		JobQueueLockTTL:                          EnvDuration("AGENT_API_JOB_QUEUE_LOCK_TTL", agentruntime.DefaultJobQueueLockTTL),
 		JobWorkerEnabled:                         EnvBool("AGENT_API_JOB_WORKER_ENABLED", true),
+		JobEventStreamEnabled:                    EnvBool("AGENT_API_JOB_EVENT_STREAM_ENABLED", true),
+		JobEventStreamPrefix:                     FirstNonEmpty(os.Getenv("AGENT_API_JOB_EVENT_STREAM_PREFIX"), agentruntime.DefaultJobEventStreamPrefix),
+		JobEventStreamTTL:                        EnvDuration("AGENT_API_JOB_EVENT_STREAM_TTL", agentruntime.DefaultJobEventStreamTTL),
+		JobEventStreamMaxLen:                     EnvInt("AGENT_API_JOB_EVENT_STREAM_MAX_LEN", 10000),
+		ChatEventStreamEnabled:                   EnvBool("AGENT_API_CHAT_EVENT_STREAM_ENABLED", true),
+		ChatEventStreamPrefix:                    FirstNonEmpty(os.Getenv("AGENT_API_CHAT_EVENT_STREAM_PREFIX"), agentruntime.DefaultChatEventStreamPrefix),
+		ChatEventStreamTTL:                       EnvDuration("AGENT_API_CHAT_EVENT_STREAM_TTL", agentruntime.DefaultChatEventStreamTTL),
+		ChatEventStreamMaxLen:                    EnvInt("AGENT_API_CHAT_EVENT_STREAM_MAX_LEN", 10000),
+		ChatEventStreamBlock:                     EnvDuration("AGENT_API_CHAT_EVENT_STREAM_BLOCK", agentruntime.DefaultChatStreamBlockRead),
 		JobEventFanoutEnabled:                    EnvBool("AGENT_API_JOB_EVENT_FANOUT_ENABLED", true),
 		JobEventFanoutChannel:                    FirstNonEmpty(os.Getenv("AGENT_API_JOB_EVENT_FANOUT_CHANNEL"), agentruntime.DefaultJobEventFanoutChannel),
 		JobEventFanoutOrigin:                     os.Getenv("AGENT_API_JOB_EVENT_FANOUT_ORIGIN"),
@@ -561,6 +586,13 @@ func Default() Config {
 		TurnTimeout:                              2 * time.Minute,
 		DeepAgentV2Enabled:                       EnvBool("AGENT_API_DEEP_AGENT_V2_ENABLED", false),
 		DeepAgentV2ShadowRoute:                   EnvBool("AGENT_API_DEEP_AGENT_V2_SHADOW_ROUTE", false),
+		LoopAutomationEnabled:                    EnvBool("AGENT_API_LOOP_AUTOMATION_ENABLED", false),
+		LoopScheduleTriggersEnabled:              EnvBool("AGENT_API_LOOP_SCHEDULE_TRIGGERS_ENABLED", false),
+		LoopWebhookTriggersEnabled:               EnvBool("AGENT_API_LOOP_WEBHOOK_TRIGGERS_ENABLED", false),
+		LoopMonitorTriggersEnabled:               EnvBool("AGENT_API_LOOP_MONITOR_TRIGGERS_ENABLED", false),
+		LoopEvalRepairTriggersEnabled:            EnvBool("AGENT_API_LOOP_EVAL_REPAIR_TRIGGERS_ENABLED", false),
+		LoopConnectorTriggersEnabled:             EnvBool("AGENT_API_LOOP_CONNECTOR_TRIGGERS_ENABLED", false),
+		LoopTriggerTTL:                           EnvDuration("AGENT_API_LOOP_TRIGGER_TTL", 7*24*time.Hour),
 		SkillShellTimeout:                        EnvDuration("AGENT_API_SKILL_SHELL_TIMEOUT", 90*time.Second),
 		SkillShellRunner:                         FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SHELL_RUNNER"), agentruntime.DefaultSkillShellRunner),
 		SkillSandboxImage:                        FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_IMAGE"), agentruntime.DefaultSkillSandboxImage),
@@ -694,7 +726,7 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.BoolVar(&cfg.AllowCustomWorkingDir, "allow-custom-working-dir", cfg.AllowCustomWorkingDir, "allow request-provided working_dir when no user workspace root is configured")
 	flags.StringVar(&cfg.Timezone, "timezone", cfg.Timezone, "IANA timezone used for current date/time context; empty uses server local time")
 	flags.StringVar(&cfg.Locale, "locale", cfg.Locale, "BCP 47 locale tag used for locale context; empty lets the model infer from the latest user message")
-	flags.StringVar(&cfg.LLMProvider, "llm-provider", cfg.LLMProvider, "LLM provider: anthropic, openai, deepseek, nvidia, qwen, gemini, vertex, shortapi, or custom")
+	flags.StringVar(&cfg.LLMProvider, "llm-provider", cfg.LLMProvider, "LLM provider: anthropic, openai, deepseek, nvidia, qwen, gemini, vertex, shortapi, custom, or simple")
 	flags.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "LLM API key; env fallback depends on -llm-provider")
 	flags.StringVar(&cfg.APIToken, "api-token", cfg.APIToken, "LLM bearer/OAuth token; env fallback depends on -llm-provider")
 	flags.StringVar(&cfg.APIBaseURL, "api-base-url", cfg.APIBaseURL, "LLM API base URL; use with openai-compatible custom providers")
@@ -818,6 +850,15 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.DurationVar(&cfg.JobQueueClaimIdle, "job-queue-claim-idle", cfg.JobQueueClaimIdle, "pending job idle age before another worker can claim it")
 	flags.DurationVar(&cfg.JobQueueLockTTL, "job-queue-lock-ttl", cfg.JobQueueLockTTL, "Redis job execution lock TTL")
 	flags.BoolVar(&cfg.JobWorkerEnabled, "job-worker-enabled", cfg.JobWorkerEnabled, "run the built-in durable job worker")
+	flags.BoolVar(&cfg.JobEventStreamEnabled, "job-event-stream-enabled", cfg.JobEventStreamEnabled, "buffer job events in Redis Streams for resumable SSE subscribers")
+	flags.StringVar(&cfg.JobEventStreamPrefix, "job-event-stream-prefix", cfg.JobEventStreamPrefix, "Redis key prefix for resumable job event streams")
+	flags.DurationVar(&cfg.JobEventStreamTTL, "job-event-stream-ttl", cfg.JobEventStreamTTL, "TTL for per-job Redis event streams")
+	flags.IntVar(&cfg.JobEventStreamMaxLen, "job-event-stream-max-len", cfg.JobEventStreamMaxLen, "approximate max entries retained per job event stream")
+	flags.BoolVar(&cfg.ChatEventStreamEnabled, "chat-event-stream-enabled", cfg.ChatEventStreamEnabled, "buffer normal chat run events in Redis Streams for resumable SSE subscribers")
+	flags.StringVar(&cfg.ChatEventStreamPrefix, "chat-event-stream-prefix", cfg.ChatEventStreamPrefix, "Redis key prefix for resumable chat run event streams")
+	flags.DurationVar(&cfg.ChatEventStreamTTL, "chat-event-stream-ttl", cfg.ChatEventStreamTTL, "TTL for per-chat-run Redis event streams")
+	flags.IntVar(&cfg.ChatEventStreamMaxLen, "chat-event-stream-max-len", cfg.ChatEventStreamMaxLen, "approximate max entries retained per chat run event stream")
+	flags.DurationVar(&cfg.ChatEventStreamBlock, "chat-event-stream-block", cfg.ChatEventStreamBlock, "Redis blocking read duration for chat run event streams")
 	flags.BoolVar(&cfg.JobEventFanoutEnabled, "job-event-fanout-enabled", cfg.JobEventFanoutEnabled, "broadcast job events through Redis pub/sub for multi-instance realtime streams")
 	flags.StringVar(&cfg.JobEventFanoutChannel, "job-event-fanout-channel", cfg.JobEventFanoutChannel, "Redis pub/sub channel for multi-instance job event fanout")
 	flags.StringVar(&cfg.JobEventFanoutOrigin, "job-event-fanout-origin", cfg.JobEventFanoutOrigin, "job event fanout origin id; default is hostname-pid-random")
@@ -844,6 +885,13 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.DurationVar(&cfg.TurnTimeout, "turn-timeout", cfg.TurnTimeout, "max duration for one agent turn")
 	flags.BoolVar(&cfg.DeepAgentV2Enabled, "deep-agent-v2-enabled", cfg.DeepAgentV2Enabled, "enable DeepAgent v2 route metadata and executor adapter behavior")
 	flags.BoolVar(&cfg.DeepAgentV2ShadowRoute, "deep-agent-v2-shadow-route", cfg.DeepAgentV2ShadowRoute, "record DeepAgent legacy/new route diffs without changing execution")
+	flags.BoolVar(&cfg.LoopAutomationEnabled, "loop-automation-enabled", cfg.LoopAutomationEnabled, "enable automatic loop discovery triggers")
+	flags.BoolVar(&cfg.LoopScheduleTriggersEnabled, "loop-schedule-triggers-enabled", cfg.LoopScheduleTriggersEnabled, "enable scheduled loop discovery triggers")
+	flags.BoolVar(&cfg.LoopWebhookTriggersEnabled, "loop-webhook-triggers-enabled", cfg.LoopWebhookTriggersEnabled, "enable webhook loop discovery triggers")
+	flags.BoolVar(&cfg.LoopMonitorTriggersEnabled, "loop-monitor-triggers-enabled", cfg.LoopMonitorTriggersEnabled, "enable monitor loop discovery triggers")
+	flags.BoolVar(&cfg.LoopEvalRepairTriggersEnabled, "loop-eval-repair-triggers-enabled", cfg.LoopEvalRepairTriggersEnabled, "enable evaluation failure repair loop triggers")
+	flags.BoolVar(&cfg.LoopConnectorTriggersEnabled, "loop-connector-triggers-enabled", cfg.LoopConnectorTriggersEnabled, "enable connector event loop discovery triggers")
+	flags.DurationVar(&cfg.LoopTriggerTTL, "loop-trigger-ttl", cfg.LoopTriggerTTL, "retention TTL for loop trigger dedupe ledger rows")
 	flags.DurationVar(&cfg.SkillShellTimeout, "skill-shell-timeout", cfg.SkillShellTimeout, "max duration for skill frontmatter shell commands")
 	flags.StringVar(&cfg.SkillShellRunner, "skill-shell-runner", cfg.SkillShellRunner, "skill shell runner: local or docker")
 	flags.StringVar(&cfg.SkillSandboxImage, "skill-sandbox-image", cfg.SkillSandboxImage, "Docker image for skill shell runner=docker")

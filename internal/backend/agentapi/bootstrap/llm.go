@@ -30,6 +30,16 @@ func BuildLLMConfig(providerName, model, apiKey, apiToken, apiBaseURL string, ti
 	if providerName == "" {
 		providerName = "anthropic"
 	}
+	if providerName == "simple" {
+		if timeout <= 0 {
+			timeout = 600
+		}
+		return LLMConfig{
+			Provider: "simple",
+			Model:    startupconfig.FirstNonEmpty(model, "simple"),
+			Timeout:  timeout,
+		}, nil
+	}
 	defaults, err := providerbackend.NewFactory().DefaultConfig(providerName)
 	if err != nil {
 		return LLMConfig{}, err
@@ -59,6 +69,8 @@ func BuildLLMConfig(providerName, model, apiKey, apiToken, apiBaseURL string, ti
 
 func newPlanner(cfg LLMConfig) (engine.Planner, error) {
 	switch strings.ToLower(cfg.Provider) {
+	case "simple":
+		return engine.NewSimplePlanner(), nil
 	case "anthropic", "claude":
 		credential := startupconfig.FirstNonEmpty(cfg.APIKey, cfg.Token)
 		client := anthropic.NewClient(credential, cfg.BaseURL, time.Duration(cfg.Timeout)*time.Second)
@@ -190,6 +202,12 @@ func ApplyRuntimeLLMConfig(base LLMConfig, runtimeConfig agentruntime.LLMGoverna
 
 func runtimeProviderLLMConfig(providerName string, timeout int) (LLMConfig, bool) {
 	providerName = strings.ToLower(strings.TrimSpace(providerName))
+	if providerName == "simple" {
+		if timeout <= 0 {
+			timeout = 600
+		}
+		return LLMConfig{Provider: "simple", Model: "simple", Timeout: timeout}, true
+	}
 	defaults, err := providerbackend.NewFactory().DefaultConfig(providerName)
 	if err != nil {
 		return LLMConfig{}, false
@@ -328,7 +346,7 @@ func providerEnvAPIKey(providerName string) string {
 	case "deepseek":
 		return startupconfig.FirstNonEmpty(os.Getenv("DEEPSEEK_API_KEY"), os.Getenv("AGENT_API_LLM_API_KEY"))
 	case "nvidia", "nim":
-		return startupconfig.FirstNonEmpty(os.Getenv("NVIDIA_API_KEY"), os.Getenv("NGC_API_KEY"), os.Getenv("AGENT_API_LLM_API_KEY"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_EMBEDDING_API_KEY"))
+		return startupconfig.FirstNonEmpty(os.Getenv("AGENT_API_LLM_API_KEY"), os.Getenv("NVIDIA_API_KEY"), os.Getenv("NGC_API_KEY"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_EMBEDDING_API_KEY"))
 	case "qwen", "dashscope", "aliyun":
 		return startupconfig.FirstNonEmpty(os.Getenv("DASHSCOPE_API_KEY"), os.Getenv("QWEN_API_KEY"), os.Getenv("ALIBABA_CLOUD_API_KEY"), os.Getenv("AGENT_API_LLM_API_KEY"))
 	case "gemini", "google":

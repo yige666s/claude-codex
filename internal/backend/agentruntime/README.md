@@ -412,7 +412,9 @@ frequency and per-pass work.
 - Timeout tiers: `-llm-chat-timeout` for normal chat calls and `-llm-skill-timeout` for skill/workflow calls.
 - Quotas: `-llm-daily-token-quota`, `-llm-daily-request-quota`, and `-llm-daily-cost-quota-usd`.
 - Estimated cost: `-llm-input-cost-per-million` and `-llm-output-cost-per-million`.
-- Runtime model selection: Admin UI updates SQL-backed runtime config; CLI model flags are only startup defaults.
+- Runtime model selection: service startup syncs env/CLI LLM settings into the
+  SQL-backed `llm_governance` config row, then runtime reads and Admin UI
+  updates use that SQL row.
 - Runtime model catalog: Admin UI model options are loaded from the SQL-backed
   `agent_runtime_config` row keyed by `llm_model_catalog`; first startup seeds
   this row from built-in defaults when it is missing.
@@ -507,14 +509,22 @@ deployments should build with `VITE_AGENT_API_BASE_URL=https://api.example.com`
 and set `AGENT_API_CORS_ALLOWED_ORIGINS` to the exact frontend origin.
 See `deploy/production/FRONTEND.md` for the deployment contract.
 
-## Durable Jobs
+## Resumable Chat Streams And Durable Jobs
 
-Long-running chat or skill workflows run as durable jobs instead of staying
-coupled to a single browser request. Product users use the normal chat entry;
-the runtime routes long-running work to jobs internally.
+Normal chat messages execute synchronously on
+`POST /v1/sessions/{id}/messages`. The response is the primary SSE stream and
+includes backend `run_id` plus SSE `id:` fields; if the browser refreshes or
+disconnects, clients can resume the same normal chat stream with
+`GET /v1/chat/runs/{run_id}/events?stream=1` and `after_id` or the standard
+`Last-Event-ID` header.
 
-- The chat API can auto-route `POST /v1/sessions/{id}/messages` to a job and
-  returns an SSE `job` event containing `job_id` and the job payload.
+Long-running skill workflows run as durable jobs instead of staying coupled to a
+single browser request. Product users use the normal chat entry; `RouteChat`
+only routes explicit long-running modes to jobs, such as `plan_execute` or
+skills marked `run_as_job` / forked execution.
+
+- Routed long-running chat requests return an SSE `job` event containing
+  `job_id` and the job payload.
 - API clients can still create explicit jobs with `POST /v1/jobs`:
 
 ```json

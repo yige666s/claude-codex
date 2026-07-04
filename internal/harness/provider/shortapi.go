@@ -40,6 +40,11 @@ func (p *ShortAPIProvider) CreateMessage(ctx context.Context, request MessageReq
 	return p.OpenAIProvider.CreateMessage(ctx, request)
 }
 
+func (p *ShortAPIProvider) StreamMessage(ctx context.Context, request MessageRequest, onChunk func(string)) (*MessageResponse, error) {
+	request.Model = normalizeShortAPIModel(request.Model)
+	return p.OpenAIProvider.StreamMessage(ctx, request, onChunk)
+}
+
 func (p *ShortAPIProvider) Name() string {
 	return "shortapi"
 }

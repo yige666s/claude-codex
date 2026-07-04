@@ -248,7 +248,7 @@ test("keeps sent chat text visible when the stream fails", async ({ page }) => {
   await expect(page.getByText(/Message delivery failed/).first()).toBeVisible();
 });
 
-test("shows streamed agent activity as a collapsible timeline", async ({ page }) => {
+test("shows streamed agent activity as inline thinking progress", async ({ page }) => {
   await mockAgentAPI(page);
 
   await page.goto("/");
@@ -260,24 +260,18 @@ test("shows streamed agent activity as a collapsible timeline", async ({ page })
   await page.getByRole("button", { name: "Send" }).click();
 
   const activity = page.locator(".agent-activity");
-  const activityHeader = activity.locator(":scope > summary");
   await expect(activity).toBeVisible();
   await expect(activity).toHaveClass(/complete/);
-  await expect(activityHeader).toContainText("Agent trace");
-  await expect(activityHeader).toContainText("Completed");
-  await expect(activity.locator(".agent-activity-list")).toBeHidden();
-
-  await activityHeader.click();
-  await expect(page.getByText("Started plan-and-execute")).toBeVisible();
-  await expect(page.getByText("Gather facts · WebSearch").first()).toBeVisible();
-  await expect(page.getByText("Web search returned source notes").first()).toBeVisible();
-  await expect(activity.locator(".agent-activity-item.running")).toHaveCount(0);
-  await expect(activity.locator(".agent-activity-item.default")).toHaveCount(0);
-  await expect(activity.locator(".agent-activity-item.succeeded").first()).toBeVisible();
-  await expect.poll(async () => activity.locator(".agent-activity-body").evaluate((node) => {
-    const style = window.getComputedStyle(node);
-    return style.overflowY === "auto" && node.clientHeight > 0;
-  }), { message: "expanded agent activity body should be the visible scroll container" }).toBe(true);
+  await expect(activity).toContainText("Thinking");
+  await expect(activity).toContainText("Completed");
+  await expect(activity.locator(".agent-tool-list")).toBeVisible();
+  await expect(activity.getByText("Gather facts · WebSearch").first()).toBeVisible();
+  await expect(activity.locator(".agent-thinking-panel")).toBeVisible();
+  await activity.locator(".agent-thinking-panel > summary").click();
+  await expect(activity.locator(".agent-thinking-stream")).toBeVisible();
+  await expect(activity.getByText("Verification step 26").first()).toBeVisible();
+  await expect(activity.getByText("Response completed").first()).toBeVisible();
+  await expect(page.locator(".trace-workspace")).toHaveCount(0);
 });
 
 test("opens a fresh chat after deleting the active session", async ({ page }) => {
@@ -305,8 +299,9 @@ test("opens a fresh chat after deleting the active session", async ({ page }) =>
   await page.getByRole("button", { name: "Use image generation" }).click();
   await page.getByRole("textbox", { name: "Message" }).fill("delete this active session");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByRole("complementary", { name: "Artifact preview" })).toBeVisible();
-  await page.getByLabel("Close artifact preview").click();
+  await expect(page.getByText("任务详情可在 Inbox 查看").first()).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Artifact preview" })).toHaveCount(0);
+  await expect(page.getByRole("complementary", { name: "Job details" })).toHaveCount(0);
   await page.getByRole("button", { name: "资源" }).click();
   await page.getByRole("tab", { name: "Jobs" }).click();
   await page.getByRole("dialog", { name: "Jobs" }).locator(".job-summary", { hasText: "delete this active session" }).click();
@@ -406,6 +401,8 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
     }
     return json(route, state.sessions);
   });
+
+  await page.route(/.*\/v1\/sessions\/[^/]+\/active-run$/, (route) => json(route, { run: null }));
 
   await page.route(/.*\/v1\/sessions\/[^/]+$/, async (route) => {
     const id = route.request().url().split("/v1/sessions/")[1].split("?")[0];

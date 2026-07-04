@@ -7,7 +7,7 @@ export type ServiceStatus = Status & {
   details?: string;
 };
 
-export type RightPanelTab = "skills" | "jobs" | "attachments" | "artifacts";
+export type RightPanelTab = "skills" | "jobs" | "attachments" | "artifacts" | "applications";
 export type RightPanelSearch = Record<RightPanelTab, string>;
 export type JobStreamStatus = "idle" | "connecting" | "live" | "reconnecting" | "failed";
 export type ComposerToolID = "image" | "web-search" | "plan-execute";
