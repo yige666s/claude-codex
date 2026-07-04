@@ -82,6 +82,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
 
   await page.getByRole("button", { name: "Use plan and execute mode" }).click();
   await expect(page.getByRole("button", { name: "Use plan and execute mode" })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Use plan and execute mode" }).click();
   await page.getByRole("textbox", { name: "Message" }).fill("hello from playwright");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Echo: hello from playwright")).toBeVisible();
@@ -228,7 +229,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   expect(actionsBox!.y).toBeGreaterThanOrEqual(textareaBox!.y + textareaBox!.height - 2);
 
   expect(api.sessions.some((session) => session.messages.some((message) => message.content?.includes("hello from playwright")))).toBe(true);
-  expect(api.chatPayloads.some((payload) => payload.content === "hello from playwright" && payload.agent_mode === "plan_execute")).toBe(true);
+  expect(api.chatPayloads.some((payload) => payload.content === "hello from playwright" && payload.agent_mode !== "plan_execute")).toBe(true);
   expect(api.chatPayloads.some((payload) => payload.content === "please inspect the existing attachment" && payload.attachment_ids?.includes("attachment-1"))).toBe(true);
   expect(api.chatPayloads.some((payload) => payload.content.startsWith("/vertex-image-artifact") && payload.thinking_mode !== true)).toBe(true);
 });
@@ -272,6 +273,25 @@ test("shows streamed agent activity as inline thinking progress", async ({ page 
   await expect(activity.getByText("Verification step 26").first()).toBeVisible();
   await expect(activity.getByText("Response completed").first()).toBeVisible();
   await expect(page.locator(".trace-workspace")).toHaveCount(0);
+});
+
+test("sends plan-execute mode from the composer and creates a trace job", async ({ page }) => {
+  const api = await mockAgentAPI(page);
+
+  await page.goto("/");
+  await page.getByLabel("Email").fill("e2e@example.com");
+  await page.getByLabel("Password").fill("password123");
+  await page.getByRole("button", { name: "Login" }).last().click();
+
+  await page.getByRole("button", { name: "Use plan and execute mode" }).click();
+  await expect(page.getByRole("button", { name: "Use plan and execute mode" })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("textbox", { name: "Message" }).fill("帮我调研一下tolan这款ai产品，然后生成调研报告");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect.poll(() => api.state.chatPayloads.at(-1)?.agent_mode).toBe("plan_execute");
+  await expect(page.getByText("Started background job").first()).toBeVisible();
+  await expect(page.getByText("user selected plan-and-execute mode").first()).toBeVisible();
+  await expect.poll(() => api.state.jobs.at(-1)?.type).toBe("deep_agent");
 });
 
 test("opens a fresh chat after deleting the active session", async ({ page }) => {
@@ -442,6 +462,22 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
       attachments: payloadAttachments
     };
     session.messages.push(userMessage);
+
+    if (payload.agent_mode === "plan_execute") {
+      const job: Job = {
+        id: `job-${state.jobs.length + 1}`,
+        session_id: session.id,
+        type: "deep_agent",
+        status: "queued",
+        content: payload.content,
+        created_at: now,
+        updated_at: now
+      };
+      state.jobs = [job, ...state.jobs];
+      return sse(route, [
+        { event: "job", data: { type: "job", job_id: job.id, job, job_reason: "user selected plan-and-execute mode", session_id: session.id } }
+      ]);
+    }
 
     if (payload.content.startsWith("/vertex-image-artifact")) {
       const job: Job = {
@@ -633,7 +669,7 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
 
   await mockAdminAPI(page);
 
-  return state;
+  return { state };
 }
 
 async function mockAdminAPI(page: Page) {

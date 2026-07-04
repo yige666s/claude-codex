@@ -659,10 +659,6 @@ export function AgentWorkspace() {
   }, [sessionId]);
 
   useEffect(() => {
-    if (messages.length > 0 && selectedComposerTool) setSelectedComposerTool("");
-  }, [messages.length, selectedComposerTool]);
-
-  useEffect(() => {
     trackResourceIds("skills", skills.map((skill) => `${skill.name}:${skill.version || ""}`));
   }, [skills]);
 

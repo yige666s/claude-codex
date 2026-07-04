@@ -5316,6 +5316,52 @@ func TestRuntimeRoutesPlanExecuteModeToDeepAgentJob(t *testing.T) {
 	}
 }
 
+func TestRuntimeChatPlanExecuteCreatesDeepAgentJob(t *testing.T) {
+	runtime := testRuntime(t)
+	jobs := NewMemoryJobStore()
+	queue := &captureJobQueue{}
+	runtime.SetJobStore(jobs)
+	runtime.SetJobQueue(queue)
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	sink := &collectSink{}
+	err = runtime.Chat(context.Background(), ChatRequest{
+		UserID:    "alice",
+		SessionID: session.ID,
+		Content:   "帮我调研一下tolan这款ai产品，然后生成调研报告",
+		AgentMode: AgentModePlanExecute,
+	}, sink)
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+
+	storedJobs, err := jobs.ListJobs(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(storedJobs) != 1 {
+		t.Fatalf("expected one deep-agent job, got %#v", storedJobs)
+	}
+	if storedJobs[0].Type != JobTypeDeepAgent || storedJobs[0].Status != JobStatusQueued {
+		t.Fatalf("unexpected routed job: %#v", storedJobs[0])
+	}
+	if len(queue.items) != 1 || queue.items[0].JobID != storedJobs[0].ID || queue.items[0].UserID != "alice" {
+		t.Fatalf("queued item mismatch: %#v job=%#v", queue.items, storedJobs[0])
+	}
+	sink.mu.Lock()
+	events := append([]Event(nil), sink.events...)
+	sink.mu.Unlock()
+	if len(events) != 1 || events[0].Type != "job" || events[0].Job == nil || events[0].Job.Type != JobTypeDeepAgent {
+		t.Fatalf("expected one deep-agent job event, got %#v", events)
+	}
+	if events[0].JobReason != "user selected plan-and-execute mode" {
+		t.Fatalf("unexpected job reason: %#v", events[0])
+	}
+}
+
 func TestServerWebSocketStreamsChatEvents(t *testing.T) {
 	server := httptest.NewServer(NewServer(testRuntime(t), HeaderAuthenticator{}, NewRateLimiter(10, time.Minute), nil))
 	defer server.Close()

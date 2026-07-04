@@ -1849,6 +1849,20 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 		return fmt.Errorf("event sink is required")
 	}
 	req.ConnectorContext = r.resolveConnectorContext(ctx, req)
+	if jobIDFromContext(ctx) == "" {
+		if decision := r.RouteChat(req); decision.RunAsJob && decision.JobType == JobTypeDeepAgent {
+			job, err := r.CreateJob(ctx, req, firstNonEmptyString(decision.JobType, JobTypeChat))
+			if err != nil {
+				_ = sink.Send(ctx, Event{Type: "error", SessionID: req.SessionID, Error: err.Error()})
+				return err
+			}
+			if err := r.StartJob(ctx, job); err != nil {
+				_ = sink.Send(ctx, Event{Type: "error", SessionID: req.SessionID, JobID: job.ID, Error: err.Error()})
+				return err
+			}
+			return sink.Send(ctx, Event{Type: "job", SessionID: req.SessionID, JobID: job.ID, Job: job, JobReason: decision.Reason})
+		}
+	}
 	session, err := r.GetSession(ctx, req.UserID, req.SessionID)
 	if err != nil {
 		return err
