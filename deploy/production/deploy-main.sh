@@ -60,6 +60,67 @@ else
   echo "warning: env file not found: $env_file; using process environment only" >&2
 fi
 
+env_value() {
+  local key="$1"
+  local value="${!key:-}"
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+    return 0
+  fi
+  if [ -f "$env_file" ]; then
+    awk -v key="$key" '
+      BEGIN { prefix = key "=" }
+      index($0, prefix) == 1 {
+        value = substr($0, length(prefix) + 1)
+        gsub(/^["'\'']|["'\'']$/, "", value)
+        print value
+        exit
+      }
+    ' "$env_file"
+  fi
+}
+
+append_profile() {
+  local profile="$1"
+  local existing=" ${compose_profiles[*]-} "
+  if [[ "$existing" != *" $profile "* ]]; then
+    compose_profiles+=("$profile")
+  fi
+}
+
+compose_profiles=()
+if [ -n "${AGENTAPI_COMPOSE_PROFILES:-}" ]; then
+  IFS=',' read -r -a requested_profiles <<<"$AGENTAPI_COMPOSE_PROFILES"
+  for profile in "${requested_profiles[@]}"; do
+    profile="$(printf '%s' "$profile" | xargs)"
+    if [ -n "$profile" ]; then
+      append_profile "$profile"
+    fi
+  done
+fi
+
+message_events_backend="$(env_value AGENT_API_MESSAGE_EVENTS_BACKEND | tr '[:upper:]' '[:lower:]')"
+case "$message_events_backend" in
+  kafka|dual)
+    append_profile kafka
+    ;;
+esac
+
+message_search_backend="$(env_value AGENT_API_MESSAGE_SEARCH_BACKEND | tr '[:upper:]' '[:lower:]')"
+case "$message_search_backend" in
+  elasticsearch|opensearch|semantic|hybrid)
+    append_profile search
+    ;;
+esac
+
+for profile in "${compose_profiles[@]}"; do
+  compose_args+=(--profile "$profile")
+done
+
+if [ "${#compose_profiles[@]}" -gt 0 ]; then
+  echo "docker compose profiles: ${compose_profiles[*]}"
+fi
+
 case "$deploy_mode" in
   build)
     run_with_heartbeat docker compose "${compose_args[@]}" up -d --build

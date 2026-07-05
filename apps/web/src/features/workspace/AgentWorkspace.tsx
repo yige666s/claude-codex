@@ -373,6 +373,7 @@ export function AgentWorkspace() {
   const abortRef = useRef<AbortController | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const jobStreamAbortRef = useRef<AbortController | null>(null);
+  const jobEventSourceRef = useRef<EventSource | null>(null);
   const jobReconnectTimerRef = useRef<number | null>(null);
   const jobReconnectAttemptRef = useRef(0);
   const jobStreamClosedRef = useRef(false);
@@ -712,7 +713,8 @@ export function AgentWorkspace() {
         if (active?.sessionId === sessionId && active.runId !== run.run_id) {
           clearActiveChatRun(active.runId);
         }
-        openChatRunStream(run.run_id, "", true);
+        const resumeAfterId = active?.sessionId === sessionId && active.runId === run.run_id ? active.lastEventId : "";
+        openChatRunStream(run.run_id, resumeAfterId || "", true);
       } catch {
         if (active?.sessionId === sessionId) clearActiveChatRun(active.runId);
         // Missing active-run metadata should not block normal chat history loading.
@@ -1640,6 +1642,7 @@ export function AgentWorkspace() {
     const abort = new AbortController();
     let sawRuntimeError = false;
     let sawTerminalEvent = false;
+    let backgroundJobStarted = false;
     let postChatRefreshStarted = false;
     let firstTokenSeen = false;
     const sentAt = performance.now();
@@ -1712,6 +1715,7 @@ export function AgentWorkspace() {
           saveActiveChatRun(data.run_id, requestSessionId, id);
         }
         if (data.type === "error") sawRuntimeError = true;
+        if (data.type === "job" && data.job_id) backgroundJobStarted = true;
         if (data.type === "done" || data.type === "error" || data.type === "cancelled") sawTerminalEvent = true;
         if (data.type === "done" || data.type === "error" || data.type === "cancelled") {
           if (data.run_id) clearActiveChatRun(data.run_id);
@@ -1739,7 +1743,7 @@ export function AgentWorkspace() {
           handleRuntimeEvent(data);
         }
       });
-      finishAgentActivity(requestSessionId);
+      if (!backgroundJobStarted) finishAgentActivity(requestSessionId);
       if (!sawTerminalEvent) clearActiveChatRunForSession(requestSessionId);
       if (selectedSessionIdRef.current === requestSessionId && lastVisibleAssistantAt !== null) {
         setResponseTiming((current) => current?.sessionId === requestSessionId ? { ...current, totalMs: timingElapsed(lastVisibleAssistantAt as number) } : current);
@@ -2023,6 +2027,9 @@ export function AgentWorkspace() {
     if (event.type === "job" && event.job_id) {
       if (event.job) setJobs((current) => upsertJob(current, event.job as Job));
       setStatus({ tone: "busy", text: "Running in background" });
+      if (!jobWorkspaceOpen || selectedJobId === event.job_id) {
+        setSelectedJobId(event.job_id);
+      }
       const submitted = event.job?.content || "";
       if (submitted && shouldDisplayJobSubmittedContent(event)) {
         const now = new Date().toISOString();
@@ -2140,7 +2147,7 @@ export function AgentWorkspace() {
     activeChatRunIdRef.current = runId;
     lastChatRunEventRef.current = afterId;
     chatRunClosedRef.current = false;
-    chatRunReconnectAttemptRef.current = 0;
+    if (!restoring) chatRunReconnectAttemptRef.current = 0;
     if (restoring) setStatus({ tone: "busy", text: "Restoring stream" });
     startAgentActivity(sessionId);
     if (typeof EventSource === "undefined") {
@@ -2167,11 +2174,17 @@ export function AgentWorkspace() {
     };
     source.onopen = () => {
       if (activeChatRunIdRef.current !== runId || chatRunClosedRef.current) return;
+      chatRunReconnectAttemptRef.current = 0;
       setStatus({ tone: "busy", text: "Streaming response" });
     };
     source.onerror = () => {
       if (activeChatRunIdRef.current !== runId || chatRunClosedRef.current) return;
-      setStatus({ tone: "busy", text: "Streaming response" });
+      if (chatRunEventSourceRef.current === source) {
+        source.close();
+        chatRunEventSourceRef.current = null;
+      }
+      setStatus({ tone: "busy", text: "Reconnecting stream" });
+      scheduleChatRunReconnect(runId);
     };
     chatRunEventTypes.forEach((type) => source.addEventListener(type, handleMessage as EventListener));
     source.onmessage = handleMessage;
@@ -2217,6 +2230,10 @@ export function AgentWorkspace() {
 
   function scheduleChatRunReconnect(runId: string) {
     if (chatRunClosedRef.current || activeChatRunIdRef.current !== runId) return;
+    if (chatRunReconnectTimerRef.current) {
+      window.clearTimeout(chatRunReconnectTimerRef.current);
+      chatRunReconnectTimerRef.current = null;
+    }
     const delay = Math.min(jobReconnectMaxMs, jobReconnectBaseMs * 2 ** chatRunReconnectAttemptRef.current);
     chatRunReconnectAttemptRef.current += 1;
     chatRunReconnectTimerRef.current = window.setTimeout(() => {
@@ -2243,7 +2260,53 @@ export function AgentWorkspace() {
       clearJobReconnectState();
       return;
     }
+    if (typeof EventSource !== "undefined") {
+      void openJobEventSource(jobId);
+      return;
+    }
     void openJobStreamWithFetchFallback(jobId);
+  }
+
+  async function openJobEventSource(jobId: string) {
+    try {
+      await api.prepareEventSourceAuth();
+    } catch {
+      // EventSource will report stale auth through the stream error path.
+    }
+    if (jobStreamClosedRef.current || activeJobStreamIdRef.current !== jobId) return;
+    const source = new EventSource(api.jobStreamURL(jobId, lastJobEventRef.current), { withCredentials: true });
+    jobEventSourceRef.current = source;
+    const handleMessage = (message: MessageEvent<string>) => {
+      if (activeJobStreamIdRef.current !== jobId || jobStreamClosedRef.current) return;
+      const event = runtimeEventFromEventSourceMessage(message);
+      if (!event) return;
+      const eventId = message.lastEventId || lastJobEventRef.current || `${Date.now()}`;
+      if (message.lastEventId) lastJobEventRef.current = message.lastEventId;
+      setJobEvents((current) => appendJobEvent(current, { id: eventId, job_id: jobId, type: event.type, event, created_at: new Date().toISOString() }));
+      recordAgentActivity(event, event.session_id || sessionId, message.lastEventId);
+      const terminalStatus = terminalJobStatusFromRuntimeEvent(event);
+      if (terminalStatus) {
+        finishJobStream(jobId, terminalStatus, event);
+      }
+    };
+    source.onopen = () => {
+      if (activeJobStreamIdRef.current !== jobId || jobStreamClosedRef.current) return;
+      jobReconnectAttemptRef.current = 0;
+      setJobStreamStatus("live");
+      setJobStreamNotice("");
+    };
+    source.onerror = () => {
+      if (activeJobStreamIdRef.current !== jobId || jobStreamClosedRef.current) return;
+      if (jobEventSourceRef.current === source) {
+        source.close();
+        jobEventSourceRef.current = null;
+      }
+      setJobStreamStatus("reconnecting");
+      setJobStreamNotice("Job stream disconnected. Reconnecting...");
+      scheduleJobReconnect(jobId);
+    };
+    chatRunEventTypes.forEach((type) => source.addEventListener(type, handleMessage as EventListener));
+    source.onmessage = handleMessage;
   }
 
   async function openJobStreamWithFetchFallback(jobId: string) {
@@ -2281,6 +2344,8 @@ export function AgentWorkspace() {
 
   function finishJobStream(jobId: string, status: JobStatus, event?: RuntimeEvent, createdAt?: string) {
     jobStreamClosedRef.current = true;
+    jobEventSourceRef.current?.close();
+    jobEventSourceRef.current = null;
     jobStreamAbortRef.current?.abort();
     jobStreamAbortRef.current = null;
     clearJobReconnectTimer();
@@ -2289,7 +2354,10 @@ export function AgentWorkspace() {
     markJobTerminal(jobId, status, event, createdAt);
     api.jobs(sessionId || undefined).then(setJobs).catch(() => {});
     const targetSession = event?.session_id || sessionId;
-    if (targetSession) refreshSessionData(targetSession, { revealNewArtifacts: true }).catch(() => {});
+    if (targetSession) {
+      finishAgentActivity(targetSession, event);
+      refreshSessionData(targetSession, { revealNewArtifacts: true }).catch(() => {});
+    }
   }
 
   async function loadJobEventReplay(jobId: string): Promise<void> {
@@ -2298,7 +2366,11 @@ export function AgentWorkspace() {
       setJobEvents(events);
       events.forEach((event) => recordAgentActivity(event.event, event.session_id || sessionId, event.id));
       const terminal = latestTerminalJobEvent(events, jobId);
-      if (terminal) markJobTerminal(jobId, terminal.status, terminal.event, terminal.created_at);
+      if (terminal) {
+        markJobTerminal(jobId, terminal.status, terminal.event, terminal.created_at);
+        const targetSession = terminal.event.session_id || sessionId;
+        if (targetSession) finishAgentActivity(targetSession, terminal.event);
+      }
     } catch (error) {
       setJobStreamStatus("failed");
       setJobStreamNotice(errorMessage(error));
@@ -2360,6 +2432,8 @@ export function AgentWorkspace() {
   function clearJobReconnectState() {
     clearJobReconnectTimer();
     jobStreamClosedRef.current = true;
+    jobEventSourceRef.current?.close();
+    jobEventSourceRef.current = null;
     jobStreamAbortRef.current?.abort();
     jobStreamAbortRef.current = null;
     activeJobStreamIdRef.current = "";
@@ -2370,6 +2444,8 @@ export function AgentWorkspace() {
   function closeJobStream() {
     jobStreamClosedRef.current = true;
     clearJobReconnectTimer();
+    jobEventSourceRef.current?.close();
+    jobEventSourceRef.current = null;
     jobStreamAbortRef.current?.abort();
     jobStreamAbortRef.current = null;
   }
@@ -3272,6 +3348,8 @@ function chatRunTerminalEvent(event?: RuntimeEvent): boolean {
 }
 
 function chatActivityTerminalStatus(event?: RuntimeEvent): AgentActivityItem["status"] | "" {
+  if (event?.type === "deep_agent_completed") return "succeeded";
+  if (event?.type === "deep_agent_failed") return "failed";
   const status = terminalJobStatusFromRuntimeEvent(event);
   if (status === "succeeded") return "succeeded";
   if (status === "failed") return "failed";

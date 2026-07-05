@@ -29,7 +29,7 @@ test.describe("real environment E2E", () => {
 
     await page.getByRole("button", { name: "资源" }).click();
     await page.getByRole("tab", { name: "Attachments" }).click();
-    await page.getByRole("button", { name: "Preview real-e2e-notes.txt" }).click();
+    await page.getByRole("button", { name: "Preview real-e2e-notes.txt" }).first().click();
     await expect(page.getByRole("dialog", { name: "real-e2e-notes.txt" })).toBeVisible();
     await expect(page.getByText("real object storage upload")).toBeVisible();
     await page.getByRole("button", { name: "Close preview" }).click();

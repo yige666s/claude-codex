@@ -92,6 +92,7 @@ services:
     environment:
       discovery.type: single-node
       xpack.security.enabled: "false"
+      cluster.routing.allocation.disk.threshold_enabled: "false"
       ES_JAVA_OPTS: "-Xms512m -Xmx512m"
     ports:
       - "${AGENT_API_ELASTICSEARCH_HOST:-127.0.0.1}:${AGENT_API_ELASTICSEARCH_PORT:-9200}:9200"

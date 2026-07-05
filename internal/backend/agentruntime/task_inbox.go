@@ -94,11 +94,15 @@ func (r *Runtime) TaskInbox(ctx context.Context, userID string, opts TaskInboxOp
 		if job == nil {
 			continue
 		}
+		jobSessionAvailable := taskInboxSessionAvailable(sessionAvailable, job.SessionID)
+		if !jobSessionAvailable {
+			continue
+		}
 		jobArtifacts := artifactsByJob[job.ID]
 		for _, artifact := range jobArtifacts {
 			artifactSeen[artifact.ID] = struct{}{}
 		}
-		item := taskInboxItemFromJob(ctx, r, userID, job, jobArtifacts, taskInboxSessionAvailable(sessionAvailable, job.SessionID))
+		item := taskInboxItemFromJob(ctx, r, userID, job, jobArtifacts, jobSessionAvailable)
 		items = append(items, item)
 	}
 	for _, artifact := range artifacts {
@@ -108,7 +112,11 @@ func (r *Runtime) TaskInbox(ctx context.Context, userID string, opts TaskInboxOp
 		if _, ok := artifactSeen[artifact.ID]; ok {
 			continue
 		}
-		items = append(items, taskInboxItemFromArtifact(artifact, taskInboxSessionAvailable(sessionAvailable, artifact.SessionID)))
+		artifactSessionAvailable := taskInboxSessionAvailable(sessionAvailable, artifact.SessionID)
+		if !artifactSessionAvailable {
+			continue
+		}
+		items = append(items, taskInboxItemFromArtifact(artifact, artifactSessionAvailable))
 	}
 
 	sort.SliceStable(items, func(i, j int) bool {

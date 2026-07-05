@@ -42,6 +42,7 @@ export function AgentActivity({ activity }: AgentActivityProps) {
   ].filter(Boolean).join(" · ");
   const latestThinking = latestVisibleItem(thinkingItems) || latest;
   const detail = latestThinking?.detail || latestThinking?.title || summary;
+  const primaryLabel = terminalStatus === "running" ? "Thinking" : stateLabel;
   const thinkingLabel = activity.running ? "Thinking" : "Thought process";
   const hasSections = thinkingItems.length > 0 || toolItems.length > 0 || noticeItems.length > 0 || citationItems.length > 0;
 
@@ -63,7 +64,7 @@ export function AgentActivity({ activity }: AgentActivityProps) {
                 : <CheckCircle2 size={16} />}
         </span>
         <span className="agent-activity-title">
-          Thinking
+          {primaryLabel}
           <small>{detail}</small>
         </span>
         <span className="agent-activity-summary">{summary}</span>

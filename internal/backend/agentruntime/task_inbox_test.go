@@ -2,7 +2,6 @@ package agentruntime
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 )
@@ -57,7 +56,7 @@ func TestTaskInboxAggregatesJobsAndArtifacts(t *testing.T) {
 	}
 }
 
-func TestTaskInboxKeepsJobWhenSessionDeleted(t *testing.T) {
+func TestTaskInboxHidesItemsWhenSessionDeleted(t *testing.T) {
 	runtime := testRuntime(t)
 	runtime.SetJobStore(NewMemoryJobStore())
 	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
@@ -79,6 +78,10 @@ func TestTaskInboxKeepsJobWhenSessionDeleted(t *testing.T) {
 	if err := runtime.jobs.UpdateJobStatus(ctx, "alice", job.ID, JobStatusFailed, "sql: no rows in result set", now); err != nil {
 		t.Fatalf("update job: %v", err)
 	}
+	artifact, err := runtime.CreateArtifact(WithJobID(ctx, job.ID), "alice", session.ID, "dog.png", "image/png", []byte("png"))
+	if err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
 	if err := runtime.DeleteSession(ctx, "alice", session.ID); err != nil {
 		t.Fatalf("delete session: %v", err)
 	}
@@ -87,23 +90,12 @@ func TestTaskInboxKeepsJobWhenSessionDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task inbox after deleted session: %v", err)
 	}
-	var orphan *TaskInboxItem
-	for i := range inbox.Items {
-		item := &inbox.Items[i]
-		if item.JobID == job.ID {
-			orphan = item
+	for _, item := range inbox.Items {
+		if item.JobID == job.ID || item.ArtifactID == artifact.ID {
+			t.Fatalf("deleted-session inbox item should be hidden: %#v", item)
 		}
 	}
-	if orphan == nil {
-		t.Fatalf("deleted-session job missing from task inbox: %#v", inbox.Items)
-	}
-	if orphan.SessionAvailable {
-		t.Fatalf("deleted-session job should be marked unavailable: %#v", orphan)
-	}
-	if orphan.SessionID != session.ID || orphan.NextAction != "" {
-		t.Fatalf("deleted-session job should not be openable from task inbox: %#v", orphan)
-	}
-	if strings.Contains(orphan.LastEvent, "sql:") {
-		t.Fatalf("deleted-session job should not expose internal storage errors: %#v", orphan)
+	if inbox.Groups[TaskInboxGroupFailed] != 0 || inbox.Groups[TaskInboxGroupCompleted] != 0 {
+		t.Fatalf("deleted-session inbox item should not affect group counts: groups=%#v items=%#v", inbox.Groups, inbox.Items)
 	}
 }

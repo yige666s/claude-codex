@@ -86,14 +86,29 @@ Kafka message events are available through the optional `kafka` profile:
 ```bash
 AGENT_API_MESSAGE_EVENTS_BACKEND=kafka \
 AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_ENABLED=true \
-AGENT_API_MESSAGE_SEARCH_BACKEND=semantic \
+AGENT_API_MESSAGE_SEARCH_BACKEND=elasticsearch \
 docker compose --profile kafka --profile search -f deploy/local/docker-compose.yml up --build
 ```
 
 The producer writes `message.created` events to `agent.messages`. The built-in
-consumer uses Redis processed locks and currently drives the Qdrant vector
-indexing worker; the same Kafka consumer foundation is intended for the
-Elasticsearch/OpenSearch indexing worker.
+consumer uses Redis processed locks and drives the configured search indexers:
+Elasticsearch/OpenSearch for full-text backends and Qdrant for semantic or
+hybrid backends. The local verification defaults to Elasticsearch so the
+Redpanda pipeline can be tested without depending on an external embedding
+provider; set `AGENT_API_MESSAGE_SEARCH_BACKEND=hybrid` explicitly when testing
+the semantic branch as well.
+
+Run the Redpanda message-event verification:
+
+```bash
+AGENT_API_MESSAGE_EVENTS_BACKEND=dual deploy/local/verify-redpanda-message-events.sh
+AGENT_API_MESSAGE_EVENTS_BACKEND=kafka deploy/local/verify-redpanda-message-events.sh
+```
+
+The verification starts Redpanda plus the search services, publishes a real chat
+message, confirms the event is present in the configured Redpanda topic
+(isolated per run by default), and waits for `/v1/search/messages` to return the
+asynchronously indexed message.
 
 Useful checks:
 

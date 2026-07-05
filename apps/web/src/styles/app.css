@@ -1086,24 +1086,27 @@ body.workspace-pane-resizing .workspace-stage {
 }
 .task-inbox-body {
   min-height: 340px;
-  padding: 16px 18px 20px;
+  padding: 14px 18px 20px;
   overflow: auto;
   display: grid;
-  gap: 14px;
+  align-content: start;
+  gap: 18px;
 }
 .task-inbox-empty,
 .task-inbox-group-empty {
-  padding: 18px;
-  border: 1px dashed rgba(204, 216, 226, 0.9);
-  border-radius: 14px;
+  padding: 10px 10px 10px 34px;
+  border: 0;
+  border-radius: 8px;
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.58);
+  background: transparent;
 }
 .task-inbox-group {
   display: grid;
-  gap: 10px;
+  gap: 6px;
 }
 .task-inbox-group header {
+  min-height: 30px;
+  padding: 0 4px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1114,9 +1117,9 @@ body.workspace-pane-resizing .workspace-stage {
   letter-spacing: 0.07em;
 }
 .task-inbox-group header strong {
-  min-width: 28px;
+  min-width: 26px;
   height: 24px;
-  padding: 0 8px;
+  padding: 0 7px;
   border-radius: 999px;
   display: inline-grid;
   place-items: center;
@@ -1125,29 +1128,32 @@ body.workspace-pane-resizing .workspace-stage {
 }
 .task-inbox-list {
   display: grid;
-  gap: 10px;
+  gap: 2px;
 }
 .task-card {
-  border: 1px solid rgba(215, 226, 235, 0.9);
-  border-radius: 14px;
+  border: 0;
+  border-radius: 8px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: var(--surface-shadow-soft);
+  gap: 6px;
+  background: transparent;
+  box-shadow: none;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+.task-card:hover {
+  background: rgba(238, 244, 248, 0.74);
 }
 .task-card-orphaned {
-  border-color: rgba(245, 158, 11, 0.42);
   grid-template-columns: minmax(0, 1fr);
-  background: rgba(255, 251, 235, 0.66);
+  background: rgba(255, 251, 235, 0.58);
 }
 .task-card-main {
   min-width: 0;
-  padding: 14px;
+  padding: 8px 10px;
   border: 0;
-  border-radius: 14px;
+  border-radius: 8px;
   display: grid;
-  gap: 7px;
+  gap: 4px;
   background: transparent;
   color: inherit;
   text-align: left;
@@ -1156,25 +1162,41 @@ body.workspace-pane-resizing .workspace-stage {
 .task-card-main-static {
   cursor: default;
 }
+.task-card-title-row,
 .task-card-main strong,
-.task-card-main small {
+.task-card-subtitle {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.task-card-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
 .task-card-main strong {
+  flex: 1;
+  color: var(--text);
   font-size: 15px;
+  font-weight: 820;
   letter-spacing: 0;
   white-space: nowrap;
 }
-.task-card-main small {
+.task-card-title-row time {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+.task-card-subtitle {
   color: var(--muted);
   font-size: 13px;
   white-space: nowrap;
 }
 .task-card-kind {
   color: var(--accent);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1182,29 +1204,29 @@ body.workspace-pane-resizing .workspace-stage {
 .task-card-meta {
   flex-wrap: wrap;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
 }
 .task-card-meta span {
-  min-height: 24px;
-  padding: 0 8px;
+  min-height: 20px;
+  padding: 0 7px;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   background: rgba(237, 244, 246, 0.9);
 }
 .task-card-actions {
-  padding: 12px 12px 12px 0;
+  padding: 8px 8px 8px 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .task-review-approve,
 .task-review-reject {
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 10px;
-  font-size: 13px;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 12px;
   font-weight: 800;
 }
 .task-review-approve {
@@ -1216,6 +1238,21 @@ body.workspace-pane-resizing .workspace-stage {
   border-color: rgba(239, 68, 68, 0.28);
   background: rgba(254, 242, 242, 0.9);
   color: var(--danger);
+}
+.task-inbox-show-more {
+  width: fit-content;
+  min-height: 30px;
+  margin: 2px 0 0 34px;
+  padding: 0 8px;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 760;
+}
+.task-inbox-show-more:hover:not(:disabled) {
+  background: rgba(238, 244, 248, 0.9);
+  color: var(--text);
 }
 .resource-load-more {
   width: 100%;
@@ -4738,7 +4775,7 @@ body.workspace-pane-resizing .workspace-stage {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 18px;
-  align-items: start;
+  align-items: center;
 }
 .connector-card-main p {
   margin: 8px 0 0;
@@ -4775,11 +4812,35 @@ body.workspace-pane-resizing .workspace-stage {
   background: rgba(245, 208, 111, 0.14);
   color: #f5d06f;
 }
+.connector-details-toggle {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #e7e7e8;
+  font-size: 13px;
+  font-weight: 760;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.connector-details-toggle:hover {
+  border-color: rgba(128, 224, 203, 0.32);
+  background: rgba(128, 224, 203, 0.08);
+}
+.connector-card-details {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
 .connector-meta-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  margin-top: 16px;
 }
 .connector-fact,
 .connector-policy-field {
@@ -4992,6 +5053,17 @@ body.workspace-pane-resizing .workspace-stage {
   border-color: var(--accent);
   background: var(--accent);
   color: #fff;
+}
+.resource-modal .connector-details-toggle {
+  border-color: rgba(205, 219, 226, 0.95);
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--text);
+}
+.resource-modal .connector-details-toggle:hover {
+  background: rgba(248, 251, 251, 0.98);
+}
+.resource-modal .connector-card-details {
+  border-top-color: rgba(214, 226, 234, 0.82);
 }
 .resource-modal .danger-outline {
   border-color: rgba(239, 68, 68, 0.55);

@@ -164,9 +164,9 @@ func (i *HTTPMessageFullTextIndexer) deleteAttachmentsByMessage(ctx context.Cont
 		"query": map[string]any{
 			"bool": map[string]any{
 				"filter": []map[string]any{
-					{"term": map[string]any{"source_type": messageIndexSourceAttachment}},
-					{"term": map[string]any{"user_id": userID}},
-					{"term": map[string]any{"message_id": messageID}},
+					exactTextTermQuery("source_type", messageIndexSourceAttachment),
+					exactTextTermQuery("user_id", userID),
+					exactTextTermQuery("message_id", messageID),
 				},
 			},
 		},
@@ -237,7 +237,7 @@ func (s *HTTPMessageFullTextSearcher) SearchMessages(ctx context.Context, userID
 		"query": map[string]any{
 			"bool": map[string]any{
 				"filter": []map[string]any{
-					{"term": map[string]any{"user_id": userID}},
+					exactTextTermQuery("user_id", userID),
 					{"term": map[string]any{"status": 1}},
 				},
 				"must": []map[string]any{
@@ -249,7 +249,7 @@ func (s *HTTPMessageFullTextSearcher) SearchMessages(ctx context.Context, userID
 				},
 				"must_not": []map[string]any{
 					{"term": map[string]any{"hidden": true}},
-					{"term": map[string]any{"role": "tool"}},
+					exactTextTermQuery("role", "tool"),
 				},
 			},
 		},
@@ -903,11 +903,27 @@ func attachmentDeleteQuery(userID, messageID, attachmentID string) map[string]an
 	return map[string]any{
 		"bool": map[string]any{
 			"filter": []map[string]any{
-				{"term": map[string]any{"source_type": messageIndexSourceAttachment}},
-				{"term": map[string]any{"user_id": strings.TrimSpace(userID)}},
-				{"term": map[string]any{"message_id": strings.TrimSpace(messageID)}},
-				{"term": map[string]any{"attachment_id": strings.TrimSpace(attachmentID)}},
+				exactTextTermQuery("source_type", messageIndexSourceAttachment),
+				exactTextTermQuery("user_id", strings.TrimSpace(userID)),
+				exactTextTermQuery("message_id", strings.TrimSpace(messageID)),
+				exactTextTermQuery("attachment_id", strings.TrimSpace(attachmentID)),
 			},
+		},
+	}
+}
+
+func exactTextTermQuery(field string, value any) map[string]any {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return map[string]any{"match_none": map[string]any{}}
+	}
+	return map[string]any{
+		"bool": map[string]any{
+			"should": []map[string]any{
+				{"term": map[string]any{field: value}},
+				{"term": map[string]any{field + ".keyword": value}},
+			},
+			"minimum_should_match": 1,
 		},
 	}
 }

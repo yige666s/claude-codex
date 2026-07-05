@@ -152,7 +152,12 @@ func (s *MessageSearchService) cacheAndReturn(ctx context.Context, cacheKey stri
 	}
 	results = cloneMessageSearchResults(results)
 	if s != nil && s.cache != nil && strings.TrimSpace(cacheKey) != "" {
-		_ = s.cache.Set(ctx, cacheKey, results)
+		// Empty search results are often transient while Redpanda-backed
+		// asynchronous indexers catch up. Caching them can hide newly indexed
+		// messages until the cache TTL expires.
+		if len(results) > 0 {
+			_ = s.cache.Set(ctx, cacheKey, results)
+		}
 	}
 	return results, nil
 }

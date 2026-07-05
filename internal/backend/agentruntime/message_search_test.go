@@ -78,6 +78,43 @@ func TestMessageSearchServiceElasticsearchDoesNotFallbackToSQL(t *testing.T) {
 	}
 }
 
+func TestHTTPMessageFullTextSearcherUsesKeywordCompatibleExactFilters(t *testing.T) {
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal request body: %v", err)
+		}
+		requestBody = string(data)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hits":{"hits":[{"_score":1,"_source":{"message_id":"m1","session_id":"s1","seq_no":1,"role":"user","content":"needle","created_at":"2026-07-05T00:00:00Z"}}]}}`))
+	}))
+	defer server.Close()
+
+	searcher := NewHTTPMessageFullTextSearcher(MessageSearchConfig{
+		Backend:  messageSearchBackendElasticsearch,
+		Endpoint: server.URL,
+		Index:    "agent_messages",
+		Timeout:  time.Second,
+	})
+	results, err := searcher.SearchMessages(context.Background(), "alice", "needle", 10, 0)
+	if err != nil {
+		t.Fatalf("SearchMessages() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %#v", results)
+	}
+	for _, field := range []string{"user_id.keyword", "role.keyword"} {
+		if !strings.Contains(requestBody, field) {
+			t.Fatalf("request body missing %s: %s", field, requestBody)
+		}
+	}
+}
+
 func TestMessageSearchServiceHybridDoesNotFallbackToSQL(t *testing.T) {
 	fallback := &stubMessageSearchStore{results: []MessageSearchResult{{SessionID: "s1", MessageIndex: 1, Content: "sql result"}}}
 	service := &MessageSearchService{

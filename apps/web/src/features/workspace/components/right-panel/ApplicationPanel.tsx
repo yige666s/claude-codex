@@ -45,62 +45,99 @@ export function ApplicationPanel({
         </div>
       )}
       <div className="connector-list">
-        {connectors.map((item) => {
-          const connection = item.connection;
-          const connected = connection?.status === "connected";
-          const busy = busyProvider === item.provider.id;
-          return (
-            <section className="connector-card" key={item.provider.id}>
-              <div className="connector-card-main">
-                <div>
-                  <div className="connector-title-row">
-                    <strong>{item.provider.name}</strong>
-                    <span className={`connector-status ${connected ? "connected" : connection?.status === "disabled" ? "disabled" : ""}`}>
-                      {connected ? "Connected" : connection?.status === "disabled" ? "Disabled" : "Not connected"}
-                    </span>
-                    {!item.provider.configured && <span className="connector-status warning">OAuth not configured</span>}
-                  </div>
-                  <p>{item.provider.description}</p>
-                </div>
-                <div className="settings-action-group">
-                  {connected ? (
-                    <button className="settings-action danger-outline" type="button" disabled={busy} onClick={() => onDisconnect(item.provider.id)}>
-                      Disconnect
-                    </button>
-                  ) : (
-                    <button className="settings-action primary" type="button" disabled={busy} onClick={() => onConnect(item.provider.id)}>
-                      {busy ? "Connecting..." : "Connect"}
-                    </button>
-                  )}
-                </div>
-              </div>
-              <div className="connector-meta-grid">
-                <ConnectorFact label="Scope" value={connection?.scopes?.join(", ") || item.provider.scopes.join(", ")} />
-                <ConnectorFact label="Last sync" value={formatConnectorTime(connection?.last_sync_at)} />
-                <ConnectorFact label="Context" value={item.context.task_types.join(", ")} />
-                <ConnectorFact label="Runtime" value={formatConnectorKind(item.provider.connection_kind, item.provider.supports_synced_index)} />
-                <ConnectorFact label="MCP server" value={formatMCPServer(item.mcp_server)} />
-                <ConnectorFact label="Discovery" value={formatConnectorTime(item.mcp_server?.last_discovered_at)} />
-                <label className="connector-policy-field">
-                  <span>Policy</span>
-                  <select
-                    className="settings-select connector-policy-select"
-                    value={connection?.permission_policy || item.provider.default_policy}
-                    disabled={!connection || busy}
-                    onChange={(event) => onPolicyChange(item.provider.id, event.target.value as ConnectorPolicy)}
-                  >
-                    {connectorPolicyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                  </select>
-                </label>
-              </div>
-              <ConnectorMCPError server={item.mcp_server} />
-              <ConnectorTools tools={item.mcp_tools || []} />
-              <small className="connector-policy-note">{item.context.policy_hint}</small>
-            </section>
-          );
-        })}
+        {connectors.map((item) => (
+          <ConnectorCard
+            key={item.provider.id}
+            item={item}
+            busy={busyProvider === item.provider.id}
+            onConnect={onConnect}
+            onPolicyChange={onPolicyChange}
+            onDisconnect={onDisconnect}
+          />
+        ))}
       </div>
     </div>
+  );
+}
+
+function ConnectorCard({
+  item,
+  busy,
+  onConnect,
+  onPolicyChange,
+  onDisconnect
+}: {
+  item: ConnectorStatus;
+  busy: boolean;
+  onConnect: (provider: string) => void;
+  onPolicyChange: (provider: string, policy: ConnectorPolicy) => void;
+  onDisconnect: (provider: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const connection = item.connection;
+  const connected = connection?.status === "connected";
+
+  return (
+    <section className={`connector-card ${expanded ? "expanded" : ""}`}>
+      <div className="connector-card-main">
+        <div>
+          <div className="connector-title-row">
+            <strong>{item.provider.name}</strong>
+            <span className={`connector-status ${connected ? "connected" : connection?.status === "disabled" ? "disabled" : ""}`}>
+              {connected ? "Connected" : connection?.status === "disabled" ? "Disabled" : "Not connected"}
+            </span>
+            {!item.provider.configured && <span className="connector-status warning">OAuth not configured</span>}
+          </div>
+          <p>{item.provider.description}</p>
+        </div>
+        <div className="settings-action-group">
+          {connected ? (
+            <button className="settings-action danger-outline" type="button" disabled={busy} onClick={() => onDisconnect(item.provider.id)}>
+              Disconnect
+            </button>
+          ) : (
+            <button className="settings-action primary" type="button" disabled={busy} onClick={() => onConnect(item.provider.id)}>
+              {busy ? "Connecting..." : "Connect"}
+            </button>
+          )}
+          <button
+            className="connector-details-toggle"
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            {expanded ? "Hide details" : "Show details"}
+          </button>
+        </div>
+      </div>
+      {expanded && (
+        <div className="connector-card-details">
+          <div className="connector-meta-grid">
+            <ConnectorFact label="Scope" value={connection?.scopes?.join(", ") || item.provider.scopes.join(", ")} />
+            <ConnectorFact label="Last sync" value={formatConnectorTime(connection?.last_sync_at)} />
+            <ConnectorFact label="Context" value={item.context.task_types.join(", ")} />
+            <ConnectorFact label="Runtime" value={formatConnectorKind(item.provider.connection_kind, item.provider.supports_synced_index)} />
+            <ConnectorFact label="MCP server" value={formatMCPServer(item.mcp_server)} />
+            <ConnectorFact label="Discovery" value={formatConnectorTime(item.mcp_server?.last_discovered_at)} />
+            <label className="connector-policy-field">
+              <span>Policy</span>
+              <select
+                className="settings-select connector-policy-select"
+                value={connection?.permission_policy || item.provider.default_policy}
+                disabled={!connection || busy}
+                onChange={(event) => onPolicyChange(item.provider.id, event.target.value as ConnectorPolicy)}
+              >
+                {connectorPolicyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+          </div>
+          <ConnectorMCPError server={item.mcp_server} />
+          <ConnectorTools tools={item.mcp_tools || []} />
+          <small className="connector-policy-note">{item.context.policy_hint}</small>
+        </div>
+      )}
+    </section>
   );
 }
 

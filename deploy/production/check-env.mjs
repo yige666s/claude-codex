@@ -77,6 +77,19 @@ if (["semantic", "hybrid"].includes(searchBackend)) {
   ]);
 }
 
+const messageEventsBackend = (env.AGENT_API_MESSAGE_EVENTS_BACKEND || "local").toLowerCase();
+if (["kafka", "dual"].includes(messageEventsBackend)) {
+  checkRequired("message-events", [
+    "AGENT_API_MESSAGE_EVENTS_KAFKA_BROKERS",
+    "AGENT_API_MESSAGE_EVENTS_KAFKA_TOPIC",
+    "AGENT_API_MESSAGE_EVENTS_KAFKA_CLIENT_ID",
+    "AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_GROUP",
+    "AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_ENABLED",
+    "AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_BACKEND",
+    "AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL"
+  ]);
+}
+
 const provider = (env.AGENT_API_LLM_PROVIDER || "").toLowerCase();
 if (provider === "vertex") {
   checkRequired("vertex", ["VERTEX_PROJECT_ID", "VERTEX_LOCATION"]);

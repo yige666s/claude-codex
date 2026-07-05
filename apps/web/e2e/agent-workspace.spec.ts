@@ -45,6 +45,15 @@ type Job = {
   updated_at: string;
 };
 
+type ActiveRun = {
+  run_id: string;
+  session_id: string;
+  status: string;
+  terminal: boolean;
+  last_event_id?: string;
+  updated_at: string;
+};
+
 test("covers auth, sessions, chat, attachments, jobs, previews, and search", async ({ page }) => {
   const api = await mockAgentAPI(page);
 
@@ -263,7 +272,6 @@ test("shows streamed agent activity as inline thinking progress", async ({ page 
   const activity = page.locator(".agent-activity");
   await expect(activity).toBeVisible();
   await expect(activity).toHaveClass(/complete/);
-  await expect(activity).toContainText("Thinking");
   await expect(activity).toContainText("Completed");
   await expect(activity.locator(".agent-tool-list")).toBeVisible();
   await expect(activity.getByText("Gather facts · WebSearch").first()).toBeVisible();
@@ -291,7 +299,175 @@ test("sends plan-execute mode from the composer and creates a trace job", async 
   await expect.poll(() => api.state.chatPayloads.at(-1)?.agent_mode).toBe("plan_execute");
   await expect(page.getByText("Started background job").first()).toBeVisible();
   await expect(page.getByText("user selected plan-and-execute mode").first()).toBeVisible();
+  const activity = page.locator(".agent-activity.complete", { hasText: "Plan-and-execute task completed" });
+  await expect(activity).toBeVisible();
+  await expect(activity.getByText("Completed").first()).toBeVisible();
   await expect.poll(() => api.state.jobs.at(-1)?.type).toBe("deep_agent");
+});
+
+test("reconnects active chat run EventSource with the last seen event id", async ({ page }) => {
+  await page.addInitScript(() => {
+    const urls: string[] = [];
+    class MockEventSource {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
+      url: string;
+      readyState = MockEventSource.CONNECTING;
+      withCredentials = false;
+      onopen: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      private listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>();
+
+      constructor(url: string, init?: EventSourceInit) {
+        this.url = url;
+        this.withCredentials = Boolean(init?.withCredentials);
+        urls.push(url);
+        const attempt = urls.length;
+        window.setTimeout(() => {
+          this.readyState = MockEventSource.OPEN;
+          this.onopen?.(new Event("open"));
+          if (attempt === 1) {
+            this.dispatch("progress", { type: "progress", run_id: "run-active", session_id: "20260509T120000Z-e2e", content: "step 1" }, "evt-1");
+            this.onerror?.(new Event("error"));
+          } else {
+            this.dispatch("done", { type: "done", run_id: "run-active", session_id: "20260509T120000Z-e2e" }, "evt-2");
+          }
+        }, 20);
+      }
+
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        const callback = typeof listener === "function" ? listener : listener.handleEvent.bind(listener);
+        const existing = this.listeners.get(type) || [];
+        existing.push(callback as (event: MessageEvent<string>) => void);
+        this.listeners.set(type, existing);
+      }
+
+      removeEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        const callback = typeof listener === "function" ? listener : listener.handleEvent.bind(listener);
+        this.listeners.set(type, (this.listeners.get(type) || []).filter((item) => item !== callback));
+      }
+
+      close() {
+        this.readyState = MockEventSource.CLOSED;
+      }
+
+      private dispatch(type: string, data: Record<string, unknown>, lastEventId: string) {
+        const event = new MessageEvent(type, { data: JSON.stringify(data), lastEventId });
+        for (const listener of this.listeners.get(type) || []) listener(event);
+        if (type === "message") this.onmessage?.(event);
+      }
+    }
+    Object.defineProperty(window, "EventSource", { configurable: true, value: MockEventSource });
+    Object.defineProperty(window, "__chatRunEventSourceUrls", { configurable: true, value: urls });
+    window.localStorage.setItem("agentapi.activeChatRun", JSON.stringify({
+      runId: "run-active",
+      sessionId: "20260509T120000Z-e2e",
+      lastEventId: "",
+      updatedAt: Date.now()
+    }));
+  });
+  await mockAgentAPI(page, {
+    activeRun: {
+      run_id: "run-active",
+      session_id: "20260509T120000Z-e2e",
+      status: "running",
+      terminal: false,
+      updated_at: now
+    }
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Email").fill("e2e@example.com");
+  await page.getByLabel("Password").fill("password123");
+  await page.getByRole("button", { name: "Login" }).last().click();
+
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __chatRunEventSourceUrls: string[] }).__chatRunEventSourceUrls.length)).toBeGreaterThanOrEqual(2);
+  const urls = await page.evaluate(() => (window as unknown as { __chatRunEventSourceUrls: string[] }).__chatRunEventSourceUrls);
+  expect(urls[0]).toContain("/v1/chat/runs/run-active/events?stream=1");
+  expect(urls[1]).toContain("after_id=evt-1");
+  await expect(page.getByText("Response completed").first()).toBeVisible();
+});
+
+test("reconnects job EventSource with the last seen event id", async ({ page }) => {
+  await page.addInitScript(() => {
+    const urls: string[] = [];
+    class MockEventSource {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
+      url: string;
+      readyState = MockEventSource.CONNECTING;
+      withCredentials = false;
+      onopen: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      private listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>();
+
+      constructor(url: string, init?: EventSourceInit) {
+        this.url = url;
+        this.withCredentials = Boolean(init?.withCredentials);
+        urls.push(url);
+        const attempt = urls.length;
+        window.setTimeout(() => {
+          this.readyState = MockEventSource.OPEN;
+          this.onopen?.(new Event("open"));
+          if (attempt === 1) {
+            this.dispatch("progress", { type: "progress", job_id: "job-1", session_id: "20260509T120000Z-e2e", content: "step 1" }, "job-evt-1");
+            this.onerror?.(new Event("error"));
+          } else {
+            this.dispatch("done", { type: "done", job_id: "job-1", session_id: "20260509T120000Z-e2e" }, "job-evt-2");
+          }
+        }, 20);
+      }
+
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        const callback = typeof listener === "function" ? listener : listener.handleEvent.bind(listener);
+        const existing = this.listeners.get(type) || [];
+        existing.push(callback as (event: MessageEvent<string>) => void);
+        this.listeners.set(type, existing);
+      }
+
+      removeEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        const callback = typeof listener === "function" ? listener : listener.handleEvent.bind(listener);
+        this.listeners.set(type, (this.listeners.get(type) || []).filter((item) => item !== callback));
+      }
+
+      close() {
+        this.readyState = MockEventSource.CLOSED;
+      }
+
+      private dispatch(type: string, data: Record<string, unknown>, lastEventId: string) {
+        const event = new MessageEvent(type, { data: JSON.stringify(data), lastEventId });
+        for (const listener of this.listeners.get(type) || []) listener(event);
+        if (type === "message") this.onmessage?.(event);
+      }
+    }
+    Object.defineProperty(window, "EventSource", { configurable: true, value: MockEventSource });
+    Object.defineProperty(window, "__jobEventSourceUrls", { configurable: true, value: urls });
+  });
+  await mockAgentAPI(page);
+
+  await page.goto("/");
+  await page.getByLabel("Email").fill("e2e@example.com");
+  await page.getByLabel("Password").fill("password123");
+  await page.getByRole("button", { name: "Login" }).last().click();
+
+  await page.getByRole("button", { name: "Use plan and execute mode" }).click();
+  await page.getByRole("textbox", { name: "Message" }).fill("run a durable background task");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Started background job").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "资源" }).click();
+  await page.getByRole("tab", { name: "Jobs" }).click();
+  await page.getByRole("dialog", { name: "Jobs" }).locator(".job-summary", { hasText: "run a durable background task" }).click();
+
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __jobEventSourceUrls: string[] }).__jobEventSourceUrls.length)).toBeGreaterThanOrEqual(2);
+  const urls = await page.evaluate(() => (window as unknown as { __jobEventSourceUrls: string[] }).__jobEventSourceUrls);
+  expect(urls[0]).toContain("/v1/jobs/job-1/events?stream=1");
+  expect(urls[1]).toContain("after_id=job-evt-1");
+  await expect(page.getByText("Response completed").first()).toBeVisible();
 });
 
 test("opens a fresh chat after deleting the active session", async ({ page }) => {
@@ -319,8 +495,7 @@ test("opens a fresh chat after deleting the active session", async ({ page }) =>
   await page.getByRole("button", { name: "Use image generation" }).click();
   await page.getByRole("textbox", { name: "Message" }).fill("delete this active session");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("任务详情可在 Inbox 查看").first()).toBeVisible();
-  await expect(page.getByRole("complementary", { name: "Artifact preview" })).toHaveCount(0);
+  await expect(page.getByText("Generated artifact result.txt").first()).toBeVisible();
   await expect(page.getByRole("complementary", { name: "Job details" })).toHaveCount(0);
   await page.getByRole("button", { name: "资源" }).click();
   await page.getByRole("tab", { name: "Jobs" }).click();
@@ -360,7 +535,7 @@ test("covers admin console smoke after the panel split", async ({ page }) => {
   await expect(page.getByText("gemini")).toBeVisible();
 });
 
-async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSessions?: Session[] } = {}) {
+async function mockAgentAPI(page: Page, options: { activeRun?: ActiveRun | null; failChat?: boolean; initialSessions?: Session[] } = {}) {
   const sessionA: Session = {
     id: "20260509T120000Z-e2e",
     working_dir: "/tmp",
@@ -422,7 +597,7 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
     return json(route, state.sessions);
   });
 
-  await page.route(/.*\/v1\/sessions\/[^/]+\/active-run$/, (route) => json(route, { run: null }));
+  await page.route(/.*\/v1\/sessions\/[^/]+\/active-run$/, (route) => json(route, { run: options.activeRun || null }));
 
   await page.route(/.*\/v1\/sessions\/[^/]+$/, async (route) => {
     const id = route.request().url().split("/v1/sessions/")[1].split("?")[0];
@@ -643,13 +818,15 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
   });
 
   await page.route("**/v1/jobs/job-1/events?stream=1**", (route) => sse(route, [
-    { id: "evt-1", event: "start", data: { type: "start", session_id: state.sessions[0].id } },
-    { id: "evt-2", event: "done", data: { type: "done", session_id: state.sessions[0].id } }
+    { id: "evt-1", event: "deep_agent_started", data: { type: "deep_agent_started", job_id: "job-1", session_id: state.sessions[0].id, content: "Plan-and-execute task started" } },
+    { id: "evt-2", event: "deep_agent_completed", data: { type: "deep_agent_completed", job_id: "job-1", session_id: state.sessions[0].id, content: "Plan-and-execute task completed" } },
+    { id: "evt-3", event: "done", data: { type: "done", job_id: "job-1", session_id: state.sessions[0].id } }
   ]));
   await page.route("**/v1/jobs/job-1/events", (route) => json(route, {
     events: [
-      { id: "evt-1", job_id: "job-1", type: "start", event: { type: "start" }, created_at: now },
-      { id: "evt-2", job_id: "job-1", type: "done", event: { type: "done", session_id: state.sessions[0].id }, created_at: now }
+      { id: "evt-1", job_id: "job-1", type: "deep_agent_started", event: { type: "deep_agent_started", job_id: "job-1", session_id: state.sessions[0].id, content: "Plan-and-execute task started" }, created_at: now },
+      { id: "evt-2", job_id: "job-1", type: "deep_agent_completed", event: { type: "deep_agent_completed", job_id: "job-1", session_id: state.sessions[0].id, content: "Plan-and-execute task completed" }, created_at: now },
+      { id: "evt-3", job_id: "job-1", type: "done", event: { type: "done", job_id: "job-1", session_id: state.sessions[0].id }, created_at: now }
     ]
   }));
   await page.route("**/v1/jobs", (route) => json(route, { jobs: state.jobs }));
@@ -669,7 +846,7 @@ async function mockAgentAPI(page: Page, options: { failChat?: boolean; initialSe
 
   await mockAdminAPI(page);
 
-  return { state };
+  return Object.assign(state, { state });
 }
 
 async function mockAdminAPI(page: Page) {

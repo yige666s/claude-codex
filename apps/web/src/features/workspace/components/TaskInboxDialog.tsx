@@ -1,4 +1,5 @@
 import { Bell, BellOff, CheckCircle2, ChevronRight, Clock3, Inbox, RotateCcw, ShieldAlert, X, XCircle } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Button } from "../../../components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../../components/ui/dialog";
@@ -30,6 +31,8 @@ const inboxGroups: Array<{ group: TaskInboxGroup; label: string; icon: ReactNode
   { group: "scheduled", label: "Scheduled", icon: <Clock3 size={16} /> }
 ];
 
+const taskInboxGroupPageSize = 5;
+
 export function TaskInboxDialog({
   open,
   items,
@@ -46,10 +49,28 @@ export function TaskInboxDialog({
   onReview,
   formatTime
 }: TaskInboxDialogProps) {
-  const grouped = inboxGroups.map((entry) => ({
+  const [visibleByGroup, setVisibleByGroup] = useState<Partial<Record<TaskInboxGroup, number>>>({});
+  const grouped = useMemo(() => inboxGroups.map((entry) => ({
     ...entry,
     items: items.filter((item) => item.group === entry.group)
-  })).filter((entry) => entry.items.length > 0 || entry.group === "needs_review" || entry.group === "running");
+  })).filter((entry) => entry.items.length > 0 || entry.group === "needs_review" || entry.group === "running"), [items]);
+
+  useEffect(() => {
+    if (open) {
+      setVisibleByGroup({});
+    }
+  }, [open]);
+
+  function visibleCountForGroup(group: TaskInboxGroup) {
+    return visibleByGroup[group] ?? taskInboxGroupPageSize;
+  }
+
+  function showMore(group: TaskInboxGroup, total: number) {
+    setVisibleByGroup((current) => {
+      const next = Math.min((current[group] ?? taskInboxGroupPageSize) + taskInboxGroupPageSize, total);
+      return { ...current, [group]: next };
+    });
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -109,18 +130,20 @@ export function TaskInboxDialog({
                 <div className="task-inbox-group-empty">Nothing here.</div>
               ) : (
                 <div className="task-inbox-list">
-                  {entry.items.map((item) => {
+                  {entry.items.slice(0, visibleCountForGroup(entry.group)).map((item) => {
                     const sessionUnavailable = Boolean(item.session_id) && item.session_available === false;
                     const cardBody = (
                       <>
                         <span className="task-card-kind">{item.kind} · {item.status}</span>
-                        <strong>{item.title}</strong>
-                        <small>{sessionUnavailable ? "关联聊天已删除。" : (item.last_event || "Task updated")}</small>
+                        <span className="task-card-title-row">
+                          <strong>{item.title}</strong>
+                          <time>{formatTime(item.last_event_at || item.updated_at)}</time>
+                        </span>
+                        <span className="task-card-subtitle">{sessionUnavailable ? "关联聊天已删除。" : (item.last_event || "Task updated")}</span>
                         <span className="task-card-meta">
                           {item.trigger && <span>{item.trigger}</span>}
                           {sessionUnavailable && <span>聊天已删除</span>}
                           {item.artifact_count > 0 && <span>{item.artifact_count} artifact{item.artifact_count === 1 ? "" : "s"}</span>}
-                          <span>{formatTime(item.last_event_at || item.updated_at)}</span>
                         </span>
                       </>
                     );
@@ -159,6 +182,11 @@ export function TaskInboxDialog({
                       </article>
                     );
                   })}
+                  {entry.items.length > visibleCountForGroup(entry.group) && (
+                    <Button className="task-inbox-show-more" variant="ghost" onClick={() => showMore(entry.group, entry.items.length)}>
+                      查看更多
+                    </Button>
+                  )}
                 </div>
               )}
             </section>
