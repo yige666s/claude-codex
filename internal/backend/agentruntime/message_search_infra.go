@@ -240,13 +240,7 @@ func (s *HTTPMessageFullTextSearcher) SearchMessages(ctx context.Context, userID
 					exactTextTermQuery("user_id", userID),
 					{"term": map[string]any{"status": 1}},
 				},
-				"must": []map[string]any{
-					{"multi_match": map[string]any{
-						"query":  query,
-						"fields": []string{"content^3", "tool_output", "content_parts.text"},
-						"type":   "best_fields",
-					}},
-				},
+				"must": []map[string]any{messageFullTextSearchQuery(query)},
 				"must_not": []map[string]any{
 					{"term": map[string]any{"hidden": true}},
 					exactTextTermQuery("role", "tool"),
@@ -283,6 +277,66 @@ func (s *HTTPMessageFullTextSearcher) SearchMessages(ctx context.Context, userID
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+func messageFullTextSearchQuery(query string) map[string]any {
+	should := []map[string]any{
+		{"multi_match": map[string]any{
+			"query":  query,
+			"fields": messageFullTextSearchFields(),
+			"type":   "best_fields",
+		}},
+		{"multi_match": map[string]any{
+			"query":  query,
+			"fields": messageFullTextSearchFields(),
+			"type":   "phrase",
+			"boost":  2,
+		}},
+	}
+	for _, term := range messageSearchTerms(query) {
+		for _, field := range messageFullTextWildcardFields() {
+			should = append(should, map[string]any{
+				"wildcard": map[string]any{
+					field: map[string]any{
+						"value":            "*" + term + "*",
+						"case_insensitive": true,
+						"boost":            0.4,
+					},
+				},
+			})
+		}
+	}
+	return map[string]any{
+		"bool": map[string]any{
+			"should":               should,
+			"minimum_should_match": 1,
+		},
+	}
+}
+
+func messageFullTextSearchFields() []string {
+	return []string{
+		"content^3",
+		"content_parts.text^2",
+		"tool_output^2",
+		"session_title^2",
+		"file_name^2",
+	}
+}
+
+func messageFullTextWildcardFields() []string {
+	return []string{
+		"content.raw",
+		"content_parts.text.raw",
+		"tool_output.raw",
+		"session_title.raw",
+		"file_name.raw",
+		"content",
+		"content_parts.text",
+		"tool_output",
+		"session_title",
+		"file_name",
+	}
 }
 
 func (s *HTTPMessageFullTextSearcher) postJSON(ctx context.Context, url string, payload any, out any) error {

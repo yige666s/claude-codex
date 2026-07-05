@@ -113,6 +113,11 @@ func TestHTTPMessageFullTextSearcherUsesKeywordCompatibleExactFilters(t *testing
 			t.Fatalf("request body missing %s: %s", field, requestBody)
 		}
 	}
+	for _, field := range []string{"session_title^2", "file_name^2", "content.raw", "case_insensitive"} {
+		if !strings.Contains(requestBody, field) {
+			t.Fatalf("request body missing recall field %s: %s", field, requestBody)
+		}
+	}
 }
 
 func TestMessageSearchServiceHybridDoesNotFallbackToSQL(t *testing.T) {

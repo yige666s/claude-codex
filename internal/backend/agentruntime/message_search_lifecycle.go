@@ -312,7 +312,15 @@ func (m *ElasticsearchMessageIndexManager) indexTemplate() map[string]any {
 }
 
 func textMapping(analyzer, searchAnalyzer string) map[string]any {
-	mapping := map[string]any{"type": "text"}
+	mapping := map[string]any{
+		"type": "text",
+		"fields": map[string]any{
+			"raw": map[string]any{
+				"type":         "keyword",
+				"ignore_above": 8191,
+			},
+		},
+	}
 	if strings.TrimSpace(analyzer) != "" {
 		mapping["analyzer"] = strings.TrimSpace(analyzer)
 	}

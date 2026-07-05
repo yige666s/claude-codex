@@ -78,6 +78,11 @@ func TestElasticsearchMessageIndexManagerBootstrapCreatesILMTemplateAndAlias(t *
 	if got := content["search_analyzer"]; got != "ik_smart" {
 		t.Fatalf("content search_analyzer = %v, want ik_smart", got)
 	}
+	fields := content["fields"].(map[string]any)
+	raw := fields["raw"].(map[string]any)
+	if got := raw["type"]; got != "keyword" {
+		t.Fatalf("content.raw type = %v, want keyword", got)
+	}
 	settings := template["template"].(map[string]any)["settings"].(map[string]any)
 	if got := settings["index.lifecycle.rollover_alias"]; got != "agent_messages" {
 		t.Fatalf("rollover alias = %v, want agent_messages", got)
