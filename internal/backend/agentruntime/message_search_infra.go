@@ -39,6 +39,10 @@ type MessageFullTextDeleter interface {
 	DeleteMessage(ctx context.Context, message state.Message) error
 }
 
+type MessageFullTextSessionDeleter interface {
+	DeleteSession(ctx context.Context, userID, sessionID string) error
+}
+
 type HTTPMessageFullTextIndexer struct {
 	endpoint string
 	index    string
@@ -104,6 +108,28 @@ func (i *HTTPMessageFullTextIndexer) DeleteMessage(ctx context.Context, message 
 		return err
 	}
 	return i.deleteAttachmentsByMessage(ctx, message)
+}
+
+func (i *HTTPMessageFullTextIndexer) DeleteSession(ctx context.Context, userID, sessionID string) error {
+	if i == nil || i.endpoint == "" || i.index == "" {
+		return errMessageSearchNotConfigured("full-text indexer")
+	}
+	userID = strings.TrimSpace(userID)
+	sessionID = strings.TrimSpace(sessionID)
+	if userID == "" || sessionID == "" {
+		return nil
+	}
+	body := map[string]any{
+		"query": map[string]any{
+			"bool": map[string]any{
+				"filter": []map[string]any{
+					exactTextTermQuery("user_id", userID),
+					exactTextTermQuery("session_id", sessionID),
+				},
+			},
+		},
+	}
+	return i.postJSONNoDecode(ctx, joinEndpointPath(i.endpoint, i.index, "_delete_by_query"), body)
 }
 
 func (i *HTTPMessageFullTextIndexer) DeleteAttachmentText(ctx context.Context, attachment state.MessageAttachment) error {
@@ -280,25 +306,21 @@ func (s *HTTPMessageFullTextSearcher) SearchMessages(ctx context.Context, userID
 }
 
 func messageFullTextSearchQuery(query string) map[string]any {
+	keyword := strings.Join(strings.Fields(strings.TrimSpace(query)), " ")
 	should := []map[string]any{
 		{"multi_match": map[string]any{
-			"query":  query,
-			"fields": messageFullTextSearchFields(),
-			"type":   "best_fields",
-		}},
-		{"multi_match": map[string]any{
-			"query":  query,
+			"query":  keyword,
 			"fields": messageFullTextSearchFields(),
 			"type":   "phrase",
-			"boost":  2,
+			"boost":  3,
 		}},
 	}
-	for _, term := range messageSearchTerms(query) {
+	if keyword != "" {
 		for _, field := range messageFullTextWildcardFields() {
 			should = append(should, map[string]any{
 				"wildcard": map[string]any{
 					field: map[string]any{
-						"value":            "*" + term + "*",
+						"value":            "*" + keyword + "*",
 						"case_insensitive": true,
 						"boost":            0.4,
 					},
@@ -327,10 +349,15 @@ func messageFullTextSearchFields() []string {
 func messageFullTextWildcardFields() []string {
 	return []string{
 		"content.raw",
+		"content.keyword",
 		"content_parts.text.raw",
+		"content_parts.text.keyword",
 		"tool_output.raw",
+		"tool_output.keyword",
 		"session_title.raw",
+		"session_title.keyword",
 		"file_name.raw",
+		"file_name.keyword",
 		"content",
 		"content_parts.text",
 		"tool_output",

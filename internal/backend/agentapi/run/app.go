@@ -17,6 +17,7 @@ const (
 	workerMessageAttachment     = "message_attachment_worker"
 	workerMessageArchive        = "message_archive_worker"
 	workerMessageSearchIndex    = "message_search_index_manager"
+	workerMessageSearchBackfill = "message_search_backfill"
 	workerJobEventFanout        = "job_event_fanout"
 	workerJobQueue              = "job_worker"
 	workerConnectorRefresh      = "connector_refresh_worker"
@@ -304,6 +305,19 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 			manager := agentruntime.NewElasticsearchMessageIndexManagerWithLogger(runtimeConfig.MessageSearch, runLogger("message_search_index_manager"))
 			workerGroup.Start(workerMessageSearchIndex, manager.Run)
 			messageSearchIndexManagerStarted = true
+		}
+	}
+	if agentruntime.MessageFullTextIndexingEnabled(runtimeConfig.MessageSearch) {
+		if backfillStore, ok := sessionStore.(agentruntime.MessageFullTextBackfillStore); ok && backfillStore != nil {
+			workerGroup.Start(workerMessageSearchBackfill, agentruntime.NewMessageFullTextBackfillWorker(
+				backfillStore,
+				agentruntime.NewHTTPMessageFullTextIndexer(runtimeConfig.MessageSearch),
+				0,
+				0,
+				runLogger("message_search_backfill"),
+			).Run)
+		} else {
+			logInfof("message search backfill disabled: SQL message store is required")
 		}
 	}
 	runtime.SetJobStore(jobStore)

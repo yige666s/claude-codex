@@ -643,6 +643,9 @@ func (r *Runtime) DeleteSession(ctx context.Context, userID, sessionID string) e
 	if err := r.sessions.Delete(ctx, userID, sessionID); err != nil {
 		return err
 	}
+	if err := r.deleteSessionFromMessageSearchIndex(ctx, userID, sessionID); err != nil {
+		return err
+	}
 	if r.messageCache != nil {
 		_ = r.messageCache.InvalidateContext(ctx, userID, sessionID)
 	}
@@ -650,6 +653,13 @@ func (r *Runtime) DeleteSession(ctx context.Context, userID, sessionID string) e
 		_ = r.loopTriggers.DeleteSession(ctx, userID, sessionID)
 	}
 	return nil
+}
+
+func (r *Runtime) deleteSessionFromMessageSearchIndex(ctx context.Context, userID, sessionID string) error {
+	if r == nil || !MessageFullTextIndexingEnabled(r.config.MessageSearch) {
+		return nil
+	}
+	return NewHTTPMessageFullTextIndexer(r.config.MessageSearch).DeleteSession(ctx, userID, sessionID)
 }
 
 func (r *Runtime) DeleteSessionMemory(ctx context.Context, userID, sessionID string) error {

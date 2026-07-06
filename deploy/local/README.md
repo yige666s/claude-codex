@@ -68,13 +68,16 @@ vector candidates with
 `AGENT_API_MEMORY_VECTOR_RERANK_ENDPOINT=https://ai.api.nvidia.com/v1/retrieval/nvidia/llama-nemotron-rerank-1b-v2/reranking` and
 `AGENT_API_MEMORY_VECTOR_RERANK_MODEL=nvidia/llama-nemotron-rerank-1b-v2`,
 returning the top 5 memories by default.
-Set `AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED=true` with
-`AGENT_API_MESSAGE_SEARCH_BACKEND=elasticsearch` or `hybrid` to bootstrap ES
-ILM, rollover templates, and IK analyzer mappings. The local Elasticsearch image
-is built from `deploy/local/elasticsearch-ik.Dockerfile` and installs the IK
-plugin that provides the default `ik_max_word` / `ik_smart` analyzers. Override
-`AGENT_API_ELASTICSEARCH_VERSION` and `AGENT_API_ELASTICSEARCH_IK_PLUGIN_URL`
-when upgrading Elasticsearch or testing a pinned plugin artifact.
+With `AGENT_API_MESSAGE_SEARCH_BACKEND=elasticsearch` or `hybrid`, local compose
+defaults `AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED=true` to bootstrap ES
+ILM, rollover templates, and IK analyzer mappings. AgentAPI also runs a
+background full-text backfill that copies existing SQL messages into ES so saved
+chat history is searchable without per-query SQL fallback. The local
+Elasticsearch image is built from `deploy/local/elasticsearch-ik.Dockerfile` and
+installs the IK plugin that provides the default `ik_max_word` / `ik_smart`
+analyzers. Override `AGENT_API_ELASTICSEARCH_VERSION` and
+`AGENT_API_ELASTICSEARCH_IK_PLUGIN_URL` when upgrading Elasticsearch or testing a
+pinned plugin artifact.
 
 AgentAPI also defaults `AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND=redis` locally
 and stores loaded session-context windows in Redis DB 1 with prefix

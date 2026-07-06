@@ -47,12 +47,17 @@ type MessageSearchResultHydrator interface {
 	HydrateMessageSearchResults(ctx context.Context, userID string, results []MessageSearchResult) ([]MessageSearchResult, error)
 }
 
+type MessageSearchVisibilityFilter interface {
+	FilterVisibleMessageSearchResults(ctx context.Context, userID string, results []MessageSearchResult) ([]MessageSearchResult, error)
+}
+
 type MessageSearchService struct {
 	config   MessageSearchConfig
 	fallback MessageSearchStore
 	keyword  MessageSearchStore
 	semantic SemanticMessageSearcher
 	hydrator MessageSearchResultHydrator
+	visible  MessageSearchVisibilityFilter
 	workflow *WorkflowEngine
 	cache    *TypedCache[[]MessageSearchResult]
 }
@@ -65,6 +70,9 @@ func NewMessageSearchService(config MessageSearchConfig, fallback MessageSearchS
 	}
 	if hydrator, ok := fallback.(MessageSearchResultHydrator); ok {
 		service.hydrator = hydrator
+	}
+	if visible, ok := fallback.(MessageSearchVisibilityFilter); ok {
+		service.visible = visible
 	}
 	switch config.Backend {
 	case messageSearchBackendElasticsearch, messageSearchBackendOpenSearch, messageSearchBackendHybrid:
@@ -113,6 +121,7 @@ func (s *MessageSearchService) SearchMessages(ctx context.Context, userID, query
 	case messageSearchBackendElasticsearch, messageSearchBackendOpenSearch:
 		if s.keyword != nil {
 			results, err = s.keyword.SearchMessages(ctx, userID, query, limit, offset)
+			results, err = s.filterVisible(ctx, userID, results, err)
 			return s.cacheAndReturn(ctx, cacheKey, results, err)
 		}
 		return nil, errMessageSearchNotConfigured("full-text backend")
@@ -139,11 +148,19 @@ func (s *MessageSearchService) SearchMessages(ctx context.Context, userID, query
 		return s.cacheAndReturn(ctx, cacheKey, results, err)
 	case messageSearchBackendHybrid:
 		results, err = s.searchHybrid(ctx, userID, query, limit, offset)
+		results, err = s.filterVisible(ctx, userID, results, err)
 		return s.cacheAndReturn(ctx, cacheKey, results, err)
 	default:
 		results, err = s.searchFallback(ctx, userID, query, limit, offset)
 		return s.cacheAndReturn(ctx, cacheKey, results, err)
 	}
+}
+
+func (s *MessageSearchService) filterVisible(ctx context.Context, userID string, results []MessageSearchResult, err error) ([]MessageSearchResult, error) {
+	if err != nil || s == nil || s.visible == nil || len(results) == 0 {
+		return results, err
+	}
+	return s.visible.FilterVisibleMessageSearchResults(ctx, userID, results)
 }
 
 func (s *MessageSearchService) cacheAndReturn(ctx context.Context, cacheKey string, results []MessageSearchResult, err error) ([]MessageSearchResult, error) {
@@ -234,40 +251,9 @@ func (s *MessageSearchService) searchHybrid(ctx context.Context, userID, query s
 
 func (s *MessageSearchService) searchHybridDirect(ctx context.Context, userID, query string, limit, offset int) ([]MessageSearchResult, error) {
 	plan := buildMessageSearchPlan(query, limit, offset, s.config)
-
-	var keywordResults []MessageSearchResult
-	var semanticResults []MessageSearchResult
-	var keywordErr error
-	var semanticErr error
-
-	if s.keyword != nil {
-		keywordResults, keywordErr = s.keyword.SearchMessages(ctx, userID, plan.Query, plan.Window, 0)
-	}
-	if s.semantic != nil {
-		semanticResults, semanticErr = s.semantic.SearchSemanticMessages(ctx, userID, plan.Query, plan.Window)
-		if semanticErr == nil {
-			semanticResults, semanticErr = s.hydrate(ctx, userID, semanticResults)
-		}
-	}
-	if keywordErr != nil {
-		return nil, keywordErr
-	}
-	if semanticErr != nil {
-		return nil, semanticErr
-	}
-	lists := [][]MessageSearchResult{keywordResults, semanticResults}
-	merged := rrfMergeMessageSearchResultsWithK(s.config.RRFK, lists...)
-	if s.config.MultiTurnEnabled && shouldExpandMessageSearch(merged, limit, s.config) {
-		for _, variant := range plan.Variants {
-			if variant == plan.Query {
-				continue
-			}
-			variantResults := s.searchHybridVariant(ctx, userID, variant, plan.Window)
-			if len(variantResults) > 0 {
-				lists = append(lists, variantResults)
-			}
-		}
-		merged = rrfMergeMessageSearchResultsWithK(s.config.RRFK, lists...)
+	merged, _, err := s.searchHybridCandidates(ctx, userID, plan, limit)
+	if err != nil {
+		return nil, err
 	}
 	if s.config.RerankEnabled {
 		merged = rerankMessageSearchResults(query, merged, s.config)

@@ -45,6 +45,10 @@ type MessageAttachmentProcessingQueue interface {
 	UpdateMessageAttachmentProcessing(ctx context.Context, userID, messageID, attachmentID string, status int, thumbnailKey, extractedTextKey string) error
 }
 
+type MessageFullTextBackfillStore interface {
+	ListMessagesForFullTextBackfill(ctx context.Context, afterCreatedAt time.Time, afterMessageID string, limit int) ([]state.Message, error)
+}
+
 type MessageWriteRequest struct {
 	UserID    string
 	SessionID string

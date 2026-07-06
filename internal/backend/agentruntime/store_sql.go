@@ -30,6 +30,18 @@ const sqlMessageColumns = `message_id, session_id, user_id, seq_no, parent_id, r
 	prompt_tokens, completion_tokens, status, is_context_used, model_id, run_id,
 	hidden, created_at, updated_at, archive_uri, archive_checksum, archived_at`
 
+func sqlMessageColumnsWithAlias(alias string) string {
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return sqlMessageColumns
+	}
+	columns := strings.Split(sqlMessageColumns, ",")
+	for i, column := range columns {
+		columns[i] = alias + "." + strings.TrimSpace(column)
+	}
+	return strings.Join(columns, ", ")
+}
+
 func NewSQLSessionStore(db *sql.DB) *SQLSessionStore {
 	return NewSQLSessionStoreWithDialect(db, SQLDialectQuestion)
 }
@@ -411,6 +423,16 @@ func (s *SQLSessionStore) Delete(ctx context.Context, userID, sessionID string) 
 			_ = tx.Rollback()
 			return err
 		}
+		if err := q.SoftDeleteSessionMessages(ctx, dbsqlc.SoftDeleteSessionMessagesParams{
+			Status:    int32(state.MessageStatusDeleted),
+			UpdatedAt: now,
+			UserID:    userID,
+			SessionID: sessionID,
+			Status_2:  int32(state.MessageStatusDeleted),
+		}); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
 	} else if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
 UPDATE agent_sessions
 SET status = ?, archived = ?, updated_at = ?
@@ -421,6 +443,18 @@ WHERE user_id = ? AND session_id = ? AND status <> ?`),
 		userID,
 		sessionID,
 		state.SessionStatusDeleted,
+	); err != nil {
+		_ = tx.Rollback()
+		return err
+	} else if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_messages
+SET status = ?, updated_at = ?
+WHERE user_id = ? AND session_id = ? AND status <> ?`),
+		state.MessageStatusDeleted,
+		sqlTimeValue(now, s.dialect),
+		userID,
+		sessionID,
+		state.MessageStatusDeleted,
 	); err != nil {
 		_ = tx.Rollback()
 		return err
@@ -937,6 +971,52 @@ LIMIT 1`),
 	return hydrated[0], true, nil
 }
 
+func (s *SQLSessionStore) ListMessagesForFullTextBackfill(ctx context.Context, afterCreatedAt time.Time, afterMessageID string, limit int) ([]state.Message, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("SQL session store is required")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	afterCreatedAt = afterCreatedAt.UTC()
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
+SELECT `+sqlMessageColumnsWithAlias("m")+`
+FROM agent_messages m
+JOIN agent_sessions s ON s.user_id = m.user_id AND s.session_id = m.session_id
+WHERE m.status = ?
+  AND s.status <> ?
+  AND m.hidden = 0
+  AND m.role <> ?
+  AND (m.content <> '' OR m.tool_output <> '' OR m.content_parts <> '[]')
+  AND (m.created_at > ? OR (m.created_at = ? AND m.message_id > ?))
+ORDER BY m.created_at ASC, m.message_id ASC
+LIMIT ?`),
+		state.MessageStatusNormal,
+		state.SessionStatusDeleted,
+		state.MessageRoleTool,
+		afterCreatedAt,
+		afterCreatedAt,
+		afterMessageID,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	messages := make([]state.Message, 0, limit)
+	for rows.Next() {
+		message, err := scanSQLMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return s.hydrateSQLMessages(ctx, "", messages)
+}
+
 func (s *SQLSessionStore) MarkMessagesContextUnused(ctx context.Context, userID, sessionID string, messageIDs []string) (int, error) {
 	if len(messageIDs) == 0 {
 		return 0, nil
@@ -1053,6 +1133,64 @@ LIMIT ? OFFSET ?`, matchOperator, matchOperator)), userID, state.MessageStatusNo
 		out = append(out, result)
 	}
 	return out, rows.Err()
+}
+
+func (s *SQLSessionStore) FilterVisibleMessageSearchResults(ctx context.Context, userID string, results []MessageSearchResult) ([]MessageSearchResult, error) {
+	if s == nil || s.db == nil || len(results) == 0 {
+		return results, nil
+	}
+	ids := make([]string, 0, len(results))
+	seen := map[string]bool{}
+	for _, result := range results {
+		id := strings.TrimSpace(result.MessageID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return results, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+4)
+	args = append(args, strings.TrimSpace(userID), state.MessageStatusNormal, state.SessionStatusDeleted, state.MessageRoleTool)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(`
+SELECT m.message_id
+FROM agent_messages m
+JOIN agent_sessions s ON s.user_id = m.user_id AND s.session_id = m.session_id
+WHERE m.user_id = ?
+  AND m.status = ?
+  AND s.status <> ?
+  AND m.hidden = 0
+  AND m.role <> ?
+  AND m.message_id IN (`+strings.Join(placeholders, ",")+`)`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	visible := map[string]bool{}
+	for rows.Next() {
+		var messageID string
+		if err := rows.Scan(&messageID); err != nil {
+			return nil, err
+		}
+		visible[messageID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	filtered := make([]MessageSearchResult, 0, len(results))
+	for _, result := range results {
+		if visible[strings.TrimSpace(result.MessageID)] {
+			filtered = append(filtered, result)
+		}
+	}
+	return filtered, nil
 }
 
 func (s *SQLSessionStore) HydrateMessageSearchResults(ctx context.Context, userID string, results []MessageSearchResult) ([]MessageSearchResult, error) {

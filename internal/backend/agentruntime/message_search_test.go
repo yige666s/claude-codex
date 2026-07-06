@@ -15,11 +15,12 @@ import (
 )
 
 type stubMessageSearchStore struct {
-	results []MessageSearchResult
-	err     error
-	limit   int
-	offset  int
-	queries []string
+	results          []MessageSearchResult
+	err              error
+	limit            int
+	offset           int
+	queries          []string
+	hiddenMessageIDs map[string]bool
 }
 
 func (s *stubMessageSearchStore) SearchMessages(ctx context.Context, userID, query string, limit, offset int) ([]MessageSearchResult, error) {
@@ -30,6 +31,20 @@ func (s *stubMessageSearchStore) SearchMessages(ctx context.Context, userID, que
 		return nil, s.err
 	}
 	return append([]MessageSearchResult(nil), s.results...), nil
+}
+
+func (s *stubMessageSearchStore) FilterVisibleMessageSearchResults(ctx context.Context, userID string, results []MessageSearchResult) ([]MessageSearchResult, error) {
+	if len(s.hiddenMessageIDs) == 0 {
+		return append([]MessageSearchResult(nil), results...), nil
+	}
+	out := make([]MessageSearchResult, 0, len(results))
+	for _, result := range results {
+		if s.hiddenMessageIDs[result.MessageID] {
+			continue
+		}
+		out = append(out, result)
+	}
+	return out, nil
 }
 
 type stubSemanticMessageSearcher struct {
@@ -78,6 +93,28 @@ func TestMessageSearchServiceElasticsearchDoesNotFallbackToSQL(t *testing.T) {
 	}
 }
 
+func TestMessageSearchServiceElasticsearchFiltersDeletedSessionResidue(t *testing.T) {
+	visible := &stubMessageSearchStore{hiddenMessageIDs: map[string]bool{"deleted-message": true}}
+	keyword := &stubMessageSearchStore{results: []MessageSearchResult{
+		{MessageID: "active-message", SessionID: "active-session", Content: "妙峰山"},
+		{MessageID: "deleted-message", SessionID: "deleted-session", Content: "妙峰山"},
+	}}
+	service := &MessageSearchService{
+		config:   normalizeMessageSearchConfig(MessageSearchConfig{Backend: messageSearchBackendElasticsearch}),
+		fallback: visible,
+		keyword:  keyword,
+		visible:  visible,
+	}
+
+	results, err := service.SearchMessages(context.Background(), "alice", "妙峰山", 10, 0)
+	if err != nil {
+		t.Fatalf("SearchMessages() error = %v", err)
+	}
+	if len(results) != 1 || results[0].MessageID != "active-message" {
+		t.Fatalf("expected deleted-session search residue to be filtered, got %#v", results)
+	}
+}
+
 func TestHTTPMessageFullTextSearcherUsesKeywordCompatibleExactFilters(t *testing.T) {
 	var requestBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +157,47 @@ func TestHTTPMessageFullTextSearcherUsesKeywordCompatibleExactFilters(t *testing
 	}
 }
 
+func TestHTTPMessageFullTextSearcherUsesWholeKeywordForWildcardRecall(t *testing.T) {
+	var requestPayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestPayload); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hits":{"hits":[]}}`))
+	}))
+	defer server.Close()
+
+	searcher := NewHTTPMessageFullTextSearcher(MessageSearchConfig{
+		Backend:  messageSearchBackendElasticsearch,
+		Endpoint: server.URL,
+		Index:    "agent_messages",
+		Timeout:  time.Second,
+	})
+	_, err := searcher.SearchMessages(context.Background(), "alice", "妙峰山", 10, 0)
+	if err != nil {
+		t.Fatalf("SearchMessages() error = %v", err)
+	}
+
+	data, err := json.Marshal(requestPayload)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	body := string(data)
+	if strings.Contains(body, `"type":"best_fields"`) {
+		t.Fatalf("request body should not use token-splitting best_fields recall: %s", body)
+	}
+	values := collectWildcardValues(requestPayload)
+	if len(values) == 0 {
+		t.Fatalf("expected wildcard recall clauses in request body: %s", body)
+	}
+	for _, value := range values {
+		if value != "*妙峰山*" {
+			t.Fatalf("wildcard recall should use only the whole keyword, got %q in %s", value, body)
+		}
+	}
+}
+
 func TestMessageSearchServiceHybridDoesNotFallbackToSQL(t *testing.T) {
 	fallback := &stubMessageSearchStore{results: []MessageSearchResult{{SessionID: "s1", MessageIndex: 1, Content: "sql result"}}}
 	service := &MessageSearchService{
@@ -137,6 +215,36 @@ func TestMessageSearchServiceHybridDoesNotFallbackToSQL(t *testing.T) {
 	if fallback.limit != 0 || fallback.offset != 0 {
 		t.Fatalf("hybrid search should not call SQL fallback, got limit=%d offset=%d", fallback.limit, fallback.offset)
 	}
+}
+
+func collectWildcardValues(value any) []string {
+	values := []string{}
+	var walk func(any)
+	walk = func(item any) {
+		switch typed := item.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				if key == "wildcard" {
+					if wildcard, ok := child.(map[string]any); ok {
+						for _, fieldBody := range wildcard {
+							if body, ok := fieldBody.(map[string]any); ok {
+								if raw, ok := body["value"].(string); ok {
+									values = append(values, raw)
+								}
+							}
+						}
+					}
+				}
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(value)
+	return values
 }
 
 func TestMessageSearchServiceHybridMergesWithRRF(t *testing.T) {
@@ -405,6 +513,46 @@ func TestHTTPMessageFullTextIndexerWritesAndDeletesDocuments(t *testing.T) {
 	}
 	if requests[1].Method != http.MethodDelete || requests[1].Path != "/agent_messages/_doc/message-1" {
 		t.Fatalf("unexpected delete request: %#v", requests[1])
+	}
+}
+
+func TestHTTPMessageFullTextIndexerDeletesSessionDocuments(t *testing.T) {
+	var request struct {
+		Method string
+		Path   string
+		Body   map[string]any
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		request.Method = r.Method
+		request.Path = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&request.Body); err != nil {
+			t.Fatalf("decode delete session body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	indexer := NewHTTPMessageFullTextIndexer(MessageSearchConfig{
+		Backend:  messageSearchBackendElasticsearch,
+		Endpoint: server.URL,
+		Index:    "agent_messages",
+		Timeout:  time.Second,
+	})
+	if err := indexer.DeleteSession(context.Background(), "alice", "session-1"); err != nil {
+		t.Fatalf("DeleteSession() error = %v", err)
+	}
+	if request.Method != http.MethodPost || request.Path != "/agent_messages/_delete_by_query" {
+		t.Fatalf("unexpected delete session request: %#v", request)
+	}
+	body, err := json.Marshal(request.Body)
+	if err != nil {
+		t.Fatalf("marshal delete session body: %v", err)
+	}
+	for _, want := range []string{"user_id.keyword", "alice", "session_id.keyword", "session-1"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("delete session body missing %q: %s", want, body)
+		}
 	}
 }
 

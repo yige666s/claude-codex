@@ -337,7 +337,7 @@ func Default() Config {
 		MessageSearchUsername:                    os.Getenv("AGENT_API_MESSAGE_SEARCH_USERNAME"),
 		MessageSearchPassword:                    os.Getenv("AGENT_API_MESSAGE_SEARCH_PASSWORD"),
 		MessageSearchTimeout:                     EnvDuration("AGENT_API_MESSAGE_SEARCH_TIMEOUT", 5*time.Second),
-		MessageSearchIndexManagementEnabled:      EnvBool("AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED", false),
+		MessageSearchIndexManagementEnabled:      EnvBool("AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED", true),
 		MessageSearchIndexLifecyclePolicy:        os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_LIFECYCLE_POLICY"),
 		MessageSearchIndexTemplate:               os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_TEMPLATE"),
 		MessageSearchIndexWriteAlias:             os.Getenv("AGENT_API_MESSAGE_SEARCH_INDEX_WRITE_ALIAS"),
