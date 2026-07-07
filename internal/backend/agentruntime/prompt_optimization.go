@@ -236,7 +236,7 @@ func (s *Server) promptOptimizationOfflineReplay(ctx context.Context, _ *Workflo
 		RenderConfig:    baseline.RenderConfig,
 		BaseVersion:     baseline.Version,
 	})
-	set, err := s.evaluation.GetGoldenSetVersion(ctx, workflowString(input, "set_id"), workflowString(input, "set_version"))
+	set, err := s.getGoldenSetVersion(ctx, workflowString(input, "set_id"), workflowString(input, "set_version"))
 	if err != nil {
 		return nil, err
 	}
@@ -289,20 +289,20 @@ func (s *Server) promptOptimizationOfflineReplay(ctx context.Context, _ *Workflo
 }
 
 func (s *Server) promptOptimizationCreateReview(ctx context.Context, _ *WorkflowRun, input map[string]any) (map[string]any, error) {
-	if workflowString(input, "offline_replay") == "completed" && workflowFloat(input, "candidate_pass_rate") < workflowFloat(input, "baseline_pass_rate") {
-		return map[string]any{
-			"review_status": "skipped",
-			"skip_reason":   "candidate pass rate is below baseline",
-		}, nil
-	}
 	promptID := workflowString(input, "prompt_id")
+	changelog := workflowString(input, "candidate_changelog")
+	recommendation := "ready_for_review"
+	if workflowString(input, "offline_replay") == "completed" && workflowFloat(input, "candidate_pass_rate") < workflowFloat(input, "baseline_pass_rate") {
+		recommendation = "blocked_by_eval_regression"
+		changelog = strings.TrimSpace(changelog + "\n\nReview gate: candidate pass rate is below baseline; keep in review until fixed or explicitly overridden.")
+	}
 	version := PromptVersion{
 		PromptID:    promptID,
 		Version:     workflowString(input, "candidate_version"),
 		Status:      PromptStatusReviewPending,
 		Content:     workflowString(input, "candidate_content"),
 		BaseVersion: workflowString(input, "baseline_version"),
-		Changelog:   workflowString(input, "candidate_changelog"),
+		Changelog:   changelog,
 		CreatedBy:   workflowString(input, "actor"),
 	}
 	baseline, err := s.promptStore.GetPromptVersion(ctx, promptID, version.BaseVersion)
@@ -320,6 +320,7 @@ func (s *Server) promptOptimizationCreateReview(ctx context.Context, _ *Workflow
 		"review_prompt_version": created.Version,
 		"review_status":         created.Status,
 		"review_prompt_hash":    created.ContentHash,
+		"review_recommendation": recommendation,
 	}, nil
 }
 

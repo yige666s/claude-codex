@@ -213,8 +213,11 @@ func TestRuntimeChatUsesMessageWriteServiceForNewMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load messages: %v", err)
 	}
-	if len(messages) < 3 {
-		t.Fatalf("expected hidden context plus user/assistant messages, got %#v", messages)
+	if len(messages) < 2 {
+		t.Fatalf("expected user/assistant messages, got %#v", messages)
+	}
+	if messagesContainRuntimeContext(messages, systemPromptSnapshotMarker) {
+		t.Fatalf("system prompt snapshot should stay LLM-only, got %#v", messages)
 	}
 	if len(publisher.events) != len(messages) {
 		t.Fatalf("expected one event per written message, events=%d messages=%d", len(publisher.events), len(messages))
@@ -275,6 +278,57 @@ func TestRuntimeChatPersistsUserMessageBeforeRunnerCompletes(t *testing.T) {
 	}
 	if got := messages[len(messages)-1].Content; got != "assistant: first message" {
 		t.Fatalf("unexpected assistant message: %q", got)
+	}
+}
+
+func TestRuntimeChatDoesNotDuplicatePrewrittenImageAttachmentUserMessage(t *testing.T) {
+	store := newRuntimeMessageWriteStore(t.TempDir())
+	runner := &captureContentRunner{}
+	runtime := NewRuntime(RuntimeConfig{TurnTimeout: time.Minute}, store, nil, nil, func(Scope) Runner { return runner })
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := store.Create(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	attachment, err := runtime.CreateAttachment(context.Background(), "alice", session.ID, "photo.png", "image/png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+
+	const prompt = "你能看到这张图片吗"
+	if err := runtime.Chat(context.Background(), ChatRequest{
+		UserID:        "alice",
+		SessionID:     session.ID,
+		Content:       prompt,
+		AttachmentIDs: []string{attachment.ID},
+	}, &collectSink{}); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	messages, err := store.LoadSessionMessages(context.Background(), "alice", session.ID, SessionLoadOptions{MaxMessages: 20, IncludeSystem: true})
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var visibleUsers []state.Message
+	for _, message := range messages {
+		if message.Role == state.MessageRoleUser && !message.Hidden {
+			visibleUsers = append(visibleUsers, message)
+		}
+	}
+	if len(visibleUsers) != 1 || visibleUsers[0].Content != prompt {
+		t.Fatalf("expected one visible user message, got %#v in %#v", visibleUsers, messages)
+	}
+	if visibleUsers[0].ContentType != state.MessageContentTypeMultipart {
+		t.Fatalf("expected multipart visible user message, got %#v", visibleUsers[0])
+	}
+	var imageBlock *publictypes.ContentBlock
+	for i := range visibleUsers[0].ContentBlocks {
+		if visibleUsers[0].ContentBlocks[i].Type == "image" {
+			imageBlock = &visibleUsers[0].ContentBlocks[i]
+			break
+		}
+	}
+	if imageBlock == nil || imageBlock.Source["type"] != "attachment_ref" || imageBlock.Source["attachment_id"] != attachment.ID {
+		t.Fatalf("expected persisted image attachment ref, got %#v", visibleUsers[0].ContentBlocks)
 	}
 }
 
@@ -763,8 +817,11 @@ func TestRuntimeChatHidesConnectorContextFromVisibleTranscript(t *testing.T) {
 	}, sink); err != nil {
 		t.Fatalf("chat: %v", err)
 	}
-	if !strings.Contains(runner.prompt, "Selected external connector context:") {
-		t.Fatalf("runner prompt did not receive connector context: %q", runner.prompt)
+	if strings.Contains(runner.prompt, "Selected external connector context:") {
+		t.Fatalf("runner user prompt should not receive connector context: %q", runner.prompt)
+	}
+	if !messagesContainRuntimeContext(runner.sessionMessages, "Selected external connector context:") {
+		t.Fatalf("runner session did not receive connector context snapshot: %#v", runner.sessionMessages)
 	}
 	sink.mu.Lock()
 	for _, event := range sink.events {
@@ -777,14 +834,13 @@ func TestRuntimeChatHidesConnectorContextFromVisibleTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load saved session: %v", err)
 	}
-	var sawVisibleUser, sawHiddenConnector bool
+	var sawVisibleUser bool
 	for _, message := range saved.Messages {
 		if message.Role != state.MessageRoleUser {
 			continue
 		}
-		if message.Hidden && strings.Contains(message.Content, "Selected external connector context:") {
-			sawHiddenConnector = true
-			continue
+		if strings.Contains(message.Content, "Selected external connector context:") {
+			t.Fatalf("saved message leaked connector context: %#v", message)
 		}
 		if message.Hidden {
 			continue
@@ -799,9 +855,6 @@ func TestRuntimeChatHidesConnectorContextFromVisibleTranscript(t *testing.T) {
 	}
 	if !sawVisibleUser {
 		t.Fatalf("saved session has no visible user message: %#v", saved.Messages)
-	}
-	if !sawHiddenConnector {
-		t.Fatalf("saved session did not preserve hidden connector prompt for audit: %#v", saved.Messages)
 	}
 }
 
@@ -847,8 +900,11 @@ func TestRuntimeChatInfersConnectorContextFromNaturalLanguage(t *testing.T) {
 	}, sink); err != nil {
 		t.Fatalf("chat: %v", err)
 	}
-	if !strings.Contains(runner.prompt, "Selected external connector context:") || !strings.Contains(runner.prompt, "- Gmail:") {
-		t.Fatalf("runner prompt did not receive inferred gmail connector context: %q", runner.prompt)
+	if strings.Contains(runner.prompt, "Selected external connector context:") {
+		t.Fatalf("runner user prompt should not receive inferred gmail connector context: %q", runner.prompt)
+	}
+	if !messagesContainRuntimeContext(runner.sessionMessages, "Selected external connector context:") || !messagesContainRuntimeContext(runner.sessionMessages, "- Gmail:") {
+		t.Fatalf("runner session did not receive inferred gmail connector snapshot: %#v", runner.sessionMessages)
 	}
 	saved, err := sessionStore.Get(ctx, "alice", session.ID)
 	if err != nil {

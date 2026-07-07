@@ -792,10 +792,34 @@ export type PromptVersion = {
   published_at?: string;
 };
 
+export type PromptEnvironmentPin = {
+  prompt_id: string;
+  environment: "dev" | "staging" | "production" | string;
+  version: string;
+  pinned_by?: string;
+  changelog?: string;
+  eval_run_id?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
 export type PromptDetail = {
   prompt: PromptTemplate;
   versions: PromptVersion[];
   published_version?: PromptVersion;
+  env_pins?: PromptEnvironmentPin[];
+};
+
+export type PromptVersionDiffRow = {
+  field: string;
+  from: unknown;
+  to: unknown;
+};
+
+export type PromptVersionDiff = {
+  diff: PromptVersionDiffRow[];
+  from: PromptVersion;
+  to: PromptVersion;
 };
 
 export type PromptRenderResult = {
@@ -881,6 +905,9 @@ export type GoldenTraceCaptureRequest = {
   target_version?: string;
   scope: EvaluationScope;
   subject_id?: string;
+  evaluation_run_id?: string;
+  evaluation_result_id?: string;
+  evaluation_result_status?: string;
   expected_answer?: string;
   expected_facts?: string[];
   tags?: string[];

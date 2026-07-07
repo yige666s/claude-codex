@@ -321,6 +321,45 @@ func TestAdminOpsGoldenCasesFromRuntimeTraceCreatesVersionedSet(t *testing.T) {
 	}
 }
 
+func TestAdminOpsGoldenCasesFromEvaluationResultCreatesBadcase(t *testing.T) {
+	ctx := context.Background()
+	server := NewServer(testRuntime(t), HeaderAuthenticator{UserHeader: "X-User-ID"}, NoopRateLimiter{}, nil)
+	server.SetAdminToken("secret")
+	store := NewMemoryEvaluationStore()
+	server.SetEvaluationStore(store)
+	run, err := store.CreateEvaluationRun(ctx, EvaluationRun{ID: "eval-run-1", Name: "prompt eval", Status: EvaluationRunStatusCompleted, Trigger: "test"})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	result, err := store.CreateEvaluationResult(ctx, EvaluationResult{
+		RunID:         run.ID,
+		SubjectType:   EvaluationSubjectGoldenCase,
+		SubjectID:     "case-1",
+		PromptID:      "runtime/deep_agent/planner",
+		PromptVersion: "candidate",
+		Status:        EvaluationResultStatusFailed,
+		Score:         0.1,
+		Input:         "Plan a research task",
+		Output:        "Missing verification step",
+		Findings:      []EvaluationFinding{{Severity: "error", Code: "missing_verification", Message: "Candidate omitted verification"}},
+	})
+	if err != nil {
+		t.Fatalf("create result: %v", err)
+	}
+	body := `{"target_version":"v1","evaluation_result_id":"` + result.ID + `","tags":["phase5"],"max_cases":1}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/ops/eval/golden-sets/prompt-badcases/cases/from-trace", bytes.NewBufferString(body))
+	req.Header.Set("X-User-ID", "admin")
+	req.Header.Set("X-Admin-Token", "secret")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("capture status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"source":"evaluation_result"`) || !strings.Contains(rec.Body.String(), `"badcase"`) || !strings.Contains(rec.Body.String(), `"missing_verification"`) {
+		t.Fatalf("capture response missing eval-result badcase: %s", rec.Body.String())
+	}
+}
+
 func TestAdminOpsTemplateReplayCorpusDashboardAndRoutes(t *testing.T) {
 	server := NewServer(testRuntime(t), HeaderAuthenticator{UserHeader: "X-User-ID"}, NoopRateLimiter{}, nil)
 	server.SetAdminToken("secret")

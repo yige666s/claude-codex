@@ -460,6 +460,42 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
     }
   };
 
+  const captureSelectedResultAsGoldenCase = async () => {
+    const cleanSetID = goldenSetID.trim();
+    if (!token || !cleanSetID || !selectedResult) {
+      setError("Select an evaluation result and Golden Set before capturing a badcase.");
+      return;
+    }
+    if (selectedResult.status !== "failed" && selectedResult.status !== "warning") {
+      setError("Only failed or warning eval results are captured as badcases.");
+      return;
+    }
+    setGoldenBusy("capture-result");
+    setError("");
+    try {
+      const payload = await api.createGoldenCasesFromTrace(token, cleanSetID, {
+        target_version: goldenTargetVersion.trim() || "v1",
+        evaluation_result_id: selectedResult.id,
+        expected_answer: selectedResult.output || "",
+        tags: splitGoldenLines(goldenTags || "badcase,from-eval-result"),
+        max_cases: 1,
+        scope: {
+          prompt_id: selectedResult.prompt_id || "",
+          prompt_version: selectedResult.prompt_version || ""
+        }
+      });
+      setGoldenSets((current) => [payload.set, ...current.filter((set) => !(set.id === payload.set.id && set.version === payload.set.version))]);
+      setGoldenSetID(payload.set.id);
+      setGoldenTargetVersion(payload.set.version || goldenTargetVersion || "v1");
+      setEvaluationTab("golden");
+      setNotice(`Captured ${payload.cases.length} eval badcase into ${payload.set.id}@${payload.set.version || "latest"}`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setGoldenBusy("");
+    }
+  };
+
   const runGoldenEvaluation = async () => {
     const set = selectedGoldenSet;
     if (!token || !set) {
@@ -786,6 +822,12 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
                   `faith ${formatPercent(metricNumber(selectedResult.metrics || {}, "faithfulness"))}`,
                   `recall ${formatPercent(metricNumber(selectedResult.metrics || {}, "context_recall"))}`
                 ].join(" · ")} />}
+                <div className="admin-action-row">
+                  <Button className="skill-action" onClick={captureSelectedResultAsGoldenCase} disabled={goldenBusy === "capture-result" || (selectedResult.status !== "failed" && selectedResult.status !== "warning")}>
+                    <Archive size={16} />
+                    <span>{goldenBusy === "capture-result" ? "Capturing" : "Add badcase"}</span>
+                  </Button>
+                </div>
               </div>
             ) : (
               <p className="muted-text">Select a result to inspect findings.</p>

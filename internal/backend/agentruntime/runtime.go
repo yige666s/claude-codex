@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +38,8 @@ const (
 	liveWebResearchTimeout      = 75 * time.Second
 	afterTurnMemoryTimeout      = 30 * time.Second
 )
+
+var userAttachmentSummaryPattern = regexp.MustCompile(`(?is)\n{2}(?:attachments|attached files):[^\n]+$`)
 
 type hiddenUserMessageContextKey struct{}
 
@@ -3096,13 +3099,70 @@ func isSameVisibleUserTurn(candidate state.Message, prewritten state.Message) bo
 	if candidate.Role != state.MessageRoleUser || candidate.Hidden || prewritten.Role != state.MessageRoleUser || prewritten.Hidden {
 		return false
 	}
-	if strings.TrimSpace(candidate.Content) != strings.TrimSpace(prewritten.Content) {
+	if visibleUserTurnText(candidate) != visibleUserTurnText(prewritten) {
 		return false
 	}
-	if promptContentText(candidate.ContentBlocks) != promptContentText(prewritten.ContentBlocks) {
+	candidateAttachments := visibleUserTurnAttachmentSignature(candidate)
+	prewrittenAttachments := visibleUserTurnAttachmentSignature(prewritten)
+	if len(candidateAttachments) != len(prewrittenAttachments) {
 		return false
+	}
+	for i := range candidateAttachments {
+		if candidateAttachments[i] != prewrittenAttachments[i] {
+			return false
+		}
 	}
 	return true
+}
+
+func visibleUserTurnText(message state.Message) string {
+	content := strings.TrimSpace(stripUserAttachmentSummary(message.Content))
+	if content != "" {
+		return content
+	}
+	return strings.TrimSpace(stripUserAttachmentSummary(promptContentText(messageContentBlocks(message))))
+}
+
+func stripUserAttachmentSummary(content string) string {
+	return userAttachmentSummaryPattern.ReplaceAllString(content, "")
+}
+
+func visibleUserTurnAttachmentSignature(message state.Message) []string {
+	seen := map[string]struct{}{}
+	var signatures []string
+	for _, block := range messageContentBlocks(message) {
+		if strings.EqualFold(strings.TrimSpace(block.Type), "text") || block.Source == nil {
+			continue
+		}
+		sourceType := strings.TrimSpace(fmt.Sprint(block.Source["type"]))
+		attachmentID := strings.TrimSpace(fmt.Sprint(block.Source["attachment_id"]))
+		filename := strings.TrimSpace(fmt.Sprint(block.Source["filename"]))
+		mediaType := strings.TrimSpace(fmt.Sprint(block.Source["media_type"]))
+		if attachmentID == "" && filename == "" && mediaType == "" {
+			continue
+		}
+		signature := strings.Join([]string{
+			strings.ToLower(strings.TrimSpace(block.Type)),
+			strings.ToLower(sourceType),
+			attachmentID,
+			filename,
+			strings.ToLower(mediaType),
+		}, "\x00")
+		if _, ok := seen[signature]; ok {
+			continue
+		}
+		seen[signature] = struct{}{}
+		signatures = append(signatures, signature)
+	}
+	sort.Strings(signatures)
+	return signatures
+}
+
+func messageContentBlocks(message state.Message) []publictypes.ContentBlock {
+	if len(message.ContentParts) > 0 {
+		return message.ContentParts
+	}
+	return message.ContentBlocks
 }
 
 func (r *Runtime) publishSavedTurnMessageEvents(ctx context.Context, userID string, session *state.Session, startMessageCount int) {
@@ -4793,6 +4853,7 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	if webSearchMode {
 		llmContent = webSearchPrompt(content)
 	}
+	connectorLines := r.connectorContextLines(ctx, req)
 	prompt, err := r.chatPrompt(ctx, req, llmContent)
 	if err != nil {
 		return runnerResult{}, err
@@ -4808,7 +4869,17 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	if err := r.injectTurnMemoryContexts(ctx, userID, llmSession, content); err != nil {
 		return runnerResult{}, err
 	}
-	r.injectTransientRuntimeContexts(llmSession)
+	snapshot, err := r.injectAssembledChatSystemPrompt(ctx, userID, session.ID, llmSession, connectorLines)
+	if err != nil {
+		return runnerResult{}, err
+	}
+	if strings.TrimSpace(snapshot.Hash) != "" {
+		ctx = WithPromptMetadata(ctx, PromptMetadata{
+			PromptID:      PromptIDRuntimeChatSystemPromptSnapshot,
+			PromptVersion: systemPromptSnapshotVersion,
+			PromptHash:    snapshot.Hash,
+		})
+	}
 	llmPrompt, err := r.materializeContentBlocks(ctx, userID, prompt)
 	if err != nil {
 		return runnerResult{}, err
@@ -4823,7 +4894,7 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	startedAt := time.Now().UTC()
 	startMessageCount := len(llmSession.Messages)
 	result, err := runWithTokenStreamContent(ctx, runner, llmSession, llmPrompt, false, onToken)
-	if result.Session != nil && (webSearchMode || len(normalizeConnectorScopes(req.ConnectorContext)) > 0) {
+	if result.Session != nil && webSearchMode {
 		normalizeInternalUserPromptTurnMessages(result.Session, startMessageCount, content, promptContentText(prompt), visiblePrompt)
 	}
 	if errors.Is(err, skilltool.ErrRunAsJobRequired) {
@@ -4905,9 +4976,6 @@ const signedAttachmentURLTTL = 15 * time.Minute
 
 func (r *Runtime) chatPrompt(ctx context.Context, req ChatRequest, content string) ([]publictypes.ContentBlock, error) {
 	blocks := []publictypes.ContentBlock{{Type: "text", Text: content}}
-	if connectorPrompt := r.connectorContextPrompt(ctx, req); connectorPrompt != "" {
-		blocks = append(blocks, publictypes.ContentBlock{Type: "text", Text: connectorPrompt})
-	}
 	attachmentNames := make([]string, 0, len(req.AttachmentIDs)+len(req.AttachmentURLs))
 	for _, id := range req.AttachmentIDs {
 		id = strings.TrimSpace(id)

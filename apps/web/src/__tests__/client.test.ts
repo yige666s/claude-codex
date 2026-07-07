@@ -92,6 +92,60 @@ describe("ApiClient auth refresh", () => {
     const api = new ApiClient(vi.fn());
     await expect(api.jobStreamResponse("job-1")).resolves.toBeInstanceOf(Response);
   });
+
+  it("uses encoded prompt IDs for admin prompt lifecycle APIs", async () => {
+    localStorage.setItem("agentapi.web.auth", JSON.stringify(authSession("access-token", "refresh", Date.now() + 900_000)));
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, init });
+      if (url.endsWith("/versions")) {
+        return jsonResponse({ version: { prompt_id: "runtime/deep_agent/planner", version: "candidate", status: "review_pending", content: "content", content_hash: "hash" } }, 201);
+      }
+      if (url.endsWith("/publish") || url.endsWith("/rollback")) {
+        return jsonResponse({ version: { prompt_id: "runtime/deep_agent/planner", version: "candidate", status: "published", content: "content", content_hash: "hash" } });
+      }
+      if (url.includes("/versions/diff")) {
+        return jsonResponse({ diff: [], from: { version: "base" }, to: { version: "candidate" } });
+      }
+      return jsonResponse({ error: "not found" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const api = new ApiClient(vi.fn());
+    await api.createPromptVersion("secret", "runtime/deep_agent/planner", { version: "candidate", content: "content", base_version: "base" });
+    await api.publishPromptVersion("secret", "runtime/deep_agent/planner", "candidate", "ship");
+    await api.rollbackPromptVersion("secret", "runtime/deep_agent/planner", "base", "rollback");
+    await api.diffPromptVersions("secret", "runtime/deep_agent/planner", "base", "candidate");
+
+    expect(calls.map((call) => call.url)).toEqual([
+      "/v1/admin/ops/prompts/runtime%2Fdeep_agent%2Fplanner/versions",
+      "/v1/admin/ops/prompts/runtime%2Fdeep_agent%2Fplanner/publish",
+      "/v1/admin/ops/prompts/runtime%2Fdeep_agent%2Fplanner/rollback",
+      "/v1/admin/ops/prompts/runtime%2Fdeep_agent%2Fplanner/versions/diff?from_version=base&to_version=candidate"
+    ]);
+    expect(JSON.parse(String(calls[0].init?.body))).toMatchObject({
+      prompt_id: "runtime/deep_agent/planner",
+      version: "candidate",
+      content: "content",
+      base_version: "base"
+    });
+    expect(new Headers(calls[0].init?.headers).get("X-Admin-Token")).toBe("secret");
+  });
+
+  it("does not send all as a prompt scope filter", async () => {
+    localStorage.setItem("agentapi.web.auth", JSON.stringify(authSession("access-token", "refresh", Date.now() + 900_000)));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("/v1/admin/ops/prompts?limit=300");
+      expect(new Headers(init?.headers).get("X-Admin-Token")).toBe("secret");
+      return jsonResponse({ prompts: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const api = new ApiClient(vi.fn());
+    await expect(api.adminOpsPrompts("secret", { scope: "all", status: "all", limit: 300 })).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 function authSession(accessToken: string, refreshToken: string, expiresAtMs: number): AuthSession {

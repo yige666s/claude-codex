@@ -89,6 +89,22 @@ func (s *CacheInvalidatingPromptStore) RollbackPromptVersion(ctx context.Context
 	return out, err
 }
 
+func (s *CacheInvalidatingPromptStore) ListPromptEnvironmentPins(ctx context.Context, promptID string) ([]PromptEnvironmentPin, error) {
+	return s.Store.ListPromptEnvironmentPins(ctx, promptID)
+}
+
+func (s *CacheInvalidatingPromptStore) GetPromptEnvironmentPin(ctx context.Context, promptID, environment string) (PromptEnvironmentPin, error) {
+	return s.Store.GetPromptEnvironmentPin(ctx, promptID, environment)
+}
+
+func (s *CacheInvalidatingPromptStore) SetPromptEnvironmentPin(ctx context.Context, pin PromptEnvironmentPin) (PromptEnvironmentPin, error) {
+	out, err := s.Store.SetPromptEnvironmentPin(ctx, pin)
+	if err == nil {
+		_ = s.invalidate(ctx)
+	}
+	return out, err
+}
+
 func (s *CacheInvalidatingPromptStore) UpsertPromptExperiment(ctx context.Context, experiment PromptExperiment, variants []PromptExperimentVariant) (PromptExperiment, error) {
 	out, err := s.Store.UpsertPromptExperiment(ctx, experiment, variants)
 	if err == nil {

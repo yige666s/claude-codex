@@ -21,6 +21,10 @@ const (
 	PromptStatusPublished     = "published"
 	PromptStatusArchived      = "archived"
 
+	PromptEnvironmentDev        = "dev"
+	PromptEnvironmentStaging    = "staging"
+	PromptEnvironmentProduction = "production"
+
 	PromptExperimentStatusDraft     = "draft"
 	PromptExperimentStatusRunning   = "running"
 	PromptExperimentStatusPaused    = "paused"
@@ -116,6 +120,17 @@ type PromptExperimentVariant struct {
 	CreatedAt     time.Time      `json:"created_at,omitempty"`
 }
 
+type PromptEnvironmentPin struct {
+	PromptID    string    `json:"prompt_id"`
+	Environment string    `json:"environment"`
+	Version     string    `json:"version"`
+	PinnedBy    string    `json:"pinned_by,omitempty"`
+	Changelog   string    `json:"changelog,omitempty"`
+	EvalRunID   string    `json:"eval_run_id,omitempty"`
+	CreatedAt   time.Time `json:"created_at,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at,omitempty"`
+}
+
 type PromptListFilter struct {
 	Scope  string
 	Status string
@@ -141,6 +156,9 @@ type PromptStore interface {
 	ListPromptVersions(ctx context.Context, promptID string) ([]PromptVersion, error)
 	PublishPromptVersion(ctx context.Context, promptID, version, actor, changelog string) (PromptVersion, error)
 	RollbackPromptVersion(ctx context.Context, promptID, version, actor, changelog string) (PromptVersion, error)
+	ListPromptEnvironmentPins(ctx context.Context, promptID string) ([]PromptEnvironmentPin, error)
+	GetPromptEnvironmentPin(ctx context.Context, promptID, environment string) (PromptEnvironmentPin, error)
+	SetPromptEnvironmentPin(ctx context.Context, pin PromptEnvironmentPin) (PromptEnvironmentPin, error)
 	UpsertPromptExperiment(ctx context.Context, experiment PromptExperiment, variants []PromptExperimentVariant) (PromptExperiment, error)
 	GetPromptExperiment(ctx context.Context, id string) (PromptExperiment, []PromptExperimentVariant, error)
 	ListPromptExperiments(ctx context.Context, filter PromptExperimentFilter) ([]PromptExperiment, error)
@@ -151,6 +169,7 @@ type MemoryPromptStore struct {
 	mu          sync.Mutex
 	prompts     map[string]PromptTemplate
 	versions    map[string]PromptVersion
+	envPins     map[string]PromptEnvironmentPin
 	experiments map[string]PromptExperiment
 	variants    map[string][]PromptExperimentVariant
 }
@@ -159,6 +178,7 @@ func NewMemoryPromptStore() *MemoryPromptStore {
 	return &MemoryPromptStore{
 		prompts:     make(map[string]PromptTemplate),
 		versions:    make(map[string]PromptVersion),
+		envPins:     make(map[string]PromptEnvironmentPin),
 		experiments: make(map[string]PromptExperiment),
 		variants:    make(map[string][]PromptExperimentVariant),
 	}
@@ -301,6 +321,69 @@ func (s *MemoryPromptStore) PublishPromptVersion(_ context.Context, promptID, ve
 
 func (s *MemoryPromptStore) RollbackPromptVersion(ctx context.Context, promptID, version, actor, changelog string) (PromptVersion, error) {
 	return s.PublishPromptVersion(ctx, promptID, version, actor, firstNonEmptyString(changelog, "rollback to "+strings.TrimSpace(version)))
+}
+
+func (s *MemoryPromptStore) ListPromptEnvironmentPins(_ context.Context, promptID string) ([]PromptEnvironmentPin, error) {
+	promptID = strings.TrimSpace(promptID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]PromptEnvironmentPin, 0, len(s.envPins))
+	for _, pin := range s.envPins {
+		if promptID != "" && pin.PromptID != promptID {
+			continue
+		}
+		out = append(out, clonePromptEnvironmentPin(pin))
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].PromptID == out[j].PromptID {
+			return out[i].Environment < out[j].Environment
+		}
+		return out[i].PromptID < out[j].PromptID
+	})
+	return out, nil
+}
+
+func (s *MemoryPromptStore) GetPromptEnvironmentPin(_ context.Context, promptID, environment string) (PromptEnvironmentPin, error) {
+	promptID = strings.TrimSpace(promptID)
+	environment = normalizePromptEnvironment(environment)
+	if promptID == "" || environment == "" {
+		return PromptEnvironmentPin{}, sql.ErrNoRows
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pin, ok := s.envPins[promptEnvironmentPinKey(promptID, environment)]
+	if !ok {
+		return PromptEnvironmentPin{}, sql.ErrNoRows
+	}
+	return clonePromptEnvironmentPin(pin), nil
+}
+
+func (s *MemoryPromptStore) SetPromptEnvironmentPin(_ context.Context, pin PromptEnvironmentPin) (PromptEnvironmentPin, error) {
+	pin = normalizePromptEnvironmentPin(pin)
+	if pin.PromptID == "" {
+		return PromptEnvironmentPin{}, fmt.Errorf("prompt id is required")
+	}
+	if pin.Environment == "" {
+		return PromptEnvironmentPin{}, fmt.Errorf("prompt environment is required")
+	}
+	if pin.Version == "" {
+		return PromptEnvironmentPin{}, fmt.Errorf("prompt version is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.prompts[pin.PromptID]; !ok {
+		return PromptEnvironmentPin{}, sql.ErrNoRows
+	}
+	if _, ok := s.versions[promptVersionKey(pin.PromptID, pin.Version)]; !ok {
+		return PromptEnvironmentPin{}, sql.ErrNoRows
+	}
+	key := promptEnvironmentPinKey(pin.PromptID, pin.Environment)
+	if existing, ok := s.envPins[key]; ok && pin.CreatedAt.IsZero() {
+		pin.CreatedAt = existing.CreatedAt
+	}
+	pin = normalizePromptEnvironmentPin(pin)
+	s.envPins[key] = clonePromptEnvironmentPin(pin)
+	return clonePromptEnvironmentPin(pin), nil
 }
 
 func (s *MemoryPromptStore) UpsertPromptExperiment(_ context.Context, experiment PromptExperiment, variants []PromptExperimentVariant) (PromptExperiment, error) {
@@ -458,8 +541,13 @@ func (s *SQLPromptStore) Init(ctx context.Context) error {
 	); err != nil {
 		return err
 	}
-	return requireSQLColumns(ctx, s.db, "agent_prompt_experiment_variants",
+	if err := requireSQLColumns(ctx, s.db, "agent_prompt_experiment_variants",
 		"experiment_id", "variant_id", "prompt_version", "weight", "metadata", "created_at",
+	); err != nil {
+		return err
+	}
+	return requireSQLColumns(ctx, s.db, "agent_prompt_environment_pins",
+		"prompt_id", "environment", "version", "pinned_by", "changelog", "eval_run_id", "created_at", "updated_at",
 	)
 }
 
@@ -614,6 +702,69 @@ func (s *SQLPromptStore) PublishPromptVersion(ctx context.Context, promptID, ver
 
 func (s *SQLPromptStore) RollbackPromptVersion(ctx context.Context, promptID, version, actor, changelog string) (PromptVersion, error) {
 	return s.setPromptVersionPublished(ctx, promptID, version, actor, firstNonEmptyString(changelog, "rollback to "+strings.TrimSpace(version)))
+}
+
+func (s *SQLPromptStore) ListPromptEnvironmentPins(ctx context.Context, promptID string) ([]PromptEnvironmentPin, error) {
+	promptID = strings.TrimSpace(promptID)
+	query := `SELECT prompt_id, environment, version, pinned_by, changelog, eval_run_id, created_at, updated_at FROM agent_prompt_environment_pins`
+	var args []any
+	if promptID != "" {
+		query += ` WHERE prompt_id = ?`
+		args = append(args, promptID)
+	}
+	query += ` ORDER BY prompt_id ASC, environment ASC`
+	rows, err := s.db.QueryContext(ctx, s.dialect.Bind(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PromptEnvironmentPin{}
+	for rows.Next() {
+		pin, err := scanPromptEnvironmentPin(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, pin)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLPromptStore) GetPromptEnvironmentPin(ctx context.Context, promptID, environment string) (PromptEnvironmentPin, error) {
+	return scanPromptEnvironmentPin(s.db.QueryRowContext(ctx, s.dialect.Bind(`
+SELECT prompt_id, environment, version, pinned_by, changelog, eval_run_id, created_at, updated_at
+FROM agent_prompt_environment_pins
+WHERE prompt_id = ? AND environment = ?`), strings.TrimSpace(promptID), normalizePromptEnvironment(environment)))
+}
+
+func (s *SQLPromptStore) SetPromptEnvironmentPin(ctx context.Context, pin PromptEnvironmentPin) (PromptEnvironmentPin, error) {
+	pin = normalizePromptEnvironmentPin(pin)
+	if pin.PromptID == "" {
+		return PromptEnvironmentPin{}, fmt.Errorf("prompt id is required")
+	}
+	if pin.Environment == "" {
+		return PromptEnvironmentPin{}, fmt.Errorf("prompt environment is required")
+	}
+	if pin.Version == "" {
+		return PromptEnvironmentPin{}, fmt.Errorf("prompt version is required")
+	}
+	if _, err := s.GetPromptVersion(ctx, pin.PromptID, pin.Version); err != nil {
+		return PromptEnvironmentPin{}, err
+	}
+	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
+INSERT INTO agent_prompt_environment_pins (prompt_id, environment, version, pinned_by, changelog, eval_run_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (prompt_id, environment) DO UPDATE SET
+	version = excluded.version,
+	pinned_by = excluded.pinned_by,
+	changelog = excluded.changelog,
+	eval_run_id = excluded.eval_run_id,
+	updated_at = excluded.updated_at`),
+		pin.PromptID, pin.Environment, pin.Version, pin.PinnedBy, pin.Changelog, pin.EvalRunID,
+		sqlTimeValue(pin.CreatedAt, s.dialect), sqlTimeValue(pin.UpdatedAt, s.dialect))
+	if err != nil {
+		return PromptEnvironmentPin{}, err
+	}
+	return s.GetPromptEnvironmentPin(ctx, pin.PromptID, pin.Environment)
 }
 
 func (s *SQLPromptStore) UpsertPromptExperiment(ctx context.Context, experiment PromptExperiment, variants []PromptExperimentVariant) (PromptExperiment, error) {
@@ -849,6 +1000,22 @@ func scanPromptVersion(row promptScanner) (PromptVersion, error) {
 	return normalizePromptVersion(version), nil
 }
 
+func scanPromptEnvironmentPin(row promptScanner) (PromptEnvironmentPin, error) {
+	var pin PromptEnvironmentPin
+	var createdAt, updatedAt any
+	if err := row.Scan(&pin.PromptID, &pin.Environment, &pin.Version, &pin.PinnedBy, &pin.Changelog, &pin.EvalRunID, &createdAt, &updatedAt); err != nil {
+		return PromptEnvironmentPin{}, err
+	}
+	var err error
+	if pin.CreatedAt, err = parseSQLTime(createdAt); err != nil {
+		return PromptEnvironmentPin{}, err
+	}
+	if pin.UpdatedAt, err = parseSQLTime(updatedAt); err != nil {
+		return PromptEnvironmentPin{}, err
+	}
+	return normalizePromptEnvironmentPin(pin), nil
+}
+
 func scanPromptExperiment(row promptScanner) (PromptExperiment, error) {
 	var experiment PromptExperiment
 	var allocation, guardrails string
@@ -953,6 +1120,27 @@ func normalizePromptVersion(version PromptVersion) PromptVersion {
 	return version
 }
 
+func normalizePromptEnvironmentPin(pin PromptEnvironmentPin) PromptEnvironmentPin {
+	pin.PromptID = strings.TrimSpace(pin.PromptID)
+	pin.Environment = normalizePromptEnvironment(pin.Environment)
+	pin.Version = strings.TrimSpace(pin.Version)
+	pin.PinnedBy = strings.TrimSpace(pin.PinnedBy)
+	pin.Changelog = truncateString(strings.TrimSpace(pin.Changelog), 4096)
+	pin.EvalRunID = strings.TrimSpace(pin.EvalRunID)
+	now := time.Now().UTC()
+	if pin.CreatedAt.IsZero() {
+		pin.CreatedAt = now
+	} else {
+		pin.CreatedAt = pin.CreatedAt.UTC()
+	}
+	if pin.UpdatedAt.IsZero() {
+		pin.UpdatedAt = now
+	} else {
+		pin.UpdatedAt = pin.UpdatedAt.UTC()
+	}
+	return pin
+}
+
 func normalizePromptExperiment(experiment PromptExperiment) PromptExperiment {
 	experiment.ID = strings.TrimSpace(experiment.ID)
 	if experiment.ID == "" {
@@ -1045,6 +1233,19 @@ func normalizeOptionalPromptExperimentStatus(status string) string {
 		return ""
 	}
 	return normalizePromptExperimentStatus(status)
+}
+
+func normalizePromptEnvironment(environment string) string {
+	switch strings.ToLower(strings.TrimSpace(environment)) {
+	case PromptEnvironmentDev, "development":
+		return PromptEnvironmentDev
+	case PromptEnvironmentStaging, "stage":
+		return PromptEnvironmentStaging
+	case PromptEnvironmentProduction, "prod":
+		return PromptEnvironmentProduction
+	default:
+		return ""
+	}
 }
 
 func normalizePromptTrafficScope(scope string) string {
@@ -1155,6 +1356,10 @@ func promptVersionKey(promptID, version string) string {
 	return strings.TrimSpace(promptID) + "\x00" + strings.TrimSpace(version)
 }
 
+func promptEnvironmentPinKey(promptID, environment string) string {
+	return strings.TrimSpace(promptID) + "\x00" + normalizePromptEnvironment(environment)
+}
+
 func newPromptExperimentID() string {
 	return newEvaluationID("pexp")
 }
@@ -1196,6 +1401,10 @@ func clonePromptVersion(version PromptVersion) PromptVersion {
 		version.PublishedAt = &value
 	}
 	return version
+}
+
+func clonePromptEnvironmentPin(pin PromptEnvironmentPin) PromptEnvironmentPin {
+	return pin
 }
 
 func clonePromptExperiment(experiment PromptExperiment) PromptExperiment {
@@ -1259,6 +1468,7 @@ type PromptResolver struct {
 type PromptResolveRequest struct {
 	PromptID      string
 	ForcedVersion string
+	Environment   string
 	UserID        string
 	SessionID     string
 	TenantID      string
@@ -1268,12 +1478,14 @@ type PromptResolveRequest struct {
 }
 
 type PromptResolution struct {
-	PromptID   string                      `json:"prompt_id"`
-	Version    PromptVersion               `json:"version"`
-	Experiment *PromptExperiment           `json:"experiment,omitempty"`
-	Variant    *PromptExperimentVariant    `json:"variant,omitempty"`
-	Assignment *PromptExperimentAssignment `json:"assignment,omitempty"`
-	Fallback   bool                        `json:"fallback,omitempty"`
+	PromptID    string                      `json:"prompt_id"`
+	Version     PromptVersion               `json:"version"`
+	Environment string                      `json:"environment,omitempty"`
+	EnvPin      *PromptEnvironmentPin       `json:"env_pin,omitempty"`
+	Experiment  *PromptExperiment           `json:"experiment,omitempty"`
+	Variant     *PromptExperimentVariant    `json:"variant,omitempty"`
+	Assignment  *PromptExperimentAssignment `json:"assignment,omitempty"`
+	Fallback    bool                        `json:"fallback,omitempty"`
 }
 
 type PromptExperimentAssignment struct {
@@ -1336,6 +1548,18 @@ func (r PromptResolver) resolveUncached(ctx context.Context, promptID string, re
 			if !errorsIsSQLNoRows(err) {
 				return PromptResolution{}, err
 			}
+			pin, err := r.Store.GetPromptEnvironmentPin(ctx, promptID, req.Environment)
+			if err == nil {
+				version, err := r.Store.GetPromptVersion(ctx, promptID, pin.Version)
+				if err != nil {
+					return PromptResolution{}, err
+				}
+				pinCopy := clonePromptEnvironmentPin(pin)
+				return PromptResolution{PromptID: promptID, Version: version, Environment: pin.Environment, EnvPin: &pinCopy}, nil
+			}
+			if !errorsIsSQLNoRows(err) {
+				return PromptResolution{}, err
+			}
 			version, err := r.Store.GetPublishedPromptVersion(ctx, promptID)
 			if err == nil {
 				return PromptResolution{PromptID: promptID, Version: version}, nil
@@ -1362,6 +1586,7 @@ func promptResolverCacheKey(promptID string, req PromptResolveRequest) string {
 		Version:   strings.TrimSpace(req.ForcedVersion),
 		Parts: []string{
 			"prompt=" + strings.TrimSpace(promptID),
+			"env=" + normalizePromptEnvironment(req.Environment),
 			"tenant=" + strings.TrimSpace(req.TenantID),
 			"mode=" + strings.TrimSpace(req.RuntimeMode),
 			"provider=" + strings.TrimSpace(req.Provider),
@@ -1592,38 +1817,17 @@ func promptRenderPreviewLimit(config map[string]any) int {
 }
 
 func defaultPromptFallbacks() map[string]PromptVersion {
-	return map[string]PromptVersion{
-		PromptIDLiveSetup: {
-			PromptID: PromptIDLiveSetup,
-			Version:  "builtin-v1",
-			Status:   PromptStatusPublished,
-			Content:  "{{content}}",
-		},
-		PromptIDEvalJudge: {
-			PromptID: PromptIDEvalJudge,
-			Version:  DefaultGoldenJudgePromptVersion,
-			Status:   PromptStatusPublished,
-			Content:  goldenJudgeSystemPrompt(),
-		},
-		PromptIDMemoryExtract: {
-			PromptID: PromptIDMemoryExtract,
-			Version:  "builtin-v1",
-			Status:   PromptStatusPublished,
-			Content:  memoryExtractionPromptTemplate(),
-			VariablesSchema: map[string]any{
-				"required": []any{"conversation_json"},
-			},
-		},
-		PromptIDMemoryEpisodeSummarize: {
-			PromptID: PromptIDMemoryEpisodeSummarize,
-			Version:  "builtin-v1",
-			Status:   PromptStatusPublished,
-			Content:  memoryEpisodeSummarizePromptTemplate(),
-			VariablesSchema: map[string]any{
-				"required": []any{"session_id", "conversation_json", "current_timestamp"},
-			},
-		},
+	out := make(map[string]PromptVersion)
+	for _, item := range BuiltinSystemPromptBaselines() {
+		version := normalizePromptVersion(item.Version)
+		out[item.Prompt.ID] = version
+		for _, alias := range item.Aliases {
+			aliasVersion := version
+			aliasVersion.PromptID = strings.TrimSpace(alias)
+			out[aliasVersion.PromptID] = normalizePromptVersion(aliasVersion)
+		}
 	}
+	return out
 }
 
 func errorsIsSQLNoRows(err error) bool {

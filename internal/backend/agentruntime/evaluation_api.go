@@ -79,21 +79,23 @@ func (s *Server) handleAdminOpsUpsertGoldenSet(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Server) handleAdminOpsListGoldenSets(w http.ResponseWriter, r *http.Request) {
-	sets, err := s.evaluation.ListGoldenSets(r.Context(), GoldenSetFilter{
+	filter := GoldenSetFilter{
 		ID:      strings.TrimSpace(r.URL.Query().Get("id")),
 		Version: strings.TrimSpace(r.URL.Query().Get("version")),
 		Limit:   parseBoundedInt(r.URL.Query().Get("limit"), 100, 1, 500),
-	})
+	}
+	sets, err := s.evaluation.ListGoldenSets(r.Context(), filter)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	sets = mergeBuiltinGoldenSets(sets, filter)
 	writeJSON(w, http.StatusOK, map[string]any{"sets": sets})
 }
 
 func (s *Server) handleAdminOpsTemplateEvalCorpus(w http.ResponseWriter, r *http.Request) {
 	ids := normalizeTemplateReplayIDs(strings.Split(strings.TrimSpace(r.URL.Query().Get("template_ids")), ","))
-	sets := filterTemplateGoldenSets(DefaultDeepAgentTemplateGoldenSets(), ids)
+	sets := filterTemplateGoldenSets(DefaultDeepAgentGoldenSets(), ids)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sets":    sets,
 		"version": DeepAgentTemplateEvalSetVersion,
@@ -135,7 +137,7 @@ func (s *Server) handleAdminOpsTemplateEvalDashboard(w http.ResponseWriter, r *h
 
 func (s *Server) handleAdminOpsGetGoldenSet(w http.ResponseWriter, r *http.Request, setID string) {
 	version := strings.TrimSpace(r.URL.Query().Get("version"))
-	set, err := s.evaluation.GetGoldenSetVersion(r.Context(), setID, version)
+	set, err := s.getGoldenSetVersion(r.Context(), setID, version)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, sql.ErrNoRows) {
@@ -164,7 +166,7 @@ func (s *Server) handleAdminOpsCreateGoldenSetVersion(w http.ResponseWriter, r *
 		writeJSONError(w, fmt.Errorf("target version is required"))
 		return
 	}
-	source, err := s.evaluation.GetGoldenSetVersion(r.Context(), setID, body.SourceVersion)
+	source, err := s.getGoldenSetVersion(r.Context(), setID, body.SourceVersion)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			source = normalizeGoldenSet(GoldenSet{
@@ -215,7 +217,7 @@ func (s *Server) handleAdminOpsCreateGoldenCasesFromTrace(w http.ResponseWriter,
 		return
 	}
 	body.SetID = setID
-	source, err := s.evaluation.GetGoldenSetVersion(r.Context(), setID, body.SourceVersion)
+	source, err := s.getGoldenSetVersion(r.Context(), setID, body.SourceVersion)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			source = normalizeGoldenSet(GoldenSet{
@@ -228,8 +230,13 @@ func (s *Server) handleAdminOpsCreateGoldenCasesFromTrace(w http.ResponseWriter,
 			return
 		}
 	}
-	traceSource := RuntimeEvaluationTraceSource{Runtime: s.runtime, LLMUsage: s.llmUsage, Risk: s.risk}
-	cases, err := BuildGoldenCasesFromRuntimeTraces(r.Context(), traceSource, body)
+	var cases []GoldenCase
+	if strings.TrimSpace(body.EvaluationResultID) != "" || strings.TrimSpace(body.EvaluationRunID) != "" || strings.TrimSpace(body.EvaluationStatus) != "" {
+		cases, err = BuildGoldenCasesFromEvaluationResults(r.Context(), s.evaluation, body)
+	} else {
+		traceSource := RuntimeEvaluationTraceSource{Runtime: s.runtime, LLMUsage: s.llmUsage, Risk: s.risk}
+		cases, err = BuildGoldenCasesFromRuntimeTraces(r.Context(), traceSource, body)
+	}
 	if err != nil {
 		writeJSONError(w, err)
 		return
@@ -290,7 +297,7 @@ func (s *Server) handleAdminOpsCreateGoldenEvaluationRun(w http.ResponseWriter, 
 		writeJSONError(w, fmt.Errorf("golden set id is required"))
 		return
 	}
-	set, err := s.evaluation.GetGoldenSetVersion(r.Context(), setID, req.SetVersion)
+	set, err := s.getGoldenSetVersion(r.Context(), setID, req.SetVersion)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, sql.ErrNoRows) {
@@ -345,6 +352,45 @@ func (s *Server) handleAdminOpsCreateGoldenEvaluationRun(w http.ResponseWriter, 
 		"reviews": persisted.Reviews,
 		"summary": persisted.Summary,
 	})
+}
+
+func (s *Server) getGoldenSetVersion(ctx context.Context, id, version string) (GoldenSet, error) {
+	set, err := s.evaluation.GetGoldenSetVersion(ctx, id, version)
+	if err == nil {
+		return set, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		if builtin, ok := builtinDeepAgentGoldenSetVersion(strings.TrimSpace(id), strings.TrimSpace(version)); ok {
+			return builtin, nil
+		}
+	}
+	return GoldenSet{}, err
+}
+
+func mergeBuiltinGoldenSets(stored []GoldenSet, filter GoldenSetFilter) []GoldenSet {
+	seen := make(map[string]struct{}, len(stored))
+	out := make([]GoldenSet, 0, len(stored)+len(DefaultDeepAgentPromptGoldenSets()))
+	for _, set := range stored {
+		seen[goldenSetKey(set.ID, set.Version)] = struct{}{}
+		out = append(out, set)
+	}
+	for _, set := range DefaultDeepAgentPromptGoldenSets() {
+		if filter.ID != "" && set.ID != filter.ID {
+			continue
+		}
+		if filter.Version != "" && set.Version != filter.Version {
+			continue
+		}
+		key := goldenSetKey(set.ID, set.Version)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		out = append(out, set)
+	}
+	if filter.Limit > 0 && len(out) > filter.Limit {
+		out = out[:filter.Limit]
+	}
+	return out
 }
 
 func readGoldenSetPayload(r *http.Request) (GoldenSet, error) {

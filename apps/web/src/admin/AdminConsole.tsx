@@ -9,6 +9,7 @@ import {
   LogOut,
   MessageCircle,
   PlayCircle,
+  ScrollText,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -57,8 +58,9 @@ import { AdminOpsPanel } from "./panels/AdminOpsPanel";
 import { AdminAuditPanel } from "./panels/AdminAuditPanel";
 import { AdminEvaluationPanel } from "./panels/AdminEvaluationPanel";
 import { AdminHealthCostPanel } from "./panels/AdminHealthCostPanel";
+import { AdminPromptPanel } from "./panels/AdminPromptPanel";
 
-type AdminSection = "skills" | "users" | "jobs-assets" | "health-cost" | "audit" | "evaluation";
+type AdminSection = "skills" | "users" | "jobs-assets" | "health-cost" | "audit" | "evaluation" | "prompts";
 
 function AdminConsole({
   api,
@@ -98,7 +100,8 @@ function AdminConsole({
     { id: "jobs-assets", label: "Jobs & assets", description: "Inspect a user's sessions, queued jobs, replay events, and generated or uploaded assets.", icon: <Briefcase size={18} /> },
     { id: "health-cost", label: "Health & cost", description: "Watch readiness checks, LLM backend health, token usage, latency, and estimated cost.", icon: <Activity size={18} /> },
     { id: "audit", label: "Audit", description: "Review sensitive operations, high-risk actions, request IDs, user scope, and metadata for investigations.", icon: <FileText size={18} /> },
-    { id: "evaluation", label: "Evaluation", description: "Run lightweight evaluations over real runtime data, inspect pass/fail findings, and close review items.", icon: <ShieldCheck size={18} /> }
+    { id: "evaluation", label: "Evaluation", description: "Run lightweight evaluations over real runtime data, inspect pass/fail findings, and close review items.", icon: <ShieldCheck size={18} /> },
+    { id: "prompts", label: "Prompts", description: "Create candidate prompt versions, preview, evaluate, promote, rollback, and inspect prompt usage.", icon: <ScrollText size={18} /> }
   ];
   const selectedAdminSection = adminSections.find((section) => section.id === adminSection) || adminSections[0];
   const selectedSkill = skills.find((skill) => skill.name === selectedName) || null;
@@ -276,6 +279,8 @@ function AdminConsole({
           <AdminAuditPanel api={api} adminToken={adminToken} />
         ) : adminSection === "evaluation" ? (
           <AdminEvaluationPanel api={api} adminToken={adminToken} />
+        ) : adminSection === "prompts" ? (
+          <AdminPromptPanel api={api} adminToken={adminToken} />
         ) : (
           <AdminSplitPane>
             <AdminListPanel>

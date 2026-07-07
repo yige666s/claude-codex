@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -201,6 +202,9 @@ func (s *Server) mountAdminRoutes(r chi.Router) {
 				r.Get("/v1/admin/ops/prompts/{promptID}/versions/diff", s.withParam("promptID", s.handleAdminOpsPromptVersionDiff))
 				r.Post("/v1/admin/ops/prompts/{promptID}/publish", s.withUserParam("promptID", s.handleAdminOpsPublishPrompt))
 				r.Post("/v1/admin/ops/prompts/{promptID}/rollback", s.withUserParam("promptID", s.handleAdminOpsRollbackPrompt))
+				r.Get("/v1/admin/ops/prompts/{promptID}/env-pins", s.withParam("promptID", s.handleAdminOpsListPromptEnvPins))
+				r.Put("/v1/admin/ops/prompts/{promptID}/env-pins/{environment}", s.withUserTwoParams("promptID", "environment", s.handleAdminOpsSetPromptEnvPin))
+				r.Post("/v1/admin/ops/prompts/{promptID}/env-pins/{environment}/rollback", s.withUserTwoParams("promptID", "environment", s.handleAdminOpsRollbackPromptEnvPin))
 				r.Post("/v1/admin/ops/prompts/{promptID}/versions/{version}/render-preview", s.withTwoParams("promptID", "version", s.handleAdminOpsPromptRenderPreview))
 				r.Post("/v1/admin/ops/prompts/{promptID}/versions/{version}/eval", s.withUserTwoParams("promptID", "version", s.handleAdminOpsPromptVersionEval))
 				r.Post("/v1/admin/ops/prompts/{promptID}/optimize", s.withUserParam("promptID", s.handleAdminOpsPromptOptimize))
@@ -527,7 +531,7 @@ func (s *Server) withUserParam(param string, handler func(http.ResponseWriter, *
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user identity is required"})
 			return
 		}
-		handler(w, r, user, chi.URLParam(r, param))
+		handler(w, r, user, routeParam(r, param))
 	}
 }
 
@@ -538,19 +542,19 @@ func (s *Server) withUserTwoParams(firstParam, secondParam string, handler func(
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user identity is required"})
 			return
 		}
-		handler(w, r, user, chi.URLParam(r, firstParam), chi.URLParam(r, secondParam))
+		handler(w, r, user, routeParam(r, firstParam), routeParam(r, secondParam))
 	}
 }
 
 func (s *Server) withParam(param string, handler func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		handler(w, r, chi.URLParam(r, param))
+		handler(w, r, routeParam(r, param))
 	}
 }
 
 func (s *Server) withTwoParams(firstParam, secondParam string, handler func(http.ResponseWriter, *http.Request, string, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		handler(w, r, chi.URLParam(r, firstParam), chi.URLParam(r, secondParam))
+		handler(w, r, routeParam(r, firstParam), routeParam(r, secondParam))
 	}
 }
 
@@ -570,7 +574,7 @@ func (s *Server) withAdminUserStoreParam(param string, handler func(http.Respons
 		if !ok {
 			return
 		}
-		handler(w, r, store, chi.URLParam(r, param))
+		handler(w, r, store, routeParam(r, param))
 	}
 }
 
@@ -585,7 +589,7 @@ func (s *Server) withUserAdminStoreParam(param string, handler func(http.Respons
 		if !ok {
 			return
 		}
-		handler(w, r, user, store, chi.URLParam(r, param))
+		handler(w, r, user, store, routeParam(r, param))
 	}
 }
 
@@ -600,8 +604,16 @@ func (s *Server) withUserAdminStoreTwoParams(firstParam, secondParam string, han
 		if !ok {
 			return
 		}
-		handler(w, r, user, store, chi.URLParam(r, firstParam), chi.URLParam(r, secondParam))
+		handler(w, r, user, store, routeParam(r, firstParam), routeParam(r, secondParam))
 	}
+}
+
+func routeParam(r *http.Request, param string) string {
+	value := chi.URLParam(r, param)
+	if decoded, err := url.PathUnescape(value); err == nil {
+		return decoded
+	}
+	return value
 }
 
 func (s *Server) adminUserStoreResponse(w http.ResponseWriter) (AdminUserStore, bool) {
@@ -620,6 +632,6 @@ func (s *Server) withUserAssetParam(kind, param string) http.HandlerFunc {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user identity is required"})
 			return
 		}
-		s.handleExtractAssetMemory(w, r, user, kind, chi.URLParam(r, param))
+		s.handleExtractAssetMemory(w, r, user, kind, routeParam(r, param))
 	}
 }

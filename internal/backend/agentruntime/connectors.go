@@ -1559,6 +1559,14 @@ func (r *Runtime) fetchLinearAccount(ctx context.Context, token ConnectorToken) 
 }
 
 func (r *Runtime) connectorContextPrompt(ctx context.Context, req ChatRequest) string {
+	lines := r.connectorContextLines(ctx, req)
+	if strings.TrimSpace(lines) == "" {
+		return ""
+	}
+	return PromptConnectorContextHeader + "\n" + lines + "\n" + PromptConnectorContextSuffix
+}
+
+func (r *Runtime) connectorContextLines(ctx context.Context, req ChatRequest) string {
 	selected := normalizeConnectorScopes(req.ConnectorContext)
 	if len(selected) == 0 || r == nil {
 		return ""
@@ -1603,7 +1611,7 @@ func (r *Runtime) connectorContextPrompt(ctx context.Context, req ChatRequest) s
 	if len(lines) == 0 {
 		return ""
 	}
-	return PromptConnectorContextHeader + "\n" + strings.Join(lines, "\n") + "\n" + PromptConnectorContextSuffix
+	return strings.Join(lines, "\n")
 }
 
 func (r *Runtime) resolveConnectorContext(ctx context.Context, req ChatRequest) []string {

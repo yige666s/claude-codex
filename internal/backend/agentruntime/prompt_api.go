@@ -93,6 +93,9 @@ func (s *Server) handleAdminOpsGetPrompt(w http.ResponseWriter, r *http.Request,
 	if published, err := s.promptStore.GetPublishedPromptVersion(r.Context(), prompt.ID); err == nil {
 		payload["published_version"] = published
 	}
+	if pins, err := s.promptStore.ListPromptEnvironmentPins(r.Context(), prompt.ID); err == nil {
+		payload["env_pins"] = pins
+	}
 	writeJSON(w, http.StatusOK, payload)
 }
 
@@ -156,6 +159,145 @@ func (s *Server) handleAdminOpsRollbackPrompt(w http.ResponseWriter, r *http.Req
 	}
 	s.auditEvent(r, "prompt_rollback", actor, map[string]any{"prompt_id": version.PromptID, "version": version.Version})
 	writeJSON(w, http.StatusOK, map[string]any{"version": version})
+}
+
+func (s *Server) handleAdminOpsListPromptEnvPins(w http.ResponseWriter, r *http.Request, promptID string) {
+	pins, err := s.promptStore.ListPromptEnvironmentPins(r.Context(), promptID)
+	if err != nil {
+		writePromptStoreError(w, err, "prompt not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"env_pins": pins})
+}
+
+func (s *Server) handleAdminOpsSetPromptEnvPin(w http.ResponseWriter, r *http.Request, actor User, promptID, environment string) {
+	s.handleAdminOpsMovePromptEnvPin(w, r, actor, promptID, environment, "prompt_env_pin_promote")
+}
+
+func (s *Server) handleAdminOpsRollbackPromptEnvPin(w http.ResponseWriter, r *http.Request, actor User, promptID, environment string) {
+	s.handleAdminOpsMovePromptEnvPin(w, r, actor, promptID, environment, "prompt_env_pin_rollback")
+}
+
+func (s *Server) handleAdminOpsMovePromptEnvPin(w http.ResponseWriter, r *http.Request, actor User, promptID, environment, auditAction string) {
+	var body struct {
+		Version   string `json:"version"`
+		Changelog string `json:"changelog"`
+		EvalRunID string `json:"eval_run_id"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	if err := s.validatePromptEnvironmentPinGate(r.Context(), promptID, body.Version, environment, body.EvalRunID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	pin, err := s.promptStore.SetPromptEnvironmentPin(r.Context(), PromptEnvironmentPin{
+		PromptID:    promptID,
+		Environment: environment,
+		Version:     body.Version,
+		PinnedBy:    actor.ID,
+		Changelog:   body.Changelog,
+		EvalRunID:   body.EvalRunID,
+	})
+	if err != nil {
+		writePromptStoreError(w, err, "prompt version not found")
+		return
+	}
+	s.auditEvent(r, auditAction, actor, map[string]any{
+		"prompt_id":   pin.PromptID,
+		"environment": pin.Environment,
+		"version":     pin.Version,
+		"eval_run_id": pin.EvalRunID,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"env_pin": pin})
+}
+
+func (s *Server) validatePromptEnvironmentPinGate(ctx context.Context, promptID, version, environment, evalRunID string) error {
+	promptID = strings.TrimSpace(promptID)
+	version = strings.TrimSpace(version)
+	environment = normalizePromptEnvironment(environment)
+	evalRunID = strings.TrimSpace(evalRunID)
+	if environment != PromptEnvironmentProduction {
+		return nil
+	}
+	if promptID == "" || version == "" {
+		return fmt.Errorf("production prompt changes require prompt_id and version")
+	}
+	if evalRunID == "" {
+		return fmt.Errorf("production prompt changes require eval_run_id")
+	}
+	if s.evaluation == nil {
+		return fmt.Errorf("production prompt changes require evaluation store")
+	}
+	run, err := s.evaluation.GetEvaluationRun(ctx, evalRunID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("eval_run_id %s not found", evalRunID)
+		}
+		return err
+	}
+	if run.Status != EvaluationRunStatusCompleted {
+		return fmt.Errorf("eval_run_id %s is not completed", evalRunID)
+	}
+	if strings.EqualFold(strings.TrimSpace(run.ThresholdStatus), "failed") {
+		return fmt.Errorf("eval_run_id %s failed configured thresholds", evalRunID)
+	}
+	if run.Failed > 0 {
+		return fmt.Errorf("eval_run_id %s has %d failed result(s)", evalRunID, run.Failed)
+	}
+	if !evaluationRunMatchesPromptVersion(ctx, s.evaluation, run, promptID, version) {
+		return fmt.Errorf("eval_run_id %s is not bound to %s@%s", evalRunID, promptID, version)
+	}
+	return nil
+}
+
+func evaluationRunMatchesPromptVersion(ctx context.Context, store EvaluationStore, run EvaluationRun, promptID, version string) bool {
+	promptID = strings.TrimSpace(promptID)
+	version = strings.TrimSpace(version)
+	metricPromptID := strings.TrimSpace(evaluationMetricString(run.Metrics, "prompt_id"))
+	metricPromptVersion := strings.TrimSpace(evaluationMetricString(run.Metrics, "prompt_version"))
+	if metricPromptID != "" || metricPromptVersion != "" {
+		return metricPromptID == promptID && metricPromptVersion == version
+	}
+	if store == nil {
+		return false
+	}
+	results, err := store.ListEvaluationResults(ctx, EvaluationResultFilter{RunID: run.ID, Limit: 500})
+	if err != nil || len(results) == 0 {
+		return false
+	}
+	matched := 0
+	for _, result := range results {
+		resultPromptID := strings.TrimSpace(result.PromptID)
+		resultPromptVersion := strings.TrimSpace(result.PromptVersion)
+		if resultPromptID == "" && resultPromptVersion == "" {
+			continue
+		}
+		if resultPromptID != promptID || resultPromptVersion != version {
+			return false
+		}
+		matched++
+	}
+	return matched > 0
+}
+
+func evaluationMetricString(values map[string]any, key string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	value, ok := values[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch value := value.(type) {
+	case string:
+		return value
+	case fmt.Stringer:
+		return value.String()
+	default:
+		return fmt.Sprint(value)
+	}
 }
 
 func (s *Server) handleAdminOpsPromptVersionDiff(w http.ResponseWriter, r *http.Request, promptID string) {
@@ -228,7 +370,7 @@ func (s *Server) handleAdminOpsPromptVersionEval(w http.ResponseWriter, r *http.
 		writePromptStoreError(w, err, "prompt version not found")
 		return
 	}
-	set, err := s.evaluation.GetGoldenSetVersion(r.Context(), req.SetID, req.SetVersion)
+	set, err := s.getGoldenSetVersion(r.Context(), req.SetID, req.SetVersion)
 	if err != nil {
 		writePromptStoreError(w, err, "golden set not found")
 		return

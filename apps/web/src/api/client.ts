@@ -1,6 +1,6 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
 import { userFacingErrorMessage } from "./errorMessages";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, BrowserPushConfig, BrowserPushSubscriptionResponse, ChatRunSummary, ConnectorAuthStart, ConnectorConnection, ConnectorPolicy, ConnectorStatus, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, LoopDiscoveryEvent, LoopDiscoveryResult, LoopTriggerRecord, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, TaskInboxResponse, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, BrowserPushConfig, BrowserPushSubscriptionResponse, ChatRunSummary, ConnectorAuthStart, ConnectorConnection, ConnectorPolicy, ConnectorStatus, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, LoopDiscoveryEvent, LoopDiscoveryResult, LoopTriggerRecord, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptEnvironmentPin, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, PromptVersion, PromptVersionDiff, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, TaskInboxResponse, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -720,7 +720,7 @@ export class ApiClient {
 
   async adminOpsPrompts(adminToken: string, options: { scope?: string; status?: string; q?: string; limit?: number } = {}): Promise<PromptTemplate[]> {
     const params = new URLSearchParams();
-    if (options.scope) params.set("scope", options.scope);
+    if (options.scope && options.scope !== "all") params.set("scope", options.scope);
     if (options.status && options.status !== "all") params.set("status", options.status);
     if (options.q) params.set("q", options.q);
     if (options.limit) params.set("limit", String(options.limit));
@@ -738,8 +738,81 @@ export class ApiClient {
     return {
       prompt: payload.prompt,
       versions: payload.versions || [],
-      published_version: payload.published_version
+      published_version: payload.published_version,
+      env_pins: payload.env_pins || []
     };
+  }
+
+  async adminOpsPromptEnvPins(adminToken: string, promptID: string): Promise<PromptEnvironmentPin[]> {
+    const payload = await this.fetchJSON<{ env_pins: PromptEnvironmentPin[] }>(`/v1/admin/ops/prompts/${encodeURIComponent(promptID)}/env-pins`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+    return payload.env_pins || [];
+  }
+
+  async createPromptVersion(adminToken: string, promptID: string, version: Partial<PromptVersion> & { version: string; content: string }): Promise<PromptVersion> {
+    const response = await this.fetchJSON<{ version: PromptVersion }>(`/v1/admin/ops/prompts/${encodeURIComponent(promptID)}/versions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({
+        ...version,
+        prompt_id: promptID
+      })
+    });
+    return response.version;
+  }
+
+  async publishPromptVersion(adminToken: string, promptID: string, version: string, changelog = ""): Promise<PromptVersion> {
+    const response = await this.fetchJSON<{ version: PromptVersion }>(`/v1/admin/ops/prompts/${encodeURIComponent(promptID)}/publish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({ version, changelog })
+    });
+    return response.version;
+  }
+
+  async rollbackPromptVersion(adminToken: string, promptID: string, version: string, changelog = ""): Promise<PromptVersion> {
+    const response = await this.fetchJSON<{ version: PromptVersion }>(`/v1/admin/ops/prompts/${encodeURIComponent(promptID)}/rollback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({ version, changelog })
+    });
+    return response.version;
+  }
+
+  async diffPromptVersions(adminToken: string, promptID: string, fromVersion: string, toVersion: string): Promise<PromptVersionDiff> {
+    const params = new URLSearchParams();
+    if (fromVersion) params.set("from_version", fromVersion);
+    if (toVersion) params.set("to_version", toVersion);
+    return this.fetchJSON<PromptVersionDiff>(`/v1/admin/ops/prompts/${encodeURIComponent(promptID)}/versions/diff?${params.toString()}`, {
+      headers: { "X-Admin-Token": adminToken }
+    });
+  }
+
+  async setPromptEnvironmentPin(adminToken: string, promptID: string, environment: string, payload: { version: string; changelog?: string; evalRunId?: string }): Promise<PromptEnvironmentPin> {
+    const response = await this.fetchJSON<{ env_pin: PromptEnvironmentPin }>(`/v1/admin/ops/prompts/${encodeURIComponent(promptID)}/env-pins/${encodeURIComponent(environment)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({
+        version: payload.version,
+        changelog: payload.changelog,
+        eval_run_id: payload.evalRunId
+      })
+    });
+    return response.env_pin;
+  }
+
+  async rollbackPromptEnvironmentPin(adminToken: string, promptID: string, environment: string, payload: { version: string; changelog?: string; evalRunId?: string }): Promise<PromptEnvironmentPin> {
+    const response = await this.fetchJSON<{ env_pin: PromptEnvironmentPin }>(`/v1/admin/ops/prompts/${encodeURIComponent(promptID)}/env-pins/${encodeURIComponent(environment)}/rollback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({
+        version: payload.version,
+        changelog: payload.changelog,
+        eval_run_id: payload.evalRunId
+      })
+    });
+    return response.env_pin;
   }
 
   async renderPromptVersionPreview(adminToken: string, promptID: string, version: string, variables: Record<string, unknown> = {}): Promise<PromptRenderResult> {

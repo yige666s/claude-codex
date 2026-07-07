@@ -98,6 +98,175 @@ func TestAdminPromptAPI(t *testing.T) {
 	}
 }
 
+func TestPromptEnvironmentPinsResolveAndRollback(t *testing.T) {
+	ctx := context.Background()
+	prompts := NewMemoryPromptStore()
+	if _, err := prompts.UpsertPrompt(ctx, PromptTemplate{ID: PromptIDMemoryExtractDefault, Name: "Memory Extract"}); err != nil {
+		t.Fatalf("upsert prompt: %v", err)
+	}
+	if _, err := prompts.CreatePromptVersion(ctx, PromptVersion{PromptID: PromptIDMemoryExtractDefault, Version: "v1", Status: PromptStatusPublished, Content: "published {{conversation_json}}"}); err != nil {
+		t.Fatalf("create v1: %v", err)
+	}
+	if _, err := prompts.CreatePromptVersion(ctx, PromptVersion{PromptID: PromptIDMemoryExtractDefault, Version: "v2", Status: PromptStatusReviewPending, Content: "dev {{conversation_json}}"}); err != nil {
+		t.Fatalf("create v2: %v", err)
+	}
+	if _, err := prompts.SetPromptEnvironmentPin(ctx, PromptEnvironmentPin{PromptID: PromptIDMemoryExtractDefault, Environment: PromptEnvironmentDev, Version: "v2", PinnedBy: "admin"}); err != nil {
+		t.Fatalf("pin dev: %v", err)
+	}
+	resolver := NewPromptResolver(prompts, nil)
+	dev, err := resolver.Resolve(ctx, PromptResolveRequest{PromptID: PromptIDMemoryExtractDefault, Environment: PromptEnvironmentDev})
+	if err != nil {
+		t.Fatalf("resolve dev: %v", err)
+	}
+	if dev.Version.Version != "v2" || dev.EnvPin == nil || dev.Environment != PromptEnvironmentDev {
+		t.Fatalf("unexpected dev resolution: %#v", dev)
+	}
+	production, err := resolver.Resolve(ctx, PromptResolveRequest{PromptID: PromptIDMemoryExtractDefault, Environment: PromptEnvironmentProduction})
+	if err != nil {
+		t.Fatalf("resolve production: %v", err)
+	}
+	if production.Version.Version != "v1" || production.EnvPin != nil {
+		t.Fatalf("production without pin should fall back to published v1: %#v", production)
+	}
+	forced, err := resolver.Resolve(ctx, PromptResolveRequest{PromptID: PromptIDMemoryExtractDefault, Environment: PromptEnvironmentDev, ForcedVersion: "v1"})
+	if err != nil {
+		t.Fatalf("resolve forced: %v", err)
+	}
+	if forced.Version.Version != "v1" || forced.EnvPin != nil {
+		t.Fatalf("forced version should bypass env pin: %#v", forced)
+	}
+	rolledBack, err := prompts.SetPromptEnvironmentPin(ctx, PromptEnvironmentPin{PromptID: PromptIDMemoryExtractDefault, Environment: PromptEnvironmentDev, Version: "v1", PinnedBy: "admin", Changelog: "rollback"})
+	if err != nil {
+		t.Fatalf("rollback pin: %v", err)
+	}
+	if rolledBack.Version != "v1" {
+		t.Fatalf("rollback pin version = %s, want v1", rolledBack.Version)
+	}
+	v2, err := prompts.GetPromptVersion(ctx, PromptIDMemoryExtractDefault, "v2")
+	if err != nil {
+		t.Fatalf("get v2: %v", err)
+	}
+	if v2.Status != PromptStatusReviewPending {
+		t.Fatalf("env rollback should not mutate version status: %#v", v2)
+	}
+}
+
+func TestSQLPromptStoreEnvironmentPins(t *testing.T) {
+	db := openPostgresMigrationTestDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS pg_trgm`); err != nil {
+		t.Fatalf("create pg_trgm extension: %v", err)
+	}
+	var schema string
+	if err := db.QueryRowContext(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatalf("current schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `SET search_path TO `+postgresQuoteIdentifier(schema)+`, public`); err != nil {
+		t.Fatalf("extend search path: %v", err)
+	}
+	if err := RunPostgresGooseMigrations(ctx, db, SQLDialectPostgres); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := NewSQLPromptStoreWithDialect(db, SQLDialectPostgres)
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("init prompt store: %v", err)
+	}
+	if _, err := store.UpsertPrompt(ctx, PromptTemplate{ID: "live_setup", Name: "Live Setup"}); err != nil {
+		t.Fatalf("upsert prompt: %v", err)
+	}
+	for _, version := range []PromptVersion{
+		{PromptID: "live_setup", Version: "v1", Status: PromptStatusPublished, Content: "published {{content}}"},
+		{PromptID: "live_setup", Version: "v2", Status: PromptStatusReviewPending, Content: "staging {{content}}"},
+		{PromptID: "live_setup", Version: "v3", Status: PromptStatusReviewPending, Content: "dev {{content}}"},
+	} {
+		if _, err := store.CreatePromptVersion(ctx, version); err != nil {
+			t.Fatalf("create %s: %v", version.Version, err)
+		}
+	}
+	for _, pin := range []PromptEnvironmentPin{
+		{PromptID: "live_setup", Environment: PromptEnvironmentDev, Version: "v3", PinnedBy: "admin"},
+		{PromptID: "live_setup", Environment: PromptEnvironmentStaging, Version: "v2", PinnedBy: "admin"},
+		{PromptID: "live_setup", Environment: PromptEnvironmentProduction, Version: "v1", PinnedBy: "admin"},
+	} {
+		if _, err := store.SetPromptEnvironmentPin(ctx, pin); err != nil {
+			t.Fatalf("set %s pin: %v", pin.Environment, err)
+		}
+	}
+	pins, err := store.ListPromptEnvironmentPins(ctx, "live_setup")
+	if err != nil {
+		t.Fatalf("list pins: %v", err)
+	}
+	if len(pins) != 3 {
+		t.Fatalf("pin count = %d, want 3: %#v", len(pins), pins)
+	}
+	resolver := NewPromptResolver(store, nil)
+	staging, err := resolver.Resolve(ctx, PromptResolveRequest{PromptID: "live_setup", Environment: PromptEnvironmentStaging})
+	if err != nil {
+		t.Fatalf("resolve staging: %v", err)
+	}
+	if staging.Version.Version != "v2" {
+		t.Fatalf("staging version = %s, want v2", staging.Version.Version)
+	}
+	if _, err := store.SetPromptEnvironmentPin(ctx, PromptEnvironmentPin{PromptID: "live_setup", Environment: PromptEnvironmentStaging, Version: "v1", PinnedBy: "admin", Changelog: "rollback"}); err != nil {
+		t.Fatalf("rollback staging pin: %v", err)
+	}
+	rolledBack, err := resolver.Resolve(ctx, PromptResolveRequest{PromptID: "live_setup", Environment: PromptEnvironmentStaging})
+	if err != nil {
+		t.Fatalf("resolve rolled back staging: %v", err)
+	}
+	if rolledBack.Version.Version != "v1" {
+		t.Fatalf("rolled back staging version = %s, want v1", rolledBack.Version.Version)
+	}
+}
+
+func TestAdminPromptEnvPinAPI(t *testing.T) {
+	runtime := NewRuntime(RuntimeConfig{}, nil, nil, nil, nil)
+	server := NewServer(runtime, HeaderAuthenticator{UserHeader: "X-User-ID"}, NoopRateLimiter{}, nil)
+	server.SetAdminToken("secret")
+	prompts := NewMemoryPromptStore()
+	server.SetPromptStore(prompts)
+
+	admin := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+		req.Header.Set("X-User-ID", "admin")
+		req.Header.Set("X-Admin-Token", "secret")
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+	promptID := PromptIDLiveSetup
+	create := admin(http.MethodPost, "/v1/admin/ops/prompts", `{"prompt":{"id":"`+promptID+`","name":"Live Setup","scope":"live"},"version":{"version":"v1","status":"published","content":"v1 {{content}}"}}`)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", create.Code, create.Body.String())
+	}
+	version := admin(http.MethodPost, "/v1/admin/ops/prompts/"+promptID+"/versions", `{"version":"v2","status":"review_pending","content":"v2 {{content}}"}`)
+	if version.Code != http.StatusCreated {
+		t.Fatalf("version status = %d body=%s", version.Code, version.Body.String())
+	}
+	promote := admin(http.MethodPut, "/v1/admin/ops/prompts/"+promptID+"/env-pins/staging", `{"version":"v2","changelog":"promote to staging","eval_run_id":"eval-1"}`)
+	if promote.Code != http.StatusOK || !strings.Contains(promote.Body.String(), `"environment":"staging"`) || !strings.Contains(promote.Body.String(), `"version":"v2"`) {
+		t.Fatalf("promote status = %d body=%s", promote.Code, promote.Body.String())
+	}
+	list := admin(http.MethodGet, "/v1/admin/ops/prompts/"+promptID+"/env-pins", "")
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"eval_run_id":"eval-1"`) {
+		t.Fatalf("list status = %d body=%s", list.Code, list.Body.String())
+	}
+	rollback := admin(http.MethodPost, "/v1/admin/ops/prompts/"+promptID+"/env-pins/staging/rollback", `{"version":"v1","changelog":"rollback staging"}`)
+	if rollback.Code != http.StatusOK || !strings.Contains(rollback.Body.String(), `"version":"v1"`) {
+		t.Fatalf("rollback status = %d body=%s", rollback.Code, rollback.Body.String())
+	}
+	resolved, err := NewPromptResolver(prompts, nil).Resolve(context.Background(), PromptResolveRequest{PromptID: promptID, Environment: PromptEnvironmentStaging})
+	if err != nil {
+		t.Fatalf("resolve staging: %v", err)
+	}
+	if resolved.Version.Version != "v1" {
+		t.Fatalf("staging version = %s, want v1", resolved.Version.Version)
+	}
+}
+
 func TestRuntimeLiveSystemInstructionUsesPromptRegistry(t *testing.T) {
 	session := state.NewSession(t.TempDir())
 	session.ID = "session-live"
@@ -298,6 +467,74 @@ func TestPromptOptimizationWorkflowCreatesReviewVersion(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("review candidate version not found: %#v", versions)
+	}
+}
+
+func TestBuiltinSystemPromptBaselinesResolveCanonicalAndLegacyAliases(t *testing.T) {
+	resolver := NewPromptResolver(nil, nil)
+	canonical, err := resolver.Resolve(context.Background(), PromptResolveRequest{PromptID: PromptIDMemoryExtractDefault})
+	if err != nil {
+		t.Fatalf("resolve canonical memory prompt: %v", err)
+	}
+	legacy, err := resolver.Resolve(context.Background(), PromptResolveRequest{PromptID: PromptIDMemoryExtract})
+	if err != nil {
+		t.Fatalf("resolve legacy memory prompt: %v", err)
+	}
+	if canonical.Version.ContentHash != legacy.Version.ContentHash {
+		t.Fatalf("canonical and legacy prompts should share content hash: canonical=%s legacy=%s", canonical.Version.ContentHash, legacy.Version.ContentHash)
+	}
+	rendered, err := RenderPrompt(canonical, map[string]any{"conversation_json": "[]"})
+	if err != nil {
+		t.Fatalf("render canonical memory prompt: %v", err)
+	}
+	if !strings.Contains(rendered.Content, "Conversation JSON:\n[]") {
+		t.Fatalf("unexpected rendered memory prompt: %s", rendered.Content)
+	}
+	for _, pair := range map[string]string{
+		PromptIDLiveSetup:              PromptIDLiveSetupDefault,
+		PromptIDEvalJudge:              PromptIDEvalJudgeDefault,
+		PromptIDMemoryEpisodeSummarize: PromptIDMemoryEpisodeSummarizeDefault,
+	} {
+		if _, err := resolver.Resolve(context.Background(), PromptResolveRequest{PromptID: pair}); err != nil {
+			t.Fatalf("resolve canonical alias target %s: %v", pair, err)
+		}
+	}
+}
+
+func TestBuiltinSystemPromptBaselinesHaveUniqueSeedIDs(t *testing.T) {
+	seen := map[string]bool{}
+	for _, baseline := range BuiltinSystemPromptBaselines() {
+		if baseline.Prompt.ID == "" {
+			t.Fatalf("baseline has empty prompt id: %#v", baseline)
+		}
+		if seen[baseline.Prompt.ID] {
+			t.Fatalf("duplicate baseline prompt id %q", baseline.Prompt.ID)
+		}
+		seen[baseline.Prompt.ID] = true
+		if baseline.Version.PromptID != baseline.Prompt.ID {
+			t.Fatalf("version prompt id mismatch for %s: %#v", baseline.Prompt.ID, baseline.Version)
+		}
+		if strings.TrimSpace(baseline.Version.Content) == "" {
+			t.Fatalf("baseline %s has empty content", baseline.Prompt.ID)
+		}
+		for _, alias := range baseline.Aliases {
+			if seen[alias] {
+				t.Fatalf("duplicate baseline alias %q", alias)
+			}
+			seen[alias] = true
+		}
+	}
+	for _, required := range []string{
+		PromptIDRuntimeChatConsumerSecurity,
+		PromptIDRuntimeDeepAgentPlanner,
+		PromptIDRuntimeDeepAgentRouter,
+		PromptIDMemoryExtractDefault,
+		PromptIDEvalJudgeDefault,
+		PromptIDLiveSetupDefault,
+	} {
+		if !seen[required] {
+			t.Fatalf("required baseline %s missing from inventory", required)
+		}
 	}
 }
 

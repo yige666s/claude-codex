@@ -32,8 +32,10 @@ func (p *RuntimeDeepAgentPlanner) CreatePlan(ctx context.Context, req DeepAgentT
 		Prompt:    req.Goal,
 	})
 	plannerSession := state.NewSession("")
-	prompt := p.deepAgentPlannerPrompt(req)
-	result, err := runner.RunGeneratedPrompt(ctx, plannerSession, prompt)
+	renderedPrompt := p.deepAgentPlannerPromptForRequest(ctx, req)
+	prompt := renderedPrompt.Content
+	callCtx := WithPromptMetadata(ctx, renderedPrompt.Metadata)
+	result, err := runner.RunGeneratedPrompt(callCtx, plannerSession, prompt)
 	if err != nil {
 		if isDeepAgentEmptyModelResponseError(err) {
 			schema := deepAgentPlanStructuredSchema()
@@ -56,7 +58,8 @@ func (p *RuntimeDeepAgentPlanner) CreatePlan(ctx context.Context, req DeepAgentT
 	if err != nil {
 		schema := deepAgentPlanStructuredSchema()
 		emitStructuredOutputValidationFailure(ctx, schema, "deep_agent_planner", ExtractAndValidateStructuredObject(result.Output, schema))
-		repaired, repairErr := repairStructuredJSONWithRunner(ctx, runner, schema, result.Output, err, deepAgentPlanRepairContext(req))
+		repairContext := p.deepAgentPlanRepairContext(ctx, req)
+		repaired, repairErr := repairStructuredJSONWithRunner(WithPromptMetadata(ctx, repairContext.Metadata), runner, schema, result.Output, err, repairContext.Content)
 		if repairErr == nil {
 			plan, err = parseDeepAgentPlan(string(repaired))
 		}
@@ -87,7 +90,24 @@ func isDeepAgentEmptyModelResponseError(err error) bool {
 }
 
 func (p *RuntimeDeepAgentPlanner) deepAgentPlannerPrompt(req DeepAgentTaskRequest) string {
-	return deepAgentPlannerPromptWithSkills(req, p.deepAgentSkillCatalogPrompt())
+	return p.deepAgentPlannerPromptForRequest(context.Background(), req).Content
+}
+
+func (p *RuntimeDeepAgentPlanner) deepAgentPlannerPromptForRequest(ctx context.Context, req DeepAgentTaskRequest) deepAgentRenderedPrompt {
+	skillCatalog := p.deepAgentSkillCatalogPrompt()
+	if strings.TrimSpace(skillCatalog) == "" {
+		skillCatalog = "(none)"
+	}
+	maxSteps := normalizeDeepAgentPolicy(req.Policy).MaxSteps
+	loadedContext := deepAgentLoadedContextPrompt(req.State)
+	if loadedContext == "" {
+		loadedContext = "(none)"
+	}
+	rubric := deepAgentRubricPrompt(req.Rubric)
+	if rubric == "" {
+		rubric = "(none)"
+	}
+	return p.renderDeepAgentPromptForScope(ctx, PromptIDRuntimeDeepAgentPlanner, req.UserID, req.SessionID, maxSteps, rubric, skillCatalog, loadedContext, strings.TrimSpace(req.Goal))
 }
 
 func (p *RuntimeDeepAgentPlanner) deepAgentSkillCatalogPrompt() string {
@@ -390,12 +410,15 @@ func (p *RuntimeDeepAgentPlanner) llmRouteStep(ctx context.Context, agentState *
 	if p == nil || p.runtime == nil {
 		return ""
 	}
-	prompt := fmt.Sprintf(PromptDeepAgentExecutionModeClassifierTemplate,
+	userID := deepAgentWorkflowString(stateWorkingMemory(agentState), "user_id")
+	sessionID := deepAgentWorkflowString(stateWorkingMemory(agentState), "session_id")
+	renderedPrompt := p.renderDeepAgentPromptForScope(ctx, PromptIDRuntimeDeepAgentModeClassifier, userID, sessionID,
 		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeConnector, DeepAgentToolModeMulti,
 		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeConnector, DeepAgentToolModeMulti, DeepAgentToolModeModel,
 		strings.TrimSpace(firstNonEmptyString(step.Intent, step.Title)), strings.TrimSpace(step.DoneCondition), p.stepContextSummary(agentState, step))
-	runner := p.runtime.runnerForScope(Scope{UserID: deepAgentWorkflowString(stateWorkingMemory(agentState), "user_id"), SessionID: deepAgentWorkflowString(stateWorkingMemory(agentState), "session_id"), Prompt: prompt})
-	result, err := runner.RunGeneratedPrompt(ctx, state.NewSession(""), prompt)
+	prompt := renderedPrompt.Content
+	runner := p.runtime.runnerForScope(Scope{UserID: userID, SessionID: sessionID, Prompt: prompt})
+	result, err := runner.RunGeneratedPrompt(WithPromptMetadata(ctx, renderedPrompt.Metadata), state.NewSession(""), prompt)
 	if err != nil {
 		return ""
 	}
@@ -454,8 +477,12 @@ func (p *RuntimeDeepAgentPlanner) selectSkillForStep(step DeepAgentStep) (*skill
 }
 
 func (p *RuntimeDeepAgentPlanner) modelPromptForStep(agentState *DeepAgentState, step DeepAgentStep) string {
+	return p.modelPromptForStepContext(context.Background(), agentState, step)
+}
+
+func (p *RuntimeDeepAgentPlanner) modelPromptForStepContext(ctx context.Context, agentState *DeepAgentState, step DeepAgentStep) string {
 	var b strings.Builder
-	b.WriteString(deepAgentToolUsageReminder())
+	b.WriteString(p.deepAgentToolUsageReminder(ctx, agentState))
 	b.WriteString("\n\n")
 	if goal := stateGoal(agentState); goal != "" {
 		b.WriteString("User goal:\n")
@@ -487,6 +514,16 @@ func (p *RuntimeDeepAgentPlanner) modelPromptForStep(agentState *DeepAgentState,
 
 func deepAgentToolUsageReminder() string {
 	return PromptDeepAgentToolUsageReminder
+}
+
+func (p *RuntimeDeepAgentPlanner) deepAgentToolUsageReminder(ctx context.Context, agentState *DeepAgentState) string {
+	userID := deepAgentWorkflowString(stateWorkingMemory(agentState), "user_id")
+	sessionID := deepAgentWorkflowString(stateWorkingMemory(agentState), "session_id")
+	rendered := p.renderDeepAgentPromptForScope(ctx, PromptIDRuntimeDeepAgentToolUsageReminder, userID, sessionID)
+	if strings.TrimSpace(rendered.Content) == "" {
+		return PromptDeepAgentToolUsageReminder
+	}
+	return rendered.Content
 }
 
 func deepAgentStepRequiresArtifact(step DeepAgentStep) bool {
@@ -1739,6 +1776,10 @@ func deepAgentPlannerPromptWithSkills(req DeepAgentTaskRequest, skillCatalog str
 
 func deepAgentPlanRepairContext(req DeepAgentTaskRequest) string {
 	return fmt.Sprintf(PromptDeepAgentPlanRepairContextTemplate, strings.TrimSpace(req.Goal), normalizeDeepAgentPolicy(req.Policy).MaxSteps)
+}
+
+func (p *RuntimeDeepAgentPlanner) deepAgentPlanRepairContext(ctx context.Context, req DeepAgentTaskRequest) deepAgentRenderedPrompt {
+	return p.renderDeepAgentPromptForScope(ctx, PromptIDRuntimeDeepAgentPlanRepair, req.UserID, req.SessionID, strings.TrimSpace(req.Goal), normalizeDeepAgentPolicy(req.Policy).MaxSteps)
 }
 
 func parseDeepAgentPlan(output string) (DeepAgentPlan, error) {

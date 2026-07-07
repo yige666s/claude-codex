@@ -17,6 +17,7 @@ const (
 )
 
 var transientRuntimeContextMarkers = []string{
+	systemPromptSnapshotMarker,
 	temporalContextMarker,
 	localeContextMarker,
 	browserMemoryContextMarker,

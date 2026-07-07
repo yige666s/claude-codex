@@ -1,0 +1,63 @@
+name: Prompt Eval Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: AgentAPI Admin API URL
+        required: true
+        default: http://127.0.0.1:8081
+      prompt_id:
+        description: Prompt ID to promote
+        required: true
+      prompt_version:
+        description: Prompt version to promote
+        required: true
+      eval_run_id:
+        description: Completed prompt eval run ID
+        required: true
+      max_failures:
+        description: Maximum allowed failed eval results
+        required: false
+        default: "0"
+  workflow_call:
+    inputs:
+      api_url:
+        type: string
+        required: true
+      prompt_id:
+        type: string
+        required: true
+      prompt_version:
+        type: string
+        required: true
+      eval_run_id:
+        type: string
+        required: true
+      max_failures:
+        type: string
+        required: false
+        default: "0"
+    secrets:
+      AGENT_API_ADMIN_TOKEN:
+        required: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify prompt eval gate
+        env:
+          AGENT_API_ADMIN_TOKEN: ${{ secrets.AGENT_API_ADMIN_TOKEN }}
+        run: |
+          node scripts/prompt-eval-gate.mjs \
+            --api-url "${{ inputs.api_url }}" \
+            --prompt-id "${{ inputs.prompt_id }}" \
+            --version "${{ inputs.prompt_version }}" \
+            --eval-run-id "${{ inputs.eval_run_id }}" \
+            --max-failures "${{ inputs.max_failures }}"

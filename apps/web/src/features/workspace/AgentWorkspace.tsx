@@ -2925,7 +2925,7 @@ async function bootstrap(
 }
 
 function visibleMessages(messages: Message[]): Message[] {
-  const visible: Message[] = [];
+  let visible: Message[] = [];
   messages.forEach((message, index) => {
     const indexed = { ...message, message_index: message.message_index ?? index };
     const syntheticSkillUser = generatedSkillUserMessage(indexed);
@@ -2943,7 +2943,7 @@ function visibleMessages(messages: Message[]): Message[] {
       return;
     }
     if (indexed.role !== "tool" && !indexed.hidden && (indexed.content || indexed.tool_output)) {
-      visible.push(indexed);
+      visible = appendRuntimeMessage(visible, indexed);
     }
   });
   return visible;
@@ -2977,7 +2977,7 @@ function upsertJob(items: Job[], job: Job): Job[] {
   return [job, ...next].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 }
 
-function appendRuntimeMessage(messages: Message[], message: Message): Message[] {
+export function appendRuntimeMessage(messages: Message[], message: Message): Message[] {
   if (isSkillProcessAssistantMessage(message)) {
     return messages;
   }
@@ -2987,10 +2987,55 @@ function appendRuntimeMessage(messages: Message[], message: Message): Message[] 
   const content = message.content || message.tool_output || "";
   const previous = messages[messages.length - 1];
   const previousContent = previous?.content || previous?.tool_output || "";
-  if (previous?.role === message.role && (previousContent === content || previousContent.startsWith(`${content}\n\nAttachments:`))) {
-    return messages;
+  if (previous?.role === message.role) {
+    if (previousContent === content || previousContent.startsWith(`${content}\n\nAttachments:`)) {
+      return messages;
+    }
+    if (isDuplicateUserAttachmentMessage(previous, message)) {
+      return [...messages.slice(0, -1), mergeRuntimeMessages(previous, message)];
+    }
   }
   return [...messages, message];
+}
+
+function isDuplicateUserAttachmentMessage(previous: Message, message: Message): boolean {
+  if (previous.role !== "user" || message.role !== "user") return false;
+  if (!messageHasAttachmentSignal(previous) && !messageHasAttachmentSignal(message)) return false;
+  return userVisibleMessageText(previous) === userVisibleMessageText(message);
+}
+
+function userVisibleMessageText(message: Message): string {
+  return stripMessageAttachmentSummary(message.content || message.tool_output || "").trim();
+}
+
+function messageHasAttachmentSignal(message: Message): boolean {
+  if ((message.attachments || []).length > 0) return true;
+  return /\n{2}(?:Attachments|Attached files):[^\n]+$/i.test(message.content || message.tool_output || "");
+}
+
+function stripMessageAttachmentSummary(text: string): string {
+  return text.replace(/\n{2}(?:Attachments|Attached files):[^\n]+$/i, "");
+}
+
+function mergeRuntimeMessages(previous: Message, message: Message): Message {
+  const attachments = mergeMessageAttachments(previous.attachments || [], message.attachments || []);
+  return {
+    ...previous,
+    ...message,
+    attachments: attachments.length > 0 ? attachments : undefined
+  };
+}
+
+function mergeMessageAttachments(left: NonNullable<Message["attachments"]>, right: NonNullable<Message["attachments"]>): NonNullable<Message["attachments"]> {
+  const merged: NonNullable<Message["attachments"]> = [];
+  const seen = new Set<string>();
+  for (const attachment of [...left, ...right]) {
+    const key = attachment.id || attachment.file_name || JSON.stringify(attachment);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(attachment);
+  }
+  return merged;
 }
 
 function isSkillProcessAssistantMessage(message: Message): boolean {

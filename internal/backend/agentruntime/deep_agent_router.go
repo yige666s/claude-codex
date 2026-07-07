@@ -391,13 +391,16 @@ func (r *RuntimeDeepAgentStepRouter) llmRouteStep(ctx context.Context, agentStat
 	if r == nil || r.runtime == nil {
 		return DeepAgentStepRoute{}, fmt.Errorf("runtime is not configured")
 	}
-	prompt := deepAgentRoutePrompt(agentState, step)
+	userID := deepAgentWorkflowString(stateWorkingMemory(agentState), "user_id")
+	sessionID := deepAgentWorkflowString(stateWorkingMemory(agentState), "session_id")
+	renderedPrompt := r.deepAgentRoutePrompt(ctx, agentState, step, userID, sessionID)
+	prompt := renderedPrompt.Content
 	runner := r.runtime.runnerForScope(Scope{
-		UserID:    deepAgentWorkflowString(stateWorkingMemory(agentState), "user_id"),
-		SessionID: deepAgentWorkflowString(stateWorkingMemory(agentState), "session_id"),
+		UserID:    userID,
+		SessionID: sessionID,
 		Prompt:    prompt,
 	})
-	result, err := runner.RunGeneratedPrompt(ctx, state.NewSession(""), prompt)
+	result, err := runner.RunGeneratedPrompt(WithPromptMetadata(ctx, renderedPrompt.Metadata), state.NewSession(""), prompt)
 	if err != nil {
 		return DeepAgentStepRoute{}, err
 	}
@@ -646,6 +649,14 @@ func deepAgentRoutePrompt(agentState *DeepAgentState, step DeepAgentStep) string
 		contextSummary = planner.stepContextSummary(agentState, step)
 	}
 	return fmt.Sprintf(PromptDeepAgentRouteTemplate, stateGoal(agentState), step.ID, step.Title, step.Intent, step.DoneCondition, contextSummary)
+}
+
+func (r *RuntimeDeepAgentStepRouter) deepAgentRoutePrompt(ctx context.Context, agentState *DeepAgentState, step DeepAgentStep, userID, sessionID string) deepAgentRenderedPrompt {
+	contextSummary := ""
+	if planner := NewRuntimeDeepAgentPlanner(r.runtime); planner != nil {
+		contextSummary = planner.stepContextSummary(agentState, step)
+	}
+	return r.renderDeepAgentPromptForScope(ctx, PromptIDRuntimeDeepAgentRouter, userID, sessionID, stateGoal(agentState), step.ID, step.Title, step.Intent, step.DoneCondition, contextSummary)
 }
 
 func parseDeepAgentStepRoute(output string) (DeepAgentStepRoute, error) {
