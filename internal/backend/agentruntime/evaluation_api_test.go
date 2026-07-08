@@ -262,6 +262,85 @@ func TestAdminOpsGoldenSetRoutesAndLLMJudgeRun(t *testing.T) {
 	}
 }
 
+func TestAdminOpsRAGEvaluationRunImportsGoldSetAndAggregates(t *testing.T) {
+	server := NewServer(testRuntime(t), HeaderAuthenticator{UserHeader: "X-User-ID"}, NoopRateLimiter{}, nil)
+	server.SetAdminToken("secret")
+	server.SetEvaluationStore(NewMemoryEvaluationStore())
+
+	body := `{
+		"set_id":"black-wukong-rag",
+		"set_version":"v1",
+		"name":"Black Wukong RAG smoke",
+		"knowledge_text":"黑神话悟空是一款以西游记为背景的动作角色扮演游戏。主角天命人会探索花果山、黑风山等区域，并与妖王战斗。游戏采用单机买断制。",
+		"csv_content":"question,answer\n黑神话悟空是什么类型的游戏？,黑神话悟空是一款以西游记为背景的动作角色扮演游戏。\n主角被称为什么？,主角被称为天命人。",
+		"judge":"heuristic",
+		"chunk_size":40,
+		"chunk_overlap":5,
+		"top_k":3
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/ops/eval/rag-runs", bytes.NewBufferString(body))
+	req.Header.Set("X-User-ID", "admin")
+	req.Header.Set("X-Admin-Token", "secret")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create rag eval status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	raw := rec.Body.String()
+	for _, want := range []string{`"id":"black-wukong-rag"`, `"subject_type":"golden_case"`, `"answer_correctness_avg"`, `"context_recall_avg"`, `"chunk_count"`} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("rag eval response missing %s: %s", want, raw)
+		}
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/admin/ops/eval/golden-sets/black-wukong-rag?version=v1", nil)
+	getReq.Header.Set("X-User-ID", "admin")
+	getReq.Header.Set("X-Admin-Token", "secret")
+	getRec := httptest.NewRecorder()
+	server.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get imported golden set status = %d body=%s", getRec.Code, getRec.Body.String())
+	}
+	if !strings.Contains(getRec.Body.String(), `"csv_case_count":2`) {
+		t.Fatalf("imported golden set missing metadata: %s", getRec.Body.String())
+	}
+}
+
+func TestAdminOpsMemoryEvaluationRunUsesGoldenSetAndAggregates(t *testing.T) {
+	root := t.TempDir()
+	memory := NewFileMemoryService(root)
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root}, NewFileSessionStore(root), memory, nil, func(Scope) Runner { return echoRunner{} })
+	server := NewServer(runtime, HeaderAuthenticator{UserHeader: "X-User-ID"}, NoopRateLimiter{}, nil)
+	server.SetAdminToken("secret")
+	server.SetEvaluationStore(NewMemoryEvaluationStore())
+
+	createBody := `{"id":"memory-smoke","name":"Memory Smoke","version":"v1","cases":[{"id":"case-style","query":"我汇报时喜欢什么格式？","expected_facts":["用户喜欢结构化输出"],"gold_evidence":[{"id":"mem-style","content":"用户喜欢结构化输出"}],"metadata":{"setup_memories":["用户喜欢结构化输出"],"expected_memory":"用户喜欢结构化输出","forbidden_memory":"用户喜欢散文式输出"}}]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/admin/ops/eval/golden-sets", bytes.NewBufferString(createBody))
+	createReq.Header.Set("X-User-ID", "admin")
+	createReq.Header.Set("X-Admin-Token", "secret")
+	createRec := httptest.NewRecorder()
+	server.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create memory golden set status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	runBody := `{"set_id":"memory-smoke","set_version":"v1","judge":"heuristic"}`
+	runReq := httptest.NewRequest(http.MethodPost, "/v1/admin/ops/eval/memory-runs", bytes.NewBufferString(runBody))
+	runReq.Header.Set("X-User-ID", "admin")
+	runReq.Header.Set("X-Admin-Token", "secret")
+	runRec := httptest.NewRecorder()
+	server.ServeHTTP(runRec, runReq)
+	if runRec.Code != http.StatusCreated {
+		t.Fatalf("create memory eval status = %d body=%s", runRec.Code, runRec.Body.String())
+	}
+	raw := runRec.Body.String()
+	for _, want := range []string{`"subject_type":"golden_case"`, `"memory_context_recall_avg"`, `"namespace_isolation_pass_avg"`, `"answer_correctness_avg"`, `"source":"admin_memory_eval"`} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("memory eval response missing %s: %s", want, raw)
+		}
+	}
+}
+
 func TestAdminOpsGoldenCasesFromRuntimeTraceCreatesVersionedSet(t *testing.T) {
 	ctx := context.Background()
 	runtime := testRuntime(t)

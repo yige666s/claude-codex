@@ -125,6 +125,10 @@ const chatRunEventTypes = [
   "deep_agent_parallel_branch_started", "deep_agent_parallel_branch_succeeded", "deep_agent_parallel_branch_failed",
   "deep_agent_parallel_supplemental_branch_started", "deep_agent_parallel_supplemental_branch_succeeded", "deep_agent_parallel_supplemental_branch_failed",
   "deep_agent_parallel_succeeded", "deep_agent_parallel_failed",
+  "deep_research_started", "deep_research_plan_created", "deep_research_worker_queued", "deep_research_worker_started",
+  "deep_research_worker_progress", "deep_research_worker_succeeded", "deep_research_worker_failed", "deep_research_worker_retrying",
+  "deep_research_worker_blocked", "deep_research_aggregate_started", "deep_research_conflict_detected", "deep_research_completed",
+  "deep_research_fallback_legacy",
   "structured_output_validation", "structured_output_repair", "structured_output_fallback",
   "workflow_run_started", "workflow_run_resumed", "workflow_run_succeeded", "workflow_run_failed",
   "workflow_step_started", "workflow_step_reused", "workflow_step_succeeded", "workflow_step_failed",
@@ -3177,6 +3181,15 @@ function agentActivityTitle(event: RuntimeEvent, data: Record<string, unknown> |
     const child = recordFromUnknown(data?.child_job);
     return ["Started child job", stringFromUnknown(child?.id || data?.child_job_id)].filter(Boolean).join(" · ");
   }
+  if (event.type.startsWith("deep_research_worker_")) {
+    const worker = stringFromUnknown(data?.worker_title || data?.worker_id || data?.branch_title);
+    const label = event.type.replace(/^deep_research_worker_/, "").replace(/_/g, " ");
+    return ["Deep research worker", label, worker].filter(Boolean).join(" · ");
+  }
+  if (event.type.startsWith("deep_research_")) {
+    const label = event.type.replace(/^deep_research_/, "").replace(/_/g, " ");
+    return ["Deep research", label].filter(Boolean).join(" · ");
+  }
   if (event.type.startsWith("deep_agent_parallel_")) {
     const branch = stringFromUnknown(data?.branch_title || data?.branch_id);
     const group = stringFromUnknown(data?.parallel_group_id);
@@ -3203,7 +3216,7 @@ function agentActivityTitle(event: RuntimeEvent, data: Record<string, unknown> |
   if (event.type === "live_skill_result") return "Skill finished";
   if (event.type === "sandbox_metric") return "Sandbox reported progress";
   if (event.type === "artifact_metric") return "Artifact tool reported progress";
-  if (/tool|skill|workflow|deep_agent|artifact|sandbox/i.test(event.type)) {
+  if (/tool|skill|workflow|deep_agent|deep_research|artifact|sandbox/i.test(event.type)) {
     return event.type.replace(/_/g, " ");
   }
   return "";
@@ -3247,7 +3260,7 @@ function agentActivityChannel(event: RuntimeEvent, data: Record<string, unknown>
     return "thinking";
   }
   if (event.type.startsWith("workflow_step_")) return "thinking";
-  if (event.type.startsWith("workflow_run_") || event.type.startsWith("deep_agent_") || event.type === "start" || event.type === "done" || event.type === "progress") {
+  if (event.type.startsWith("workflow_run_") || event.type.startsWith("deep_agent_") || event.type.startsWith("deep_research_") || event.type === "start" || event.type === "done" || event.type === "progress") {
     return "thinking";
   }
   return "notice";
@@ -3394,7 +3407,9 @@ function chatRunTerminalEvent(event?: RuntimeEvent): boolean {
 
 function chatActivityTerminalStatus(event?: RuntimeEvent): AgentActivityItem["status"] | "" {
   if (event?.type === "deep_agent_completed") return "succeeded";
+  if (event?.type === "deep_research_completed") return "succeeded";
   if (event?.type === "deep_agent_failed") return "failed";
+  if (event?.type === "deep_research_worker_failed") return "failed";
   const status = terminalJobStatusFromRuntimeEvent(event);
   if (status === "succeeded") return "succeeded";
   if (status === "failed") return "failed";

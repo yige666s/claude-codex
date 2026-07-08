@@ -19,6 +19,16 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	t.Setenv("AGENT_API_LIVE_LANGUAGE_CODE", "zh-CN")
 	t.Setenv("AGENT_API_DEEP_AGENT_V2_ENABLED", "true")
 	t.Setenv("AGENT_API_DEEP_AGENT_V2_SHADOW_ROUTE", "true")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_ORCHESTRATOR_WORKER_ENABLED", "true")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_WORKER_BACKEND", "harness_agent")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_MAX_WORKERS", "6")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_MAX_CONCURRENCY", "2")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_WORKER_TIMEOUT", "7m")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_TOTAL_TIMEOUT", "21m")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_MAX_RETRIES", "3")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_FALLBACK_LEGACY", "false")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_REQUIRE_SOURCES", "false")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_MIN_SUCCESSFUL_WORKERS", "2")
 
 	cfg := Default()
 
@@ -51,6 +61,18 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	}
 	if !cfg.DeepAgentV2Enabled || !cfg.DeepAgentV2ShadowRoute {
 		t.Fatalf("deep agent v2 flags not loaded: enabled=%v shadow=%v", cfg.DeepAgentV2Enabled, cfg.DeepAgentV2ShadowRoute)
+	}
+	if !cfg.DeepResearchOrchestratorWorkerEnabled ||
+		cfg.DeepResearchWorkerBackend != "harness_agent" ||
+		cfg.DeepResearchMaxWorkers != 6 ||
+		cfg.DeepResearchMaxConcurrency != 2 ||
+		cfg.DeepResearchWorkerTimeout != 7*time.Minute ||
+		cfg.DeepResearchTotalTimeout != 21*time.Minute ||
+		cfg.DeepResearchMaxRetries != 3 ||
+		cfg.DeepResearchFallbackLegacy ||
+		cfg.DeepResearchRequireSources ||
+		cfg.DeepResearchMinSuccessfulWorkers != 2 {
+		t.Fatalf("deep research flags not loaded: %#v", cfg)
 	}
 }
 

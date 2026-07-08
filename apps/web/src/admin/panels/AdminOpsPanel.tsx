@@ -559,6 +559,14 @@ export function AdminOpsPanel({ api, adminToken }: { api: ApiClient; adminToken:
 	                          <SkillFact label="Verifier checks" value={`${String(deepAgentSummary.metrics?.verifier_checks || 0)} checks, ${String(deepAgentSummary.metrics?.verifier_failed || 0)} failed`} />
 	                          <SkillFact label="Governance" value={deepAgentSummary.governance?.policy_blocked ? deepAgentSummary.governance.policy_block_reason || "Policy blocked" : deepAgentSummary.governance?.kill_switch ? "Kill switch enabled" : "Active"} />
 	                        </div>
+	                        {deepAgentSummary.deep_research && (
+	                          <div className="admin-facts">
+	                            <SkillFact label="Deep research" value={`${deepAgentSummary.deep_research.status || "unknown"} · ${deepResearchWorkerCount(deepAgentSummary.deep_research)} workers`} />
+	                            <SkillFact label="Worker backend" value={deepAgentSummary.deep_research.config?.worker_backend || "inline"} />
+	                            <SkillFact label="Concurrency" value={String(deepAgentSummary.deep_research.plan?.max_concurrency || deepAgentSummary.deep_research.config?.max_concurrency || 0)} />
+	                            <SkillFact label="Aggregate" value={deepAgentSummary.deep_research.aggregate?.summary || deepAgentSummary.deep_research.aggregate?.status || "None"} />
+	                          </div>
+	                        )}
 	                        <div className="admin-action-row">
 	                          <Button className="skill-action" onClick={loadDeepAgentReplay} disabled={Boolean(actionBusy)}>
 	                            <RefreshCw size={15} />
@@ -890,6 +898,11 @@ function formatWorkflowStepSummary(step: WorkflowStepRun): string {
 function selectPrimaryWorkflowID(workflows: WorkflowRun[], selectedID = ""): string {
   if (selectedID && workflows.some((workflow) => workflow.id === selectedID)) return selectedID;
   return workflows.find((workflow) => workflow.name === "deep_agent_task")?.id || workflows[0]?.id || "";
+}
+
+function deepResearchWorkerCount(run: NonNullable<DeepAgentWorkflowSummary["deep_research"]>): number {
+  if (run.worker_runs) return Object.keys(run.worker_runs).length;
+  return run.plan?.nodes?.length || 0;
 }
 
 function formatRecordSummary(record?: Record<string, unknown>): string {

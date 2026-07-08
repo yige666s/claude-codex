@@ -33,7 +33,7 @@ import {
   type AdminTabOption
 } from "../shared";
 import { sessionTitle } from "../../lib/sessionTitle";
-import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, GoldenCandidate, GoldenSet, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, PromptExperiment, PromptTemplate, PromptVersion, RiskReviewSummary, RiskSummary, Session } from "../../types";
+import type { AdminHealthStatus, AdminUser, Asset, AuditLogRecord, AuditLogSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, GoldenCandidate, GoldenSet, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, MemoryEvaluationRunResponse, PromptExperiment, PromptTemplate, PromptVersion, RAGEvaluationRunResponse, RiskReviewSummary, RiskSummary, Session } from "../../types";
 
 function splitGoldenLines(value: string): string[] {
   return value
@@ -104,6 +104,15 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
   const [goldenExpectedFacts, setGoldenExpectedFacts] = useState("");
   const [goldenJudge, setGoldenJudge] = useState("heuristic");
   const [goldenBusy, setGoldenBusy] = useState("");
+  const [ragKnowledgeText, setRagKnowledgeText] = useState("");
+  const [ragCSVContent, setRagCSVContent] = useState("");
+  const [ragChunkSize, setRagChunkSize] = useState(200);
+  const [ragChunkOverlap, setRagChunkOverlap] = useState(20);
+  const [ragTopK, setRagTopK] = useState(4);
+  const [ragReport, setRagReport] = useState<RAGEvaluationRunResponse | null>(null);
+  const [memoryEvalUserID, setMemoryEvalUserID] = useState("");
+  const [memoryEvalCleanup, setMemoryEvalCleanup] = useState(true);
+  const [memoryReport, setMemoryReport] = useState<MemoryEvaluationRunResponse | null>(null);
   const [promptCatalog, setPromptCatalog] = useState<PromptTemplate[]>([]);
   const [promptEvalID, setPromptEvalID] = useState("live_setup");
   const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
@@ -489,6 +498,98 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
       setGoldenTargetVersion(payload.set.version || goldenTargetVersion || "v1");
       setEvaluationTab("golden");
       setNotice(`Captured ${payload.cases.length} eval badcase into ${payload.set.id}@${payload.set.version || "latest"}`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setGoldenBusy("");
+    }
+  };
+
+  const readRAGFile = async (file: File | undefined, setter: (value: string) => void) => {
+    if (!file) return;
+    try {
+      setter(await file.text());
+      setNotice(`Loaded ${file.name}`);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
+  const runRAGEvaluation = async () => {
+    const cleanSetID = goldenSetID.trim() || "black-wukong-rag";
+    if (!token || !ragKnowledgeText.trim() || !ragCSVContent.trim()) {
+      setError("Load knowledge text and Golden CSV before running RAG eval.");
+      return;
+    }
+    setGoldenBusy("rag-run");
+    setError("");
+    try {
+      const report = await api.createRAGEvaluationRun(token, {
+        setId: cleanSetID,
+        setVersion: goldenTargetVersion.trim() || "v1",
+        name: `${cleanSetID}_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}`,
+        description: "RAG evaluation imported from Admin knowledge text and question/answer CSV.",
+        knowledgeText: ragKnowledgeText,
+        csvContent: ragCSVContent,
+        judge: goldenJudge,
+        chunkSize: Math.max(1, Math.min(4096, ragChunkSize || 200)),
+        chunkOverlap: Math.max(0, Math.min(4095, ragChunkOverlap || 0)),
+        topK: Math.max(1, Math.min(20, ragTopK || 4)),
+        persistSet: true
+      });
+      setRagReport(report);
+      setGoldenSets((current) => [report.set, ...current.filter((set) => !(set.id === report.set.id && set.version === report.set.version))]);
+      setGoldenSetID(report.set.id);
+      setGoldenTargetVersion(report.set.version || "v1");
+      setGoldenSourceVersion(report.set.version || "v1");
+      setRuns((current) => [report.run, ...current.filter((run) => run.id !== report.run.id)]);
+      setSummary(report.summary);
+      setResults(report.results);
+      setReviews((current) => mergeEvaluationReviews(current, report.reviews));
+      setSelectedRunID(report.run.id);
+      setSelectedResultID(report.results[0]?.id || "");
+      setSubjectType("golden_case");
+      setEvaluationTab("results");
+      setNotice(`RAG eval completed: ${report.set.cases.length} cases, ${report.chunk_count} chunks, ${report.run.passed} passed`);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setGoldenBusy("");
+    }
+  };
+
+  const runMemoryEvaluation = async () => {
+    const set = selectedGoldenSet;
+    if (!token || !set) {
+      setError("Select a Golden Set before running memory eval.");
+      return;
+    }
+    if (!set.cases.length) {
+      setError("Selected Golden Set has no cases.");
+      return;
+    }
+    setGoldenBusy("memory-run");
+    setError("");
+    try {
+      const report = await api.createMemoryEvaluationRun(token, {
+        setId: set.id,
+        setVersion: set.version || "",
+        userId: memoryEvalUserID.trim() || undefined,
+        cleanup: memoryEvalUserID.trim() ? memoryEvalCleanup : true,
+        judge: goldenJudge,
+        name: `${set.id}_${set.version || "latest"}_memory_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}`,
+        trigger: "admin_memory_eval"
+      });
+      setMemoryReport(report);
+      setRuns((current) => [report.run, ...current.filter((run) => run.id !== report.run.id)]);
+      setSummary(report.summary);
+      setResults(report.results);
+      setReviews((current) => mergeEvaluationReviews(current, report.reviews));
+      setSelectedRunID(report.run.id);
+      setSelectedResultID(report.results[0]?.id || "");
+      setSubjectType("golden_case");
+      setEvaluationTab("results");
+      setNotice(`Memory eval completed: ${report.set.cases.length} cases, user ${report.user_id}, ${report.run.passed} passed`);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -967,6 +1068,96 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
                 <Sparkles size={16} />
                 <span>{goldenBusy === "run" ? "Running" : "Run golden eval"}</span>
               </Button>
+            </div>
+            <div className="prompt-eval-box rag-eval-box">
+              <div className="admin-card-head">
+                <h3>RAG gold set</h3>
+                {ragReport && <small>{ragReport.set.cases.length} cases · {ragReport.chunk_count} chunks</small>}
+              </div>
+              <div className="golden-form-grid">
+                <label className="admin-field wide">
+                  <span>Knowledge text</span>
+                  <input type="file" accept=".txt,text/plain" onChange={(event) => void readRAGFile(event.currentTarget.files?.[0], setRagKnowledgeText)} aria-label="Upload RAG knowledge text" />
+                  <Textarea value={ragKnowledgeText} onChange={(event) => setRagKnowledgeText(event.currentTarget.value)} rows={6} placeholder="黑悟空.txt content" aria-label="RAG knowledge text" />
+                </label>
+                <label className="admin-field wide">
+                  <span>Golden CSV</span>
+                  <input type="file" accept=".csv,text/csv" onChange={(event) => void readRAGFile(event.currentTarget.files?.[0], setRagCSVContent)} aria-label="Upload RAG Golden CSV" />
+                  <Textarea value={ragCSVContent} onChange={(event) => setRagCSVContent(event.currentTarget.value)} rows={5} placeholder={"question,answer\n黑神话悟空是什么类型的游戏？,黑神话悟空是一款..."} aria-label="RAG Golden CSV" />
+                </label>
+                <label className="admin-field">
+                  <span>Chunk size</span>
+                  <Input type="number" min={1} max={4096} value={String(ragChunkSize)} onChange={(event) => setRagChunkSize(Number(event.currentTarget.value))} aria-label="RAG chunk size" />
+                </label>
+                <label className="admin-field">
+                  <span>Overlap</span>
+                  <Input type="number" min={0} max={4095} value={String(ragChunkOverlap)} onChange={(event) => setRagChunkOverlap(Number(event.currentTarget.value))} aria-label="RAG chunk overlap" />
+                </label>
+                <label className="admin-field">
+                  <span>Top K</span>
+                  <Input type="number" min={1} max={20} value={String(ragTopK)} onChange={(event) => setRagTopK(Number(event.currentTarget.value))} aria-label="RAG top K" />
+                </label>
+                <label className="admin-field">
+                  <span>Set version</span>
+                  <Input value={goldenTargetVersion} onChange={(event) => setGoldenTargetVersion(event.currentTarget.value)} placeholder="v1" aria-label="RAG Golden Set version" />
+                </label>
+              </div>
+              <div className="admin-action-row golden-actions">
+                <Button className="skill-action primary" onClick={runRAGEvaluation} disabled={goldenBusy === "rag-run" || !token || !ragKnowledgeText.trim() || !ragCSVContent.trim()}>
+                  <PlayCircle size={16} />
+                  <span>{goldenBusy === "rag-run" ? "Running" : "Run RAG eval"}</span>
+                </Button>
+                <small className="muted-text">{ragCSVContent.trim() ? `${Math.max(0, ragCSVContent.trim().split(/\r?\n/).length - 1)} CSV rows` : "question/answer CSV"}</small>
+              </div>
+              {ragReport && (
+                <div className="prompt-comparison-grid">
+                  <AdminMetric label="Pass rate" value={formatPercent(ragReport.summary.pass_rate)} />
+                  <AdminMetric label="Answer correctness" value={formatPercent(promptEvalMetric(ragReport.summary, "answer_correctness_avg"))} />
+                  <AdminMetric label="Faithfulness" value={formatPercent(promptEvalMetric(ragReport.summary, "faithfulness_avg"))} />
+                  <AdminMetric label="Context recall" value={formatPercent(promptEvalMetric(ragReport.summary, "context_recall_avg"))} />
+                </div>
+              )}
+            </div>
+            <div className="prompt-eval-box memory-eval-box">
+              <div className="admin-card-head">
+                <h3>Memory gold set</h3>
+                {memoryReport && <small>{memoryReport.set.cases.length} cases · {memoryReport.user_id}</small>}
+              </div>
+              <div className="golden-form-grid">
+                <label className="admin-field">
+                  <span>Memory user</span>
+                  <Input value={memoryEvalUserID} onChange={(event) => setMemoryEvalUserID(event.currentTarget.value)} placeholder="sandbox by default" aria-label="Memory evaluation user ID" />
+                </label>
+                <label className="admin-field checkbox-field">
+                  <span>Cleanup</span>
+                  <input type="checkbox" checked={memoryEvalCleanup} onChange={(event) => setMemoryEvalCleanup(event.currentTarget.checked)} aria-label="Cleanup memory evaluation user data" />
+                </label>
+                <label className="admin-field wide">
+                  <span>Case metadata</span>
+                  <pre className="admin-code-block compact">{`{
+  "setup_memories": ["用户喜欢结构化输出"],
+  "expected_memory": "用户喜欢结构化输出",
+  "forbidden_memory": "其他用户的偏好",
+  "capture_user_message": "记住我喜欢 CSV 导出",
+  "capture_assistant_message": "已记住"
+}`}</pre>
+                </label>
+              </div>
+              <div className="admin-action-row golden-actions">
+                <Button className="skill-action primary" onClick={runMemoryEvaluation} disabled={goldenBusy === "memory-run" || !token || !selectedGoldenSet?.cases.length}>
+                  <Database size={16} />
+                  <span>{goldenBusy === "memory-run" ? "Running" : "Run memory eval"}</span>
+                </Button>
+                <small className="muted-text">{selectedGoldenSet ? `${selectedGoldenSet.id}@${selectedGoldenSet.version || "latest"}` : "Select a Golden Set"}</small>
+              </div>
+              {memoryReport && (
+                <div className="prompt-comparison-grid">
+                  <AdminMetric label="Memory recall" value={formatPercent(promptEvalMetric(memoryReport.summary, "memory_context_recall_avg"))} />
+                  <AdminMetric label="Capture recall" value={formatPercent(promptEvalMetric(memoryReport.summary, "memory_capture_recall_avg"))} />
+                  <AdminMetric label="Isolation" value={formatPercent(promptEvalMetric(memoryReport.summary, "namespace_isolation_pass_avg"))} />
+                  <AdminMetric label="Forbidden leak" value={formatPercent(promptEvalMetric(memoryReport.summary, "memory_forbidden_leak_avg"))} />
+                </div>
+              )}
             </div>
             <div className="prompt-eval-box">
               <div className="admin-card-head">

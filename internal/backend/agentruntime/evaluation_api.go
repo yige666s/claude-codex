@@ -354,6 +354,159 @@ func (s *Server) handleAdminOpsCreateGoldenEvaluationRun(w http.ResponseWriter, 
 	})
 }
 
+func (s *Server) handleAdminOpsCreateRAGEvaluationRun(w http.ResponseWriter, r *http.Request, actor User) {
+	var req RAGEvaluationRunRequest
+	if err := readJSON(r, &req); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	judgeMode := strings.ToLower(strings.TrimSpace(req.Judge))
+	if judgeMode == "" {
+		judgeMode = "heuristic"
+	}
+	if judgeMode != "heuristic" && judgeMode != "llm" && judgeMode != "llm-as-judge" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported golden judge"})
+		return
+	}
+	input, err := buildRAGEvaluationInput(req)
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	persistSet := true
+	if req.PersistSet != nil {
+		persistSet = *req.PersistSet
+	}
+	set := input.Set
+	if persistSet {
+		set, err = s.evaluation.UpsertGoldenSet(r.Context(), input.Set)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	engine := s.goldenEvaluationEngineForRequest(r.Context(), judgeMode)
+	if engine == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "evaluation judge is not configured"})
+		return
+	}
+	report, err := engine.EvaluateGolden(r.Context(), GoldenEvaluationRequest{
+		ID:         req.ID,
+		Name:       firstNonEmptyString(strings.TrimSpace(req.Name), defaultGoldenEvaluationRunName(set, time.Now().UTC())),
+		Trigger:    firstNonEmptyString(req.Trigger, "admin_rag_eval"),
+		Set:        set,
+		Candidates: input.Candidates,
+		Thresholds: req.Thresholds,
+	})
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	persisted, err := s.persistEvaluationRunReport(r, report)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "admin_eval_rag_run_create", actor, map[string]any{
+		"eval_run_id":        persisted.Run.ID,
+		"golden_set_id":      set.ID,
+		"golden_set_version": set.Version,
+		"judge":              judgeMode,
+		"case_count":         len(set.Cases),
+		"chunk_count":        len(input.Chunks),
+		"persist_set":        persistSet,
+		"total":              persisted.Run.Total,
+		"passed":             persisted.Run.Passed,
+		"failed":             persisted.Run.Failed,
+		"warning":            persisted.Run.Warning,
+	})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"set":         set,
+		"candidates":  input.Candidates,
+		"chunk_count": len(input.Chunks),
+		"run":         persisted.Run,
+		"results":     persisted.Results,
+		"reviews":     persisted.Reviews,
+		"summary":     persisted.Summary,
+	})
+}
+
+func (s *Server) handleAdminOpsCreateMemoryEvaluationRun(w http.ResponseWriter, r *http.Request, actor User) {
+	var req MemoryEvaluationRunRequest
+	if err := readJSON(r, &req); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	judgeMode := strings.ToLower(strings.TrimSpace(req.Judge))
+	if judgeMode == "" {
+		judgeMode = "heuristic"
+	}
+	if judgeMode != "heuristic" && judgeMode != "llm" && judgeMode != "llm-as-judge" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported golden judge"})
+		return
+	}
+	input, err := s.buildMemoryEvaluationInput(r.Context(), req)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	if input.Cleanup {
+		defer func() {
+			_ = s.runtime.memory.DeleteUser(context.Background(), input.UserID)
+		}()
+	}
+	engine := s.goldenEvaluationEngineForRequest(r.Context(), judgeMode)
+	if engine == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "evaluation judge is not configured"})
+		return
+	}
+	report, err := engine.EvaluateGolden(r.Context(), GoldenEvaluationRequest{
+		ID:         req.ID,
+		Name:       firstNonEmptyString(strings.TrimSpace(req.Name), defaultGoldenEvaluationRunName(input.Set, time.Now().UTC())),
+		Trigger:    firstNonEmptyString(req.Trigger, "admin_memory_eval"),
+		Set:        input.Set,
+		Candidates: input.Candidates,
+		Thresholds: req.Thresholds,
+	})
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	report = attachMemoryMetricsToReport(report, input.Candidates)
+	persisted, err := s.persistEvaluationRunReport(r, report)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditEvent(r, "admin_eval_memory_run_create", actor, map[string]any{
+		"eval_run_id":        persisted.Run.ID,
+		"golden_set_id":      input.Set.ID,
+		"golden_set_version": input.Set.Version,
+		"judge":              judgeMode,
+		"memory_user_id":     input.UserID,
+		"cleanup":            input.Cleanup,
+		"case_count":         len(input.Set.Cases),
+		"total":              persisted.Run.Total,
+		"passed":             persisted.Run.Passed,
+		"failed":             persisted.Run.Failed,
+		"warning":            persisted.Run.Warning,
+	})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"set":        input.Set,
+		"candidates": input.Candidates,
+		"user_id":    input.UserID,
+		"cleanup":    input.Cleanup,
+		"run":        persisted.Run,
+		"results":    persisted.Results,
+		"reviews":    persisted.Reviews,
+		"summary":    persisted.Summary,
+	})
+}
+
 func (s *Server) getGoldenSetVersion(ctx context.Context, id, version string) (GoldenSet, error) {
 	set, err := s.evaluation.GetGoldenSetVersion(ctx, id, version)
 	if err == nil {

@@ -1,6 +1,6 @@
 import { clearAuth, loadAuth, saveAuth } from "./authStore";
 import { userFacingErrorMessage } from "./errorMessages";
-import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, BrowserPushConfig, BrowserPushSubscriptionResponse, ChatRunSummary, ConnectorAuthStart, ConnectorConnection, ConnectorPolicy, ConnectorStatus, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, LoopDiscoveryEvent, LoopDiscoveryResult, LoopTriggerRecord, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptEnvironmentPin, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, PromptVersion, PromptVersionDiff, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, TaskInboxResponse, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
+import type { AdminHealthStatus, AdminSkill, AdminUser, Asset, AuditLogSummary, AuthRegistrationPending, AuthSession, BrowserMemoryRequest, BrowserPushConfig, BrowserPushSubscriptionResponse, ChatRunSummary, ConnectorAuthStart, ConnectorConnection, ConnectorPolicy, ConnectorStatus, DeepAgentReplayReport, DeepAgentResumeRequest, DeepAgentWorkflowSummary, EvaluationResult, EvaluationReview, EvaluationRun, EvaluationRunReport, EvaluationRunSummary, EvaluationScope, EvaluationThresholds, GoldenCandidate, GoldenCase, GoldenSet, GoldenTraceCaptureRequest, Job, JobEvent, LLMGovernanceConfig, LLMQuotaAdminSummary, LLMUsageAdminSummary, LoopDiscoveryEvent, LoopDiscoveryResult, LoopTriggerRecord, MemoryEvaluationRunResponse, MemoryItem, MemoryMaintenanceAction, MemoryMaintenanceRunReport, MemorySettings, MessageSearchResult, PersonalizationSettings, PromptDetail, PromptEnvironmentPin, PromptExperiment, PromptExperimentDetail, PromptExperimentVariant, PromptRenderResult, PromptTemplate, PromptVersion, PromptVersionDiff, RAGEvaluationRunResponse, ReadinessStatus, RiskReviewItem, RiskReviewSummary, RiskSummary, Session, Skill, SkillExecution, SkillExecutionSummary, SkillReviewResult, SkillVersion, TaskInboxResponse, UserProfile, WorkflowRun, WorkflowStepRun } from "../types";
 
 const configuredAPIBaseURL = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_AGENT_API_BASE_URL || "").trim();
 
@@ -988,6 +988,46 @@ export class ApiClient {
       })
     });
     return normalizeEvaluationReport(response);
+  }
+
+  async createRAGEvaluationRun(adminToken: string, payload: { setId?: string; setVersion?: string; name?: string; description?: string; knowledgeText: string; csvContent: string; judge?: "heuristic" | "llm" | string; chunkSize?: number; chunkOverlap?: number; topK?: number; persistSet?: boolean; thresholds?: EvaluationThresholds }): Promise<RAGEvaluationRunResponse> {
+    const response = await this.fetchJSON<RAGEvaluationRunResponse>("/v1/admin/ops/eval/rag-runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({
+        set_id: payload.setId,
+        set_version: payload.setVersion,
+        name: payload.name,
+        description: payload.description,
+        knowledge_text: payload.knowledgeText,
+        csv_content: payload.csvContent,
+        judge: payload.judge,
+        chunk_size: payload.chunkSize,
+        chunk_overlap: payload.chunkOverlap,
+        top_k: payload.topK,
+        persist_set: payload.persistSet,
+        thresholds: payload.thresholds
+      })
+    });
+    return { ...normalizeEvaluationReport(response), set: response.set, candidates: response.candidates || [], chunk_count: response.chunk_count || 0 };
+  }
+
+  async createMemoryEvaluationRun(adminToken: string, payload: { setId: string; setVersion?: string; userId?: string; cleanup?: boolean; judge?: "heuristic" | "llm" | string; name?: string; trigger?: string; thresholds?: EvaluationThresholds }): Promise<MemoryEvaluationRunResponse> {
+    const response = await this.fetchJSON<MemoryEvaluationRunResponse>("/v1/admin/ops/eval/memory-runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify({
+        set_id: payload.setId,
+        set_version: payload.setVersion,
+        user_id: payload.userId,
+        cleanup: payload.cleanup,
+        judge: payload.judge,
+        name: payload.name,
+        trigger: payload.trigger,
+        thresholds: payload.thresholds
+      })
+    });
+    return { ...normalizeEvaluationReport(response), set: response.set, candidates: response.candidates || [], user_id: response.user_id || "", cleanup: Boolean(response.cleanup) };
   }
 
   async adminOpsEvaluationRuns(adminToken: string, options: { status?: string; trigger?: string; limit?: number } = {}): Promise<EvaluationRun[]> {

@@ -914,6 +914,19 @@ export type GoldenTraceCaptureRequest = {
   max_cases?: number;
 };
 
+export type RAGEvaluationRunResponse = EvaluationRunReport & {
+  set: GoldenSet;
+  candidates: GoldenCandidate[];
+  chunk_count: number;
+};
+
+export type MemoryEvaluationRunResponse = EvaluationRunReport & {
+  set: GoldenSet;
+  candidates: GoldenCandidate[];
+  user_id: string;
+  cleanup: boolean;
+};
+
 export type Asset = {
   id: string;
   kind: "attachment" | "artifact";
@@ -1237,6 +1250,7 @@ export type DeepAgentWorkflowSummary = {
     args?: Record<string, unknown>;
     hash?: string;
   }>;
+  deep_research?: DeepResearchRunState;
   learnings?: Array<{
     id: string;
     type: string;
@@ -1269,6 +1283,55 @@ export type DeepAgentWorkflowSummary = {
   failed_count: number;
   action_count: number;
   no_progress_count: number;
+};
+
+export type DeepResearchRunState = {
+  version?: string;
+  status?: string;
+  goal?: string;
+  plan?: {
+    goal?: string;
+    max_concurrency?: number;
+    nodes?: DeepResearchTaskNode[];
+  };
+  worker_runs?: Record<string, DeepResearchTaskNode>;
+  aggregate?: {
+    status?: string;
+    summary?: string;
+    final_answer?: string;
+    partial?: boolean;
+    errors?: string[];
+    sources?: Array<Record<string, unknown>>;
+    artifacts?: Array<Record<string, unknown>>;
+  };
+  config?: {
+    worker_backend?: string;
+    max_workers?: number;
+    max_concurrency?: number;
+    worker_timeout_ms?: number;
+    total_timeout_ms?: number;
+    max_retries?: number;
+    require_sources?: boolean;
+    min_successful_workers?: number;
+  };
+  recovery_hint?: string;
+};
+
+export type DeepResearchTaskNode = {
+  id: string;
+  title?: string;
+  description?: string;
+  depends_on?: string[];
+  worker_role?: string;
+  allowed_tools?: string[];
+  expected_output?: string;
+  required?: boolean;
+  status?: string;
+  attempt?: number;
+  agent_run_id?: string;
+  error?: string;
+  blocked_by?: string[];
+  result?: Record<string, unknown>;
 };
 
 export type DeepAgentTimelineItem = {

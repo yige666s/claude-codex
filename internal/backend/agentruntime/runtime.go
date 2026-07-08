@@ -92,6 +92,7 @@ type Runtime struct {
 	skillExecutions   SkillExecutionStore
 	workflowStore     WorkflowStore
 	deepAgentEvidence DeepAgentEvidenceRepository
+	deepResearchAgent DeepResearchHarnessAgentRunner
 	toolCallLedger    ToolCallLedgerStore
 	promptStore       PromptStore
 	promptResolver    PromptResolver
@@ -162,6 +163,13 @@ func (r *Runtime) SetDeepAgentEvidenceRepository(repo DeepAgentEvidenceRepositor
 		return
 	}
 	r.deepAgentEvidence = repo
+}
+
+func (r *Runtime) SetDeepResearchHarnessAgentRunner(runner DeepResearchHarnessAgentRunner) {
+	if r == nil {
+		return
+	}
+	r.deepResearchAgent = runner
 }
 
 func (r *Runtime) SetToolCallLedgerStore(store ToolCallLedgerStore) {
@@ -4030,7 +4038,7 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 		state["loop_goal_id"] = job.LoopGoalID
 		state["loop_contract_id"] = job.LoopGoalID
 	}
-	result, err := r.ExecuteDeepAgentTask(turnCtx, DeepAgentTaskRequest{
+	req := DeepAgentTaskRequest{
 		UserID:           job.UserID,
 		SessionID:        job.SessionID,
 		JobID:            job.ID,
@@ -4038,7 +4046,17 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 		Policy:           policy,
 		State:            state,
 		ConnectorContext: normalizeConnectorScopes(job.ConnectorContext),
-	}, nil, nil, nil)
+	}
+	var result *DeepAgentTaskResult
+	if r.deepResearchOrchestratorWorkerEnabled() {
+		result, err = r.ExecuteDeepResearchTask(turnCtx, req, nil, nil, nil)
+		if err != nil && r.config.DeepResearch.FallbackLegacy && deepResearchCanFallbackToLegacy(result) {
+			_ = sink.Send(ctx, Event{Type: "deep_research_fallback_legacy", SessionID: job.SessionID, JobID: job.ID, Role: "workflow", Content: "Deep research planning failed before workers started; falling back to legacy DeepAgent", Error: err.Error()})
+			result, err = r.ExecuteDeepAgentTask(turnCtx, req, nil, nil, nil)
+		}
+	} else {
+		result, err = r.ExecuteDeepAgentTask(turnCtx, req, nil, nil, nil)
+	}
 	if err != nil {
 		_ = r.emitDeepAgentTraceSummaryEvent(ctx, sink, job, result)
 		messageErr := r.appendDeepAgentResultMessage(ctx, job.UserID, job.SessionID, result, err)
@@ -4374,6 +4392,9 @@ func (r *Runtime) ResumeWorkflowRunWithRequest(ctx context.Context, req DeepAgen
 	}
 	switch run.Name {
 	case deepAgentTaskWorkflowName:
+		if run.Version == deepResearchWorkflowVersion {
+			return r.ResumeDeepResearchWorkflowRun(ctx, run.ID)
+		}
 		req.RunID = run.ID
 		result, err := r.ResumeDeepAgentTask(ctx, req, nil, nil, nil)
 		if result != nil && result.Run != nil {
@@ -4397,10 +4418,162 @@ func (r *Runtime) CancelWorkflowRun(ctx context.Context, runID string) (*Workflo
 		return run, nil
 	}
 	now := time.Now().UTC()
+	if run.Version == deepResearchWorkflowVersion {
+		if state, err := deepAgentStateFromWorkflowRun(run); err == nil && state != nil {
+			if drRun, ok := deepResearchRunStateFromAny(run.State["deep_research"]); ok {
+				for id, node := range drRun.WorkerRuns {
+					switch node.Status {
+					case DeepResearchTaskStatusPending, DeepResearchTaskStatusReady, DeepResearchTaskStatusRunning, DeepResearchTaskStatusRetrying:
+						node.Status = DeepResearchTaskStatusCancelled
+						completed := now
+						node.CompletedAt = &completed
+						drRun.WorkerRuns[id] = node
+						for idx := range drRun.Plan.Nodes {
+							if drRun.Plan.Nodes[idx].ID == id {
+								drRun.Plan.Nodes[idx] = node
+							}
+						}
+					}
+				}
+				drRun.Status = DeepResearchRunStatusCancelled
+				drRun.CompletedAt = &now
+				state.Status = DeepAgentRunStatusFailed
+				state.Blocker = "cancelled by admin"
+				state.WorkingMemory["deep_research"] = drRun
+				run.State["deep_agent_state"] = state
+				run.State["deep_research"] = drRun
+			}
+		}
+	}
 	run.Status = WorkflowStatusCancelled
 	run.Error = "cancelled by admin"
 	run.UpdatedAt = now
 	run.FinishedAt = &now
+	if err := r.workflowStore.UpdateWorkflowRun(ctx, run); err != nil {
+		return nil, err
+	}
+	return run, nil
+}
+
+func (r *Runtime) ResumeDeepResearchWorkflowRun(ctx context.Context, runID string) (*WorkflowRun, error) {
+	if r == nil || r.workflowStore == nil {
+		return nil, fmt.Errorf("workflow store is not configured")
+	}
+	run, err := r.workflowStore.GetWorkflowRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil || run.Version != deepResearchWorkflowVersion {
+		return run, fmt.Errorf("workflow run %s is not a deep research run", runID)
+	}
+	state, err := deepAgentStateFromWorkflowRun(run)
+	if err != nil {
+		return run, err
+	}
+	drRun, ok := deepResearchRunStateFromAny(run.State["deep_research"])
+	if !ok {
+		drRun, ok = deepResearchRunStateFromAny(state.WorkingMemory["deep_research"])
+	}
+	if !ok {
+		return run, fmt.Errorf("deep research state missing for workflow %s", runID)
+	}
+	now := time.Now().UTC()
+	for id, node := range drRun.WorkerRuns {
+		switch node.Status {
+		case DeepResearchTaskStatusReady, DeepResearchTaskStatusRunning, DeepResearchTaskStatusRetrying:
+			node.Status = DeepResearchTaskStatusPending
+			node.StartedAt = nil
+			node.CompletedAt = nil
+			node.LastHeartbeatAt = nil
+			drRun.WorkerRuns[id] = node
+			for idx := range drRun.Plan.Nodes {
+				if drRun.Plan.Nodes[idx].ID == id {
+					drRun.Plan.Nodes[idx] = node
+				}
+			}
+		}
+	}
+	drRun.Status = DeepResearchRunStatusRunning
+	state.Status = DeepAgentRunStatusRunning
+	state.Blocker = ""
+	run.Status = WorkflowStatusRunning
+	run.Error = ""
+	run.FinishedAt = nil
+	run.UpdatedAt = now
+	if run.StartedAt == nil {
+		run.StartedAt = &now
+	}
+	controller := NewDeepResearchController(r.workflowStore, ContextWorkflowEventSink{}, nil, newRuntimeDeepResearchWorkerExecutor(r, NewRuntimeDeepAgentExecutor(r)), nil, normalizeDeepResearchRuntimeConfig(r.config.DeepResearch))
+	controller.SetDeliverableDecider(NewRuntimeDeepResearchDeliverableDecider(r))
+	controller.SetArtifactPublisher(NewRuntimeDeepResearchArtifactPublisher(r))
+	req := DeepAgentTaskRequest{
+		UserID:           run.UserID,
+		SessionID:        run.SessionID,
+		JobID:            run.JobID,
+		Goal:             state.Goal,
+		State:            cloneWorkflowMap(state.WorkingMemory),
+		ConnectorContext: normalizeConnectorScopes(deepAgentStringSlice(state.WorkingMemory["connector_context"])),
+		Policy:           r.deepAgentJobPolicy(),
+	}
+	controller.persistDeepResearchState(ctx, run, state, drRun)
+	if err := controller.executeWorkerGraph(ctx, run, req, state, &drRun); err != nil {
+		run.Status = WorkflowStatusFailed
+		run.Error = err.Error()
+		state.Status = DeepAgentRunStatusBlocked
+		state.Blocker = err.Error()
+		controller.persistDeepResearchState(ctx, run, state, drRun)
+		_ = r.workflowStore.UpdateWorkflowRun(ctx, run)
+		return run, err
+	}
+	aggregate, err := controller.aggregator.Aggregate(ctx, drRun)
+	drRun.Aggregate = aggregate
+	if err != nil {
+		run.Status = WorkflowStatusFailed
+		run.Error = err.Error()
+		state.Status = DeepAgentRunStatusBlocked
+		state.Blocker = err.Error()
+		controller.persistDeepResearchState(ctx, run, state, drRun)
+		_ = r.workflowStore.UpdateWorkflowRun(ctx, run)
+		return run, err
+	}
+	decision, err := controller.decideDeepResearchDeliverable(ctx, req, state, drRun, aggregate)
+	aggregate.Deliverable = decision
+	drRun.Aggregate = aggregate
+	state.WorkingMemory["deep_research_deliverable"] = decision
+	if err != nil {
+		run.Status = WorkflowStatusFailed
+		run.Error = err.Error()
+		state.Status = DeepAgentRunStatusBlocked
+		state.Blocker = err.Error()
+		controller.persistDeepResearchState(ctx, run, state, drRun)
+		_ = r.workflowStore.UpdateWorkflowRun(ctx, run)
+		return run, err
+	}
+	if deepResearchDecisionRequiresArtifact(decision) {
+		ref, publishErr := controller.publishDeepResearchArtifact(ctx, req, state, drRun, aggregate, decision)
+		if publishErr != nil {
+			err := fmt.Errorf("deep research deliverable artifact required but not created: %w", publishErr)
+			run.Status = WorkflowStatusFailed
+			run.Error = err.Error()
+			state.Status = DeepAgentRunStatusBlocked
+			state.Blocker = err.Error()
+			controller.persistDeepResearchState(ctx, run, state, drRun)
+			_ = r.workflowStore.UpdateWorkflowRun(ctx, run)
+			return run, err
+		}
+		aggregate.Artifacts = dedupeDeepResearchArtifacts(append(aggregate.Artifacts, ref))
+		state.WorkingMemory["final_artifact_refs"] = aggregate.Artifacts
+		state.WorkingMemory["deep_research_artifact_refs"] = aggregate.Artifacts
+		drRun.Aggregate = aggregate
+	}
+	finished := time.Now().UTC()
+	drRun.Status = DeepResearchRunStatusSucceeded
+	drRun.CompletedAt = &finished
+	state.Status = DeepAgentRunStatusSucceeded
+	run.Status = WorkflowStatusSucceeded
+	run.Error = ""
+	run.FinishedAt = &finished
+	controller.persistDeepResearchState(ctx, run, state, drRun)
 	if err := r.workflowStore.UpdateWorkflowRun(ctx, run); err != nil {
 		return nil, err
 	}
@@ -4466,6 +4639,45 @@ func (r *Runtime) ExecuteDeepAgentTask(ctx context.Context, req DeepAgentTaskReq
 	controller.SetRiskGate(NewRuntimeDeepAgentRiskGate(r))
 	controller.SetLearningSink(NewRuntimeDeepAgentLearningSink(r))
 	return controller.Execute(ctx, req)
+}
+
+func (r *Runtime) ExecuteDeepResearchTask(ctx context.Context, req DeepAgentTaskRequest, orchestrator DeepResearchOrchestrator, worker DeepResearchWorkerExecutor, aggregator DeepResearchAggregator) (*DeepAgentTaskResult, error) {
+	if r == nil {
+		return nil, fmt.Errorf("runtime is not configured")
+	}
+	store := r.workflowStore
+	if store == nil {
+		store = NewMemoryWorkflowStore()
+	}
+	if worker == nil {
+		worker = newRuntimeDeepResearchWorkerExecutor(r, NewRuntimeDeepAgentExecutor(r))
+	}
+	cfg := normalizeDeepResearchRuntimeConfig(r.config.DeepResearch)
+	controller := NewDeepResearchController(store, ContextWorkflowEventSink{}, orchestrator, worker, aggregator, cfg)
+	controller.SetDeliverableDecider(NewRuntimeDeepResearchDeliverableDecider(r))
+	controller.SetArtifactPublisher(NewRuntimeDeepResearchArtifactPublisher(r))
+	return controller.Execute(ctx, req)
+}
+
+func (r *Runtime) deepResearchOrchestratorWorkerEnabled() bool {
+	return r != nil && r.config.DeepResearch.OrchestratorWorkerEnabled
+}
+
+func deepResearchCanFallbackToLegacy(result *DeepAgentTaskResult) bool {
+	if result == nil || result.Run == nil {
+		return true
+	}
+	raw := result.Run.State["deep_research"]
+	run, ok := deepResearchRunStateFromAny(raw)
+	if !ok {
+		return true
+	}
+	for _, node := range run.WorkerRuns {
+		if node.Attempt > 0 || node.Status == DeepResearchTaskStatusRunning || node.Status == DeepResearchTaskStatusSucceeded || node.Status == DeepResearchTaskStatusFailedFinal {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Runtime) ResumeDeepAgentTask(ctx context.Context, req DeepAgentResumeRequest, planner DeepAgentPlanner, executor DeepAgentExecutor, verifier DeepAgentVerifier) (*DeepAgentTaskResult, error) {

@@ -5498,10 +5498,26 @@ body.workspace-pane-resizing .workspace-stage {
 .golden-form-grid .admin-field.wide {
   grid-column: 1 / -1;
 }
+.golden-form-grid .checkbox-field {
+  justify-content: end;
+}
+.golden-form-grid .checkbox-field input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  accent-color: var(--accent);
+}
 .golden-form-grid select,
+.golden-form-grid input[type="file"],
 .golden-form-grid textarea {
   min-width: 0;
   width: 100%;
+}
+.golden-form-grid input[type="file"] {
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid rgba(214, 225, 229, 0.95);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
 }
 .golden-form-grid textarea {
   min-height: 74px;
@@ -5521,6 +5537,12 @@ body.workspace-pane-resizing .workspace-stage {
   border: 1px solid rgba(214, 225, 229, 0.9);
   border-radius: 12px;
   background: rgba(248, 252, 251, 0.82);
+}
+.admin-code-block.compact {
+  min-height: 0;
+  margin: 0;
+  padding: 10px;
+  font-size: 12px;
 }
 .prompt-workflow-steps {
   margin-top: 12px;

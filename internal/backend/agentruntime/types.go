@@ -587,6 +587,7 @@ type RuntimeConfig struct {
 	TurnTimeout           time.Duration
 	SkillShellTimeout     time.Duration
 	DeepAgent             DeepAgentRuntimeConfig
+	DeepResearch          DeepResearchRuntimeConfig
 	LoopDiscovery         LoopDiscoveryConfig
 	SkillShellSandbox     SkillShellSandboxConfig
 	MessageSearch         MessageSearchConfig
@@ -638,6 +639,23 @@ type MemoryRecallConfig struct {
 type DeepAgentRuntimeConfig struct {
 	V2Enabled     bool
 	V2ShadowRoute bool
+}
+
+type DeepResearchRuntimeConfig struct {
+	OrchestratorWorkerEnabled bool
+	WorkerBackend             string
+	MaxWorkers                int
+	MaxConcurrency            int
+	WorkerTimeout             time.Duration
+	TotalTimeout              time.Duration
+	MaxRetries                int
+	FallbackLegacy            bool
+	RequireSources            bool
+	MinSuccessfulWorkers      int
+}
+
+type DeepResearchHarnessAgentRunner interface {
+	RunDeepResearchAgent(ctx context.Context, input DeepResearchWorkerInput) (DeepResearchWorkerResult, error)
 }
 
 type LiveConfig struct {

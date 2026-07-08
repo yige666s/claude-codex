@@ -288,6 +288,16 @@ type Config struct {
 	TurnTimeout                              time.Duration
 	DeepAgentV2Enabled                       bool
 	DeepAgentV2ShadowRoute                   bool
+	DeepResearchOrchestratorWorkerEnabled    bool
+	DeepResearchWorkerBackend                string
+	DeepResearchMaxWorkers                   int
+	DeepResearchMaxConcurrency               int
+	DeepResearchWorkerTimeout                time.Duration
+	DeepResearchTotalTimeout                 time.Duration
+	DeepResearchMaxRetries                   int
+	DeepResearchFallbackLegacy               bool
+	DeepResearchRequireSources               bool
+	DeepResearchMinSuccessfulWorkers         int
 	LoopAutomationEnabled                    bool
 	LoopScheduleTriggersEnabled              bool
 	LoopWebhookTriggersEnabled               bool
@@ -586,6 +596,16 @@ func Default() Config {
 		TurnTimeout:                              2 * time.Minute,
 		DeepAgentV2Enabled:                       EnvBool("AGENT_API_DEEP_AGENT_V2_ENABLED", false),
 		DeepAgentV2ShadowRoute:                   EnvBool("AGENT_API_DEEP_AGENT_V2_SHADOW_ROUTE", false),
+		DeepResearchOrchestratorWorkerEnabled:    EnvBool("AGENT_API_DEEP_RESEARCH_ORCHESTRATOR_WORKER_ENABLED", false),
+		DeepResearchWorkerBackend:                FirstNonEmpty(os.Getenv("AGENT_API_DEEP_RESEARCH_WORKER_BACKEND"), "inline"),
+		DeepResearchMaxWorkers:                   EnvInt("AGENT_API_DEEP_RESEARCH_MAX_WORKERS", 8),
+		DeepResearchMaxConcurrency:               EnvInt("AGENT_API_DEEP_RESEARCH_MAX_CONCURRENCY", 3),
+		DeepResearchWorkerTimeout:                EnvDuration("AGENT_API_DEEP_RESEARCH_WORKER_TIMEOUT", 5*time.Minute),
+		DeepResearchTotalTimeout:                 EnvDuration("AGENT_API_DEEP_RESEARCH_TOTAL_TIMEOUT", 20*time.Minute),
+		DeepResearchMaxRetries:                   EnvInt("AGENT_API_DEEP_RESEARCH_MAX_RETRIES", 2),
+		DeepResearchFallbackLegacy:               EnvBool("AGENT_API_DEEP_RESEARCH_FALLBACK_LEGACY", true),
+		DeepResearchRequireSources:               EnvBool("AGENT_API_DEEP_RESEARCH_REQUIRE_SOURCES", true),
+		DeepResearchMinSuccessfulWorkers:         EnvInt("AGENT_API_DEEP_RESEARCH_MIN_SUCCESSFUL_WORKERS", 1),
 		LoopAutomationEnabled:                    EnvBool("AGENT_API_LOOP_AUTOMATION_ENABLED", false),
 		LoopScheduleTriggersEnabled:              EnvBool("AGENT_API_LOOP_SCHEDULE_TRIGGERS_ENABLED", false),
 		LoopWebhookTriggersEnabled:               EnvBool("AGENT_API_LOOP_WEBHOOK_TRIGGERS_ENABLED", false),
@@ -885,6 +905,16 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.DurationVar(&cfg.TurnTimeout, "turn-timeout", cfg.TurnTimeout, "max duration for one agent turn")
 	flags.BoolVar(&cfg.DeepAgentV2Enabled, "deep-agent-v2-enabled", cfg.DeepAgentV2Enabled, "enable DeepAgent v2 route metadata and executor adapter behavior")
 	flags.BoolVar(&cfg.DeepAgentV2ShadowRoute, "deep-agent-v2-shadow-route", cfg.DeepAgentV2ShadowRoute, "record DeepAgent legacy/new route diffs without changing execution")
+	flags.BoolVar(&cfg.DeepResearchOrchestratorWorkerEnabled, "deep-research-orchestrator-worker-enabled", cfg.DeepResearchOrchestratorWorkerEnabled, "enable orchestrator-worker execution for plan_execute deep research jobs")
+	flags.StringVar(&cfg.DeepResearchWorkerBackend, "deep-research-worker-backend", cfg.DeepResearchWorkerBackend, "deep research worker backend: inline or harness_agent")
+	flags.IntVar(&cfg.DeepResearchMaxWorkers, "deep-research-max-workers", cfg.DeepResearchMaxWorkers, "maximum deep research worker nodes per run")
+	flags.IntVar(&cfg.DeepResearchMaxConcurrency, "deep-research-max-concurrency", cfg.DeepResearchMaxConcurrency, "maximum concurrent deep research workers")
+	flags.DurationVar(&cfg.DeepResearchWorkerTimeout, "deep-research-worker-timeout", cfg.DeepResearchWorkerTimeout, "timeout per deep research worker")
+	flags.DurationVar(&cfg.DeepResearchTotalTimeout, "deep-research-total-timeout", cfg.DeepResearchTotalTimeout, "total timeout for a deep research run")
+	flags.IntVar(&cfg.DeepResearchMaxRetries, "deep-research-max-retries", cfg.DeepResearchMaxRetries, "maximum retries per failed deep research worker")
+	flags.BoolVar(&cfg.DeepResearchFallbackLegacy, "deep-research-fallback-legacy", cfg.DeepResearchFallbackLegacy, "fallback to legacy DeepAgent when orchestrator-worker planning fails before workers start")
+	flags.BoolVar(&cfg.DeepResearchRequireSources, "deep-research-require-sources", cfg.DeepResearchRequireSources, "require sourced evidence for deep research aggregation")
+	flags.IntVar(&cfg.DeepResearchMinSuccessfulWorkers, "deep-research-min-successful-workers", cfg.DeepResearchMinSuccessfulWorkers, "minimum successful workers required before aggregation")
 	flags.BoolVar(&cfg.LoopAutomationEnabled, "loop-automation-enabled", cfg.LoopAutomationEnabled, "enable automatic loop discovery triggers")
 	flags.BoolVar(&cfg.LoopScheduleTriggersEnabled, "loop-schedule-triggers-enabled", cfg.LoopScheduleTriggersEnabled, "enable scheduled loop discovery triggers")
 	flags.BoolVar(&cfg.LoopWebhookTriggersEnabled, "loop-webhook-triggers-enabled", cfg.LoopWebhookTriggersEnabled, "enable webhook loop discovery triggers")

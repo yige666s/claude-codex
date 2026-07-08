@@ -105,6 +105,18 @@ func runtimeConfigFromStartup(cfg startupconfig.Config, skillShellSandboxConfig 
 			V2Enabled:     cfg.DeepAgentV2Enabled,
 			V2ShadowRoute: cfg.DeepAgentV2ShadowRoute,
 		},
+		DeepResearch: agentruntime.DeepResearchRuntimeConfig{
+			OrchestratorWorkerEnabled: cfg.DeepResearchOrchestratorWorkerEnabled,
+			WorkerBackend:             cfg.DeepResearchWorkerBackend,
+			MaxWorkers:                cfg.DeepResearchMaxWorkers,
+			MaxConcurrency:            cfg.DeepResearchMaxConcurrency,
+			WorkerTimeout:             cfg.DeepResearchWorkerTimeout,
+			TotalTimeout:              cfg.DeepResearchTotalTimeout,
+			MaxRetries:                cfg.DeepResearchMaxRetries,
+			FallbackLegacy:            cfg.DeepResearchFallbackLegacy,
+			RequireSources:            cfg.DeepResearchRequireSources,
+			MinSuccessfulWorkers:      cfg.DeepResearchMinSuccessfulWorkers,
+		},
 		LoopDiscovery: agentruntime.LoopDiscoveryConfig{
 			AutomationEnabled:         cfg.LoopAutomationEnabled,
 			ScheduleTriggersEnabled:   cfg.LoopScheduleTriggersEnabled,

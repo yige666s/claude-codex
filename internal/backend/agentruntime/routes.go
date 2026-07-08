@@ -220,6 +220,8 @@ func (s *Server) mountAdminRoutes(r chi.Router) {
 				r.Use(s.evaluationRequiredMiddleware)
 				r.Post("/v1/admin/ops/eval/runs", s.withUser(s.handleAdminOpsCreateEvaluationRun))
 				r.Post("/v1/admin/ops/eval/golden-runs", s.withUser(s.handleAdminOpsCreateGoldenEvaluationRun))
+				r.Post("/v1/admin/ops/eval/rag-runs", s.withUser(s.handleAdminOpsCreateRAGEvaluationRun))
+				r.Post("/v1/admin/ops/eval/memory-runs", s.withUser(s.handleAdminOpsCreateMemoryEvaluationRun))
 				r.Get("/v1/admin/ops/eval/runs", s.handleAdminOpsListEvaluationRuns)
 				r.Get("/v1/admin/ops/eval/runs/{runID}", s.withParam("runID", s.handleAdminOpsGetEvaluationRun))
 				r.Get("/v1/admin/ops/eval/template-corpus", s.handleAdminOpsTemplateEvalCorpus)

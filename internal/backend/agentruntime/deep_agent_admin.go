@@ -29,6 +29,7 @@ type DeepAgentWorkflowSummary struct {
 	Evaluator      map[string]any               `json:"evaluator_verdict,omitempty"`
 	ActionHistory  []DeepAgentAction            `json:"action_history,omitempty"`
 	Learnings      []DeepAgentLearningCandidate `json:"learnings,omitempty"`
+	DeepResearch   *DeepResearchRunState        `json:"deep_research,omitempty"`
 	CompletedCount int                          `json:"completed_count"`
 	FailedCount    int                          `json:"failed_count"`
 	ActionCount    int                          `json:"action_count"`
@@ -94,6 +95,9 @@ func DeepAgentSummaryFromWorkflowRun(run *WorkflowRun) (*DeepAgentWorkflowSummar
 		FailedCount:    len(state.FailedSteps),
 		ActionCount:    state.ActionCount,
 		NoProgress:     state.NoProgressCount,
+	}
+	if drRun, ok := deepResearchRunStateFromAny(state.WorkingMemory["deep_research"]); ok {
+		summary.DeepResearch = &drRun
 	}
 	if state.CurrentStepIndex >= 0 && state.CurrentStepIndex < len(state.Plan.Steps) {
 		step := state.Plan.Steps[state.CurrentStepIndex]

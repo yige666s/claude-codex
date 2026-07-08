@@ -120,6 +120,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		engineFactory,
 	)
 	runtime.SetWorkflowStore(workflowStore)
+	runtime.SetDeepResearchHarnessAgentRunner(agentruntime.NewEngineDeepResearchHarnessAgentRunner(runtime))
 	runtime.SetDeepAgentEvidenceRepository(deepAgentEvidenceRepo)
 	runtime.SetConnectorStore(connectorStore)
 	runtime.SetConnectorTokenVault(connectorTokenVault)

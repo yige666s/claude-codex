@@ -627,7 +627,7 @@ function groupJobEvents(events: JobEvent[]): JobEventGroup[] {
 function eventGroupForType(type: string): string {
   if (type === "gate" || type === "deep_agent_gate_decision") return "run";
   if (type === "artifact_output" || type === "deep_agent_artifact_output" || type.startsWith("artifact")) return "outputs";
-  if (type.startsWith("deep_agent_parallel_") || type === "parallel_workflow") return "parallel";
+  if (type.startsWith("deep_agent_parallel_") || type.startsWith("deep_research_") || type === "parallel_workflow") return "parallel";
   if (type === "workflow_step" || type === "deep_agent_action" || type === "child_skill_job") return "steps";
   if (type.startsWith("workflow_step") || type.startsWith("deep_agent_action") || type === "deep_agent_child_job") return "steps";
   return "run";
@@ -662,6 +662,9 @@ function JobEventDetail({ event }: { event: JobEvent }) {
     ["Status", stringValue(data?.status)]
   ]);
   const actionRows = compactRows([
+    ["Worker", stringValue(data?.worker_title || data?.worker_id)],
+    ["Worker role", stringValue(data?.worker_role)],
+    ["Agent run", stringValue(data?.agent_run_id)],
     ["Action ID", stringValue(data?.action_id || data?.action_hash)],
     ["Plan step", stringValue(data?.step_id || data?.step_title)],
     ["Tool", stringValue(data?.tool)],
@@ -789,6 +792,14 @@ function eventTitle(event: JobEvent, data: Record<string, unknown> | null): stri
   if (event.type === "deep_agent_child_job") {
     const child = recordValue(data?.child_job);
     return ["child job", stringValue(child?.id), stringValue(child?.status)].filter(Boolean).join(" · ");
+  }
+  if (event.type.startsWith("deep_research_worker_")) {
+    const worker = stringValue(data?.worker_title || data?.worker_id || data?.branch_title);
+    const label = event.type.replace(/^deep_research_worker_/, "").replace(/_/g, " ");
+    return ["deep research worker", label, worker].filter(Boolean).join(" · ");
+  }
+  if (event.type.startsWith("deep_research_")) {
+    return ["deep research", event.type.replace(/^deep_research_/, "").replace(/_/g, " ")].join(" · ");
   }
   if (event.type.startsWith("deep_agent_parallel_")) {
     const branch = stringValue(data?.branch_title || data?.branch_id);
