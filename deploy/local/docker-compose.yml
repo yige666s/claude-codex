@@ -1,5 +1,6 @@
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: ${AGENT_API_POSTGRES_DB:-agentapi}
@@ -20,6 +21,7 @@ services:
       retries: 20
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     command: redis-server --appendonly yes
     ports:
@@ -33,6 +35,7 @@ services:
       retries: 20
 
   redpanda:
+    restart: unless-stopped
     image: redpandadata/redpanda:v24.2.11
     profiles: ["kafka"]
     command:
@@ -81,6 +84,7 @@ services:
       retries: 20
 
   elasticsearch:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: deploy/local/elasticsearch-ik.Dockerfile
@@ -105,6 +109,7 @@ services:
       retries: 30
 
   qdrant:
+    restart: unless-stopped
     image: qdrant/qdrant:v1.12.5
     profiles: ["search"]
     ports:
@@ -118,6 +123,7 @@ services:
       retries: 30
 
   agentapi:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: Dockerfile.agentapi
@@ -629,6 +635,7 @@ services:
       start_period: 15s
 
   agentweb:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: Dockerfile.agentweb
