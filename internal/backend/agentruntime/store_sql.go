@@ -2332,6 +2332,154 @@ func (m *SQLMemoryService) Init(ctx context.Context) error {
 	)
 }
 
+func (m *SQLMemoryService) RecordMemoryRecallTrace(ctx context.Context, trace MemoryRecallTrace) error {
+	if m == nil || m.db == nil {
+		return nil
+	}
+	trace = normalizeMemoryRecallTrace(trace)
+	memoryItemIDs, err := json.Marshal(trace.MemoryItemIDs)
+	if err != nil {
+		return err
+	}
+	episodeIDs, err := json.Marshal(trace.EpisodeIDs)
+	if err != nil {
+		return err
+	}
+	sourceRefs, err := json.Marshal(trace.SourceRefs)
+	if err != nil {
+		return err
+	}
+	metadata, err := json.Marshal(trace.Metadata)
+	if err != nil {
+		return err
+	}
+	_, err = m.db.ExecContext(ctx, m.dialect.Bind(`
+INSERT INTO agent_memory_recall_events (
+	id, user_id, session_id, trigger_reason, query_hash, query, original_query, rewritten_query,
+	query_rewrite_used, query_rewrite_reason, query_rewrite_degraded, memory_item_ids, episode_ids,
+	source_refs, memory_chars, episode_chars, injected, degraded, degraded_reason, latency_ms, metadata, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`),
+		trace.ID,
+		trace.UserID,
+		trace.SessionID,
+		trace.TriggerReason,
+		trace.QueryHash,
+		trace.Query,
+		trace.OriginalQuery,
+		trace.RewrittenQuery,
+		trace.QueryRewriteUsed,
+		trace.QueryRewriteReason,
+		trace.QueryRewriteDegraded,
+		string(memoryItemIDs),
+		string(episodeIDs),
+		string(sourceRefs),
+		trace.MemoryChars,
+		trace.EpisodeChars,
+		trace.Injected,
+		trace.Degraded,
+		trace.DegradedReason,
+		trace.LatencyMS,
+		string(metadata),
+		trace.CreatedAt.UTC(),
+	)
+	if err != nil && isOptionalMemoryRecallTraceTableError(err) {
+		return nil
+	}
+	return err
+}
+
+func (m *SQLMemoryService) ListMemoryRecallTraces(ctx context.Context, userID, sessionID string, limit int) ([]MemoryRecallTrace, error) {
+	if m == nil || m.db == nil {
+		return nil, nil
+	}
+	userID = strings.TrimSpace(userID)
+	sessionID = strings.TrimSpace(sessionID)
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	rows, err := m.db.QueryContext(ctx, m.dialect.Bind(`
+SELECT id, user_id, session_id, trigger_reason, query_hash, query, original_query, rewritten_query,
+	query_rewrite_used, query_rewrite_reason, query_rewrite_degraded, memory_item_ids, episode_ids,
+	source_refs, memory_chars, episode_chars, injected, degraded, degraded_reason, latency_ms, metadata, created_at
+FROM agent_memory_recall_events
+WHERE user_id = ? AND (? = '' OR session_id = ?)
+ORDER BY created_at DESC
+LIMIT ?
+`), userID, sessionID, sessionID, limit)
+	if err != nil {
+		if isOptionalMemoryRecallTraceTableError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+	traces := make([]MemoryRecallTrace, 0)
+	for rows.Next() {
+		var trace MemoryRecallTrace
+		var memoryItemIDsJSON, episodeIDsJSON, sourceRefsJSON, metadataJSON string
+		var createdAt any
+		if err := rows.Scan(
+			&trace.ID,
+			&trace.UserID,
+			&trace.SessionID,
+			&trace.TriggerReason,
+			&trace.QueryHash,
+			&trace.Query,
+			&trace.OriginalQuery,
+			&trace.RewrittenQuery,
+			&trace.QueryRewriteUsed,
+			&trace.QueryRewriteReason,
+			&trace.QueryRewriteDegraded,
+			&memoryItemIDsJSON,
+			&episodeIDsJSON,
+			&sourceRefsJSON,
+			&trace.MemoryChars,
+			&trace.EpisodeChars,
+			&trace.Injected,
+			&trace.Degraded,
+			&trace.DegradedReason,
+			&trace.LatencyMS,
+			&metadataJSON,
+			&createdAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(memoryItemIDsJSON), &trace.MemoryItemIDs)
+		_ = json.Unmarshal([]byte(episodeIDsJSON), &trace.EpisodeIDs)
+		_ = json.Unmarshal([]byte(sourceRefsJSON), &trace.SourceRefs)
+		_ = json.Unmarshal([]byte(metadataJSON), &trace.Metadata)
+		if trace.CreatedAt, err = parseSQLTime(createdAt); err != nil {
+			return nil, err
+		}
+		traces = append(traces, normalizeMemoryRecallTrace(trace))
+	}
+	return traces, rows.Err()
+}
+
+func isOptionalMemoryRecallTraceTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "agent_memory_recall_events") &&
+		(strings.Contains(message, "does not exist") ||
+			strings.Contains(message, "no such table") ||
+			strings.Contains(message, "undefined table")) {
+		return true
+	}
+	if strings.Contains(message, "does not exist") &&
+		(strings.Contains(message, "original_query") ||
+			strings.Contains(message, "rewritten_query") ||
+			strings.Contains(message, "query_rewrite")) {
+		return true
+	}
+	return false
+}
+
 func (m *SQLMemoryService) LoadContext(ctx context.Context, userID string, session *state.Session) (string, error) {
 	if session == nil {
 		return "", nil

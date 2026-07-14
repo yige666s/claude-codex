@@ -199,7 +199,7 @@ func existingSystemContextSegments(session *state.Session) []SystemPromptSegment
 		switch {
 		case strings.Contains(content, "<personalization>"):
 			segments = append(segments, dynamicSystemPromptSegment(SystemPromptLayerSession, SystemPromptCacheSession, content))
-		case strings.Contains(content, memoryContextMarker), strings.Contains(content, episodicMemoryContextMarker), strings.Contains(content, browserMemoryContextMarker):
+		case strings.Contains(content, appRuntimeContextMarker), strings.Contains(content, memoryContextMarker), strings.Contains(content, episodicMemoryContextMarker), strings.Contains(content, browserMemoryContextMarker):
 			segments = append(segments, dynamicSystemPromptSegment(SystemPromptLayerDynamic, SystemPromptCacheNone, content))
 		}
 	}
@@ -240,6 +240,7 @@ func isAssembledSystemPromptSourceMessage(message state.Message) bool {
 	}
 	return strings.Contains(content, consumerSecuritySystemContext) ||
 		strings.Contains(content, "<personalization>") ||
+		strings.Contains(content, appRuntimeContextMarker) ||
 		strings.Contains(content, memoryContextMarker) ||
 		strings.Contains(content, episodicMemoryContextMarker) ||
 		strings.Contains(content, browserMemoryContextMarker) ||

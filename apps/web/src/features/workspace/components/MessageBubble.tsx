@@ -4,7 +4,7 @@ import { Button } from "../../../components/ui/button";
 import type { ApiClient } from "../../../api/client";
 import { MarkdownContent } from "./messages/MarkdownContent";
 import { MessageAssetAttachmentPreview, MessageAttachmentPreview, splitAttachedTextSections } from "./messages/MessageAttachmentPreview";
-import type { Message } from "../../../types";
+import type { Message, StructuredOutput } from "../../../types";
 
 type MessageBubbleProps = {
   message: Message;
@@ -71,6 +71,13 @@ export function MessageBubble({
           ))}
         </div>
       )}
+      {message.structured_outputs && message.structured_outputs.length > 0 && (
+        <div className="message-structured-outputs">
+          {message.structured_outputs.map((output, index) => (
+            <StructuredOutputCard key={output.id || `${output.kind || "structured"}-${index}`} output={output} />
+          ))}
+        </div>
+      )}
       {isAssistant && !streaming && (
         <div className="message-actions" aria-label="Assistant message actions">
           <Button className={`message-action-button ${copied ? "copied" : ""}`} variant="ghost" size="icon" onClick={copyMessage} disabled={copied || !text} title={copied ? "Copied" : "Copy"} aria-label={copied ? "Copied" : "Copy"}>
@@ -80,6 +87,56 @@ export function MessageBubble({
       )}
     </article>
   );
+}
+
+function StructuredOutputCard({ output }: { output: StructuredOutput }) {
+  const kind = String(output.kind || "card");
+  const title = String(output.title || output.summary || structuredOutputKindLabel(kind));
+  const summary = output.summary && output.summary !== title ? String(output.summary) : "";
+  const actions = Array.isArray(output.actions) ? output.actions.slice(0, 4) : [];
+  const artifacts = Array.isArray(output.artifact_refs) ? output.artifact_refs.slice(0, 3) : [];
+  return (
+    <section className={`message-structured-output ${kind.replace(/[^a-z0-9_-]/gi, "-")}`}>
+      <header>
+        <span>{structuredOutputKindLabel(kind)}</span>
+        <strong>{title}</strong>
+      </header>
+      {summary && <p>{summary}</p>}
+      {artifacts.length > 0 && (
+        <div className="message-structured-output-list">
+          {artifacts.map((artifact, index) => (
+            <span key={String(artifact.id || artifact.artifact_id || index)}>
+              {String(artifact.filename || artifact.name || artifact.id || artifact.artifact_id || "artifact")}
+            </span>
+          ))}
+        </div>
+      )}
+      {actions.length > 0 && (
+        <div className="message-structured-output-actions">
+          {actions.map((action, index) => (
+            <button key={String(action.id || index)} type="button" disabled title={String(action.intent || "")}>
+              {String(action.label || action.intent || "Action")}
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function structuredOutputKindLabel(kind: string): string {
+  switch (kind) {
+    case "artifact_card":
+      return "Artifact";
+    case "choice_set":
+      return "Choices";
+    case "progress":
+      return "Progress";
+    case "diagnostic":
+      return "Diagnostic";
+    default:
+      return "Card";
+  }
 }
 
 function stripAttachmentSummary(text: string, shouldStrip: boolean): string {

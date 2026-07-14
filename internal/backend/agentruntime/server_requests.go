@@ -39,12 +39,15 @@ func (req createJobRequest) ValidateRequest() error {
 }
 
 type chatMessageRequest struct {
-	Content          string              `json:"content"`
-	AttachmentIDs    []string            `json:"attachment_ids"`
-	AttachmentURLs   []ChatAttachmentURL `json:"attachment_urls"`
-	ThinkingMode     bool                `json:"thinking_mode,omitempty"`
-	AgentMode        string              `json:"agent_mode,omitempty"`
-	ConnectorContext []string            `json:"connector_context,omitempty"`
+	Content                  string              `json:"content"`
+	IdempotencyKey           string              `json:"idempotency_key,omitempty"`
+	ClientUserMessageID      string              `json:"client_user_message_id,omitempty"`
+	ClientAssistantMessageID string              `json:"client_assistant_message_id,omitempty"`
+	AttachmentIDs            []string            `json:"attachment_ids"`
+	AttachmentURLs           []ChatAttachmentURL `json:"attachment_urls"`
+	ThinkingMode             bool                `json:"thinking_mode,omitempty"`
+	AgentMode                string              `json:"agent_mode,omitempty"`
+	ConnectorContext         []string            `json:"connector_context,omitempty"`
 }
 
 func (req chatMessageRequest) ValidateRequest() error {

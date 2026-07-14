@@ -129,7 +129,7 @@ const chatRunEventTypes = [
   "deep_research_worker_progress", "deep_research_worker_succeeded", "deep_research_worker_failed", "deep_research_worker_retrying",
   "deep_research_worker_blocked", "deep_research_aggregate_started", "deep_research_conflict_detected", "deep_research_completed",
   "deep_research_fallback_legacy",
-  "structured_output_validation", "structured_output_repair", "structured_output_fallback",
+  "structured_output", "structured_output_validation", "structured_output_repair", "structured_output_fallback",
   "workflow_run_started", "workflow_run_resumed", "workflow_run_succeeded", "workflow_run_failed",
   "workflow_step_started", "workflow_step_reused", "workflow_step_succeeded", "workflow_step_failed",
   "connector_tool_call_started", "connector_tool_call_succeeded", "connector_tool_call_failed",
@@ -2028,6 +2028,19 @@ export function AgentWorkspace() {
       setMessages((current) => appendRuntimeMessage(current, message));
       appendSessionMessage(event.session_id || sessionId, message);
     }
+    if (event.type === "structured_output") {
+      const output = runtimeEventStructuredOutput(event);
+      if (output) {
+        const targetSessionId = event.session_id || sessionId;
+        setMessages((current) => appendStructuredOutputToMessages(current, event, output));
+        if (targetSessionId) {
+          setSessions((current) => current.map((item) => item.id === targetSessionId ? {
+            ...item,
+            messages: appendStructuredOutputToMessages(item.messages || [], event, output)
+          } : item));
+        }
+      }
+    }
     if (event.type === "job" && event.job_id) {
       if (event.job) setJobs((current) => upsertJob(current, event.job as Job));
       setStatus({ tone: "busy", text: "Running in background" });
@@ -3067,10 +3080,44 @@ function runtimeEventText(event: RuntimeEvent): string {
 
 function runtimeEventMessage(event: RuntimeEvent, role: "user" | "assistant"): Message {
   return {
+    id: event.id,
+    session_id: event.session_id,
+    run_id: event.run_id,
     role,
     content: runtimeEventText(event),
     created_at: new Date().toISOString()
   };
+}
+
+function runtimeEventStructuredOutput(event: RuntimeEvent) {
+  const direct = recordFromUnknown(event.structured_output);
+  if (direct) return direct;
+  const data = recordFromUnknown(event.data);
+  if (!data) return null;
+  if (data.version || data.kind || data.actions || data.artifact_refs) return data;
+  return recordFromUnknown(data.structured_output);
+}
+
+function appendStructuredOutputToMessages(messages: Message[], event: RuntimeEvent, output: Record<string, unknown>): Message[] {
+  const normalized = { ...output, id: String(output.id || event.id || `so-${Date.now()}`) };
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    if (event.run_id && message.run_id && message.run_id !== event.run_id) continue;
+    const existing = message.structured_outputs || [];
+    if (existing.some((item) => item.id && item.id === normalized.id)) return messages;
+    const next = [...messages];
+    next[index] = { ...message, structured_outputs: [...existing, normalized] };
+    return next;
+  }
+  return appendRuntimeMessage(messages, {
+    role: "assistant",
+    session_id: event.session_id,
+    run_id: event.run_id,
+    content: "",
+    structured_outputs: [normalized],
+    created_at: new Date().toISOString()
+  });
 }
 
 function agentActivityItemFromRuntimeEvent(event: RuntimeEvent, eventId = ""): AgentActivityItem | null {

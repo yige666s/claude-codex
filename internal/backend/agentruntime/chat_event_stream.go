@@ -50,10 +50,17 @@ func NewRedisChatStreamStore(client redis.UniversalClient, config RedisChatStrea
 }
 
 func (s *RedisChatStreamStore) CreateRun(ctx context.Context, userID, sessionID string) (*ChatRunSummary, error) {
+	return s.CreateRunWithID(ctx, userID, sessionID, NewChatRunID())
+}
+
+func (s *RedisChatStreamStore) CreateRunWithID(ctx context.Context, userID, sessionID, runID string) (*ChatRunSummary, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("redis chat stream is not configured")
 	}
-	runID := NewChatRunID()
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		runID = NewChatRunID()
+	}
 	now := time.Now().UTC()
 	userID = strings.TrimSpace(userID)
 	sessionID = strings.TrimSpace(sessionID)

@@ -124,6 +124,7 @@ func defaultMemoryRecallConfig() MemoryRecallConfig {
 		IntentClassifierEnabled:      true,
 		IntentClassifierThreshold:    defaultMemoryRecallIntentThreshold,
 		IntentClassifierContextTurns: defaultMemoryRecallIntentContextTurns,
+		QueryRewriteEnabled:          true,
 		LLMTriggerEnabled:            true,
 		LLMTriggerTimeout:            defaultMemoryRecallLLMTriggerTimeout,
 	}

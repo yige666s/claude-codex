@@ -38,6 +38,8 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	loopTriggerStore := buildLoopTriggerStore(storeCfg)
 	skillExecutionStore := buildSkillExecutionStore(storeCfg)
 	toolCallLedgerStore := buildToolCallLedgerStore(storeCfg)
+	runtimeOutputSQLStore := buildRuntimeOutputSQLStore(storeCfg)
+	runtimeOutputMemoryStore := buildRuntimeOutputStore(storeCfg)
 	evaluationStore := buildEvaluationStore(storeCfg)
 	promptStore := buildPromptStore(storeCfg)
 	cacheStore, cacheRedisClient := bootstrap.BuildCacheStore(cfg.CacheBackend, cfg.CacheRedisURL, cfg.CachePrefix, cfg.CacheDefaultTTL)
@@ -383,6 +385,15 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 			MaxLen: int64(cfg.ChatEventStreamMaxLen),
 			Block:  cfg.ChatEventStreamBlock,
 		}))
+	}
+	if runtimeOutputSQLStore != nil {
+		server.SetStructuredOutputStore(runtimeOutputSQLStore)
+		server.SetChatRunSnapshotStore(runtimeOutputSQLStore)
+		server.SetChatTurnReservationStore(runtimeOutputSQLStore)
+	} else if runtimeOutputMemoryStore != nil {
+		server.SetStructuredOutputStore(runtimeOutputMemoryStore)
+		server.SetChatRunSnapshotStore(runtimeOutputMemoryStore)
+		server.SetChatTurnReservationStore(runtimeOutputMemoryStore)
 	}
 	server.SetAuthService(authService)
 	server.SetAuditLogger(buildAuditLogger(storeCfg))

@@ -55,6 +55,36 @@ type MemoryService interface {
 	PruneBefore(ctx context.Context, cutoff time.Time) (int, error)
 }
 
+type MemoryRecallTraceStore interface {
+	RecordMemoryRecallTrace(ctx context.Context, trace MemoryRecallTrace) error
+	ListMemoryRecallTraces(ctx context.Context, userID, sessionID string, limit int) ([]MemoryRecallTrace, error)
+}
+
+type MemoryRecallTrace struct {
+	ID                   string            `json:"id"`
+	UserID               string            `json:"user_id,omitempty"`
+	SessionID            string            `json:"session_id,omitempty"`
+	TriggerReason        string            `json:"trigger_reason"`
+	Query                string            `json:"query,omitempty"`
+	QueryHash            string            `json:"query_hash,omitempty"`
+	OriginalQuery        string            `json:"original_query,omitempty"`
+	RewrittenQuery       string            `json:"rewritten_query,omitempty"`
+	QueryRewriteUsed     bool              `json:"query_rewrite_used,omitempty"`
+	QueryRewriteReason   string            `json:"query_rewrite_reason,omitempty"`
+	QueryRewriteDegraded bool              `json:"query_rewrite_degraded,omitempty"`
+	MemoryItemIDs        []string          `json:"memory_item_ids,omitempty"`
+	EpisodeIDs           []string          `json:"episode_ids,omitempty"`
+	SourceRefs           []MemorySourceRef `json:"source_refs,omitempty"`
+	MemoryChars          int               `json:"memory_chars,omitempty"`
+	EpisodeChars         int               `json:"episode_chars,omitempty"`
+	Injected             bool              `json:"injected"`
+	Degraded             bool              `json:"degraded"`
+	DegradedReason       string            `json:"degraded_reason,omitempty"`
+	LatencyMS            int64             `json:"latency_ms,omitempty"`
+	Metadata             map[string]any    `json:"metadata,omitempty"`
+	CreatedAt            time.Time         `json:"created_at"`
+}
+
 type SavedMemoryDeletionService interface {
 	DeleteSavedMemory(ctx context.Context, userID string) error
 }
@@ -405,14 +435,18 @@ type LiveClientStream interface {
 }
 
 type ChatRequest struct {
-	UserID           string
-	SessionID        string
-	Content          string
-	AttachmentIDs    []string
-	AttachmentURLs   []ChatAttachmentURL
-	ThinkingMode     bool
-	AgentMode        string
-	ConnectorContext []string
+	UserID                   string
+	SessionID                string
+	RunID                    string
+	IdempotencyKey           string
+	ClientUserMessageID      string
+	ClientAssistantMessageID string
+	Content                  string
+	AttachmentIDs            []string
+	AttachmentURLs           []ChatAttachmentURL
+	ThinkingMode             bool
+	AgentMode                string
+	ConnectorContext         []string
 }
 
 type ChatAttachmentURL struct {
@@ -632,6 +666,7 @@ type MemoryRecallConfig struct {
 	IntentClassifierEnabled      bool
 	IntentClassifierThreshold    float64
 	IntentClassifierContextTurns int
+	QueryRewriteEnabled          bool
 	LLMTriggerEnabled            bool
 	LLMTriggerTimeout            time.Duration
 }

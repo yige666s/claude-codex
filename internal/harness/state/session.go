@@ -42,34 +42,35 @@ const (
 )
 
 type Message struct {
-	ID               string                     `json:"id,omitempty"`
-	SessionID        string                     `json:"session_id,omitempty"`
-	UserID           string                     `json:"user_id,omitempty"`
-	SeqNo            int64                      `json:"seq_no,omitempty"`
-	ParentID         string                     `json:"parent_id,omitempty"`
-	Role             string                     `json:"role"`
-	ContentType      string                     `json:"content_type,omitempty"`
-	Content          string                     `json:"content,omitempty"`
-	ContentParts     []publictypes.ContentBlock `json:"content_parts,omitempty"`
-	ContentBlocks    []publictypes.ContentBlock `json:"content_blocks,omitempty"`
-	Attachments      []MessageAttachment        `json:"attachments,omitempty"`
-	ToolName         string                     `json:"tool_name,omitempty"`
-	ToolCallID       string                     `json:"tool_call_id,omitempty"` // Anthropic tool_use ID
-	ToolInput        json.RawMessage            `json:"tool_input,omitempty"`
-	ToolOutput       string                     `json:"tool_output,omitempty"`
-	ToolCalls        []ToolCall                 `json:"tool_calls,omitempty"` // For assistant messages with tool_use
-	PromptTokens     int                        `json:"prompt_tokens,omitempty"`
-	CompletionTokens int                        `json:"completion_tokens,omitempty"`
-	Status           int                        `json:"status,omitempty"`
-	IsContextUsed    bool                       `json:"is_context_used,omitempty"`
-	ModelID          string                     `json:"model_id,omitempty"`
-	RunID            string                     `json:"run_id,omitempty"`
-	ArchiveURI       string                     `json:"archive_uri,omitempty"`
-	ArchiveChecksum  string                     `json:"archive_checksum,omitempty"`
-	ArchivedAt       *time.Time                 `json:"archived_at,omitempty"`
-	CreatedAt        time.Time                  `json:"created_at"`
-	UpdatedAt        time.Time                  `json:"updated_at,omitempty"`
-	Hidden           bool                       `json:"hidden,omitempty"` // hidden messages are not shown in the TUI
+	ID                string                     `json:"id,omitempty"`
+	SessionID         string                     `json:"session_id,omitempty"`
+	UserID            string                     `json:"user_id,omitempty"`
+	SeqNo             int64                      `json:"seq_no,omitempty"`
+	ParentID          string                     `json:"parent_id,omitempty"`
+	Role              string                     `json:"role"`
+	ContentType       string                     `json:"content_type,omitempty"`
+	Content           string                     `json:"content,omitempty"`
+	ContentParts      []publictypes.ContentBlock `json:"content_parts,omitempty"`
+	ContentBlocks     []publictypes.ContentBlock `json:"content_blocks,omitempty"`
+	Attachments       []MessageAttachment        `json:"attachments,omitempty"`
+	ToolName          string                     `json:"tool_name,omitempty"`
+	ToolCallID        string                     `json:"tool_call_id,omitempty"` // Anthropic tool_use ID
+	ToolInput         json.RawMessage            `json:"tool_input,omitempty"`
+	ToolOutput        string                     `json:"tool_output,omitempty"`
+	ToolCalls         []ToolCall                 `json:"tool_calls,omitempty"` // For assistant messages with tool_use
+	StructuredOutputs []json.RawMessage          `json:"structured_outputs,omitempty"`
+	PromptTokens      int                        `json:"prompt_tokens,omitempty"`
+	CompletionTokens  int                        `json:"completion_tokens,omitempty"`
+	Status            int                        `json:"status,omitempty"`
+	IsContextUsed     bool                       `json:"is_context_used,omitempty"`
+	ModelID           string                     `json:"model_id,omitempty"`
+	RunID             string                     `json:"run_id,omitempty"`
+	ArchiveURI        string                     `json:"archive_uri,omitempty"`
+	ArchiveChecksum   string                     `json:"archive_checksum,omitempty"`
+	ArchivedAt        *time.Time                 `json:"archived_at,omitempty"`
+	CreatedAt         time.Time                  `json:"created_at"`
+	UpdatedAt         time.Time                  `json:"updated_at,omitempty"`
+	Hidden            bool                       `json:"hidden,omitempty"` // hidden messages are not shown in the TUI
 }
 
 type ToolCall struct {

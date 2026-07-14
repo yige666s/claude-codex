@@ -1197,6 +1197,23 @@ func TestRuntimeInjectsRelevantMemoryEpisodeTransiently(t *testing.T) {
 	if episode.RecallCount == 0 {
 		t.Fatalf("expected recall count to be recorded, got %#v", episode)
 	}
+	traces, err := runtime.ListMemoryRecallTraces(ctx, "alice", session.ID, 10)
+	if err != nil {
+		t.Fatalf("ListMemoryRecallTraces() error = %v", err)
+	}
+	if len(traces) == 0 || !containsString(traces[0].EpisodeIDs, "ep_navicat") {
+		t.Fatalf("expected episodic recall trace, got %#v", traces)
+	}
+	foundEpisodeSource := false
+	for _, ref := range traces[0].SourceRefs {
+		if ref.Kind == "memory_episode" && ref.ID == "ep_navicat" {
+			foundEpisodeSource = true
+			break
+		}
+	}
+	if !foundEpisodeSource {
+		t.Fatalf("expected memory_episode source ref, got %#v", traces[0].SourceRefs)
+	}
 }
 
 func TestRuntimeSkipsTrivialTurnMemoryRecall(t *testing.T) {
@@ -1236,6 +1253,49 @@ func TestRuntimeRecallsMemoryForExplicitPastContextQuery(t *testing.T) {
 	}
 	if !messagesContainRuntimeContext(session.Messages, "wrong key") {
 		t.Fatalf("expected recalled memory context, got %#v", session.Messages)
+	}
+	traces, err := runtime.ListMemoryRecallTraces(ctx, "alice", session.ID, 10)
+	if err != nil {
+		t.Fatalf("ListMemoryRecallTraces() error = %v", err)
+	}
+	if len(traces) != 1 {
+		t.Fatalf("expected one memory recall trace, got %#v", traces)
+	}
+	if !traces[0].Injected || traces[0].MemoryChars == 0 || traces[0].QueryHash == "" {
+		t.Fatalf("trace should record injected memory and query hash, got %#v", traces[0])
+	}
+	if traces[0].TriggerReason == "" || traces[0].TriggerReason == memoryRecallReasonNoRecall {
+		t.Fatalf("trace should record recall trigger reason, got %#v", traces[0])
+	}
+}
+
+func TestRuntimeMemoryRecallUsesQueryRewriter(t *testing.T) {
+	ctx := context.Background()
+	memory := &countingMemoryService{content: "# Memory\n\n- User likes quiet OOTD photo spots near rivers."}
+	runtime := NewRuntime(RuntimeConfig{}, NewFileSessionStore(t.TempDir()), memory, nil, nil)
+	runtime.SetMemoryQueryRewriter(staticMemoryQueryRewriter{result: MemoryQueryRewriteResult{
+		Query:  "用户个人资料 当前位置 城市 OOTD 打卡 周边推荐",
+		Used:   true,
+		Reason: "test_rewrite",
+	}})
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("我想明天进行OOTD打卡，给我推荐一些周围的好去处")
+
+	if err := runtime.injectTurnMemoryContexts(ctx, "alice", session, "我想明天进行OOTD打卡，给我推荐一些周围的好去处"); err != nil {
+		t.Fatalf("injectTurnMemoryContexts() error = %v", err)
+	}
+	if !strings.Contains(memory.LastContextQuery(), "用户个人资料") {
+		t.Fatalf("LoadContext should receive rewritten query, got %q", memory.LastContextQuery())
+	}
+	if !messagesContainRuntimeContext(session.Messages, "Private Memory Context") {
+		t.Fatalf("expected private memory context wrapper, got %#v", session.Messages)
+	}
+	traces, err := runtime.ListMemoryRecallTraces(ctx, "alice", session.ID, 10)
+	if err != nil {
+		t.Fatalf("ListMemoryRecallTraces() error = %v", err)
+	}
+	if len(traces) != 1 || !traces[0].QueryRewriteUsed || traces[0].QueryRewriteReason != "test_rewrite" || !strings.Contains(traces[0].RewrittenQuery, "用户个人资料") {
+		t.Fatalf("expected query rewrite trace, got %#v", traces)
 	}
 }
 
@@ -7662,15 +7722,17 @@ type blockingMemoryService struct {
 }
 
 type countingMemoryService struct {
-	mu      sync.Mutex
-	calls   int
-	content string
+	mu        sync.Mutex
+	calls     int
+	content   string
+	lastQuery string
 }
 
-func (s *countingMemoryService) LoadContext(context.Context, string, *state.Session) (string, error) {
+func (s *countingMemoryService) LoadContext(_ context.Context, _ string, session *state.Session) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls++
+	s.lastQuery = lastVisibleUserMessage(session)
 	return s.content, nil
 }
 
@@ -7702,6 +7764,24 @@ func (s *countingMemoryService) LoadContextCalls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls
+}
+
+func (s *countingMemoryService) LastContextQuery() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastQuery
+}
+
+type staticMemoryQueryRewriter struct {
+	result MemoryQueryRewriteResult
+	err    error
+}
+
+func (r staticMemoryQueryRewriter) RewriteMemoryRecallQuery(context.Context, MemoryQueryRewriteInput) (MemoryQueryRewriteResult, error) {
+	if r.err != nil {
+		return MemoryQueryRewriteResult{}, r.err
+	}
+	return r.result, nil
 }
 
 func newBlockingMemoryService() *blockingMemoryService {

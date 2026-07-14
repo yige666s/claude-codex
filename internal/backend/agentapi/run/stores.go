@@ -219,6 +219,28 @@ func buildToolCallLedgerStore(cfg storeConfig) agentruntime.ToolCallLedgerStore 
 	return agentruntime.NewMemoryToolCallLedgerStore()
 }
 
+func buildRuntimeOutputStore(cfg storeConfig) *agentruntime.MemoryRuntimeOutputStore {
+	if !strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		return agentruntime.NewMemoryRuntimeOutputStore()
+	}
+	return nil
+}
+
+func buildRuntimeOutputSQLStore(cfg storeConfig) *agentruntime.SQLRuntimeOutputStore {
+	if !strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		return nil
+	}
+	db := openSQLDB(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	dialect := agentruntime.ParseSQLDialect(startupconfig.FirstNonEmpty(cfg.sqlDialect, cfg.sqlDriver))
+	store := agentruntime.NewSQLRuntimeOutputStoreWithDialect(db, dialect)
+	if err := store.Init(ctx); err != nil {
+		logFatalf("init sql runtime output store: %v", err)
+	}
+	return store
+}
+
 func buildEvaluationStore(cfg storeConfig) agentruntime.EvaluationStore {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

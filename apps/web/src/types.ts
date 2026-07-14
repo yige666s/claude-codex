@@ -29,14 +29,37 @@ export type AuthRegistrationPending = {
 };
 
 export type Message = {
+  id?: string;
+  session_id?: string;
+  run_id?: string;
   role: "user" | "assistant" | "tool" | string;
   message_index?: number;
   content?: string;
+  structured_outputs?: StructuredOutput[];
   attachments?: MessageAttachment[];
   tool_name?: string;
   tool_output?: string;
   created_at?: string;
   hidden?: boolean;
+};
+
+export type StructuredOutput = {
+  id?: string;
+  version?: string;
+  kind?: "card" | "artifact_card" | "choice_set" | "progress" | "diagnostic" | string;
+  title?: string;
+  summary?: string;
+  items?: unknown[];
+  actions?: Array<{
+    id?: string;
+    label?: string;
+    intent?: string;
+    payload?: Record<string, unknown>;
+    requires_confirmation?: boolean;
+  }>;
+  artifact_refs?: Array<Record<string, unknown>>;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown;
 };
 
 export type AgentActivityItem = {
@@ -997,6 +1020,7 @@ export type RuntimeEvent = {
   job?: Job;
   job_reason?: string;
   data?: unknown;
+  structured_output?: StructuredOutput;
 };
 
 export type ChatRunSummary = {

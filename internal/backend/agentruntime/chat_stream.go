@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ const DefaultChatStreamBlockRead = 10 * time.Second
 
 type ChatStreamStore interface {
 	CreateRun(ctx context.Context, userID, sessionID string) (*ChatRunSummary, error)
+	CreateRunWithID(ctx context.Context, userID, sessionID, runID string) (*ChatRunSummary, error)
 	Append(ctx context.Context, runID, userID, sessionID string, event Event) (*ChatStreamEvent, error)
 	ListAfter(ctx context.Context, userID, runID, afterID string, limit int) ([]*ChatStreamEvent, bool, error)
 	BlockRead(ctx context.Context, userID, runID, afterID string, limit int, block time.Duration) ([]*ChatStreamEvent, bool, error)
@@ -68,6 +70,10 @@ func NewChatRunID() string {
 }
 
 func (s *MemoryChatStreamStore) CreateRun(ctx context.Context, userID, sessionID string) (*ChatRunSummary, error) {
+	return s.CreateRunWithID(ctx, userID, sessionID, NewChatRunID())
+}
+
+func (s *MemoryChatStreamStore) CreateRunWithID(ctx context.Context, userID, sessionID, runID string) (*ChatRunSummary, error) {
 	if s == nil {
 		return nil, fmt.Errorf("chat stream store is not configured")
 	}
@@ -76,7 +82,10 @@ func (s *MemoryChatStreamStore) CreateRun(ctx context.Context, userID, sessionID
 		return nil, ctx.Err()
 	default:
 	}
-	runID := NewChatRunID()
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		runID = NewChatRunID()
+	}
 	now := time.Now().UTC()
 	userID = strings.TrimSpace(userID)
 	sessionID = strings.TrimSpace(sessionID)
@@ -337,13 +346,23 @@ func chatStreamTerminalStatus(eventType string) string {
 }
 
 type resumableChatSink struct {
-	runID     string
-	userID    string
-	sessionID string
-	store     ChatStreamStore
-	client    EventSink
-	failed    bool
-	terminal  bool
+	runID             string
+	userID            string
+	sessionID         string
+	store             ChatStreamStore
+	structuredOutputs StructuredOutputStore
+	snapshots         ChatRunSnapshotStore
+	reservations      ChatTurnReservationStore
+	client            EventSink
+	failed            bool
+	terminal          bool
+	eventCount        int
+	structuredCount   int
+	artifactCount     int
+	finalContent      string
+	finalMessageID    string
+	lastEventID       string
+	lastError         string
 }
 
 func (s *resumableChatSink) Send(ctx context.Context, event Event) error {
@@ -354,8 +373,29 @@ func (s *resumableChatSink) Send(ctx context.Context, event Event) error {
 	if err != nil {
 		return err
 	}
+	s.eventCount++
+	s.lastEventID = record.ID
+	if event.Type == "message" && event.Role == "assistant" {
+		s.finalContent = event.Content
+		s.finalMessageID = event.ID
+	}
+	if event.Type == "artifact" || event.Type == "artifact_created" || event.Type == "media.generated" {
+		s.artifactCount++
+	}
+	if event.Type == "error" {
+		s.lastError = event.Error
+	}
+	if output, ok := structuredOutputFromEvent(record.Event, s.userID, s.sessionID, s.runID); ok {
+		s.structuredCount++
+		if s.structuredOutputs != nil {
+			if _, err := s.structuredOutputs.SaveStructuredOutput(ctx, output); err != nil {
+				return err
+			}
+		}
+	}
 	if chatStreamTerminal(record.Type) {
 		s.terminal = true
+		s.saveTerminalSnapshot(ctx, record.Type)
 	}
 	if s.client == nil || s.failed {
 		return nil
@@ -370,4 +410,30 @@ func (s *resumableChatSink) Send(ctx context.Context, event Event) error {
 		s.failed = true
 	}
 	return nil
+}
+
+func (s *resumableChatSink) saveTerminalSnapshot(ctx context.Context, terminalType string) {
+	if s == nil {
+		return
+	}
+	status := chatStreamTerminalStatus(terminalType)
+	if s.snapshots != nil {
+		_ = s.snapshots.SaveChatRunSnapshot(ctx, ChatRunSnapshot{
+			RunID:                 s.runID,
+			UserID:                s.userID,
+			SessionID:             s.sessionID,
+			Status:                status,
+			FinalMessageID:        s.finalMessageID,
+			FinalContent:          s.finalContent,
+			EventCount:            s.eventCount,
+			StructuredOutputCount: s.structuredCount,
+			ArtifactCount:         s.artifactCount,
+			Error:                 s.lastError,
+			LastEventID:           s.lastEventID,
+			Payload:               json.RawMessage(`{}`),
+		})
+	}
+	if s.reservations != nil {
+		_ = s.reservations.UpdateChatTurnReservationStatus(ctx, s.userID, s.sessionID, s.runID, status)
+	}
 }

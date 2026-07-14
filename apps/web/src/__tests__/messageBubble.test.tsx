@@ -42,4 +42,29 @@ describe("MessageBubble", () => {
     expect(html).toContain("images.jpeg");
     expect(html).not.toContain("Attached files:");
   });
+
+  it("renders structured outputs on assistant messages", () => {
+    const html = renderToStaticMarkup(
+      <MessageBubble
+        api={api}
+        message={{
+          role: "assistant",
+          content: "",
+          structured_outputs: [{
+            id: "so-1",
+            version: "agentapi_structured_output.v1",
+            kind: "artifact_card",
+            title: "Draft ready",
+            summary: "Generated a project brief",
+            artifact_refs: [{ id: "artifact-1", filename: "brief.md" }],
+            actions: [{ id: "open", label: "Open", intent: "open_artifact" }]
+          }]
+        }}
+      />
+    );
+
+    expect(html).toContain("Draft ready");
+    expect(html).toContain("brief.md");
+    expect(html).toContain("Open");
+  });
 });

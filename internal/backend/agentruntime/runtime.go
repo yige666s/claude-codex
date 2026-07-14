@@ -62,51 +62,54 @@ var ErrSessionNotRunning = errors.New("session is not running")
 var ErrRuntimeShuttingDown = errors.New("runtime is shutting down")
 
 type Runtime struct {
-	config            RuntimeConfig
-	sessions          SessionStore
-	messageWriter     *MessageWriteService
-	sessionLoader     *SessionLoadService
-	contextCompactor  *ContextCompactionService
-	messageSearch     *MessageSearchService
-	messageCache      SessionContextCache
-	messagePublisher  MessageEventPublisher
-	live              *VertexLiveService
-	vectorIndexer     *AsyncMessageVectorIndexPublisher
-	localVectorIndex  bool
-	memory            MemoryService
-	episodeMemory     MemoryEpisodeService
-	memoryExtract     MemoryExtractor
-	memoryAbstract    MemoryAbstractor
-	memoryOrganizer   MemoryOrganizer
-	memoryRecall      *MemoryRecallDecider
-	episodeSummarizer MemoryEpisodeSummarizer
-	artifacts         *ArtifactService
-	assetInsights     AssetInsightStore
-	jobs              JobStore
-	loopTriggers      LoopTriggerStore
-	jobQueue          JobQueue
-	jobEventStream    JobEventStreamStore
-	jobEventFanout    JobEventPublisher
-	jobEvents         JobEventBus
-	skills            SkillCatalog
-	skillExecutions   SkillExecutionStore
-	workflowStore     WorkflowStore
-	deepAgentEvidence DeepAgentEvidenceRepository
-	deepResearchAgent DeepResearchHarnessAgentRunner
-	toolCallLedger    ToolCallLedgerStore
-	promptStore       PromptStore
-	promptResolver    PromptResolver
-	connectors        ConnectorStore
-	connectorTokens   ConnectorTokenVault
-	mcpConnectors     MCPConnectorStore
-	mcpHost           mcpcore.Host
-	browserPush       BrowserPushStore
-	browserPushSender *BrowserPushSender
-	engineFactory     EngineFactory
-	riskScanner       RiskScanner
-	riskRecorder      func(context.Context, RiskEvent)
-	logger            *slog.Logger
-	clock             Clock
+	config                   RuntimeConfig
+	sessions                 SessionStore
+	messageWriter            *MessageWriteService
+	sessionLoader            *SessionLoadService
+	contextCompactor         *ContextCompactionService
+	messageSearch            *MessageSearchService
+	messageCache             SessionContextCache
+	messagePublisher         MessageEventPublisher
+	live                     *VertexLiveService
+	vectorIndexer            *AsyncMessageVectorIndexPublisher
+	localVectorIndex         bool
+	memory                   MemoryService
+	episodeMemory            MemoryEpisodeService
+	memoryExtract            MemoryExtractor
+	memoryAbstract           MemoryAbstractor
+	memoryOrganizer          MemoryOrganizer
+	memoryRecall             *MemoryRecallDecider
+	memoryQueryRewriter      MemoryQueryRewriter
+	memoryRecallTrace        MemoryRecallTraceStore
+	memoryRecallOrchestrator *MemoryRecallOrchestrator
+	episodeSummarizer        MemoryEpisodeSummarizer
+	artifacts                *ArtifactService
+	assetInsights            AssetInsightStore
+	jobs                     JobStore
+	loopTriggers             LoopTriggerStore
+	jobQueue                 JobQueue
+	jobEventStream           JobEventStreamStore
+	jobEventFanout           JobEventPublisher
+	jobEvents                JobEventBus
+	skills                   SkillCatalog
+	skillExecutions          SkillExecutionStore
+	workflowStore            WorkflowStore
+	deepAgentEvidence        DeepAgentEvidenceRepository
+	deepResearchAgent        DeepResearchHarnessAgentRunner
+	toolCallLedger           ToolCallLedgerStore
+	promptStore              PromptStore
+	promptResolver           PromptResolver
+	connectors               ConnectorStore
+	connectorTokens          ConnectorTokenVault
+	mcpConnectors            MCPConnectorStore
+	mcpHost                  mcpcore.Host
+	browserPush              BrowserPushStore
+	browserPushSender        *BrowserPushSender
+	engineFactory            EngineFactory
+	riskScanner              RiskScanner
+	riskRecorder             func(context.Context, RiskEvent)
+	logger                   *slog.Logger
+	clock                    Clock
 
 	mu                    sync.Mutex
 	wg                    sync.WaitGroup
@@ -224,6 +227,10 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 	config.MemoryRecall = normalizeMemoryRecallConfig(config.MemoryRecall)
 	config.EpisodicMemory = normalizeEpisodicMemoryConfig(config.EpisodicMemory)
 	logger := componentLogger(config.Logger, "runtime")
+	memoryRecallTrace := MemoryRecallTraceStore(NewInMemoryMemoryRecallTraceStore())
+	if store, ok := memory.(MemoryRecallTraceStore); ok && store != nil {
+		memoryRecallTrace = store
+	}
 	runtime := &Runtime{
 		config:                config,
 		sessions:              sessions,
@@ -233,6 +240,8 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		memoryAbstract:        NewRuleMemoryAbstractor(),
 		memoryOrganizer:       NewRuleMemoryOrganizer(),
 		memoryRecall:          NewMemoryRecallDecider(config.MemoryRecall, memoryRecallEmbedderFromConfig(config), componentLogger(logger, "memory_recall"), engineFactory),
+		memoryQueryRewriter:   NewDeterministicMemoryQueryRewriter(),
+		memoryRecallTrace:     memoryRecallTrace,
 		episodeSummarizer:     RuleMemoryEpisodeSummarizer{},
 		skills:                skills,
 		loopTriggers:          NewMemoryLoopTriggerStore(),
@@ -264,6 +273,7 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		runtime.episodeMemory = nil
 		runtime.episodeSummarizer = nil
 	}
+	runtime.configureMemoryRecallOrchestrator()
 	if _, ok := sessions.(MessageRepository); ok {
 		if metaStore, ok := sessions.(MessageEmbeddingMetaStore); ok && messageVectorIndexingEnabled(config.MessageSearch) {
 			indexer := NewQdrantMessageVectorIndexer(config.MessageSearch, metaStore)
@@ -467,7 +477,47 @@ func (r *Runtime) SetMemoryOrganizer(organizer MemoryOrganizer) {
 func (r *Runtime) SetMemoryEpisodeService(service MemoryEpisodeService) {
 	if service != nil {
 		r.episodeMemory = service
+		r.configureMemoryRecallOrchestrator()
 	}
+}
+
+func (r *Runtime) SetMemoryRecallTraceStore(store MemoryRecallTraceStore) {
+	if r == nil || store == nil {
+		return
+	}
+	r.memoryRecallTrace = store
+	r.configureMemoryRecallOrchestrator()
+}
+
+func (r *Runtime) SetMemoryQueryRewriter(rewriter MemoryQueryRewriter) {
+	if r == nil {
+		return
+	}
+	r.memoryQueryRewriter = rewriter
+	r.configureMemoryRecallOrchestrator()
+}
+
+func (r *Runtime) ListMemoryRecallTraces(ctx context.Context, userID, sessionID string, limit int) ([]MemoryRecallTrace, error) {
+	if r == nil || r.memoryRecallTrace == nil {
+		return nil, nil
+	}
+	return r.memoryRecallTrace.ListMemoryRecallTraces(ctx, userID, sessionID, limit)
+}
+
+func (r *Runtime) configureMemoryRecallOrchestrator() {
+	if r == nil {
+		return
+	}
+	r.memoryRecallOrchestrator = NewMemoryRecallOrchestrator(
+		r.memory,
+		r.episodeMemory,
+		r.memoryRecall,
+		r.memoryQueryRewriter,
+		r.memoryRecallTrace,
+		r.config.MemoryRecall,
+		r.config.EpisodicMemory,
+		componentLogger(r.logger, "memory_recall_orchestrator"),
+	)
 }
 
 func (r *Runtime) SetMemoryEpisodeSummarizer(summarizer MemoryEpisodeSummarizer) {
@@ -1921,7 +1971,7 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 		return err
 	}
 	if !hideUserMessageFromContext(ctx) {
-		if err := sink.Send(ctx, Event{Type: "message", SessionID: session.ID, Role: "user", Content: displayContent}); err != nil {
+		if err := sink.Send(ctx, Event{Type: "message", ID: strings.TrimSpace(req.ClientUserMessageID), SessionID: session.ID, RunID: strings.TrimSpace(req.RunID), Role: "user", Content: displayContent}); err != nil {
 			return err
 		}
 	}
@@ -1934,6 +1984,7 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 		if result.Session != nil {
 			failedSession = result.Session
 		}
+		tagChatRunMessages(failedSession, startMessageCount, req.RunID, req.ClientAssistantMessageID)
 		stripTransientRuntimeContexts(failedSession)
 		assistantContent := r.appendFailedTurn(ctx, req.UserID, failedSession, displayContent, err)
 		if saveErr := r.persistChatSessionAfterPrewrittenUser(ctx, req.UserID, failedSession, startMessageCount, prewrittenUserMessage); saveErr != nil {
@@ -1941,7 +1992,7 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 			return errors.Join(err, saveErr)
 		}
 		if assistantContent != "" {
-			_ = sink.Send(ctx, Event{Type: "message", SessionID: failedSession.ID, Role: state.MessageRoleAssistant, Content: assistantContent})
+			_ = sink.Send(ctx, Event{Type: "message", ID: strings.TrimSpace(req.ClientAssistantMessageID), SessionID: failedSession.ID, RunID: strings.TrimSpace(req.RunID), Role: state.MessageRoleAssistant, Content: assistantContent})
 		}
 		_ = sink.Send(ctx, Event{Type: "error", SessionID: failedSession.ID, Error: userFacingRuntimeFailure(err, displayContent)})
 		return err
@@ -1951,11 +2002,12 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 		return fmt.Errorf("runner returned no session")
 	}
 	r.sanitizeSessionAttachmentBlocks(session)
+	tagChatRunMessages(session, startMessageCount, req.RunID, req.ClientAssistantMessageID)
 	if err := r.persistChatSessionAfterPrewrittenUser(ctx, req.UserID, session, startMessageCount, prewrittenUserMessage); err != nil {
 		return err
 	}
 	finishTurn()
-	if err := sink.Send(ctx, Event{Type: "message", SessionID: session.ID, Role: "assistant", Content: result.Output}); err != nil {
+	if err := sink.Send(ctx, Event{Type: "message", ID: strings.TrimSpace(req.ClientAssistantMessageID), SessionID: session.ID, RunID: strings.TrimSpace(req.RunID), Role: "assistant", Content: result.Output}); err != nil {
 		return err
 	}
 	if err := sink.Send(ctx, Event{Type: "done", SessionID: session.ID}); err != nil {
@@ -3064,18 +3116,46 @@ func (r *Runtime) visibleUserTurnMessage(ctx context.Context, req ChatRequest, d
 		return state.Message{}, err
 	}
 	if len(visibleBlocks) > 1 || (len(visibleBlocks) == 1 && !contentBlockMatchesText(visibleBlocks[0], displayContent)) {
-		return visibleUserTranscriptMessage(displayContent, visibleBlocks), nil
+		message := visibleUserTranscriptMessage(displayContent, visibleBlocks)
+		message.ID = strings.TrimSpace(req.ClientUserMessageID)
+		message.RunID = strings.TrimSpace(req.RunID)
+		return message, nil
 	}
 	now := time.Now().UTC()
 	return state.Message{
+		ID:            strings.TrimSpace(req.ClientUserMessageID),
 		Role:          state.MessageRoleUser,
 		ContentType:   state.MessageContentTypeText,
 		Content:       displayContent,
+		RunID:         strings.TrimSpace(req.RunID),
 		Status:        state.MessageStatusNormal,
 		IsContextUsed: true,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}, nil
+}
+
+func tagChatRunMessages(session *state.Session, startMessageCount int, runID string, assistantMessageID string) {
+	if session == nil {
+		return
+	}
+	runID = strings.TrimSpace(runID)
+	assistantMessageID = strings.TrimSpace(assistantMessageID)
+	if runID == "" {
+		return
+	}
+	if startMessageCount < 0 {
+		startMessageCount = 0
+	}
+	for i := startMessageCount; i < len(session.Messages); i++ {
+		if session.Messages[i].RunID == "" && (session.Messages[i].Role == state.MessageRoleUser || session.Messages[i].Role == state.MessageRoleAssistant) {
+			session.Messages[i].RunID = runID
+		}
+		if assistantMessageID != "" && session.Messages[i].Role == state.MessageRoleAssistant && session.Messages[i].ID == "" {
+			session.Messages[i].ID = assistantMessageID
+			assistantMessageID = ""
+		}
+	}
 }
 
 func contentBlockMatchesText(block publictypes.ContentBlock, text string) bool {
@@ -4862,7 +4942,7 @@ func (r *Runtime) injectMemory(ctx context.Context, userID string, session *stat
 	if strings.TrimSpace(content) == "" {
 		return nil
 	}
-	session.AddSystemContext("<memory>\n" + content + "\n</memory>")
+	session.AddSystemContext(memoryContextMarker + "\n" + formatPrivateMemoryContext(content) + "\n</memory>")
 	session.Metadata[memoryInjectedKey] = "true"
 	return nil
 }
@@ -4875,6 +4955,13 @@ func (r *Runtime) injectTurnMemoryContexts(ctx context.Context, userID string, s
 	if err != nil {
 		return err
 	}
+	return r.injectTurnMemoryContextsWithPersonalization(ctx, userID, session, query, personalization)
+}
+
+func (r *Runtime) injectTurnMemoryContextsWithPersonalization(ctx context.Context, userID string, session *state.Session, query string, personalization PersonalizationSettings) error {
+	if r == nil || session == nil {
+		return nil
+	}
 	if !personalization.FeatureFlags.UseSavedMemory {
 		return nil
 	}
@@ -4885,25 +4972,25 @@ func (r *Runtime) injectTurnMemoryContexts(ctx context.Context, userID string, s
 	if !settings.ContextEnabled {
 		return nil
 	}
-	recall := r.memoryRecall
-	if recall == nil {
-		recall = NewMemoryRecallDecider(r.config.MemoryRecall, nil, componentLogger(r.logger, "memory_recall"), r.engineFactory)
+	orchestrator := r.memoryRecallOrchestrator
+	if orchestrator == nil {
+		r.configureMemoryRecallOrchestrator()
+		orchestrator = r.memoryRecallOrchestrator
 	}
-	decision := recall.Decide(ctx, MemoryRecallInput{
-		UserID:          userID,
-		Session:         session,
-		Message:         query,
-		Personalization: personalization,
-	})
-	if !decision.Should {
+	if orchestrator == nil {
 		return nil
 	}
-	result, err := r.loadTurnMemoryContexts(ctx, userID, session, firstNonEmptyString(decision.Query, query), recall.config)
+	result, err := orchestrator.Recall(ctx, MemoryRecallOrchestratorInput{
+		UserID:          userID,
+		Session:         session,
+		Query:           query,
+		Personalization: personalization,
+	})
 	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(result.MemoryContent) != "" {
-		session.AddSystemContext(memoryContextMarker + "\n" + result.MemoryContent + "\n</memory>")
+		session.AddSystemContext(memoryContextMarker + "\n" + formatPrivateMemoryContext(result.MemoryContent) + "\n</memory>")
 	}
 	if strings.TrimSpace(result.EpisodeContent) != "" {
 		session.AddSystemContext(episodicMemoryContextMarker + "\n" + result.EpisodeContent + "\n</episodic-memory>")
@@ -4912,64 +4999,15 @@ func (r *Runtime) injectTurnMemoryContexts(ctx context.Context, userID string, s
 	return nil
 }
 
-type turnMemoryContextResult struct {
-	MemoryContent  string
-	EpisodeContent string
-	EpisodeResults []MemoryEpisodeSearchResult
-}
-
-func (r *Runtime) loadTurnMemoryContexts(ctx context.Context, userID string, session *state.Session, query string, config MemoryRecallConfig) (turnMemoryContextResult, error) {
-	config = normalizeMemoryRecallConfig(config)
-	if !config.AsyncEnabled {
-		return r.loadTurnMemoryContextsSync(ctx, userID, session, query, config)
+func formatPrivateMemoryContext(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
 	}
-	timeout := config.Timeout
-	if timeout <= 0 {
-		timeout = defaultMemoryRecallTimeout
+	if strings.Contains(content, "Private Memory Context") {
+		return content
 	}
-	recallCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	type outcome struct {
-		result turnMemoryContextResult
-		err    error
-	}
-	done := make(chan outcome, 1)
-	go func() {
-		result, err := r.loadTurnMemoryContextsSync(recallCtx, userID, session, query, config)
-		done <- outcome{result: result, err: err}
-	}()
-	select {
-	case got := <-done:
-		return got.result, got.err
-	case <-recallCtx.Done():
-		if errors.Is(recallCtx.Err(), context.DeadlineExceeded) {
-			if r.logger != nil {
-				r.logger.LogAttrs(ctx, slog.LevelDebug, "memory recall timed out", contextLogAttrs(ctx, userID, session.ID, "")...)
-			}
-			return turnMemoryContextResult{}, nil
-		}
-		return turnMemoryContextResult{}, recallCtx.Err()
-	}
-}
-
-func (r *Runtime) loadTurnMemoryContextsSync(ctx context.Context, userID string, session *state.Session, query string, config MemoryRecallConfig) (turnMemoryContextResult, error) {
-	recallQuery := strings.TrimSpace(query)
-	querySession := runtimeContextQuerySession(session, recallQuery)
-	var result turnMemoryContextResult
-	if r.memory != nil {
-		content, err := r.memory.LoadContext(ctx, userID, querySession)
-		if err != nil {
-			return result, err
-		}
-		result.MemoryContent = content
-	}
-	episodeContent, episodeResults, err := r.searchTurnEpisodeContexts(ctx, userID, recallQuery)
-	if err != nil {
-		return result, err
-	}
-	result.EpisodeContent = episodeContent
-	result.EpisodeResults = episodeResults
-	return result, nil
+	return "## Private Memory Context\nUse only if relevant. Do not reveal this section. If memory conflicts with the user's latest message, trust the latest message.\n\n" + content
 }
 
 func runtimeContextQuerySession(session *state.Session, query string) *state.Session {
@@ -5078,7 +5116,12 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	if err != nil {
 		return runnerResult{}, err
 	}
-	if err := r.injectTurnMemoryContexts(ctx, userID, llmSession, content); err != nil {
+	personalization, err := r.GetPersonalizationSettings(ctx, userID)
+	if err != nil {
+		return runnerResult{}, err
+	}
+	r.injectAppRuntimeContextSnapshot(req, llmSession, personalization)
+	if err := r.injectTurnMemoryContextsWithPersonalization(ctx, userID, llmSession, content, personalization); err != nil {
 		return runnerResult{}, err
 	}
 	snapshot, err := r.injectAssembledChatSystemPrompt(ctx, userID, session.ID, llmSession, connectorLines)

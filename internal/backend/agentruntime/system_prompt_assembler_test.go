@@ -27,6 +27,7 @@ func TestSystemPromptAssemblerBuildsOrderedSnapshot(t *testing.T) {
 	}
 	session := state.NewSession("")
 	session.AddSystemContext("<personalization>\nPrefer concise Chinese answers.\n</personalization>")
+	session.AddSystemContext(appRuntimeContextMarker + "\n{\"version\":\"agentapi_context.v1\",\"agent_mode\":\"chat\"}\n</app-runtime-context>")
 	session.AddSystemContext(memoryContextMarker + "\nUser likes trail running.\n</memory>")
 
 	snapshot, err := (SystemPromptAssembler{
@@ -53,6 +54,7 @@ func TestSystemPromptAssemblerBuildsOrderedSnapshot(t *testing.T) {
 		"<consumer-security>",
 		"<locale-context>",
 		"<personalization>",
+		"<app-runtime-context>",
 		"<memory>",
 		"<temporal-context>",
 	)
@@ -61,6 +63,9 @@ func TestSystemPromptAssemblerBuildsOrderedSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(snapshot.Content, `cache="long"`) || !strings.Contains(snapshot.Content, `cache="none"`) {
 		t.Fatalf("snapshot should expose segment cache policies: %s", snapshot.Content)
+	}
+	if !stripTransientRuntimeContexts(session) || messagesContainRuntimeContext(session.Messages, appRuntimeContextMarker) {
+		t.Fatalf("app runtime context should be transient, got %#v", session.Messages)
 	}
 }
 

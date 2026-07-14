@@ -30,33 +30,36 @@ import (
 const defaultRateLimitWindow = time.Minute
 
 type Server struct {
-	runtime          *Runtime
-	router           http.Handler
-	auth             Authenticator
-	authService      *AuthService
-	limiter          RateLimitPolicy
-	logger           *slog.Logger
-	upgrader         websocket.Upgrader
-	security         WebSecurityConfig
-	llmStatus        func() LLMGovernanceStatus
-	llmUsage         LLMUsageAdminStore
-	llmConfig        *LLMGovernanceConfigManager
-	metrics          *MetricsRegistry
-	audit            AuditLogger
-	risk             RiskStore
-	riskScanner      RiskScanner
-	evaluation       EvaluationStore
-	evaluationJudge  GoldenJudge
-	promptStore      PromptStore
-	chatStreams      ChatStreamStore
-	instrumentHTTP   func(http.Handler) http.Handler
-	operationLimiter *OperationRateLimiter
-	adminToken       string
-	skillRegistry    SkillRegistryAdminStore
-	readyMu          sync.RWMutex
-	readyChecks      map[string]readinessCheck
-	shutdownOnce     sync.Once
-	shutdownCh       chan struct{}
+	runtime              *Runtime
+	router               http.Handler
+	auth                 Authenticator
+	authService          *AuthService
+	limiter              RateLimitPolicy
+	logger               *slog.Logger
+	upgrader             websocket.Upgrader
+	security             WebSecurityConfig
+	llmStatus            func() LLMGovernanceStatus
+	llmUsage             LLMUsageAdminStore
+	llmConfig            *LLMGovernanceConfigManager
+	metrics              *MetricsRegistry
+	audit                AuditLogger
+	risk                 RiskStore
+	riskScanner          RiskScanner
+	evaluation           EvaluationStore
+	evaluationJudge      GoldenJudge
+	promptStore          PromptStore
+	chatStreams          ChatStreamStore
+	structuredOutputs    StructuredOutputStore
+	chatRunSnapshots     ChatRunSnapshotStore
+	chatTurnReservations ChatTurnReservationStore
+	instrumentHTTP       func(http.Handler) http.Handler
+	operationLimiter     *OperationRateLimiter
+	adminToken           string
+	skillRegistry        SkillRegistryAdminStore
+	readyMu              sync.RWMutex
+	readyChecks          map[string]readinessCheck
+	shutdownOnce         sync.Once
+	shutdownCh           chan struct{}
 }
 
 func NewServer(runtime *Runtime, auth Authenticator, limiter RateLimitPolicy, logger *log.Logger) *Server {
@@ -67,13 +70,17 @@ func NewServerWithLogger(runtime *Runtime, auth Authenticator, limiter RateLimit
 	if limiter == nil {
 		limiter = NewRateLimiter(60, defaultRateLimitWindow)
 	}
+	outputStore := NewMemoryRuntimeOutputStore()
 	server := &Server{
-		runtime:     runtime,
-		auth:        auth,
-		limiter:     limiter,
-		logger:      componentLogger(logger, "http_server"),
-		metrics:     NewMetricsRegistry(),
-		chatStreams: NewMemoryChatStreamStore(),
+		runtime:              runtime,
+		auth:                 auth,
+		limiter:              limiter,
+		logger:               componentLogger(logger, "http_server"),
+		metrics:              NewMetricsRegistry(),
+		chatStreams:          NewMemoryChatStreamStore(),
+		structuredOutputs:    outputStore,
+		chatRunSnapshots:     outputStore,
+		chatTurnReservations: outputStore,
 		upgrader: websocket.Upgrader{
 			CheckOrigin:  sameHostOrigin,
 			Subprotocols: []string{"agentapi.bearer"},
@@ -90,6 +97,27 @@ func (s *Server) SetChatStreamStore(store ChatStreamStore) {
 		return
 	}
 	s.chatStreams = store
+}
+
+func (s *Server) SetStructuredOutputStore(store StructuredOutputStore) {
+	if s == nil || store == nil {
+		return
+	}
+	s.structuredOutputs = store
+}
+
+func (s *Server) SetChatRunSnapshotStore(store ChatRunSnapshotStore) {
+	if s == nil || store == nil {
+		return
+	}
+	s.chatRunSnapshots = store
+}
+
+func (s *Server) SetChatTurnReservationStore(store ChatTurnReservationStore) {
+	if s == nil || store == nil {
+		return
+	}
+	s.chatTurnReservations = store
 }
 
 func (s *Server) SetHTTPInstrumentation(instrument func(http.Handler) http.Handler) {
@@ -2851,6 +2879,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request, user
 		writeJSON(w, http.StatusOK, publicSessionSummaryViews(sessions))
 		return
 	}
+	s.hydrateSessionStructuredOutputs(r.Context(), user.ID, sessions)
 	writeJSON(w, http.StatusOK, publicSessionViews(sessions))
 }
 
@@ -2871,7 +2900,55 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, user U
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
+	s.hydrateSessionStructuredOutputs(r.Context(), user.ID, []*state.Session{session})
 	writeJSON(w, http.StatusOK, publicSessionView(session))
+}
+
+func (s *Server) hydrateSessionStructuredOutputs(ctx context.Context, userID string, sessions []*state.Session) {
+	if s == nil || s.structuredOutputs == nil || len(sessions) == 0 {
+		return
+	}
+	for _, session := range sessions {
+		if session == nil {
+			continue
+		}
+		outputs, err := s.structuredOutputs.ListStructuredOutputsBySession(ctx, userID, session.ID)
+		if err != nil || len(outputs) == 0 {
+			continue
+		}
+		attachStructuredOutputsToSession(session, outputs)
+	}
+}
+
+func attachStructuredOutputsToSession(session *state.Session, outputs []MessageStructuredOutput) {
+	if session == nil || len(outputs) == 0 {
+		return
+	}
+	byMessageID := make(map[string][]json.RawMessage)
+	byRunID := make(map[string][]json.RawMessage)
+	for _, output := range outputs {
+		if len(output.Payload) == 0 {
+			continue
+		}
+		if output.MessageID != "" {
+			byMessageID[output.MessageID] = append(byMessageID[output.MessageID], output.Payload)
+			continue
+		}
+		if output.RunID != "" {
+			byRunID[output.RunID] = append(byRunID[output.RunID], output.Payload)
+		}
+	}
+	attachedRun := make(map[string]bool)
+	for i := range session.Messages {
+		message := &session.Messages[i]
+		if message.ID != "" {
+			message.StructuredOutputs = append(message.StructuredOutputs, byMessageID[message.ID]...)
+		}
+		if message.Role == state.MessageRoleAssistant && message.RunID != "" && !attachedRun[message.RunID] {
+			message.StructuredOutputs = append(message.StructuredOutputs, byRunID[message.RunID]...)
+			attachedRun[message.RunID] = true
+		}
+	}
 }
 
 func publicSessionViews(sessions []*state.Session) []*state.Session {
@@ -2914,14 +2991,19 @@ func publicSessionView(session *state.Session) *state.Session {
 	clone.Metadata = nil
 	clone.Messages = make([]state.Message, 0, len(session.Messages))
 	for _, message := range session.Messages {
-		if message.Hidden || message.Role == "tool" || strings.TrimSpace(firstNonEmptyString(message.Content, message.ToolOutput)) == "" {
+		if message.Hidden || message.Role == "tool" || (strings.TrimSpace(firstNonEmptyString(message.Content, message.ToolOutput)) == "" && len(message.StructuredOutputs) == 0) {
 			continue
 		}
 		publicMessage := state.Message{
-			Role:        message.Role,
-			Content:     message.Content,
-			Attachments: publicMessageAttachments(message.Attachments),
-			CreatedAt:   message.CreatedAt,
+			ID:                message.ID,
+			SessionID:         message.SessionID,
+			RunID:             message.RunID,
+			Role:              message.Role,
+			Content:           message.Content,
+			ToolOutput:        message.ToolOutput,
+			StructuredOutputs: append([]json.RawMessage(nil), message.StructuredOutputs...),
+			Attachments:       publicMessageAttachments(message.Attachments),
+			CreatedAt:         message.CreatedAt,
 		}
 		clone.Messages = append(clone.Messages, publicMessage)
 	}
@@ -3641,15 +3723,36 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request, user User
 		return
 	}
 	s.logEvent("chat_start", map[string]any{"user_id": user.ID, "session_id": sessionID, "chars": len(body.Content), "request_id": requestIDFromContext(r.Context())})
-	req := ChatRequest{UserID: user.ID, SessionID: sessionID, Content: body.Content, AttachmentIDs: body.AttachmentIDs, AttachmentURLs: body.AttachmentURLs, ThinkingMode: body.ThinkingMode, AgentMode: body.AgentMode, ConnectorContext: body.ConnectorContext}
-	run, err := s.chatStreams.CreateRun(r.Context(), user.ID, sessionID)
+	idempotencyKey := firstNonEmptyString(strings.TrimSpace(body.IdempotencyKey), strings.TrimSpace(r.Header.Get("Idempotency-Key")), "chat-"+newSortableID())
+	reservation := ChatTurnReservation{
+		UserID:             user.ID,
+		SessionID:          sessionID,
+		IdempotencyKey:     idempotencyKey,
+		RunID:              NewChatRunID(),
+		UserMessageID:      strings.TrimSpace(body.ClientUserMessageID),
+		AssistantMessageID: strings.TrimSpace(body.ClientAssistantMessageID),
+		Status:             "reserved",
+	}
+	if s.chatTurnReservations != nil {
+		reservation, err = s.chatTurnReservations.ReserveChatTurn(r.Context(), reservation)
+		if err != nil {
+			_ = sink.Send(r.Context(), Event{Type: "error", SessionID: sessionID, Error: err.Error()})
+			return
+		}
+		if !reservation.Reserved {
+			s.streamExistingChatRunToSink(r, user, reservation.RunID, sink, jobEventCursor(r))
+			return
+		}
+	}
+	req := ChatRequest{UserID: user.ID, SessionID: sessionID, RunID: reservation.RunID, IdempotencyKey: idempotencyKey, ClientUserMessageID: reservation.UserMessageID, ClientAssistantMessageID: reservation.AssistantMessageID, Content: body.Content, AttachmentIDs: body.AttachmentIDs, AttachmentURLs: body.AttachmentURLs, ThinkingMode: body.ThinkingMode, AgentMode: body.AgentMode, ConnectorContext: body.ConnectorContext}
+	run, err := s.chatStreams.CreateRunWithID(r.Context(), user.ID, sessionID, reservation.RunID)
 	if err != nil {
 		_ = sink.Send(r.Context(), Event{Type: "error", SessionID: sessionID, Error: err.Error()})
 		return
 	}
 	runID := run.RunID
 	runCtx := context.WithoutCancel(r.Context())
-	resumableSink := &resumableChatSink{runID: runID, userID: user.ID, sessionID: sessionID, store: s.chatStreams, client: sink}
+	resumableSink := &resumableChatSink{runID: runID, userID: user.ID, sessionID: sessionID, store: s.chatStreams, structuredOutputs: s.structuredOutputs, snapshots: s.chatRunSnapshots, reservations: s.chatTurnReservations, client: sink}
 	if err := s.runtime.Chat(runCtx, req, resumableSink); err != nil && !errors.Is(err, context.Canceled) {
 		s.logEvent("chat_error", map[string]any{"user_id": user.ID, "session_id": sessionID, "run_id": runID, "error": err.Error(), "request_id": requestIDFromContext(r.Context())})
 		if !resumableSink.terminal {
@@ -3688,6 +3791,9 @@ func (s *Server) handleChatRunEvents(w http.ResponseWriter, r *http.Request, use
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return
 			}
+			if s.writeChatRunSnapshotFallback(r.Context(), user.ID, runID, sink) {
+				return
+			}
 			_ = sink.Send(r.Context(), Event{Type: "error", RunID: runID, Error: err.Error()})
 			return
 		}
@@ -3712,6 +3818,127 @@ func (s *Server) handleChatRunEvents(w http.ResponseWriter, r *http.Request, use
 			}
 		}
 	}
+}
+
+func (s *Server) handleChatRunUsage(w http.ResponseWriter, r *http.Request, user User, runID string) {
+	summary, err := SummarizeRunUsage(r.Context(), s.chatRunSnapshots, s.structuredOutputs, nil, user.ID, runID)
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	if err := s.addRuntimeToolCallCounts(r.Context(), &summary, user.ID, runID); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"usage": summary})
+}
+
+func (s *Server) handleAdminOpsChatRunUsage(w http.ResponseWriter, r *http.Request, runID string) {
+	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	summary, err := SummarizeRunUsage(r.Context(), s.chatRunSnapshots, s.structuredOutputs, nil, userID, runID)
+	if err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	if err := s.addRuntimeToolCallCounts(r.Context(), &summary, userID, runID); err != nil {
+		writeJSONError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"usage": summary})
+}
+
+func (s *Server) addRuntimeToolCallCounts(ctx context.Context, summary *RunUsageSummary, userID, runID string) error {
+	if s == nil || s.runtime == nil || summary == nil {
+		return nil
+	}
+	toolCalls, err := s.runtime.ListToolCalls(ctx, ToolCallLedgerFilter{UserID: strings.TrimSpace(userID), WorkflowRunID: strings.TrimSpace(runID), Limit: 2000})
+	if err != nil {
+		return err
+	}
+	summary.ToolCallCount = len(toolCalls)
+	for _, toolCall := range toolCalls {
+		if strings.EqualFold(strings.TrimSpace(toolCall.Status), "failed") || strings.TrimSpace(toolCall.Error) != "" {
+			summary.ToolErrorCount++
+		}
+	}
+	return nil
+}
+
+func (s *Server) streamExistingChatRunToSink(r *http.Request, user User, runID string, sink *sseEventSink, afterID string) {
+	if s == nil || s.chatStreams == nil || sink == nil {
+		return
+	}
+	for {
+		events, terminal, err := s.chatStreams.BlockRead(r.Context(), user.ID, runID, afterID, DefaultChatStreamEventLimit, DefaultChatStreamBlockRead)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
+			if s.writeChatRunSnapshotFallback(r.Context(), user.ID, runID, sink) {
+				return
+			}
+			_ = sink.Send(r.Context(), Event{Type: "error", RunID: runID, Error: err.Error()})
+			return
+		}
+		for _, event := range events {
+			if afterID != "" && event.ID <= afterID {
+				continue
+			}
+			afterID = event.ID
+			if err := sink.send(r.Context(), event.ID, event.Event); err != nil {
+				return
+			}
+			if chatStreamTerminal(event.Type) {
+				return
+			}
+		}
+		if terminal {
+			return
+		}
+		if len(events) == 0 {
+			if err := sink.KeepAlive(r.Context()); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (s *Server) writeChatRunSnapshotFallback(ctx context.Context, userID, runID string, sink *sseEventSink) bool {
+	if s == nil || s.chatRunSnapshots == nil || sink == nil {
+		return false
+	}
+	snapshot, err := s.chatRunSnapshots.GetChatRunSnapshot(ctx, userID, runID)
+	if err != nil || snapshot.RunID == "" {
+		return false
+	}
+	eventType := "done"
+	switch snapshot.Status {
+	case "failed":
+		eventType = "error"
+	case "cancelled":
+		eventType = "cancelled"
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"source":                  "chat_run_snapshot",
+		"status":                  snapshot.Status,
+		"event_count":             snapshot.EventCount,
+		"structured_output_count": snapshot.StructuredOutputCount,
+		"artifact_count":          snapshot.ArtifactCount,
+	})
+	event := Event{
+		Type:      eventType,
+		SessionID: snapshot.SessionID,
+		RunID:     snapshot.RunID,
+		Content:   snapshot.FinalContent,
+		Error:     snapshot.Error,
+		Data:      payload,
+	}
+	id := snapshot.LastEventID
+	if id == "" {
+		id = "snapshot-" + snapshot.RunID
+	}
+	_ = sink.send(ctx, id, event)
+	return true
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, _ *http.Request, user User, sessionID string) {

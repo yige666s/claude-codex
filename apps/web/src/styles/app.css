@@ -2632,6 +2632,57 @@ body.workspace-pane-resizing .workspace-stage {
   gap: 5px;
   color: var(--muted);
 }
+.message-structured-outputs {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.message-structured-output {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+.message-structured-output header {
+  display: grid;
+  gap: 2px;
+}
+.message-structured-output header span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 720;
+  text-transform: uppercase;
+}
+.message-structured-output header strong {
+  color: var(--text);
+  font-size: 14px;
+}
+.message-structured-output p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.message-structured-output-list,
+.message-structured-output-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.message-structured-output-list span,
+.message-structured-output-actions button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.message-structured-output-actions button {
+  cursor: default;
+  opacity: 0.78;
+}
 .message-action-button {
   width: 30px;
   height: 30px;

@@ -12,6 +12,7 @@ import (
 const (
 	temporalContextMarker       = "<temporal-context>"
 	localeContextMarker         = "<locale-context>"
+	appRuntimeContextMarker     = "<app-runtime-context>"
 	memoryContextMarker         = "<memory>"
 	episodicMemoryContextMarker = "<episodic-memory>"
 )
@@ -20,6 +21,7 @@ var transientRuntimeContextMarkers = []string{
 	systemPromptSnapshotMarker,
 	temporalContextMarker,
 	localeContextMarker,
+	appRuntimeContextMarker,
 	browserMemoryContextMarker,
 	memoryContextMarker,
 	episodicMemoryContextMarker,
