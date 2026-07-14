@@ -352,6 +352,31 @@ type AgentMemoryEpisode struct {
 	UpdatedAt      time.Time    `json:"updated_at"`
 }
 
+type AgentMemoryRecallEvent struct {
+	ID                   string    `json:"id"`
+	UserID               string    `json:"user_id"`
+	SessionID            string    `json:"session_id"`
+	TriggerReason        string    `json:"trigger_reason"`
+	QueryHash            string    `json:"query_hash"`
+	Query                string    `json:"query"`
+	OriginalQuery        string    `json:"original_query"`
+	RewrittenQuery       string    `json:"rewritten_query"`
+	QueryRewriteUsed     bool      `json:"query_rewrite_used"`
+	QueryRewriteReason   string    `json:"query_rewrite_reason"`
+	QueryRewriteDegraded bool      `json:"query_rewrite_degraded"`
+	MemoryItemIds        string    `json:"memory_item_ids"`
+	EpisodeIds           string    `json:"episode_ids"`
+	SourceRefs           string    `json:"source_refs"`
+	MemoryChars          int64     `json:"memory_chars"`
+	EpisodeChars         int64     `json:"episode_chars"`
+	Injected             bool      `json:"injected"`
+	Degraded             bool      `json:"degraded"`
+	DegradedReason       string    `json:"degraded_reason"`
+	LatencyMs            int64     `json:"latency_ms"`
+	Metadata             string    `json:"metadata"`
+	CreatedAt            time.Time `json:"created_at"`
+}
+
 type AgentMemorySetting struct {
 	UserID    string    `json:"user_id"`
 	Payload   string    `json:"payload"`
