@@ -18,6 +18,8 @@ import (
 const (
 	defaultMemoryConfidence = 0.7
 	defaultMemoryWeight     = 0.65
+	memoryBM25K1            = 1.2
+	memoryBM25B             = 0.75
 )
 
 type MemoryExtractionInput struct {
@@ -1004,8 +1006,15 @@ func selectMemoryItemsForSessionContext(items []MemoryItem, query, sessionID str
 		if !memoryVisibleInSession(item, sessionID) {
 			continue
 		}
-		item.Weight = memoryContextScore(item, query)
 		candidates = append(candidates, item)
+	}
+	bm25Scores := memoryBM25ItemScores(query, candidates)
+	for i := range candidates {
+		relevance := 0.0
+		if i < len(bm25Scores) {
+			relevance = bm25Scores[i]
+		}
+		candidates[i].Weight = memoryContextScoreWithRelevance(candidates[i], relevance)
 	}
 	sortMemoryItems(candidates)
 	return limitMemoryItems(candidates, limit)
@@ -1039,9 +1048,12 @@ func memoryItemHasSourceRef(item MemoryItem, sourceKind, sourceID string) bool {
 }
 
 func memoryContextScore(item MemoryItem, query string) float64 {
+	return memoryContextScoreWithRelevance(item, memoryTextRelevance(query, item.Content+" "+strings.Join(item.Tags, " ")))
+}
+
+func memoryContextScoreWithRelevance(item MemoryItem, relevance float64) float64 {
 	item = scoreMemoryQuality(item, nil, time.Now().UTC())
 	base := computeMemoryWeight(item.Category, defaultCategoryImportance(item.Category), item.Confidence, item.UpdatedAt, item.AccessCount)
-	relevance := memoryTextRelevance(query, item.Content+" "+strings.Join(item.Tags, " "))
 	quality := metadataFloat(item.Metadata, "quality_score", 0.65)
 	feedback := memoryFeedbackScore(item)
 	levelBoost := 0.0
@@ -1180,6 +1192,161 @@ func memoryTextRelevance(query, content string) float64 {
 		}
 	}
 	return clamp01(float64(matched) / math.Sqrt(float64(len(queryTokens)*len(contentTokens))))
+}
+
+func memoryBM25ItemScores(query string, items []MemoryItem) []float64 {
+	documents := make([]string, 0, len(items))
+	for _, item := range items {
+		item = normalizeMemoryItem(item)
+		documents = append(documents, strings.TrimSpace(item.Content+" "+strings.Join(item.Tags, " ")))
+	}
+	return memoryBM25Scores(query, documents)
+}
+
+func memoryBM25Scores(query string, documents []string) []float64 {
+	scores := make([]float64, len(documents))
+	queryTerms := uniqueMemoryBM25Terms(memoryBM25Tokens(query))
+	if len(queryTerms) == 0 || len(documents) == 0 {
+		return scores
+	}
+	termDocumentFrequency := map[string]int{}
+	documentTermFrequency := make([]map[string]int, len(documents))
+	documentLengths := make([]int, len(documents))
+	totalLength := 0
+	nonEmptyDocuments := 0
+	for i, document := range documents {
+		tokens := memoryBM25Tokens(document)
+		documentLengths[i] = len(tokens)
+		if len(tokens) == 0 {
+			documentTermFrequency[i] = map[string]int{}
+			continue
+		}
+		nonEmptyDocuments++
+		totalLength += len(tokens)
+		termFrequency := map[string]int{}
+		seen := map[string]bool{}
+		for _, token := range tokens {
+			termFrequency[token]++
+			if !seen[token] {
+				termDocumentFrequency[token]++
+				seen[token] = true
+			}
+		}
+		documentTermFrequency[i] = termFrequency
+	}
+	if nonEmptyDocuments == 0 || totalLength == 0 {
+		return scores
+	}
+	averageDocumentLength := float64(totalLength) / float64(nonEmptyDocuments)
+	maxScore := 0.0
+	for i, termFrequency := range documentTermFrequency {
+		if len(termFrequency) == 0 {
+			continue
+		}
+		documentLength := float64(documentLengths[i])
+		score := 0.0
+		for _, term := range queryTerms {
+			frequency := termFrequency[term]
+			if frequency == 0 {
+				continue
+			}
+			documentFrequency := termDocumentFrequency[term]
+			if documentFrequency == 0 {
+				continue
+			}
+			idf := math.Log(1 + (float64(nonEmptyDocuments-documentFrequency)+0.5)/(float64(documentFrequency)+0.5))
+			denominator := float64(frequency) + memoryBM25K1*(1-memoryBM25B+memoryBM25B*documentLength/averageDocumentLength)
+			if denominator <= 0 {
+				continue
+			}
+			score += idf * (float64(frequency) * (memoryBM25K1 + 1)) / denominator
+		}
+		scores[i] = score
+		if score > maxScore {
+			maxScore = score
+		}
+	}
+	if maxScore <= 0 {
+		return scores
+	}
+	for i, score := range scores {
+		scores[i] = clamp01(score / maxScore)
+	}
+	return scores
+}
+
+func uniqueMemoryBM25Terms(tokens []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if seen[token] {
+			continue
+		}
+		seen[token] = true
+		out = append(out, token)
+	}
+	return out
+}
+
+func memoryBM25Tokens(value string) []string {
+	value = strings.ToLower(value)
+	tokens := []string{}
+	ascii := make([]rune, 0, 16)
+	cjk := make([]rune, 0, 16)
+	flushASCII := func() {
+		if len(ascii) >= 2 {
+			token := string(ascii)
+			if !memoryBM25StopWord(token) {
+				tokens = append(tokens, token)
+			}
+		}
+		ascii = ascii[:0]
+	}
+	flushCJK := func() {
+		if len(cjk) == 2 {
+			token := string(cjk)
+			if !memoryBM25StopWord(token) {
+				tokens = append(tokens, token)
+			}
+		} else if len(cjk) > 2 {
+			for i := 0; i+1 < len(cjk); i++ {
+				token := string(cjk[i : i+2])
+				if !memoryBM25StopWord(token) {
+					tokens = append(tokens, token)
+				}
+			}
+		}
+		cjk = cjk[:0]
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+			flushCJK()
+			ascii = append(ascii, r)
+		case isMemoryBM25CJK(r):
+			flushASCII()
+			cjk = append(cjk, r)
+		default:
+			flushASCII()
+			flushCJK()
+		}
+	}
+	flushASCII()
+	flushCJK()
+	return tokens
+}
+
+func isMemoryBM25CJK(r rune) bool {
+	return (r >= '\u4e00' && r <= '\u9fff') || (r >= '\u3400' && r <= '\u4dbf')
+}
+
+func memoryBM25StopWord(token string) bool {
+	switch strings.TrimSpace(token) {
+	case "", "the", "and", "for", "with", "this", "that", "you", "are", "was", "were", "一个", "这个", "那个", "一下", "我们", "你们", "他们":
+		return true
+	default:
+		return false
+	}
 }
 
 func memoryTokens(value string) map[string]bool {
