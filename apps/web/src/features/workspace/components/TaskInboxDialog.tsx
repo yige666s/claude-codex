@@ -75,11 +75,11 @@ export function TaskInboxDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="task-inbox-modal" hideClose>
-        <DialogTitle className="sr-only">Task Inbox</DialogTitle>
+        <DialogTitle className="sr-only">消息</DialogTitle>
         <DialogDescription className="sr-only">Review task status, approvals, failures, and generated artifacts.</DialogDescription>
         <div className="task-inbox-head">
           <div>
-            <span className="task-inbox-kicker"><Inbox size={17} /> Task Inbox</span>
+            <span className="task-inbox-kicker"><Inbox size={17} /> 消息</span>
             <h2>通知与审批中心</h2>
             {browserNotificationPermission === "denied" && (
               <p className="task-inbox-permission-note">Browser notifications are blocked in this browser.</p>
@@ -108,10 +108,10 @@ export function TaskInboxDialog({
                 </Button>
               )
             )}
-            <Button className="icon" variant="ghost" onClick={onRefresh} disabled={loading} title="Refresh inbox" aria-label="Refresh inbox">
+            <Button className="icon" variant="ghost" onClick={onRefresh} disabled={loading} title="刷新消息" aria-label="刷新消息">
               <RotateCcw size={17} />
             </Button>
-            <Button className="icon" variant="ghost" onClick={() => onOpenChange(false)} title="Close inbox" aria-label="Close inbox">
+            <Button className="icon" variant="ghost" onClick={() => onOpenChange(false)} title="关闭消息" aria-label="关闭消息">
               <X size={18} />
             </Button>
           </div>

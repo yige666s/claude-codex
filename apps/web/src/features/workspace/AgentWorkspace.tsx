@@ -3565,12 +3565,12 @@ function ServiceStatusPill({ status }: { status: ServiceStatus }) {
 
 function jobStartedMessage(event: RuntimeEvent): string {
   if (event.job?.type === "deep_agent") {
-    return "已进入计划执行模式，系统会先生成计划再逐步执行；任务详情可在 Inbox 查看。";
+    return "已进入计划执行模式，系统会先生成计划再逐步执行；任务详情可在消息中查看。";
   }
   if (event.job?.type === "skill") {
-    return "已开始执行工作流，完成后会自动更新结果；任务详情可在 Inbox 查看。";
+    return "已开始执行工作流，完成后会自动更新结果；任务详情可在消息中查看。";
   }
-  return "已开始后台处理，完成后会自动更新结果；任务详情可在 Inbox 查看。";
+  return "已开始后台处理，完成后会自动更新结果；任务详情可在消息中查看。";
 }
 
 function shouldDisplayJobSubmittedContent(event: RuntimeEvent): boolean {

@@ -67,7 +67,7 @@ for (const viewport of viewports) {
     await page.getByRole("button", { name: "Close preview" }).click();
     await page.getByLabel("Close artifact preview").click();
 
-    await domClickButton(page, "搜索聊天");
+    await domClickButton(page, "搜索");
     await expect(page.getByRole("dialog", { name: "Search across all sessions" })).toBeVisible();
     await assertBoxWithinViewport(page, ".global-search-modal", viewport.width);
     await page.getByRole("textbox", { name: "Search across all sessions" }).fill("visual");

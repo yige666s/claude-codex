@@ -35,7 +35,7 @@ test.describe("real environment E2E", () => {
     await page.getByRole("button", { name: "Close preview" }).click();
     await page.getByRole("dialog", { name: "Attachments" }).getByLabel("Close resources").click();
 
-    await page.getByRole("button", { name: "搜索聊天" }).click();
+    await page.getByRole("button", { name: "搜索" }).click();
     await page.getByRole("textbox", { name: "Search across all sessions" }).fill("AgentAPI real E2E smoke");
     await expect(page.locator(".global-search-result").first()).toBeVisible({ timeout: 30_000 });
     await page.keyboard.press("Escape");

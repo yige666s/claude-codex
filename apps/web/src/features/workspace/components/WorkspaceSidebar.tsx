@@ -101,13 +101,13 @@ export function WorkspaceSidebar({
           <MessageSquarePlus size={18} />
           <span className="sidebar-action-label">新聊天</span>
         </Button>
-        <Button className="sidebar-action-button" variant="ghost" onClick={onOpenSearch} title="搜索聊天" aria-label="搜索聊天">
+        <Button className="sidebar-action-button" variant="ghost" onClick={onOpenSearch} title="搜索" aria-label="搜索">
           <Search size={18} />
-          <span className="sidebar-action-label">搜索聊天</span>
+          <span className="sidebar-action-label">搜索</span>
         </Button>
-        <Button className="sidebar-action-button" variant="ghost" onClick={onOpenInbox} title="Inbox" aria-label="Inbox">
+        <Button className="sidebar-action-button" variant="ghost" onClick={onOpenInbox} title="消息" aria-label="消息">
           <Inbox size={18} />
-          <span className="sidebar-action-label">Inbox</span>
+          <span className="sidebar-action-label">消息</span>
         </Button>
         <nav className="sidebar-resource-nav" aria-label="Workspace resources">
           <ResourceButton tab="jobs" label="资源" hasNew={hasResourceNotice} icon={<Briefcase size={17} />} onOpen={onOpenResource} />

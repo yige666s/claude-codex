@@ -209,7 +209,7 @@ test("covers auth, sessions, chat, attachments, jobs, previews, and search", asy
   await page.getByRole("button", { name: "新聊天" }).click();
   await expect(jobWorkspace).toBeHidden();
 
-  await page.getByRole("button", { name: "搜索聊天" }).click();
+  await page.getByRole("button", { name: "搜索" }).click();
   await page.getByRole("textbox", { name: "Search across all sessions" }).fill("playwright");
   await page.getByRole("dialog", { name: "Search across all sessions" }).locator(".global-search-result", { hasText: "hello from playwright" }).first().click();
   await expect(page.getByRole("heading", { name: "hello from playwright" })).toBeVisible();

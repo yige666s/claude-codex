@@ -42,7 +42,6 @@ export function AuthPage({ mode, status, forgotCooldownSeconds = 0, onModeChange
           <div className="auth-photo-link">{isForgot || isReset ? "ACCOUNT RECOVERY" : isLogin ? "CREATE ACCOUNT" : "SIGN IN"}</div>
         </div>
         <form className="auth-card" onSubmit={onSubmit}>
-          <div className="auth-close-dot" aria-hidden="true">×</div>
           <div className="auth-head">
             <p>{isReset ? "Choose a new password" : isForgot ? "Recover access" : isLogin ? "Welcome back" : "Start building"}</p>
             <h1>{isReset ? "Reset your password" : isForgot ? "Send a reset link" : isLogin ? "Sign in to AgentAPI" : "Create your workspace"}</h1>
