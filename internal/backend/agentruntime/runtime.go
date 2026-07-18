@@ -224,6 +224,12 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 	config.MemoryVector.CacheDefaultTTL = config.CacheDefaultTTL
 	config.MemoryVector.CacheFailOpen = config.CacheFailOpen
 	config.SkillShellSandbox = config.SkillShellSandbox.normalized()
+	config.MemoryPolicy = normalizeMemoryPolicy(config.MemoryPolicy)
+	if config.MemoryPolicyProvider == nil {
+		config.MemoryPolicyProvider = NewStaticMemoryPolicyProvider(config.MemoryPolicy)
+	} else {
+		config.MemoryPolicy = config.MemoryPolicyProvider.MemoryPolicy()
+	}
 	config.MemoryRecall = normalizeMemoryRecallConfig(config.MemoryRecall)
 	config.EpisodicMemory = normalizeEpisodicMemoryConfig(config.EpisodicMemory)
 	logger := componentLogger(config.Logger, "runtime")
@@ -236,11 +242,11 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		sessions:              sessions,
 		memory:                memory,
 		episodeMemory:         memoryEpisodeServiceFrom(memory),
-		memoryExtract:         NewRuleMemoryExtractor(),
+		memoryExtract:         NewRuleMemoryExtractorWithProvider(config.MemoryPolicyProvider),
 		memoryAbstract:        NewRuleMemoryAbstractor(),
 		memoryOrganizer:       NewRuleMemoryOrganizer(),
-		memoryRecall:          NewMemoryRecallDecider(config.MemoryRecall, memoryRecallEmbedderFromConfig(config), componentLogger(logger, "memory_recall"), engineFactory),
-		memoryQueryRewriter:   NewDeterministicMemoryQueryRewriter(),
+		memoryRecall:          NewMemoryRecallDeciderWithPolicyProvider(config.MemoryRecall, memoryRecallEmbedderFromConfig(config), componentLogger(logger, "memory_recall"), config.MemoryPolicyProvider, engineFactory),
+		memoryQueryRewriter:   NewDeterministicMemoryQueryRewriterWithProvider(config.MemoryPolicyProvider),
 		memoryRecallTrace:     memoryRecallTrace,
 		episodeSummarizer:     RuleMemoryEpisodeSummarizer{},
 		skills:                skills,
@@ -460,6 +466,16 @@ func (r *Runtime) SetMemoryExtractor(extractor MemoryExtractor) {
 	if extractor != nil {
 		r.memoryExtract = extractor
 	}
+}
+
+func (r *Runtime) memoryPolicy() MemoryPolicy {
+	if r == nil {
+		return DefaultMemoryPolicy()
+	}
+	if r.config.MemoryPolicyProvider != nil {
+		return r.config.MemoryPolicyProvider.MemoryPolicy()
+	}
+	return normalizeMemoryPolicy(r.config.MemoryPolicy)
 }
 
 func (r *Runtime) SetMemoryAbstractor(abstractor MemoryAbstractor) {
@@ -3397,7 +3413,8 @@ func (r *Runtime) afterTurnMemory(ctx context.Context, userID string, session *s
 					return err
 				}
 			} else {
-				items := evaluateMemoryCandidates(userID, session.ID, candidates)
+				policy := r.memoryPolicy()
+				items := evaluateMemoryCandidatesWithPolicy(userID, session.ID, candidates, policy)
 				if len(items) > 0 {
 					existing, err := service.ListMemoryItems(ctx, userID, MemoryItemFilter{})
 					if err != nil {
@@ -3405,7 +3422,7 @@ func (r *Runtime) afterTurnMemory(ctx context.Context, userID string, session *s
 					}
 					for _, candidate := range items {
 						var conflictUpdates []MemoryItem
-						candidate, conflictUpdates = applyMemoryConflictResolution(existing, candidate)
+						candidate, conflictUpdates = applyMemoryConflictResolutionWithPolicy(existing, candidate, policy)
 						for _, update := range conflictUpdates {
 							if _, err := service.UpdateMemoryItem(ctx, userID, update); err != nil {
 								return err
@@ -3436,7 +3453,7 @@ func (r *Runtime) captureEpisodeAfterTurn(ctx context.Context, userID string, se
 	if !config.Enabled || !config.CaptureEnabled {
 		return nil
 	}
-	episode, ok, err := buildMemoryEpisodeFromSessionWithConfig(ctx, userID, session, r.episodeSummarizer, time.Now().UTC(), config)
+	episode, ok, err := buildMemoryEpisodeFromSessionWithPolicy(ctx, userID, session, r.episodeSummarizer, time.Now().UTC(), config, r.memoryPolicy())
 	if err != nil || !ok {
 		return err
 	}

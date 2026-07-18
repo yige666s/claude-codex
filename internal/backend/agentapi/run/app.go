@@ -18,6 +18,7 @@ const (
 	workerMessageArchive        = "message_archive_worker"
 	workerMessageSearchIndex    = "message_search_index_manager"
 	workerMessageSearchBackfill = "message_search_backfill"
+	workerMemoryPolicyReload    = "memory_policy_reload"
 	workerJobEventFanout        = "job_event_fanout"
 	workerJobQueue              = "job_worker"
 	workerConnectorRefresh      = "connector_refresh_worker"
@@ -108,6 +109,11 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	mcpConnectorStore := buildMCPConnectorStore(storeCfg)
 	browserPushStore := buildBrowserPushStore(storeCfg)
 	runtimeConfig := runtimeConfigFromStartup(cfg, skillShellSandboxConfig)
+	runtimeConfig.MemoryPolicyProvider = agentruntime.NewStaticMemoryPolicyProvider(runtimeConfig.MemoryPolicy)
+	if memoryPolicyReloader := memoryPolicyReloaderFromStartup(cfg, runtimeConfig.MemoryPolicy, appLogger); memoryPolicyReloader != nil {
+		runtimeConfig.MemoryPolicyProvider = memoryPolicyReloader
+		workerGroup.Start(workerMemoryPolicyReload, memoryPolicyReloader.Run)
+	}
 	runtimeConfig.Logger = appLogger
 	runtimeConfig.CacheStore = cacheStore
 	runtimeConfig.CacheMetrics = cacheMetrics
@@ -240,7 +246,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	llmMemoryExtractor.PromptResolver = agentruntime.NewCachedPromptResolver(promptStore, nil, cacheStore, cfg.CacheDefaultTTL, cfg.CacheFailOpen, cacheMetrics)
 	runtime.SetMemoryExtractor(agentruntime.NewHybridMemoryExtractor(
 		llmMemoryExtractor,
-		agentruntime.NewRuleMemoryExtractor(),
+		agentruntime.NewRuleMemoryExtractorWithProvider(runtimeConfig.MemoryPolicyProvider),
 	))
 	llmEpisodeSummarizer := agentruntime.NewLLMMemoryEpisodeSummarizer(engineFactory)
 	llmEpisodeSummarizer.Timeout = cfg.EpisodicMemorySummarizeTimeout

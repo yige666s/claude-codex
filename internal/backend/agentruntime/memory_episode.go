@@ -254,16 +254,20 @@ func shouldCaptureMemoryEpisode(session *state.Session) bool {
 }
 
 func shouldCaptureMemoryEpisodeWithConfig(session *state.Session, config EpisodicMemoryConfig) bool {
+	return shouldCaptureMemoryEpisodeWithPolicy(session, config, DefaultMemoryPolicy())
+}
+
+func shouldCaptureMemoryEpisodeWithPolicy(session *state.Session, config EpisodicMemoryConfig, policy MemoryPolicy) bool {
 	config = normalizeEpisodicMemoryConfig(config)
 	messages := visibleEpisodeMessagesWithLimit(session, config.MaxMessages)
 	if len(messages) == 0 {
 		return false
 	}
-	if len(messages) >= config.MinMessages && !isLowInformationEpisode(messages) {
+	if len(messages) >= config.MinMessages && !isLowInformationEpisodeWithPolicy(messages, policy) {
 		return true
 	}
 	for _, msg := range messages {
-		if msg.Role == state.MessageRoleUser && hasExplicitEpisodeSignal(msg.Content) {
+		if msg.Role == state.MessageRoleUser && hasExplicitEpisodeSignalWithPolicy(msg.Content, policy) {
 			return true
 		}
 	}
@@ -271,13 +275,14 @@ func shouldCaptureMemoryEpisodeWithConfig(session *state.Session, config Episodi
 }
 
 func hasExplicitEpisodeSignal(content string) bool {
+	return hasExplicitEpisodeSignalWithPolicy(content, DefaultMemoryPolicy())
+}
+
+func hasExplicitEpisodeSignalWithPolicy(content string, policy MemoryPolicy) bool {
 	lower := strings.ToLower(strings.TrimSpace(content))
-	signals := []string{
-		"记住这次", "保存这次", "这次对话", "下次继续", "以后接着", "总结一下这次", "回顾这次",
-		"remember this session", "save this conversation", "continue next time", "pick this up later",
-	}
-	for _, signal := range signals {
-		if strings.Contains(lower, signal) {
+	for _, signal := range normalizeMemoryPolicy(policy).Episode.CaptureSignals {
+		needle := strings.ToLower(strings.TrimSpace(signal))
+		if needle != "" && strings.Contains(lower, needle) {
 			return true
 		}
 	}
@@ -285,6 +290,11 @@ func hasExplicitEpisodeSignal(content string) bool {
 }
 
 func isLowInformationEpisode(messages []state.Message) bool {
+	return isLowInformationEpisodeWithPolicy(messages, DefaultMemoryPolicy())
+}
+
+func isLowInformationEpisodeWithPolicy(messages []state.Message, policy MemoryPolicy) bool {
+	lowPolicy := normalizeMemoryPolicy(policy).Episode.LowInformation
 	var combined strings.Builder
 	for _, msg := range messages {
 		if msg.Role == state.MessageRoleUser {
@@ -293,13 +303,12 @@ func isLowInformationEpisode(messages []state.Message) bool {
 		}
 	}
 	text := strings.TrimSpace(combined.String())
-	if len([]rune(text)) < 24 {
+	if len([]rune(text)) < lowPolicy.MinRunes {
 		return true
 	}
 	lower := strings.ToLower(text)
-	low := []string{"hello", "hi", "thanks", "thank you", "ok", "好的", "谢谢", "你好"}
-	for _, value := range low {
-		if lower == value {
+	for _, value := range lowPolicy.ExactPhrases {
+		if lower == strings.ToLower(strings.TrimSpace(value)) {
 			return true
 		}
 	}
@@ -311,8 +320,12 @@ func buildMemoryEpisodeFromSession(ctx context.Context, userID string, session *
 }
 
 func buildMemoryEpisodeFromSessionWithConfig(ctx context.Context, userID string, session *state.Session, summarizer MemoryEpisodeSummarizer, now time.Time, config EpisodicMemoryConfig) (MemoryEpisode, bool, error) {
+	return buildMemoryEpisodeFromSessionWithPolicy(ctx, userID, session, summarizer, now, config, DefaultMemoryPolicy())
+}
+
+func buildMemoryEpisodeFromSessionWithPolicy(ctx context.Context, userID string, session *state.Session, summarizer MemoryEpisodeSummarizer, now time.Time, config EpisodicMemoryConfig, policy MemoryPolicy) (MemoryEpisode, bool, error) {
 	config = normalizeEpisodicMemoryConfig(config)
-	if strings.TrimSpace(userID) == "" || session == nil || summarizer == nil || !config.Enabled || !config.CaptureEnabled || !shouldCaptureMemoryEpisodeWithConfig(session, config) {
+	if strings.TrimSpace(userID) == "" || session == nil || summarizer == nil || !config.Enabled || !config.CaptureEnabled || !shouldCaptureMemoryEpisodeWithPolicy(session, config, policy) {
 		return MemoryEpisode{}, false, nil
 	}
 	messages := visibleEpisodeMessagesWithLimit(session, config.MaxMessages)
@@ -328,8 +341,8 @@ func buildMemoryEpisodeFromSessionWithConfig(ctx context.Context, userID string,
 	if strings.TrimSpace(draft.Summary) == "" && strings.TrimSpace(draft.L0Abstract) == "" {
 		return MemoryEpisode{}, false, nil
 	}
-	summary, metadata := sanitizeMemoryContent(draft.Summary)
-	abstract, abstractMeta := sanitizeMemoryContent(draft.L0Abstract)
+	summary, metadata := sanitizeMemoryContentWithPolicy(draft.Summary, policy)
+	abstract, abstractMeta := sanitizeMemoryContentWithPolicy(draft.L0Abstract, policy)
 	for key, value := range abstractMeta {
 		metadata["abstract_"+key] = value
 	}
@@ -339,6 +352,7 @@ func buildMemoryEpisodeFromSessionWithConfig(ctx context.Context, userID string,
 		}
 		metadata[key] = value
 	}
+	metadata["memory_policy_version"] = memoryPolicyVersion(policy)
 	expiresAt := now.Add(config.TTL)
 	sourceID := memoryEpisodeSourceID(session)
 	episode := MemoryEpisode{

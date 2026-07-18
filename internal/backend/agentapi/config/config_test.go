@@ -29,6 +29,10 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	t.Setenv("AGENT_API_DEEP_RESEARCH_FALLBACK_LEGACY", "false")
 	t.Setenv("AGENT_API_DEEP_RESEARCH_REQUIRE_SOURCES", "false")
 	t.Setenv("AGENT_API_DEEP_RESEARCH_MIN_SUCCESSFUL_WORKERS", "2")
+	t.Setenv("AGENT_API_MEMORY_POLICY_PATH", "/tmp/memory-policy.yaml")
+	t.Setenv("AGENT_API_MEMORY_POLICY_VERSION", "memory-v9")
+	t.Setenv("AGENT_API_MEMORY_POLICY_RELOAD_INTERVAL", "30s")
+	t.Setenv("AGENT_API_MEMORY_POLICY_STRICT_EVAL", "true")
 
 	cfg := Default()
 
@@ -74,6 +78,12 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 		cfg.DeepResearchMinSuccessfulWorkers != 2 {
 		t.Fatalf("deep research flags not loaded: %#v", cfg)
 	}
+	if cfg.MemoryPolicyPath != "/tmp/memory-policy.yaml" ||
+		cfg.MemoryPolicyVersion != "memory-v9" ||
+		cfg.MemoryPolicyReloadInterval != 30*time.Second ||
+		!cfg.MemoryPolicyStrictEval {
+		t.Fatalf("memory policy flags not loaded: %#v", cfg)
+	}
 }
 
 func TestDefaultReadsLLMModelAlias(t *testing.T) {
@@ -83,6 +93,16 @@ func TestDefaultReadsLLMModelAlias(t *testing.T) {
 
 	if cfg.Model != "gemini-2.5-flash" {
 		t.Fatalf("Model = %q, want gemini-2.5-flash", cfg.Model)
+	}
+}
+
+func TestDefaultEnablesMemoryPolicyReloadWhenPathIsConfigured(t *testing.T) {
+	t.Setenv("AGENT_API_MEMORY_POLICY_PATH", "/tmp/memory-policy.json")
+
+	cfg := Default()
+
+	if cfg.MemoryPolicyReloadInterval != 30*time.Second {
+		t.Fatalf("MemoryPolicyReloadInterval = %s, want 30s", cfg.MemoryPolicyReloadInterval)
 	}
 }
 
@@ -115,6 +135,10 @@ func TestBindFlagsOverridesConfig(t *testing.T) {
 		"--object-timeout", "4s",
 		"--timezone", "UTC",
 		"--locale", "en-US",
+		"--memory-policy-path", "/tmp/policy.json",
+		"--memory-policy-version", "memory-v10",
+		"--memory-policy-reload-interval", "45s",
+		"--memory-policy-strict-eval",
 	})
 
 	if err := command.Execute(); err != nil {
@@ -143,6 +167,12 @@ func TestBindFlagsOverridesConfig(t *testing.T) {
 	}
 	if cfg.Locale != "en-US" {
 		t.Fatalf("Locale = %q, want en-US", cfg.Locale)
+	}
+	if cfg.MemoryPolicyPath != "/tmp/policy.json" ||
+		cfg.MemoryPolicyVersion != "memory-v10" ||
+		cfg.MemoryPolicyReloadInterval != 45*time.Second ||
+		!cfg.MemoryPolicyStrictEval {
+		t.Fatalf("memory policy flag overrides not loaded: %#v", cfg)
 	}
 }
 

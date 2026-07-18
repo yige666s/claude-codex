@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -127,12 +128,42 @@ func runtimeConfigFromStartup(cfg startupconfig.Config, skillShellSandboxConfig 
 			TriggerTTL:                cfg.LoopTriggerTTL,
 		},
 		MessageSearch:     messageSearchConfigFromStartup(cfg),
+		MemoryPolicy:      memoryPolicyFromStartup(cfg),
 		MemoryVector:      memoryVectorConfigFromStartup(cfg),
 		MemoryRecall:      memoryRecallConfigFromStartup(cfg),
 		EpisodicMemory:    episodicMemoryConfigFromStartup(cfg),
 		Live:              liveConfigFromStartup(cfg),
 		SkillShellSandbox: skillShellSandboxConfig,
 	}
+}
+
+func memoryPolicyFromStartup(cfg startupconfig.Config) agentruntime.MemoryPolicy {
+	policy, err := agentruntime.LoadMemoryPolicyFile(cfg.MemoryPolicyPath, cfg.MemoryPolicyVersion)
+	if err != nil {
+		logFatalf("load memory policy: %v", err)
+	}
+	if err := agentruntime.ValidateMemoryPolicyForStartup(policy, cfg.MemoryPolicyStrictEval); err != nil {
+		logFatalf("validate memory policy: %v", err)
+	}
+	return policy
+}
+
+func memoryPolicyReloaderFromStartup(cfg startupconfig.Config, initial agentruntime.MemoryPolicy, logger *slog.Logger) *agentruntime.MemoryPolicyFileReloader {
+	if strings.TrimSpace(cfg.MemoryPolicyPath) == "" || cfg.MemoryPolicyReloadInterval <= 0 {
+		return nil
+	}
+	reloader, err := agentruntime.NewMemoryPolicyFileReloader(agentruntime.MemoryPolicyFileReloaderConfig{
+		Path:            cfg.MemoryPolicyPath,
+		ExpectedVersion: cfg.MemoryPolicyVersion,
+		ReloadInterval:  cfg.MemoryPolicyReloadInterval,
+		StrictEval:      cfg.MemoryPolicyStrictEval,
+		InitialPolicy:   initial,
+		Logger:          logger,
+	})
+	if err != nil {
+		logFatalf("configure memory policy reloader: %v", err)
+	}
+	return reloader
 }
 
 func memoryRecallConfigFromStartup(cfg startupconfig.Config) agentruntime.MemoryRecallConfig {

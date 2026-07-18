@@ -55,23 +55,43 @@ type MemoryEvaluation struct {
 	Reason   string
 }
 
-type RuleMemoryExtractor struct{}
-
-func NewRuleMemoryExtractor() RuleMemoryExtractor {
-	return RuleMemoryExtractor{}
+type RuleMemoryExtractor struct {
+	Policy   MemoryPolicy
+	Provider MemoryPolicyProvider
 }
 
-func (RuleMemoryExtractor) Extract(_ context.Context, input MemoryExtractionInput) ([]MemoryCandidate, error) {
+func NewRuleMemoryExtractor() RuleMemoryExtractor {
+	return NewRuleMemoryExtractorWithPolicy(DefaultMemoryPolicy())
+}
+
+func NewRuleMemoryExtractorWithPolicy(policy MemoryPolicy) RuleMemoryExtractor {
+	return RuleMemoryExtractor{Policy: normalizeMemoryPolicy(policy)}
+}
+
+func NewRuleMemoryExtractorWithProvider(provider MemoryPolicyProvider) RuleMemoryExtractor {
+	return RuleMemoryExtractor{Provider: provider}
+}
+
+func (e RuleMemoryExtractor) MemoryPolicy() MemoryPolicy {
+	if e.Provider != nil {
+		return e.Provider.MemoryPolicy()
+	}
+	return normalizeMemoryPolicy(e.Policy)
+}
+
+func (e RuleMemoryExtractor) Extract(_ context.Context, input MemoryExtractionInput) ([]MemoryCandidate, error) {
+	policy := e.MemoryPolicy()
 	userText := lastVisibleUserMessageFromMessages(input.Messages)
-	if userText == "" || memoryOptOutRequested(userText) {
+	if userText == "" || memoryOptOutRequestedWithPolicy(userText, policy) {
 		return nil, nil
 	}
-	candidates := extractMemoryCandidates(userText)
+	candidates := extractMemoryCandidatesWithPolicy(userText, policy)
 	for i := range candidates {
 		if candidates[i].Metadata == nil {
 			candidates[i].Metadata = map[string]any{}
 		}
 		candidates[i].Metadata["extractor"] = "rule"
+		candidates[i].Metadata["memory_policy_version"] = memoryPolicyVersion(policy)
 	}
 	return candidates, nil
 }
@@ -262,39 +282,6 @@ func (RuleMemoryAbstractor) Build(_ context.Context, userID string, items []Memo
 	return abstracts, nil
 }
 
-var (
-	explicitMemoryPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)(?:please\s+)?remember(?:\s+that)?\s+(.+)`),
-		regexp.MustCompile(`(?i)(?:note|save)\s+(?:that\s+)?(.+)`),
-		regexp.MustCompile(`(?i)(?:帮我记录|帮我记住|请记住|记一下|记录一下|记住(?:了)?)\s*[,，:：]?\s*(.+)`),
-	}
-	preferencePatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\bI\s+(?:really\s+)?(?:like|love|prefer|enjoy)\s+(.+)`),
-		regexp.MustCompile(`(?i)\bI\s+(?:do\s+not|don't|dislike|hate)\s+(.+)`),
-		regexp.MustCompile(`(?i)\bmy\s+preference\s+is\s+(.+)`),
-		regexp.MustCompile(`(?:我喜欢|我偏好|我更喜欢|我不喜欢|我讨厌|我的偏好是)[:：]?\s*(.+)`),
-	}
-	factPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\bmy\s+name\s+is\s+([^\n。.!?]+)`),
-		regexp.MustCompile(`(?i)\bmy\s+(?:job|profession|occupation|role)\s+is\s+([^\n。.!?]+)`),
-		regexp.MustCompile(`(?i)\bI\s+(?:am|work as|live in)\s+([^\n。.!?]+)`),
-		regexp.MustCompile(`(?:我的职业是|我的工作是|我的岗位是)[:：]?\s*([^\n。！？!?]+)`),
-		regexp.MustCompile(`(?:我叫|我的名字是|我是|我住在|我居住在|我居住于|我在)[:：]?\s*([^\n。！？!?]+)`),
-	}
-	piiPatterns = []struct {
-		name    string
-		pattern *regexp.Regexp
-	}{
-		{"secret", regexp.MustCompile(`(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|bearer|password|passwd|secret|client[_-]?secret)\s*[:=]\s*[^\s,;]+`)},
-		{"secret", regexp.MustCompile(`(?i)\b(?:sk|pk|rk)-[A-Za-z0-9_\-]{16,}\b`)},
-		{"email", regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b`)},
-		{"ssn", regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)},
-		{"cn_id", regexp.MustCompile(`\b\d{17}[\dXx]\b`)},
-		{"credit_card", regexp.MustCompile(`\b(?:\d[ -]*?){13,19}\b`)},
-		{"phone", regexp.MustCompile(`(?:\+?\d[\d\s\-()]{7,}\d)`)},
-	}
-)
-
 func extractMemoryItems(userID string, session *state.Session) []MemoryItem {
 	if strings.TrimSpace(userID) == "" || session == nil || session.ID == "" {
 		return nil
@@ -304,12 +291,16 @@ func extractMemoryItems(userID string, session *state.Session) []MemoryItem {
 }
 
 func evaluateMemoryCandidates(userID, sessionID string, candidates []MemoryCandidate) []MemoryItem {
+	return evaluateMemoryCandidatesWithPolicy(userID, sessionID, candidates, DefaultMemoryPolicy())
+}
+
+func evaluateMemoryCandidatesWithPolicy(userID, sessionID string, candidates []MemoryCandidate, policy MemoryPolicy) []MemoryItem {
 	if len(candidates) == 0 {
 		return nil
 	}
 	items := make([]MemoryItem, 0, len(candidates))
 	for _, candidate := range candidates {
-		evaluation := evaluateMemoryCandidate(userID, sessionID, candidate)
+		evaluation := evaluateMemoryCandidateWithPolicy(userID, sessionID, candidate, policy)
 		if !evaluation.Accepted {
 			continue
 		}
@@ -336,45 +327,106 @@ func lastVisibleUserMessageFromMessages(messages []state.Message) string {
 }
 
 func extractMemoryCandidates(text string) []MemoryCandidate {
+	return extractMemoryCandidatesWithPolicy(text, DefaultMemoryPolicy())
+}
+
+func extractMemoryCandidatesWithPolicy(text string, policy MemoryPolicy) []MemoryCandidate {
+	policy = normalizeMemoryPolicy(policy)
 	text = strings.TrimSpace(text)
 	var candidates []MemoryCandidate
-	for _, pattern := range explicitMemoryPatterns {
-		if content := firstMatch(pattern, text); content != "" {
-			candidates = append(candidates, MemoryCandidate{
-				Content:    content,
-				Category:   inferMemoryCategory(content),
-				Tags:       []string{"explicit"},
-				Confidence: 0.9,
-				Importance: 0.9,
-				Reason:     "explicit_memory_request",
-			})
+	for _, rule := range policy.Extraction.Rules {
+		pattern, ok := compileMemoryPolicyPattern(rule.Pattern)
+		if !ok {
+			continue
 		}
-	}
-	for _, pattern := range preferencePatterns {
-		if content := firstMatch(pattern, text); content != "" {
-			candidates = append(candidates, MemoryCandidate{
-				Content:    preferenceMemoryContent(text, content),
-				Category:   MemoryCategoryPreference,
-				Tags:       []string{"preference"},
-				Confidence: 0.78,
-				Importance: 0.65,
-				Reason:     "preference_pattern",
-			})
+		content := firstMatch(pattern, text)
+		if content == "" {
+			continue
 		}
-	}
-	for _, pattern := range factPatterns {
-		if content := firstMatch(pattern, text); content != "" {
-			candidates = append(candidates, MemoryCandidate{
-				Content:    factMemoryContent(text, content),
-				Category:   MemoryCategoryFact,
-				Tags:       []string{"fact"},
-				Confidence: 0.7,
-				Importance: 0.7,
-				Reason:     "fact_pattern",
-			})
+		candidate, ok := memoryCandidateFromPolicyRule(text, content, rule, policy)
+		if ok {
+			candidates = append(candidates, candidate)
 		}
 	}
 	return dedupeMemoryCandidates(candidates)
+}
+
+func memoryCandidateFromPolicyRule(original, extracted string, rule MemoryExtractionRule, policy MemoryPolicy) (MemoryCandidate, bool) {
+	kind := strings.ToLower(strings.TrimSpace(rule.Kind))
+	candidate := MemoryCandidate{
+		Tags:       normalizeMemoryTags(rule.Tags),
+		Confidence: memoryPolicyRuleConfidence(rule),
+		Importance: memoryPolicyRuleImportance(rule),
+		Reason:     strings.TrimSpace(rule.Reason),
+		Metadata: map[string]any{
+			"extraction_rule_id":    strings.TrimSpace(rule.ID),
+			"memory_policy_version": memoryPolicyVersion(policy),
+		},
+	}
+	switch kind {
+	case "explicit":
+		candidate.Content = extracted
+		candidate.Category = firstNonEmptyString(rule.Category, inferMemoryCategoryWithPolicy(extracted, policy))
+		if len(candidate.Tags) == 0 {
+			candidate.Tags = []string{"explicit"}
+		}
+		if candidate.Reason == "" {
+			candidate.Reason = "explicit_memory_request"
+		}
+	case "preference":
+		candidate.Content = preferenceMemoryContentWithPolicy(original, extracted, policy)
+		candidate.Category = firstNonEmptyString(rule.Category, MemoryCategoryPreference)
+		if len(candidate.Tags) == 0 {
+			candidate.Tags = []string{"preference"}
+		}
+		if candidate.Reason == "" {
+			candidate.Reason = "preference_pattern"
+		}
+	case "fact":
+		candidate.Content = factMemoryContentWithPolicy(original, extracted, policy)
+		candidate.Category = firstNonEmptyString(rule.Category, MemoryCategoryFact)
+		if len(candidate.Tags) == 0 {
+			candidate.Tags = []string{"fact"}
+		}
+		if candidate.Reason == "" {
+			candidate.Reason = "fact_pattern"
+		}
+	default:
+		return MemoryCandidate{}, false
+	}
+	return candidate, true
+}
+
+func memoryPolicyRuleConfidence(rule MemoryExtractionRule) float64 {
+	if rule.Confidence > 0 {
+		return rule.Confidence
+	}
+	switch strings.ToLower(strings.TrimSpace(rule.Kind)) {
+	case "explicit":
+		return 0.9
+	case "preference":
+		return 0.78
+	case "fact":
+		return 0.7
+	default:
+		return defaultMemoryConfidence
+	}
+}
+
+func memoryPolicyRuleImportance(rule MemoryExtractionRule) float64 {
+	if rule.Importance > 0 {
+		return rule.Importance
+	}
+	switch strings.ToLower(strings.TrimSpace(rule.Kind)) {
+	case "explicit":
+		return 0.9
+	case "preference":
+		return 0.65
+	case "fact":
+		return 0.7
+	default:
+		return defaultMemoryWeight
+	}
 }
 
 func memoryExtractionPrompt(input MemoryExtractionInput) string {
@@ -548,20 +600,25 @@ func markLLMMemoryCandidates(candidates []MemoryCandidate, repairAttempt int) {
 }
 
 func evaluateMemoryCandidate(userID, sessionID string, candidate MemoryCandidate) MemoryEvaluation {
+	return evaluateMemoryCandidateWithPolicy(userID, sessionID, candidate, DefaultMemoryPolicy())
+}
+
+func evaluateMemoryCandidateWithPolicy(userID, sessionID string, candidate MemoryCandidate, policy MemoryPolicy) MemoryEvaluation {
+	policy = normalizeMemoryPolicy(policy)
 	candidate.Content = strings.TrimSpace(candidate.Content)
 	if candidate.Content == "" {
 		return MemoryEvaluation{Reason: "empty"}
 	}
-	if candidate.Confidence < 0.6 {
+	if candidate.Confidence < policy.Extraction.MinConfidence {
 		return MemoryEvaluation{Reason: "low_confidence"}
 	}
 	sensitivity := strings.ToLower(strings.TrimSpace(candidate.Sensitivity))
-	if sensitivity == "secret" || sensitivity == "unsafe" || hasSecretMemory(candidate.Content) || hasPromptInjectionMemory(candidate.Content) {
+	if sensitivity == "secret" || sensitivity == "unsafe" || hasSecretMemoryWithPolicy(candidate.Content, policy) || hasPromptInjectionMemoryWithPolicy(candidate.Content, policy) {
 		return MemoryEvaluation{Reason: "blocked_sensitive"}
 	}
-	content, metadata := sanitizeMemoryContent(candidate.Content)
-	content = truncateMemoryContent(content)
-	if content == "" || isWeakMemoryContent(content) {
+	content, metadata := sanitizeMemoryContentWithPolicy(candidate.Content, policy)
+	content = truncateMemoryContentWithPolicy(content, policy)
+	if content == "" || isWeakMemoryContentWithPolicy(content, policy) {
 		return MemoryEvaluation{Reason: "weak_content"}
 	}
 	item := newConversationMemoryItem(userID, sessionID, content)
@@ -595,7 +652,8 @@ func evaluateMemoryCandidate(userID, sessionID string, candidate MemoryCandidate
 	if sensitivity != "" {
 		item.Metadata["sensitivity"] = sensitivity
 	}
-	item.Metadata["security_filter_version"] = "regex-v2"
+	item.Metadata["security_filter_version"] = policy.Safety.Version
+	item.Metadata["memory_policy_version"] = memoryPolicyVersion(policy)
 	item.ExpiresAt = expiresAtFromHint(candidate.ExpiresHint, item.CreatedAt)
 	return MemoryEvaluation{Accepted: true, Item: item}
 }
@@ -615,31 +673,49 @@ func cleanExtractedMemory(value string) string {
 }
 
 func preferenceMemoryContent(original, extracted string) string {
+	return preferenceMemoryContentWithPolicy(original, extracted, DefaultMemoryPolicy())
+}
+
+func preferenceMemoryContentWithPolicy(original, extracted string, policy MemoryPolicy) string {
 	original = strings.TrimSpace(original)
-	if strings.Contains(original, extracted) && len([]rune(original)) <= 160 {
+	if strings.Contains(original, extracted) && len([]rune(original)) <= normalizeMemoryPolicy(policy).Extraction.InlineOriginalMaxRunes {
 		return cleanExtractedMemory(original)
 	}
 	return "User preference: " + extracted
 }
 
 func factMemoryContent(original, extracted string) string {
+	return factMemoryContentWithPolicy(original, extracted, DefaultMemoryPolicy())
+}
+
+func factMemoryContentWithPolicy(original, extracted string, policy MemoryPolicy) string {
+	policy = normalizeMemoryPolicy(policy)
 	original = strings.TrimSpace(original)
-	if strings.Contains(original, extracted) && len([]rune(original)) <= 160 && !isWeakMemoryContent(original) {
+	if strings.Contains(original, extracted) && len([]rune(original)) <= policy.Extraction.InlineOriginalMaxRunes && !isWeakMemoryContentWithPolicy(original, policy) {
 		return cleanExtractedMemory(original)
 	}
 	return "User fact: " + extracted
 }
 
 func inferMemoryCategory(content string) string {
+	return inferMemoryCategoryWithPolicy(content, DefaultMemoryPolicy())
+}
+
+func inferMemoryCategoryWithPolicy(content string, policy MemoryPolicy) string {
+	content = strings.TrimSpace(content)
 	lower := strings.ToLower(content)
-	switch {
-	case strings.Contains(lower, "prefer") || strings.Contains(lower, "like") || strings.Contains(lower, "love") || strings.Contains(lower, "dislike") || strings.Contains(content, "喜欢") || strings.Contains(content, "偏好"):
-		return MemoryCategoryPreference
-	case strings.Contains(lower, "learned") || strings.Contains(lower, "can ") || strings.Contains(lower, "skill") || strings.Contains(content, "会") || strings.Contains(content, "擅长"):
-		return MemoryCategorySkill
-	default:
-		return MemoryCategoryFact
+	for _, hint := range normalizeMemoryPolicy(policy).Extraction.CategoryHints {
+		for _, keyword := range hint.Keywords {
+			keyword = strings.TrimSpace(keyword)
+			if keyword == "" {
+				continue
+			}
+			if strings.Contains(lower, strings.ToLower(keyword)) || strings.Contains(content, keyword) {
+				return normalizeMemoryCategory(hint.Category)
+			}
+		}
 	}
+	return MemoryCategoryFact
 }
 
 func dedupeMemoryCandidates(candidates []MemoryCandidate) []MemoryCandidate {
@@ -657,13 +733,23 @@ func dedupeMemoryCandidates(candidates []MemoryCandidate) []MemoryCandidate {
 }
 
 func sanitizeMemoryContent(content string) (string, map[string]any) {
+	return sanitizeMemoryContentWithPolicy(content, DefaultMemoryPolicy())
+}
+
+func sanitizeMemoryContentWithPolicy(content string, policy MemoryPolicy) (string, map[string]any) {
+	policy = normalizeMemoryPolicy(policy)
 	metadata := map[string]any{}
 	content = strings.TrimSpace(content)
 	var hits []string
-	for _, rule := range piiPatterns {
-		if rule.pattern.MatchString(content) {
-			hits = append(hits, rule.name)
-			content = rule.pattern.ReplaceAllString(content, "["+strings.ToUpper(rule.name)+"_REDACTED]")
+	for _, rule := range policy.Safety.PIIRules {
+		pattern, ok := compileMemoryPolicyPattern(rule.Pattern)
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(rule.Name)
+		if pattern.MatchString(content) {
+			hits = append(hits, name)
+			content = pattern.ReplaceAllString(content, "["+strings.ToUpper(name)+"_REDACTED]")
 		}
 	}
 	if len(hits) > 0 {
@@ -673,8 +759,16 @@ func sanitizeMemoryContent(content string) (string, map[string]any) {
 }
 
 func hasSecretMemory(content string) bool {
-	for _, rule := range piiPatterns {
-		if rule.name == "secret" && rule.pattern.MatchString(content) {
+	return hasSecretMemoryWithPolicy(content, DefaultMemoryPolicy())
+}
+
+func hasSecretMemoryWithPolicy(content string, policy MemoryPolicy) bool {
+	for _, rule := range normalizeMemoryPolicy(policy).Safety.PIIRules {
+		pattern, ok := compileMemoryPolicyPattern(rule.Pattern)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(rule.Name) == "secret" && pattern.MatchString(content) {
 			return true
 		}
 	}
@@ -682,10 +776,14 @@ func hasSecretMemory(content string) bool {
 }
 
 func hasPromptInjectionMemory(content string) bool {
+	return hasPromptInjectionMemoryWithPolicy(content, DefaultMemoryPolicy())
+}
+
+func hasPromptInjectionMemoryWithPolicy(content string, policy MemoryPolicy) bool {
 	lower := strings.ToLower(content)
-	phrases := []string{"ignore previous", "ignore system", "bypass", "jailbreak", "developer message", "system prompt", "泄露", "忽略系统", "绕过"}
-	for _, phrase := range phrases {
-		if strings.Contains(lower, phrase) {
+	for _, phrase := range normalizeMemoryPolicy(policy).Safety.PromptInjectionPhrases {
+		phrase = strings.TrimSpace(phrase)
+		if phrase != "" && strings.Contains(lower, strings.ToLower(phrase)) {
 			return true
 		}
 	}
@@ -693,25 +791,34 @@ func hasPromptInjectionMemory(content string) bool {
 }
 
 func memoryOptOutRequested(content string) bool {
+	return memoryOptOutRequestedWithPolicy(content, DefaultMemoryPolicy())
+}
+
+func memoryOptOutRequestedWithPolicy(content string, policy MemoryPolicy) bool {
 	lower := strings.ToLower(content)
-	return strings.Contains(lower, "do not remember") || strings.Contains(lower, "don't remember") || strings.Contains(lower, "不要记住") || strings.Contains(lower, "别记住")
+	for _, phrase := range normalizeMemoryPolicy(policy).Safety.OptOutPhrases {
+		phrase = strings.TrimSpace(phrase)
+		if phrase != "" && strings.Contains(lower, strings.ToLower(phrase)) {
+			return true
+		}
+	}
+	return false
 }
 
 func isWeakMemoryContent(content string) bool {
+	return isWeakMemoryContentWithPolicy(content, DefaultMemoryPolicy())
+}
+
+func isWeakMemoryContentWithPolicy(content string, policy MemoryPolicy) bool {
+	weakPolicy := normalizeMemoryPolicy(policy).Extraction.WeakContent
 	words := strings.Fields(content)
 	runes := len([]rune(content))
-	// Bug 3 fix: 非 CJK 文本最低词数从 2 提升到 3，过滤 "I like it" 等短句。
-	if runes < 8 || (len(words) < 3 && !containsCJK(content)) {
+	if runes < weakPolicy.MinRunes || (len(words) < weakPolicy.MinNonCJKWords && !containsCJK(content)) {
 		return true
 	}
 	lower := strings.ToLower(strings.TrimSpace(content))
-	weak := []string{
-		"hello", "hi", "ok", "thanks", "thank you",
-		"i like it", "i love it", "i hate it", "i don't like it",
-		"好的", "谢谢",
-	}
-	for _, value := range weak {
-		if lower == value {
+	for _, value := range weakPolicy.ExactPhrases {
+		if lower == strings.ToLower(strings.TrimSpace(value)) {
 			return true
 		}
 	}
@@ -752,12 +859,20 @@ func expiresAtFromHint(hint string, now time.Time) *time.Time {
 }
 
 func truncateMemoryContent(value string) string {
+	return truncateMemoryContentWithPolicy(value, DefaultMemoryPolicy())
+}
+
+func truncateMemoryContentWithPolicy(value string, policy MemoryPolicy) string {
 	value = strings.TrimSpace(value)
-	if len([]rune(value)) <= 2000 {
+	maxRunes := normalizeMemoryPolicy(policy).Extraction.MaxContentRunes
+	if len([]rune(value)) <= maxRunes {
 		return value
 	}
 	runes := []rune(value)
-	return string(runes[:1997]) + "..."
+	if maxRunes <= 3 {
+		return string(runes[:maxRunes])
+	}
+	return string(runes[:maxRunes-3]) + "..."
 }
 
 func normalizeMemoryItem(item MemoryItem) MemoryItem {
@@ -1194,6 +1309,12 @@ func memoryTextRelevance(query, content string) float64 {
 	return clamp01(float64(matched) / math.Sqrt(float64(len(queryTokens)*len(contentTokens))))
 }
 
+type memoryConflictSlot struct {
+	Name   string
+	Value  string
+	RuleID string
+}
+
 func memoryBM25ItemScores(query string, items []MemoryItem) []float64 {
 	documents := make([]string, 0, len(items))
 	for _, item := range items {
@@ -1350,15 +1471,8 @@ func memoryBM25StopWord(token string) bool {
 }
 
 func memoryTokens(value string) map[string]bool {
-	value = strings.ToLower(value)
 	tokens := map[string]bool{}
-	for _, token := range strings.FieldsFunc(value, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && !(r >= '\u4e00' && r <= '\u9fff')
-	}) {
-		token = strings.TrimSpace(token)
-		if len([]rune(token)) < 2 {
-			continue
-		}
+	for _, token := range memoryBM25Tokens(value) {
 		tokens[token] = true
 	}
 	return tokens
@@ -1417,6 +1531,11 @@ func upsertMemoryItem(existing []MemoryItem, candidate MemoryItem) MemoryItem {
 }
 
 func applyMemoryConflictResolution(existing []MemoryItem, candidate MemoryItem) (MemoryItem, []MemoryItem) {
+	return applyMemoryConflictResolutionWithPolicy(existing, candidate, DefaultMemoryPolicy())
+}
+
+func applyMemoryConflictResolutionWithPolicy(existing []MemoryItem, candidate MemoryItem, policy MemoryPolicy) (MemoryItem, []MemoryItem) {
+	policy = normalizeMemoryPolicy(policy)
 	candidate = normalizeMemoryItem(candidate)
 	if candidate.ID == "" {
 		candidate.ID = newMemoryID()
@@ -1427,31 +1546,38 @@ func applyMemoryConflictResolution(existing []MemoryItem, candidate MemoryItem) 
 		if current.ID == candidate.ID || current.Status != MemoryStatusActive {
 			continue
 		}
-		if current.Namespace == MemoryNamespacePersonalization && current.Source == MemorySourceUserEdit && candidate.Source != MemorySourceUserEdit && memoryConflictCandidate(current, candidate) {
+		conflicts, conflictRuleID := memoryConflictCandidateWithPolicy(current, candidate, policy)
+		if current.Namespace == MemoryNamespacePersonalization && current.Source == MemorySourceUserEdit && candidate.Source != MemorySourceUserEdit && conflicts {
 			candidate.Status = MemoryStatusArchived
 			candidate.SupersededByID = current.ID
 			candidate.ConflictIDs = normalizeMemoryIDs(append(candidate.ConflictIDs, current.ID))
 			candidate.Metadata["conflict_strategy"] = "explicit_personalization"
+			candidate.Metadata["conflict_rule_id"] = conflictRuleID
+			candidate.Metadata["memory_policy_version"] = memoryPolicyVersion(policy)
 			return candidate, updates
 		}
 		if current.Namespace != candidate.Namespace || current.Level != MemoryLevelAtomic || current.Category != candidate.Category {
 			continue
 		}
-		if !memoryConflictCandidate(current, candidate) {
+		if !conflicts {
 			continue
 		}
-		strategy := memoryConflictStrategy(current, candidate)
+		strategy := memoryConflictStrategyWithPolicy(current, candidate, policy)
 		switch strategy {
 		case "pending_confirm":
 			candidate.Status = MemoryStatusPendingConfirm
 			candidate.ConflictIDs = normalizeMemoryIDs(append(candidate.ConflictIDs, current.ID))
 			candidate.Metadata["conflict_strategy"] = strategy
+			candidate.Metadata["conflict_rule_id"] = conflictRuleID
+			candidate.Metadata["memory_policy_version"] = memoryPolicyVersion(policy)
 			continue
 		case "candidate_loses":
 			candidate.Status = MemoryStatusArchived
 			candidate.SupersededByID = current.ID
 			candidate.ConflictIDs = normalizeMemoryIDs(append(candidate.ConflictIDs, current.ID))
 			candidate.Metadata["conflict_strategy"] = strategy
+			candidate.Metadata["conflict_rule_id"] = conflictRuleID
+			candidate.Metadata["memory_policy_version"] = memoryPolicyVersion(policy)
 			continue
 		default:
 			current.Status = MemoryStatusArchived
@@ -1462,9 +1588,13 @@ func applyMemoryConflictResolution(existing []MemoryItem, candidate MemoryItem) 
 				current.Metadata = map[string]any{}
 			}
 			current.Metadata["conflict_strategy"] = strategy
+			current.Metadata["conflict_rule_id"] = conflictRuleID
+			current.Metadata["memory_policy_version"] = memoryPolicyVersion(policy)
 			candidate.SupersedesID = current.ID
 			candidate.ConflictIDs = normalizeMemoryIDs(append(candidate.ConflictIDs, current.ID))
 			candidate.Metadata["conflict_strategy"] = strategy
+			candidate.Metadata["conflict_rule_id"] = conflictRuleID
+			candidate.Metadata["memory_policy_version"] = memoryPolicyVersion(policy)
 			updates = append(updates, current)
 		}
 	}
@@ -1472,24 +1602,110 @@ func applyMemoryConflictResolution(existing []MemoryItem, candidate MemoryItem) 
 }
 
 func memoryConflictCandidate(a, b MemoryItem) bool {
+	conflicts, _ := memoryConflictCandidateWithPolicy(a, b, DefaultMemoryPolicy())
+	return conflicts
+}
+
+func memoryConflictCandidateWithPolicy(a, b MemoryItem, policy MemoryPolicy) (bool, string) {
+	policy = normalizeMemoryPolicy(policy)
 	if a.RawHash != "" && a.RawHash == b.RawHash {
-		return false
+		return false, ""
+	}
+	if aSlot, ok := memoryFactConflictSlotWithPolicy(a.Content, policy); ok {
+		if bSlot, ok := memoryFactConflictSlotWithPolicy(b.Content, policy); ok && aSlot.Name == bSlot.Name {
+			if memorySlotValuesSameWithPolicy(aSlot.Value, bSlot.Value, policy) {
+				return false, aSlot.RuleID
+			}
+			return true, aSlot.RuleID
+		}
 	}
 	overlap := memoryTextRelevance(a.Content, b.Content)
-	if overlap < 0.18 {
+	if overlap < policy.Conflict.TextOverlapMin {
+		return false, ""
+	}
+	if memoryContradictsWithPolicy(a.Content, b.Content, policy) {
+		return true, "text_contradiction"
+	}
+	if overlap >= policy.Conflict.StrongOverlapThreshold {
+		return true, "strong_text_overlap"
+	}
+	return false, ""
+}
+
+func memoryFactConflictSlot(content string) (memoryConflictSlot, bool) {
+	return memoryFactConflictSlotWithPolicy(content, DefaultMemoryPolicy())
+}
+
+func memoryFactConflictSlotWithPolicy(content string, policy MemoryPolicy) (memoryConflictSlot, bool) {
+	value := strings.ToLower(strings.TrimSpace(content))
+	if value == "" {
+		return memoryConflictSlot{}, false
+	}
+	for _, slot := range normalizeMemoryPolicy(policy).Conflict.Slots {
+		for _, marker := range slot.Markers {
+			marker = strings.ToLower(strings.TrimSpace(marker))
+			if marker == "" {
+				continue
+			}
+			if idx := strings.Index(value, marker); idx >= 0 {
+				slotValue := normalizeMemorySlotValueWithPolicy(value[idx+len(marker):], policy)
+				return memoryConflictSlot{Name: strings.TrimSpace(slot.Name), Value: slotValue, RuleID: strings.TrimSpace(slot.ID)}, true
+			}
+		}
+	}
+	return memoryConflictSlot{}, false
+}
+
+func memorySlotValuesSame(a, b string) bool {
+	return memorySlotValuesSameWithPolicy(a, b, DefaultMemoryPolicy())
+}
+
+func memorySlotValuesSameWithPolicy(a, b string, policy MemoryPolicy) bool {
+	a = normalizeMemorySlotValueWithPolicy(a, policy)
+	b = normalizeMemorySlotValueWithPolicy(b, policy)
+	if a == "" || b == "" {
 		return false
 	}
-	return memoryContradicts(a.Content, b.Content) || overlap >= 0.45
+	return a == b || strings.Contains(a, b) || strings.Contains(b, a)
+}
+
+func normalizeMemorySlotValue(value string) string {
+	return normalizeMemorySlotValueWithPolicy(value, DefaultMemoryPolicy())
+}
+
+func normalizeMemorySlotValueWithPolicy(value string, policy MemoryPolicy) string {
+	conflictPolicy := normalizeMemoryPolicy(policy).Conflict
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.Trim(value, " \t\r\n。.!?！？,，;；:：")
+	for _, prefix := range conflictPolicy.SlotValuePrefixes {
+		value = strings.TrimSpace(strings.TrimPrefix(value, prefix))
+	}
+	for _, suffix := range conflictPolicy.SlotValueSuffixes {
+		value = strings.TrimSpace(strings.TrimSuffix(value, suffix))
+	}
+	replacerArgs := make([]string, 0, len(conflictPolicy.SlotValueRemove)*2)
+	for _, token := range conflictPolicy.SlotValueRemove {
+		replacerArgs = append(replacerArgs, token, "")
+	}
+	if len(replacerArgs) == 0 {
+		return value
+	}
+	replacer := strings.NewReplacer(replacerArgs...)
+	return replacer.Replace(value)
 }
 
 func memoryConflictStrategy(existing, candidate MemoryItem) string {
+	return memoryConflictStrategyWithPolicy(existing, candidate, DefaultMemoryPolicy())
+}
+
+func memoryConflictStrategyWithPolicy(existing, candidate MemoryItem, policy MemoryPolicy) string {
 	if sourcePriority(candidate.Source) > sourcePriority(existing.Source) {
 		return "source_priority"
 	}
 	if sourcePriority(candidate.Source) < sourcePriority(existing.Source) {
 		return "candidate_loses"
 	}
-	if memoryTemporalReplacement(candidate.Content) {
+	if memoryTemporalReplacementWithPolicy(candidate.Content, policy) {
 		return "temporal"
 	}
 	diff := math.Abs(candidate.Confidence - existing.Confidence)
@@ -1516,9 +1732,14 @@ func sourcePriority(source string) int {
 }
 
 func memoryTemporalReplacement(content string) bool {
+	return memoryTemporalReplacementWithPolicy(content, DefaultMemoryPolicy())
+}
+
+func memoryTemporalReplacementWithPolicy(content string, policy MemoryPolicy) bool {
 	lower := strings.ToLower(content)
-	for _, phrase := range []string{"now ", "currently ", "moved to", "changed to", "现在", "目前", "搬到", "改为"} {
-		if strings.Contains(lower, phrase) {
+	for _, phrase := range normalizeMemoryPolicy(policy).Conflict.TemporalMarkers {
+		needle := strings.ToLower(phrase)
+		if strings.TrimSpace(needle) != "" && strings.Contains(lower, needle) {
 			return true
 		}
 	}
@@ -1526,19 +1747,30 @@ func memoryTemporalReplacement(content string) bool {
 }
 
 func memoryContradicts(a, b string) bool {
+	return memoryContradictsWithPolicy(a, b, DefaultMemoryPolicy())
+}
+
+func memoryContradictsWithPolicy(a, b string, policy MemoryPolicy) bool {
+	policy = normalizeMemoryPolicy(policy)
 	aLower := strings.ToLower(a)
 	bLower := strings.ToLower(b)
-	aNeg := memoryHasNegation(aLower)
-	bNeg := memoryHasNegation(bLower)
-	if aNeg != bNeg && memoryTextRelevance(a, b) >= 0.18 {
+	aNeg := memoryHasNegationWithPolicy(aLower, policy)
+	bNeg := memoryHasNegationWithPolicy(bLower, policy)
+	if aNeg != bNeg && memoryTextRelevance(a, b) >= policy.Conflict.TextOverlapMin {
 		return true
 	}
-	return memoryTemporalReplacement(bLower) && memoryTextRelevance(a, b) >= 0.18
+	return memoryTemporalReplacementWithPolicy(bLower, policy) && memoryTextRelevance(a, b) >= policy.Conflict.TextOverlapMin
 }
 
 func memoryHasNegation(value string) bool {
-	for _, phrase := range []string{"don't", "do not", "dislike", "hate", "not ", "不喜欢", "讨厌", "不是", "不再"} {
-		if strings.Contains(value, phrase) {
+	return memoryHasNegationWithPolicy(value, DefaultMemoryPolicy())
+}
+
+func memoryHasNegationWithPolicy(value string, policy MemoryPolicy) bool {
+	lower := strings.ToLower(value)
+	for _, phrase := range normalizeMemoryPolicy(policy).Conflict.NegationMarkers {
+		needle := strings.ToLower(phrase)
+		if strings.TrimSpace(needle) != "" && strings.Contains(lower, needle) {
 			return true
 		}
 	}

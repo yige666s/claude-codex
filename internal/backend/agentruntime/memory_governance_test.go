@@ -76,6 +76,63 @@ func TestFileMemoryServiceLoadContextUsesBM25KeywordRanking(t *testing.T) {
 	}
 }
 
+func TestMemoryExtractorCapturesChineseResidenceMoveFact(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("我现在搬到北京市海淀区居住了")
+	session.AddAssistantMessage("已更新")
+
+	candidates, err := NewRuleMemoryExtractor().Extract(context.Background(), MemoryExtractionInput{
+		UserID:    "alice",
+		SessionID: session.ID,
+		Messages:  session.Messages,
+		Now:       time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("extract memory candidates: %v", err)
+	}
+	items := evaluateMemoryCandidates("alice", session.ID, candidates)
+	for _, item := range items {
+		if item.Category == MemoryCategoryFact && strings.Contains(item.Content, "海淀区") {
+			return
+		}
+	}
+	t.Fatalf("expected Chinese residence move fact memory, got %#v", items)
+}
+
+func TestFileMemoryServiceArchivesOldChineseResidenceOnMove(t *testing.T) {
+	ctx := context.Background()
+	memory := NewFileMemoryService(t.TempDir())
+	session := state.NewSession(t.TempDir())
+	session.AddUserMessage("我居住在北京市通州区")
+	session.AddAssistantMessage("好的")
+	if err := memory.AfterTurn(ctx, "alice", session); err != nil {
+		t.Fatalf("first memory turn: %v", err)
+	}
+
+	session.AddUserMessage("我现在搬到北京市海淀区居住了")
+	session.AddAssistantMessage("已更新")
+	if err := memory.AfterTurn(ctx, "alice", session); err != nil {
+		t.Fatalf("move memory turn: %v", err)
+	}
+
+	items, err := memory.ListMemoryItems(ctx, "alice", MemoryItemFilter{})
+	if err != nil {
+		t.Fatalf("list memory: %v", err)
+	}
+	var activeNew, archivedOld MemoryItem
+	for _, item := range items {
+		if strings.Contains(item.Content, "海淀区") && item.Status == MemoryStatusActive {
+			activeNew = item
+		}
+		if strings.Contains(item.Content, "通州区") && item.Status == MemoryStatusArchived {
+			archivedOld = item
+		}
+	}
+	if activeNew.ID == "" || archivedOld.ID == "" || archivedOld.SupersededByID != activeNew.ID {
+		t.Fatalf("expected move to archive old residence and keep new active, got %#v", items)
+	}
+}
+
 func firstMemoryBullet(content string) string {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)

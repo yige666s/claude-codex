@@ -76,7 +76,8 @@ func (o *MemoryRecallOrchestrator) Recall(ctx context.Context, input MemoryRecal
 		OriginalQuery: input.Query,
 		Query:         recallQuery,
 		Metadata: map[string]any{
-			"decision_should": decision.Should,
+			"decision_should":       decision.Should,
+			"memory_policy_version": memoryPolicyVersionFromProvider(decider),
 		},
 	}
 	defer func() {

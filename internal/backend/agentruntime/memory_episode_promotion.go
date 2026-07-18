@@ -12,6 +12,7 @@ import (
 type RuleMemoryEpisodePromoter struct {
 	Extractor MemoryExtractor
 	Items     MemoryItemService
+	Policy    MemoryPolicy
 	Now       func() time.Time
 }
 
@@ -21,7 +22,7 @@ func (p RuleMemoryEpisodePromoter) PromoteEpisodes(ctx context.Context, userID s
 	}
 	extractor := p.Extractor
 	if extractor == nil {
-		extractor = NewRuleMemoryExtractor()
+		extractor = NewRuleMemoryExtractorWithPolicy(p.policy())
 	}
 	now := time.Now().UTC()
 	if p.Now != nil {
@@ -49,7 +50,7 @@ func (p RuleMemoryEpisodePromoter) PromoteEpisodes(ctx context.Context, userID s
 		for i := range candidates {
 			candidates[i] = decorateEpisodePromotionCandidate(candidates[i], episode)
 		}
-		items := evaluateMemoryCandidates(userID, episode.SessionID, candidates)
+		items := evaluateMemoryCandidatesWithPolicy(userID, episode.SessionID, candidates, p.policy())
 		for _, item := range items {
 			item = normalizeMemoryItem(item)
 			if item.Metadata == nil {
@@ -67,7 +68,7 @@ func (p RuleMemoryEpisodePromoter) PromoteEpisodes(ctx context.Context, userID s
 			}))
 			item.Tags = normalizeMemoryTags(append(item.Tags, "episode", "promoted"))
 			var conflictUpdates []MemoryItem
-			item, existing, conflictUpdates = resolveEpisodePromotionConflicts(existing, item)
+			item, existing, conflictUpdates = resolveEpisodePromotionConflictsWithPolicy(existing, item, p.policy())
 			for _, update := range conflictUpdates {
 				if _, err := p.Items.UpdateMemoryItem(ctx, userID, update); err != nil {
 					return promoted, err
@@ -83,6 +84,10 @@ func (p RuleMemoryEpisodePromoter) PromoteEpisodes(ctx context.Context, userID s
 		}
 	}
 	return promoted, nil
+}
+
+func (p RuleMemoryEpisodePromoter) policy() MemoryPolicy {
+	return normalizeMemoryPolicy(p.Policy)
 }
 
 func episodePromotionMessages(episode MemoryEpisode) []state.Message {
@@ -129,7 +134,11 @@ func decorateEpisodePromotionCandidate(candidate MemoryCandidate, episode Memory
 }
 
 func resolveEpisodePromotionConflicts(existing []MemoryItem, item MemoryItem) (MemoryItem, []MemoryItem, []MemoryItem) {
-	explicitConflicts := explicitPersonalizationConflicts(existing, item)
+	return resolveEpisodePromotionConflictsWithPolicy(existing, item, DefaultMemoryPolicy())
+}
+
+func resolveEpisodePromotionConflictsWithPolicy(existing []MemoryItem, item MemoryItem, policy MemoryPolicy) (MemoryItem, []MemoryItem, []MemoryItem) {
+	explicitConflicts := explicitPersonalizationConflictsWithPolicy(existing, item, policy)
 	if len(explicitConflicts) > 0 {
 		item.Status = MemoryStatusPendingConfirm
 		item.ConflictIDs = normalizeMemoryIDs(append(item.ConflictIDs, explicitConflicts...))
@@ -138,9 +147,10 @@ func resolveEpisodePromotionConflicts(existing []MemoryItem, item MemoryItem) (M
 		}
 		item.Metadata["conflict_strategy"] = "explicit_personalization"
 		item.Metadata["maintenance_action"] = "episode_promotion_pending_personalization_conflict"
+		item.Metadata["memory_policy_version"] = memoryPolicyVersion(policy)
 		return item, existing, nil
 	}
-	candidate, updates := applyMemoryConflictResolution(existing, item)
+	candidate, updates := applyMemoryConflictResolutionWithPolicy(existing, item, policy)
 	for _, update := range updates {
 		replaced := false
 		for i := range existing {
@@ -158,6 +168,10 @@ func resolveEpisodePromotionConflicts(existing []MemoryItem, item MemoryItem) (M
 }
 
 func explicitPersonalizationConflicts(existing []MemoryItem, candidate MemoryItem) []string {
+	return explicitPersonalizationConflictsWithPolicy(existing, candidate, DefaultMemoryPolicy())
+}
+
+func explicitPersonalizationConflictsWithPolicy(existing []MemoryItem, candidate MemoryItem, policy MemoryPolicy) []string {
 	var conflicts []string
 	for _, current := range existing {
 		current = normalizeMemoryItem(current)
@@ -167,7 +181,7 @@ func explicitPersonalizationConflicts(existing []MemoryItem, candidate MemoryIte
 		if current.Namespace != MemoryNamespacePersonalization || current.Source != MemorySourceUserEdit {
 			continue
 		}
-		if memoryConflictCandidate(current, candidate) {
+		if conflictsWithCandidate, _ := memoryConflictCandidateWithPolicy(current, candidate, policy); conflictsWithCandidate {
 			conflicts = append(conflicts, current.ID)
 		}
 	}

@@ -117,6 +117,10 @@ type Config struct {
 	MemoryRecallQueryRewriteEnabled          bool
 	MemoryRecallLLMTriggerEnabled            bool
 	MemoryRecallLLMTriggerTimeout            time.Duration
+	MemoryPolicyPath                         string
+	MemoryPolicyVersion                      string
+	MemoryPolicyReloadInterval               time.Duration
+	MemoryPolicyStrictEval                   bool
 	EpisodicMemoryEnabled                    bool
 	EpisodicMemoryCaptureEnabled             bool
 	EpisodicMemoryContextEnabled             bool
@@ -426,6 +430,10 @@ func Default() Config {
 		MemoryRecallQueryRewriteEnabled:          EnvBool("AGENT_API_MEMORY_RECALL_QUERY_REWRITE_ENABLED", true),
 		MemoryRecallLLMTriggerEnabled:            EnvBool("AGENT_API_MEMORY_RECALL_LLM_TRIGGER_ENABLED", true),
 		MemoryRecallLLMTriggerTimeout:            EnvDuration("AGENT_API_MEMORY_RECALL_LLM_TRIGGER_TIMEOUT", 900*time.Millisecond),
+		MemoryPolicyPath:                         os.Getenv("AGENT_API_MEMORY_POLICY_PATH"),
+		MemoryPolicyVersion:                      os.Getenv("AGENT_API_MEMORY_POLICY_VERSION"),
+		MemoryPolicyReloadInterval:               EnvDuration("AGENT_API_MEMORY_POLICY_RELOAD_INTERVAL", defaultMemoryPolicyReloadInterval(os.Getenv("AGENT_API_MEMORY_POLICY_PATH"))),
+		MemoryPolicyStrictEval:                   EnvBool("AGENT_API_MEMORY_POLICY_STRICT_EVAL", false),
 		EpisodicMemoryEnabled:                    EnvBool("AGENT_API_EPISODIC_MEMORY_ENABLED", true),
 		EpisodicMemoryCaptureEnabled:             EnvBool("AGENT_API_EPISODIC_MEMORY_CAPTURE_ENABLED", true),
 		EpisodicMemoryContextEnabled:             EnvBool("AGENT_API_EPISODIC_MEMORY_CONTEXT_ENABLED", true),
@@ -628,6 +636,13 @@ func Default() Config {
 	}
 }
 
+func defaultMemoryPolicyReloadInterval(path string) time.Duration {
+	if strings.TrimSpace(path) == "" {
+		return 0
+	}
+	return 30 * time.Second
+}
+
 // BindFlags binds CLI flags onto cfg. Defaults should already be loaded from Default().
 func BindFlags(command *cobra.Command, cfg *Config) {
 	flags := command.Flags()
@@ -736,6 +751,10 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.BoolVar(&cfg.MemoryRecallQueryRewriteEnabled, "memory-recall-query-rewrite-enabled", cfg.MemoryRecallQueryRewriteEnabled, "enable deterministic query rewrite for per-turn memory recall")
 	flags.BoolVar(&cfg.MemoryRecallLLMTriggerEnabled, "memory-recall-llm-trigger-enabled", cfg.MemoryRecallLLMTriggerEnabled, "enable low-cost sidecar LLM memory recall trigger fallback")
 	flags.DurationVar(&cfg.MemoryRecallLLMTriggerTimeout, "memory-recall-llm-trigger-timeout", cfg.MemoryRecallLLMTriggerTimeout, "maximum time to wait for sidecar LLM memory recall trigger")
+	flags.StringVar(&cfg.MemoryPolicyPath, "memory-policy-path", cfg.MemoryPolicyPath, "JSON/YAML memory policy file for extraction, safety, conflict, recall, and episode rules")
+	flags.StringVar(&cfg.MemoryPolicyVersion, "memory-policy-version", cfg.MemoryPolicyVersion, "expected memory policy version; also labels the built-in default policy when no file is set")
+	flags.DurationVar(&cfg.MemoryPolicyReloadInterval, "memory-policy-reload-interval", cfg.MemoryPolicyReloadInterval, "poll interval for hot-reloading the memory policy file; 0 disables reload")
+	flags.BoolVar(&cfg.MemoryPolicyStrictEval, "memory-policy-strict-eval", cfg.MemoryPolicyStrictEval, "run built-in memory policy smoke eval at startup")
 	flags.BoolVar(&cfg.EpisodicMemoryEnabled, "episodic-memory-enabled", cfg.EpisodicMemoryEnabled, "enable L2 episodic memory capture and recall")
 	flags.BoolVar(&cfg.EpisodicMemoryCaptureEnabled, "episodic-memory-capture-enabled", cfg.EpisodicMemoryCaptureEnabled, "enable after-turn L2 episodic memory capture")
 	flags.BoolVar(&cfg.EpisodicMemoryContextEnabled, "episodic-memory-context-enabled", cfg.EpisodicMemoryContextEnabled, "enable query-aware L2 episodic memory context injection")

@@ -27,23 +27,42 @@ type MemoryQueryRewriteResult struct {
 	Degraded bool
 }
 
-type DeterministicMemoryQueryRewriter struct{}
-
-func NewDeterministicMemoryQueryRewriter() DeterministicMemoryQueryRewriter {
-	return DeterministicMemoryQueryRewriter{}
+type DeterministicMemoryQueryRewriter struct {
+	Policy   MemoryPolicy
+	Provider MemoryPolicyProvider
 }
 
-func (DeterministicMemoryQueryRewriter) RewriteMemoryRecallQuery(_ context.Context, input MemoryQueryRewriteInput) (MemoryQueryRewriteResult, error) {
+func NewDeterministicMemoryQueryRewriter() DeterministicMemoryQueryRewriter {
+	return NewDeterministicMemoryQueryRewriterWithPolicy(DefaultMemoryPolicy())
+}
+
+func NewDeterministicMemoryQueryRewriterWithPolicy(policy MemoryPolicy) DeterministicMemoryQueryRewriter {
+	return DeterministicMemoryQueryRewriter{Policy: normalizeMemoryPolicy(policy)}
+}
+
+func NewDeterministicMemoryQueryRewriterWithProvider(provider MemoryPolicyProvider) DeterministicMemoryQueryRewriter {
+	return DeterministicMemoryQueryRewriter{Provider: provider}
+}
+
+func (r DeterministicMemoryQueryRewriter) MemoryPolicy() MemoryPolicy {
+	if r.Provider != nil {
+		return r.Provider.MemoryPolicy()
+	}
+	return normalizeMemoryPolicy(r.Policy)
+}
+
+func (r DeterministicMemoryQueryRewriter) RewriteMemoryRecallQuery(_ context.Context, input MemoryQueryRewriteInput) (MemoryQueryRewriteResult, error) {
+	policy := r.MemoryPolicy()
 	base := strings.Join(strings.Fields(strings.TrimSpace(firstNonEmptyString(input.DecisionQuery, input.OriginalQuery))), " ")
 	if base == "" {
 		return MemoryQueryRewriteResult{}, nil
 	}
-	cleaned := stripMemoryRecallQueryPreamble(base)
+	cleaned := stripMemoryRecallQueryPreambleWithPolicy(base, policy)
 	variants := []string{cleaned}
 	if cleaned != base {
 		variants = append(variants, base)
 	}
-	variants = append(variants, memoryRecallSignalExpansions(input, cleaned)...)
+	variants = append(variants, memoryRecallSignalExpansionsWithPolicy(input, cleaned, policy)...)
 	rewritten := strings.Join(compactMemoryRecallQueryParts(variants, 6), "\n")
 	rewritten = tailClipRunes(rewritten, normalizeMemoryRecallConfig(input.Config).RecentContextMaxRunes*2)
 	rewritten = strings.TrimSpace(rewritten)
@@ -58,70 +77,66 @@ func (DeterministicMemoryQueryRewriter) RewriteMemoryRecallQuery(_ context.Conte
 }
 
 func stripMemoryRecallQueryPreamble(query string) string {
+	return stripMemoryRecallQueryPreambleWithPolicy(query, DefaultMemoryPolicy())
+}
+
+func stripMemoryRecallQueryPreambleWithPolicy(query string, policy MemoryPolicy) string {
 	query = strings.TrimSpace(query)
-	for _, phrase := range []string{"请问", "麻烦", "帮我", "帮忙", "查一下", "搜一下", "找一下", "我想知道", "你能不能", "can you", "please", "could you"} {
+	for _, phrase := range normalizeMemoryPolicy(policy).Recall.QueryPreamblePhrases {
 		query = strings.ReplaceAll(query, phrase, " ")
 	}
 	return strings.Join(strings.Fields(strings.TrimSpace(query)), " ")
 }
 
 func memoryRecallSignalExpansions(input MemoryQueryRewriteInput, query string) []string {
+	return memoryRecallSignalExpansionsWithPolicy(input, query, DefaultMemoryPolicy())
+}
+
+func memoryRecallSignalExpansionsWithPolicy(input MemoryQueryRewriteInput, query string, policy MemoryPolicy) []string {
 	lower := strings.ToLower(query)
 	var out []string
-	if containsAnyString(lower, "ootd", "穿搭", "打卡", "搭配", "衣服", "风格", "审美") {
-		out = append(out, "user style preferences outfit preferences saved image references appearance constraints")
+	for _, expansion := range normalizeMemoryPolicy(policy).Recall.Expansions {
+		if !containsAnyString(lower, expansion.Triggers...) {
+			continue
+		}
+		if strings.TrimSpace(expansion.Expansion) != "" {
+			out = append(out, expansion.Expansion)
+		}
 		if memoryRecallQueryContainsHan(query) {
-			out = append(out, "用户穿搭偏好 风格偏好 保存的图片参考 外观约束")
+			if strings.TrimSpace(expansion.HanExpansion) != "" {
+				out = append(out, expansion.HanExpansion)
+			}
 		}
 	}
-	if containsAnyString(lower, "附近", "周围", "去哪", "哪里", "where", "nearby", "around", "location", "city", "城市", "住", "搬到") {
-		out = append(out, "user profile location city typical places travel preferences")
-		if memoryRecallQueryContainsHan(query) {
-			out = append(out, "用户个人资料 当前位置 城市 常去地点 出行偏好")
-		}
-	}
-	if containsAnyString(lower, "我是谁", "我的名字", "名字", "职业", "身份", "profile", "identity", "name", "occupation") {
-		out = append(out, "user profile facts identity name occupation")
-		if memoryRecallQueryContainsHan(query) {
-			out = append(out, "用户资料 身份 名字 职业")
-		}
-	}
-	if containsAnyString(lower, "喜欢", "偏好", "不要", "避免", "讨厌", "prefer", "preference", "avoid", "dislike", "boundary", "constraint") {
-		out = append(out, "user preferences constraints boundaries likes dislikes")
-		if memoryRecallQueryContainsHan(query) {
-			out = append(out, "用户偏好 约束 边界 喜好 禁忌")
-		}
-	}
-	if containsAnyString(lower, "上次", "之前", "刚才", "那个", "那张", "这张", "继续", "previous", "earlier", "last time", "that one") {
-		out = append(out, "prior conversation choices saved assets episodic summaries")
-		if memoryRecallQueryContainsHan(query) {
-			out = append(out, "历史对话 之前选择 保存素材 情节摘要")
-		}
-	}
-	if profileHints := memoryRecallProfileHints(input.Personalization); profileHints != "" {
+	if profileHints := memoryRecallProfileHintsWithPolicy(input.Personalization, policy); profileHints != "" {
 		out = append(out, profileHints)
 	}
 	return out
 }
 
 func memoryRecallProfileHints(settings PersonalizationSettings) string {
+	return memoryRecallProfileHintsWithPolicy(settings, DefaultMemoryPolicy())
+}
+
+func memoryRecallProfileHintsWithPolicy(settings PersonalizationSettings, policy MemoryPolicy) string {
+	profileHints := normalizeMemoryPolicy(policy).Recall.ProfileHints
 	var hints []string
 	if strings.TrimSpace(settings.Profile.Nickname) != "" {
-		hints = append(hints, "known nickname")
+		hints = append(hints, profileHints.Nickname)
 	}
 	if strings.TrimSpace(settings.Profile.Occupation) != "" {
-		hints = append(hints, "known occupation")
+		hints = append(hints, profileHints.Occupation)
 	}
 	if strings.TrimSpace(settings.Profile.About) != "" {
-		hints = append(hints, "known profile about")
+		hints = append(hints, profileHints.About)
 	}
 	if strings.TrimSpace(settings.Style.Preset) != "" || strings.TrimSpace(settings.Style.Tone) != "" {
-		hints = append(hints, "known response style preferences")
+		hints = append(hints, profileHints.ResponseStyle)
 	}
 	if len(hints) == 0 {
 		return ""
 	}
-	return "personalization hints: " + strings.Join(hints, ", ")
+	return profileHints.Prefix + strings.Join(compactMemoryRecallQueryParts(hints, len(hints)), ", ")
 }
 
 func compactMemoryRecallQueryParts(values []string, limit int) []string {

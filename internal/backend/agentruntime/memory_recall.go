@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -42,12 +41,6 @@ const (
 	memoryRecallReasonNoRecall                 = "no_recall_needed"
 )
 
-var defaultMemoryRecallPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)上次|之前|你还记得|我之前(说|提|讲|告诉你)|继续|接着|刚才|前面`),
-	regexp.MustCompile(`(?i)那个(事|问题|方案|人)|还是.*那个|和之前一样`),
-	regexp.MustCompile(`(?i)last time|as i mentioned|remember when|you said|we discussed|earlier|previously`),
-}
-
 var memoryRecallIntentLabels = []memoryRecallIntentLabel{
 	{name: "new_topic", text: "用户提出了一个全新的问题或话题", recall: true},
 	{name: "continuation", text: "用户在延续当前上下文窗口内的对话内容", recall: false},
@@ -75,19 +68,39 @@ type MemoryRecallInput struct {
 }
 
 type MemoryRecallDecider struct {
-	config        MemoryRecallConfig
-	embedder      QueryEmbedder
-	runnerFactory EngineFactory
-	logger        *slog.Logger
+	config         MemoryRecallConfig
+	embedder       QueryEmbedder
+	runnerFactory  EngineFactory
+	logger         *slog.Logger
+	policy         MemoryPolicy
+	policyProvider MemoryPolicyProvider
 }
 
 func NewMemoryRecallDecider(config MemoryRecallConfig, embedder QueryEmbedder, logger *slog.Logger, runnerFactories ...EngineFactory) *MemoryRecallDecider {
+	return NewMemoryRecallDeciderWithPolicy(config, embedder, logger, DefaultMemoryPolicy(), runnerFactories...)
+}
+
+func NewMemoryRecallDeciderWithPolicy(config MemoryRecallConfig, embedder QueryEmbedder, logger *slog.Logger, policy MemoryPolicy, runnerFactories ...EngineFactory) *MemoryRecallDecider {
+	return NewMemoryRecallDeciderWithPolicyProvider(config, embedder, logger, NewStaticMemoryPolicyProvider(policy), runnerFactories...)
+}
+
+func NewMemoryRecallDeciderWithPolicyProvider(config MemoryRecallConfig, embedder QueryEmbedder, logger *slog.Logger, provider MemoryPolicyProvider, runnerFactories ...EngineFactory) *MemoryRecallDecider {
 	config = normalizeMemoryRecallConfig(config)
 	var runnerFactory EngineFactory
 	if len(runnerFactories) > 0 {
 		runnerFactory = runnerFactories[0]
 	}
-	return &MemoryRecallDecider{config: config, embedder: embedder, runnerFactory: runnerFactory, logger: logger}
+	return &MemoryRecallDecider{config: config, embedder: embedder, runnerFactory: runnerFactory, logger: logger, policyProvider: provider}
+}
+
+func (d *MemoryRecallDecider) MemoryPolicy() MemoryPolicy {
+	if d == nil {
+		return DefaultMemoryPolicy()
+	}
+	if d.policyProvider != nil {
+		return d.policyProvider.MemoryPolicy()
+	}
+	return normalizeMemoryPolicy(d.policy)
 }
 
 func memoryRecallEmbedderFromConfig(config RuntimeConfig) QueryEmbedder {
@@ -184,6 +197,7 @@ func normalizeMemoryRecallConfig(config MemoryRecallConfig) MemoryRecallConfig {
 
 func (d *MemoryRecallDecider) Decide(ctx context.Context, input MemoryRecallInput) MemoryRecallDecision {
 	config := normalizeMemoryRecallConfig(d.config)
+	policy := d.MemoryPolicy()
 	message := strings.TrimSpace(input.Message)
 	query := buildMemoryRecallQuery(input.Session, message, config)
 	if !config.Enabled {
@@ -198,10 +212,10 @@ func (d *MemoryRecallDecider) Decide(ctx context.Context, input MemoryRecallInpu
 	if memoryRecallForceTrigger(input.Session, message, config) {
 		return MemoryRecallDecision{Should: true, Reason: memoryRecallReasonForceRule, Query: query}
 	}
-	if memoryRecallKeywordTrigger(message) {
+	if memoryRecallKeywordTriggerWithPolicy(message, policy) {
 		return MemoryRecallDecision{Should: true, Reason: memoryRecallReasonKeywordRule, Query: query}
 	}
-	if memoryRecallEntityTrigger(message, memoryRecallUserEntities(input.Personalization)) {
+	if memoryRecallEntityTrigger(message, memoryRecallUserEntitiesWithPolicy(input.Personalization, policy)) {
 		return MemoryRecallDecision{Should: true, Reason: memoryRecallReasonEntityRule, Query: query}
 	}
 	if config.EmbeddingEnabled {
@@ -210,7 +224,7 @@ func (d *MemoryRecallDecider) Decide(ctx context.Context, input MemoryRecallInpu
 			if d.logger != nil {
 				d.logger.LogAttrs(ctx, slog.LevelWarn, "memory recall embedding trigger failed", slog.String("error", err.Error()))
 			}
-			if memoryRecallFallbackTrigger(message, config) {
+			if memoryRecallFallbackTriggerWithPolicy(message, config, policy) {
 				return MemoryRecallDecision{Should: true, Reason: memoryRecallReasonEmbeddingUnavailable, Query: query}
 			}
 			return MemoryRecallDecision{Reason: memoryRecallReasonEmbeddingFallbackNoMatch, Query: query}
@@ -218,7 +232,7 @@ func (d *MemoryRecallDecider) Decide(ctx context.Context, input MemoryRecallInpu
 		if should {
 			return MemoryRecallDecision{Should: true, Reason: reason, Query: query}
 		}
-		if reason == memoryRecallReasonEmbeddingUnavailable && memoryRecallFallbackTrigger(message, config) {
+		if reason == memoryRecallReasonEmbeddingUnavailable && memoryRecallFallbackTriggerWithPolicy(message, config, policy) {
 			return MemoryRecallDecision{Should: true, Reason: memoryRecallReasonEmbeddingUnavailable, Query: query}
 		}
 	}
@@ -228,7 +242,7 @@ func (d *MemoryRecallDecider) Decide(ctx context.Context, input MemoryRecallInpu
 			if d.logger != nil {
 				d.logger.LogAttrs(ctx, slog.LevelWarn, "memory recall intent classifier failed", slog.String("error", err.Error()))
 			}
-			if memoryRecallFallbackTrigger(message, config) {
+			if memoryRecallFallbackTriggerWithPolicy(message, config, policy) {
 				return MemoryRecallDecision{Should: true, Reason: memoryRecallReasonIntentUnavailable, Query: query}
 			}
 			return MemoryRecallDecision{Reason: memoryRecallReasonNoRecall, Query: query}
@@ -236,14 +250,14 @@ func (d *MemoryRecallDecider) Decide(ctx context.Context, input MemoryRecallInpu
 		if should {
 			return MemoryRecallDecision{Should: true, Reason: reason, Query: query}
 		}
-		if reason == memoryRecallReasonIntentUnavailable && memoryRecallFallbackTrigger(message, config) {
+		if reason == memoryRecallReasonIntentUnavailable && memoryRecallFallbackTriggerWithPolicy(message, config, policy) {
 			return MemoryRecallDecision{Should: true, Reason: memoryRecallReasonIntentUnavailable, Query: query}
 		}
 	}
-	if !config.EmbeddingEnabled && !config.IntentClassifierEnabled && memoryRecallFallbackTrigger(message, config) {
+	if !config.EmbeddingEnabled && !config.IntentClassifierEnabled && memoryRecallFallbackTriggerWithPolicy(message, config, policy) {
 		return MemoryRecallDecision{Should: true, Reason: memoryRecallReasonEmbeddingUnavailable, Query: query}
 	}
-	if config.LLMTriggerEnabled && memoryRecallLLMTriggerCandidate(input.Session, message, config) {
+	if config.LLMTriggerEnabled && memoryRecallLLMTriggerCandidateWithPolicy(input.Session, message, config, policy) {
 		decision, err := d.llmTrigger(ctx, input.UserID, input.Session, message, query, config)
 		if err != nil {
 			if d.logger != nil {
@@ -327,6 +341,10 @@ func parseMemoryRecallLLMResponse(output string) (memoryRecallLLMResponse, error
 }
 
 func memoryRecallLLMTriggerCandidate(session *state.Session, message string, config MemoryRecallConfig) bool {
+	return memoryRecallLLMTriggerCandidateWithPolicy(session, message, config, DefaultMemoryPolicy())
+}
+
+func memoryRecallLLMTriggerCandidateWithPolicy(session *state.Session, message string, config MemoryRecallConfig, policy MemoryPolicy) bool {
 	message = strings.TrimSpace(message)
 	if message == "" {
 		return false
@@ -334,7 +352,7 @@ func memoryRecallLLMTriggerCandidate(session *state.Session, message string, con
 	if memoryRecallForceTrigger(session, message, config) {
 		return false
 	}
-	if memoryRecallKeywordTrigger(message) {
+	if memoryRecallKeywordTriggerWithPolicy(message, policy) {
 		return false
 	}
 	if containsCJK(message) {
@@ -517,8 +535,16 @@ func memoryRecallTurnIndex(session *state.Session, message string) int {
 }
 
 func memoryRecallKeywordTrigger(message string) bool {
+	return memoryRecallKeywordTriggerWithPolicy(message, DefaultMemoryPolicy())
+}
+
+func memoryRecallKeywordTriggerWithPolicy(message string, policy MemoryPolicy) bool {
 	message = strings.TrimSpace(message)
-	for _, pattern := range defaultMemoryRecallPatterns {
+	for _, rule := range normalizeMemoryPolicy(policy).Recall.KeywordPatterns {
+		pattern, ok := compileMemoryPolicyPattern(rule.Pattern)
+		if !ok {
+			continue
+		}
 		if pattern.MatchString(message) {
 			return true
 		}
@@ -544,9 +570,13 @@ func memoryRecallEntityTrigger(message string, entities []string) bool {
 }
 
 func memoryRecallUserEntities(settings PersonalizationSettings) []string {
+	return memoryRecallUserEntitiesWithPolicy(settings, DefaultMemoryPolicy())
+}
+
+func memoryRecallUserEntitiesWithPolicy(settings PersonalizationSettings, policy MemoryPolicy) []string {
 	values := []string{settings.Profile.Nickname, settings.Profile.Occupation}
-	values = append(values, splitEntityCandidates(settings.Profile.About)...)
-	values = append(values, splitEntityCandidates(settings.CustomInstructions)...)
+	values = append(values, splitEntityCandidatesWithPolicy(settings.Profile.About, policy)...)
+	values = append(values, splitEntityCandidatesWithPolicy(settings.CustomInstructions, policy)...)
 	seen := map[string]bool{}
 	out := make([]string, 0, len(values))
 	for _, value := range values {
@@ -564,13 +594,17 @@ func memoryRecallUserEntities(settings PersonalizationSettings) []string {
 }
 
 func splitEntityCandidates(text string) []string {
+	return splitEntityCandidatesWithPolicy(text, DefaultMemoryPolicy())
+}
+
+func splitEntityCandidatesWithPolicy(text string, policy MemoryPolicy) []string {
 	fields := strings.FieldsFunc(text, func(r rune) bool {
 		return unicode.IsSpace(r) || strings.ContainsRune(",，。；;、/|:：()（）[]【】", r)
 	})
 	out := make([]string, 0, len(fields))
 	for _, field := range fields {
 		field = strings.TrimSpace(field)
-		if len([]rune(field)) >= 2 && !memoryRecallWeakToken(field) {
+		if len([]rune(field)) >= 2 && !memoryRecallWeakTokenWithPolicy(field, policy) {
 			out = append(out, field)
 		}
 	}
@@ -578,7 +612,11 @@ func splitEntityCandidates(text string) []string {
 }
 
 func memoryRecallFallbackTrigger(message string, config MemoryRecallConfig) bool {
-	if memoryRecallKeywordTrigger(message) {
+	return memoryRecallFallbackTriggerWithPolicy(message, config, DefaultMemoryPolicy())
+}
+
+func memoryRecallFallbackTriggerWithPolicy(message string, config MemoryRecallConfig, policy MemoryPolicy) bool {
+	if memoryRecallKeywordTriggerWithPolicy(message, policy) {
 		return true
 	}
 	if estimateRecallTokenCount(message) > config.ComplexTokenThreshold {
@@ -591,12 +629,17 @@ func memoryRecallFallbackTrigger(message string, config MemoryRecallConfig) bool
 }
 
 func memoryRecallWeakToken(token string) bool {
-	switch strings.ToLower(strings.TrimSpace(token)) {
-	case "hi", "hello", "hey", "ok", "okay", "yes", "no", "thanks", "thank", "you", "好的", "谢谢", "可以", "用户", "默认", "回复":
-		return true
-	default:
-		return false
+	return memoryRecallWeakTokenWithPolicy(token, DefaultMemoryPolicy())
+}
+
+func memoryRecallWeakTokenWithPolicy(token string, policy MemoryPolicy) bool {
+	token = strings.ToLower(strings.TrimSpace(token))
+	for _, weak := range normalizeMemoryPolicy(policy).Recall.WeakTokens {
+		if token == strings.ToLower(strings.TrimSpace(weak)) {
+			return true
+		}
 	}
+	return false
 }
 
 func estimateRecallTokenCount(message string) int {

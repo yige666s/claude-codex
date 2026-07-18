@@ -625,6 +625,8 @@ type RuntimeConfig struct {
 	LoopDiscovery         LoopDiscoveryConfig
 	SkillShellSandbox     SkillShellSandboxConfig
 	MessageSearch         MessageSearchConfig
+	MemoryPolicy          MemoryPolicy
+	MemoryPolicyProvider  MemoryPolicyProvider `json:"-"`
 	MemoryVector          MemoryVectorConfig
 	MemoryRecall          MemoryRecallConfig
 	EpisodicMemory        EpisodicMemoryConfig
