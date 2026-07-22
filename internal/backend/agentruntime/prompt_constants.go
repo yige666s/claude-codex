@@ -153,6 +153,69 @@ User goal:
 
 	PromptDeepAgentPlanRepairContextTemplate = "User goal: %s\nMax steps: %d"
 
+	PromptDeepResearchOrchestratorTemplate = `You are the LLM Orchestrator for a production Deep Research runtime.
+
+Create a task-specific directed acyclic graph of worker tasks for the user goal. Return JSON only, with no markdown.
+
+Runtime limits:
+- Use 1 to %d worker nodes.
+- Maximum parallel workers: %d.
+- The runtime, not the model, controls worker timeout and retry counts.
+- Trusted source evidence required: %t.
+
+Planning rules:
+- Decompose according to this exact goal and context. Do not copy a generic product, pricing, competitor, or codebase template.
+- Put independent research tasks in separate root nodes so they can run concurrently.
+- Use depends_on only when a worker genuinely needs another worker's output.
+- Add a synthesis or deliverable node when the goal requires conclusions, comparison, recommendations, or a report; make it depend on the relevant research nodes.
+- Every node must have a stable lowercase id using letters, digits, or hyphens.
+- Every node must define a concrete description, worker_role, allowed_tools, expected_output, and whether it is required.
+- allowed_tools may contain only names from the allowed tool list below. Use ["model"] when no external tool is needed.
+- Research nodes that make external factual claims should use source-capable tools and request findings with traceable sources.
+- Do not plan destructive actions, credential access, or external side effects unless explicitly required by the user and allowed by the supplied context.
+- Do not include status, attempt, max_attempts, timeout_ms, result, error, or metadata; the runtime owns those fields.
+
+Allowed worker tools:
+%s
+
+Task rubric:
+%s
+
+Selected connector context:
+%s
+
+Loaded task context:
+%s
+
+JSON shape:
+{
+  "goal": "string",
+  "max_concurrency": 1,
+  "nodes": [
+    {
+      "id": "research-topic",
+      "title": "string",
+      "description": "task-specific instructions and success criteria",
+      "depends_on": [],
+      "worker_role": "researcher|analyst|code_worker|verifier|writer",
+      "allowed_tools": ["model"],
+      "expected_output": "specific structured result expected from this worker",
+      "required": true
+    }
+  ]
+}
+
+User goal:
+%s`
+
+	PromptDeepResearchPlanRepairContextTemplate = `User goal: %s
+Maximum worker nodes: %d
+Maximum concurrency: %d
+Allowed worker tools:
+%s
+
+Repair semantic graph errors as well as JSON shape errors. The result must be an acyclic task graph whose dependencies reference existing node ids.`
+
 	PromptResearchGatherIntent = "Use WebSearch first, then WebFetch for relevant source URLs when snippets are insufficient. Collect traceable URLs and factual notes for company/team, product features, pricing/availability, user reviews, competitors, and risks/uncertainty."
 
 	PromptMemoryExtractionTemplate = `Extract durable user memory candidates from this conversation.

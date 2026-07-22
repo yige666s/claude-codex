@@ -37,6 +37,7 @@ type DeepResearchController struct {
 	aggregator         DeepResearchAggregator
 	deliverableDecider DeepResearchDeliverableDecider
 	artifactPublisher  DeepResearchArtifactPublisher
+	contextLoader      DeepAgentContextLoader
 	evidence           DeepAgentEvidenceStore
 	config             DeepResearchRuntimeConfig
 	clock              Clock
@@ -60,14 +61,21 @@ func NewDeepResearchController(store WorkflowStore, events WorkflowEventSink, or
 		aggregator = ruleDeepResearchAggregator{requireSources: cfg.RequireSources}
 	}
 	return &DeepResearchController{
-		store:        store,
-		events:       events,
-		orchestrator: orchestrator,
-		worker:       worker,
-		aggregator:   aggregator,
-		evidence:     deepAgentDefaultEvidenceStore(),
-		config:       cfg,
-		clock:        systemClock{},
+		store:         store,
+		events:        events,
+		orchestrator:  orchestrator,
+		worker:        worker,
+		aggregator:    aggregator,
+		contextLoader: noopDeepAgentContextLoader{},
+		evidence:      deepAgentDefaultEvidenceStore(),
+		config:        cfg,
+		clock:         systemClock{},
+	}
+}
+
+func (c *DeepResearchController) SetContextLoader(loader DeepAgentContextLoader) {
+	if c != nil && loader != nil {
+		c.contextLoader = loader
 	}
 }
 
@@ -129,6 +137,13 @@ func (c *DeepResearchController) Execute(ctx context.Context, req DeepAgentTaskR
 		state.WorkingMemory["user_id"] = firstNonEmptyString(deepAgentWorkflowString(state.WorkingMemory, "user_id"), req.UserID)
 		state.WorkingMemory["session_id"] = firstNonEmptyString(deepAgentWorkflowString(state.WorkingMemory, "session_id"), req.SessionID)
 		state.WorkingMemory["job_id"] = firstNonEmptyString(deepAgentWorkflowString(state.WorkingMemory, "job_id"), req.JobID, jobIDFromContext(ctx))
+		if connectors := normalizeConnectorScopes(req.ConnectorContext); len(connectors) > 0 {
+			state.WorkingMemory["connector_context"] = connectors
+		}
+		if !deepAgentRubricEmpty(state.Rubric) {
+			state.WorkingMemory["rubric"] = state.Rubric
+		}
+		hydrateLoopContractWorkingMemory(state.WorkingMemory, contract)
 		drRun = DeepResearchRunState{
 			Version:    deepResearchWorkflowVersion,
 			Status:     DeepResearchRunStatusRunning,
@@ -145,12 +160,54 @@ func (c *DeepResearchController) Execute(ctx context.Context, req DeepAgentTaskR
 		})
 		return map[string]any{"deep_agent_state": state, "deep_research": drRun, "loop_contract": contract}, nil
 	})
+	engine.RegisterStepHandler("load_context", func(ctx context.Context, run *WorkflowRun, input map[string]any) (map[string]any, error) {
+		loader := c.contextLoader
+		if loader == nil {
+			loader = noopDeepAgentContextLoader{}
+		}
+		loaded, err := loader.LoadDeepAgentContext(ctx, req, state)
+		if err != nil {
+			return nil, err
+		}
+		if state.WorkingMemory == nil {
+			state.WorkingMemory = map[string]any{}
+		}
+		if loaded.EvidencePack.TokenBudget == 0 {
+			loaded.EvidencePack = buildDeepAgentEvidencePack(loaded, state, deepAgentEvidencePackTokenBudget)
+		}
+		state.WorkingMemory[deepAgentLoadedContextKey] = loaded
+		state.WorkingMemory[deepAgentEvidencePackKey] = loaded.EvidencePack
+		req.State = cloneWorkflowMap(state.WorkingMemory)
+		state.UpdatedAt = c.now()
+		c.persistDeepResearchState(ctx, run, state, drRun)
+		return map[string]any{
+			"working_memory_keys":      len(state.WorkingMemory),
+			"has_job_context":          firstNonEmptyString(req.JobID, jobIDFromContext(ctx)) != "",
+			"message_count":            len(loaded.RecentMessages),
+			"attachment_count":         len(loaded.Attachments),
+			"artifact_count":           len(loaded.ExistingArtifacts),
+			"skill_count":              len(loaded.SkillCatalog),
+			"tool_count":               len(loaded.ToolCatalog),
+			"memory_loaded":            strings.TrimSpace(loaded.MemorySummary) != "",
+			"evidence_pack_tokens":     loaded.EvidencePack.TokenEstimate,
+			"evidence_pack_budget":     loaded.EvidencePack.TokenBudget,
+			"issue_count":              len(loaded.Issues),
+			"deep_agent_context":       loaded,
+			"deep_agent_evidence_pack": loaded.EvidencePack,
+			"deep_agent_state":         state,
+			"deep_research":            drRun,
+		}, nil
+	})
 	engine.RegisterStepHandler("plan_deep_research", func(ctx context.Context, run *WorkflowRun, input map[string]any) (map[string]any, error) {
 		plan, err := c.orchestrator.Plan(ctx, req, c.config)
 		if err != nil {
 			return nil, err
 		}
 		plan = normalizeDeepResearchPlan(plan, state.Goal, c.config)
+		allowedTools, _ := deepResearchOrchestratorAllowedTools(req.State)
+		if err := canonicalizeDeepResearchPlanAllowedTools(&plan, allowedTools); err != nil {
+			return nil, err
+		}
 		if err := validateDeepResearchPlan(plan); err != nil {
 			return nil, err
 		}
@@ -291,6 +348,7 @@ func deepResearchWorkflowDefinition(workerGraphTimeout time.Duration) WorkflowDe
 		Version: deepResearchWorkflowVersion,
 		Steps: []WorkflowStepDefinition{
 			{Name: "initialize_task"},
+			{Name: "load_context"},
 			{Name: "plan_deep_research"},
 			{Name: "execute_deep_research_workers", Timeout: workerGraphTimeout},
 			{Name: "aggregate_deep_research"},
@@ -327,6 +385,9 @@ func (c *DeepResearchController) executeWorkerGraph(ctx context.Context, run *Wo
 			return fmt.Errorf("deep research scheduler made no progress")
 		}
 		limit := c.config.MaxConcurrency
+		if planned := drRun.Plan.MaxConcurrency; planned > 0 && (limit <= 0 || planned < limit) {
+			limit = planned
+		}
 		if limit <= 0 || limit > len(ready) {
 			limit = len(ready)
 		}

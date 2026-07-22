@@ -74,6 +74,30 @@ func DefaultDeepAgentPromptGoldenSets() []GoldenSet {
 				},
 			},
 		}),
+		normalizeGoldenSet(GoldenSet{
+			ID:          "deep_research_prompt_orchestrator",
+			Name:        "Deep Research orchestrator prompt regression",
+			Description: "Golden set for task-specific worker DAG decomposition, dependency safety, and tool boundaries.",
+			Version:     DeepAgentPromptEvalSetVersion,
+			Metadata: map[string]any{
+				"phase":      deepResearchWorkflowVersion,
+				"prompt_ids": []any{PromptIDRuntimeDeepResearchOrchestrator, PromptIDRuntimeDeepResearchPlanRepair},
+			},
+			Cases: []GoldenCase{
+				{
+					ID:             "orchestrator-enterprise-comparison",
+					Query:          "调研两款企业 AI 产品的权限、安全和部署能力，并给出选型建议",
+					ExpectedAnswer: "Plan should create task-specific parallel evidence workers followed by a synthesis worker that depends on their outputs.",
+					ExpectedFacts: []string{
+						"parallel evidence nodes",
+						"synthesis dependencies",
+						"source-capable allowed tools",
+						"no runtime-owned retry or timeout fields",
+					},
+					Tags: []string{"deep_research", "orchestrator", "dag", "comparison"},
+				},
+			},
+		}),
 	}
 }
 

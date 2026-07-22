@@ -3226,6 +3226,62 @@ func TestGovernedPlannerEnforcesDailyQuota(t *testing.T) {
 	}
 }
 
+func TestGovernedPlannerLetsAdmittedRequestFinishAfterCrossingQuota(t *testing.T) {
+	store := NewMemoryLLMUsageStore()
+	if err := store.RecordLLMUsage(context.Background(), LLMUsageRecord{
+		ID:          "existing",
+		UserID:      "alice",
+		SessionID:   "older-session",
+		RequestID:   "older-request",
+		Status:      "success",
+		TotalTokens: 9,
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
+	newPlanner := func() *GovernedPlanner {
+		planner, err := NewGovernedPlanner([]LLMBackend{
+			{Name: "primary", Provider: "vertex", Model: "ok", Planner: planTextPlanner{text: "ok"}},
+		}, store, LLMGovernanceConfig{DailyTokenQuota: 10})
+		if err != nil {
+			t.Fatalf("NewGovernedPlanner() error = %v", err)
+		}
+		return planner
+	}
+
+	session := state.NewSession(t.TempDir())
+	requestOne := WithLLMScope(context.Background(), LLMScope{
+		UserID: "alice", SessionID: session.ID, RequestID: "request-1",
+	})
+	if _, err := newPlanner().Next(requestOne, session, nil); err != nil {
+		t.Fatalf("first admitted call failed: %v", err)
+	}
+
+	// A fresh planner simulates another engine/worker participating in the same
+	// logical turn. The scoped admission travels with the request context.
+	if _, err := newPlanner().Next(requestOne, session, nil); err != nil {
+		t.Fatalf("admitted request was interrupted after crossing quota: %v", err)
+	}
+
+	requestTwo := WithLLMScope(context.Background(), LLMScope{
+		UserID: "alice", SessionID: session.ID, RequestID: "request-2",
+	})
+	if _, err := newPlanner().Next(requestTwo, session, nil); err == nil || !strings.Contains(err.Error(), "quota") {
+		t.Fatalf("new request should be rejected after quota is crossed, got %v", err)
+	}
+}
+
+func TestQuotaFailureSkipsModelRecoveryAndUsesActionableMessage(t *testing.T) {
+	err := errors.New("daily LLM token quota exceeded")
+	if shouldAttemptFailureRecovery(err) {
+		t.Fatal("quota failure must not spend another model call on recovery")
+	}
+	message := userFacingRuntimeFailure(err, "帮我查看 GitHub")
+	if !strings.Contains(message, "模型使用额度已用尽") {
+		t.Fatalf("unexpected quota message %q", message)
+	}
+}
+
 func TestServerRequiresUserIdentity(t *testing.T) {
 	server := NewServer(testRuntime(t), HeaderAuthenticator{}, NewRateLimiter(10, time.Minute), nil)
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)

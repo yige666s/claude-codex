@@ -650,20 +650,26 @@ func (qe *QueryEngine) executeQueryLoop(
 		}
 	}
 	result := <-terminal
+	// Preserve every model/tool message emitted before a terminal failure. A
+	// final model call can fail after a side-effecting tool has already
+	// succeeded; dropping these messages loses the durable execution evidence
+	// and makes recovery incorrectly report the tool operation as failed.
+	if len(result.Messages) > 0 {
+		qe.mutableMessages = result.Messages
+	} else if len(emitted) > 0 {
+		qe.mutableMessages = append(qe.mutableMessages, emitted...)
+	}
+	qe.totalUsage = usageFromMessages(qe.mutableMessages)
+	if len(emitted) > 0 {
+		if err := qe.recordMessages(emitted); err != nil {
+			return err
+		}
+	}
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.Reason == TerminalReasonMaxTurns {
 		return fmt.Errorf("query exceeded max turns (%d)", maxTurns)
-	}
-	if len(result.Messages) > 0 {
-		qe.mutableMessages = result.Messages
-	} else {
-		qe.mutableMessages = append(qe.mutableMessages, emitted...)
-	}
-	qe.totalUsage = usageFromMessages(qe.mutableMessages)
-	if len(emitted) > 0 {
-		return qe.recordMessages(emitted)
 	}
 	return nil
 }

@@ -3,7 +3,8 @@ package agentruntime
 import "time"
 
 const (
-	deepResearchWorkflowVersion = "deep_research_orchestrator_worker_v1"
+	deepResearchWorkflowVersionV1 = "deep_research_orchestrator_worker_v1"
+	deepResearchWorkflowVersion   = "deep_research_orchestrator_worker_v2"
 
 	DeepResearchWorkerBackendInline       = "inline"
 	DeepResearchWorkerBackendHarnessAgent = "harness_agent"
@@ -25,6 +26,15 @@ const (
 	DeepResearchRunStatusPartial   = "partial"
 	DeepResearchRunStatusCancelled = "cancelled"
 )
+
+func isDeepResearchWorkflowVersion(version string) bool {
+	switch version {
+	case deepResearchWorkflowVersion, deepResearchWorkflowVersionV1:
+		return true
+	default:
+		return false
+	}
+}
 
 type DeepResearchPlan struct {
 	Goal           string                 `json:"goal"`

@@ -3713,7 +3713,8 @@ func shouldAttemptFailureRecovery(err error) bool {
 	}
 	return !errors.Is(err, context.Canceled) &&
 		!errors.Is(err, context.DeadlineExceeded) &&
-		!errors.Is(err, ErrRuntimeShuttingDown)
+		!errors.Is(err, ErrRuntimeShuttingDown) &&
+		!isLLMQuotaError(err)
 }
 
 func lastVisibleAssistantAfterLastVisibleUser(session *state.Session) string {
@@ -3753,6 +3754,8 @@ func failureCategory(err error) string {
 	switch {
 	case text == "":
 		return "internal execution failed"
+	case isLLMQuotaError(err):
+		return "model quota exceeded"
 	case strings.Contains(text, "timed out") || strings.Contains(text, "timeout") || errors.Is(err, context.DeadlineExceeded):
 		return "tool execution timed out"
 	case strings.Contains(text, "permission denied") || strings.Contains(text, "forbidden") || strings.Contains(text, "unauthorized") || strings.Contains(text, "authorization failed"):
@@ -3770,6 +3773,8 @@ func userFacingRuntimeFailure(err error, userContent string) string {
 	category := failureCategory(err)
 	if containsCJK(userContent) {
 		switch category {
+		case "model quota exceeded":
+			return "抱歉，今日模型使用额度已用尽，请在额度重置或管理员调整额度后重试。"
 		case "tool execution timed out":
 			return "抱歉，这次操作没有完成：内部工具执行超时了。请稍后重试，或把请求拆得更小一些。"
 		case "authorization or permission error":
@@ -3783,6 +3788,8 @@ func userFacingRuntimeFailure(err error, userContent string) string {
 		}
 	}
 	switch category {
+	case "model quota exceeded":
+		return "Sorry, today's model usage quota has been reached. Please retry after the quota resets or an administrator adjusts it."
 	case "tool execution timed out":
 		return "Sorry, I could not complete that operation because an internal tool timed out. Please try again later or simplify the request."
 	case "authorization or permission error":
@@ -3794,6 +3801,14 @@ func userFacingRuntimeFailure(err error, userContent string) string {
 	default:
 		return "Sorry, I could not complete that operation. Please try again later or simplify the request."
 	}
+}
+
+func isLLMQuotaError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "daily llm") && strings.Contains(text, "quota exceeded")
 }
 
 func errorString(err error) string {
@@ -4671,7 +4686,7 @@ func (r *Runtime) ResumeWorkflowRunWithRequest(ctx context.Context, req DeepAgen
 	}
 	switch run.Name {
 	case deepAgentTaskWorkflowName:
-		if run.Version == deepResearchWorkflowVersion {
+		if isDeepResearchWorkflowVersion(run.Version) {
 			return r.ResumeDeepResearchWorkflowRun(ctx, run.ID)
 		}
 		req.RunID = run.ID
@@ -4697,7 +4712,7 @@ func (r *Runtime) CancelWorkflowRun(ctx context.Context, runID string) (*Workflo
 		return run, nil
 	}
 	now := time.Now().UTC()
-	if run.Version == deepResearchWorkflowVersion {
+	if isDeepResearchWorkflowVersion(run.Version) {
 		if state, err := deepAgentStateFromWorkflowRun(run); err == nil && state != nil {
 			if drRun, ok := deepResearchRunStateFromAny(run.State["deep_research"]); ok {
 				for id, node := range drRun.WorkerRuns {
@@ -4742,7 +4757,7 @@ func (r *Runtime) ResumeDeepResearchWorkflowRun(ctx context.Context, runID strin
 	if err != nil {
 		return nil, err
 	}
-	if run == nil || run.Version != deepResearchWorkflowVersion {
+	if run == nil || !isDeepResearchWorkflowVersion(run.Version) {
 		return run, fmt.Errorf("workflow run %s is not a deep research run", runID)
 	}
 	state, err := deepAgentStateFromWorkflowRun(run)
@@ -4931,8 +4946,12 @@ func (r *Runtime) ExecuteDeepResearchTask(ctx context.Context, req DeepAgentTask
 	if worker == nil {
 		worker = newRuntimeDeepResearchWorkerExecutor(r, NewRuntimeDeepAgentExecutor(r))
 	}
+	if orchestrator == nil {
+		orchestrator = NewRuntimeDeepResearchOrchestrator(r)
+	}
 	cfg := normalizeDeepResearchRuntimeConfig(r.config.DeepResearch)
 	controller := NewDeepResearchController(store, ContextWorkflowEventSink{}, orchestrator, worker, aggregator, cfg)
+	controller.SetContextLoader(r)
 	controller.SetDeliverableDecider(NewRuntimeDeepResearchDeliverableDecider(r))
 	controller.SetArtifactPublisher(NewRuntimeDeepResearchArtifactPublisher(r))
 	return controller.Execute(ctx, req)

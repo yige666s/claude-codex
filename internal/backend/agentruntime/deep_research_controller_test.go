@@ -22,6 +22,15 @@ func TestDeepResearchPlanValidationRejectsCycles(t *testing.T) {
 	}
 }
 
+func TestDeepResearchWorkflowVersionKeepsV1RecoveryCompatibility(t *testing.T) {
+	if !isDeepResearchWorkflowVersion(deepResearchWorkflowVersionV1) {
+		t.Fatalf("legacy deep research workflow version %q must remain recoverable", deepResearchWorkflowVersionV1)
+	}
+	if !isDeepResearchWorkflowVersion(deepResearchWorkflowVersion) {
+		t.Fatalf("current deep research workflow version %q must be recognized", deepResearchWorkflowVersion)
+	}
+}
+
 func TestDeepResearchControllerRunsDAGAndPersistsWorkerState(t *testing.T) {
 	store := NewMemoryWorkflowStore()
 	worker := &recordingDeepResearchWorker{}
@@ -168,6 +177,35 @@ func TestDeepResearchControllerSchedulesReadyNodesAcrossBatches(t *testing.T) {
 	}
 }
 
+func TestDeepResearchControllerHonorsPlanConcurrencyLimit(t *testing.T) {
+	worker := &concurrencyTrackingDeepResearchWorker{}
+	controller := NewDeepResearchController(NewMemoryWorkflowStore(), ContextWorkflowEventSink{}, staticDeepResearchOrchestrator{plan: DeepResearchPlan{
+		Goal:           "bounded concurrency",
+		MaxConcurrency: 1,
+		Nodes: []DeepResearchTaskNode{
+			{ID: "a", Title: "A", Required: true},
+			{ID: "b", Title: "B", Required: true},
+			{ID: "c", Title: "C", Required: true},
+		},
+	}}, worker, nil, DeepResearchRuntimeConfig{
+		OrchestratorWorkerEnabled: true,
+		WorkerBackend:             DeepResearchWorkerBackendInline,
+		MaxWorkers:                4,
+		MaxConcurrency:            3,
+		WorkerTimeout:             time.Second,
+		TotalTimeout:              5 * time.Second,
+		RequireSources:            false,
+		MinSuccessfulWorkers:      1,
+	})
+
+	if _, err := controller.Execute(context.Background(), DeepAgentTaskRequest{Goal: "bounded concurrency"}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := worker.maxConcurrency(); got != 1 {
+		t.Fatalf("maximum worker concurrency = %d, want plan limit 1", got)
+	}
+}
+
 func TestDeepResearchControllerHonorsPerNodeMaxAttempts(t *testing.T) {
 	store := NewMemoryWorkflowStore()
 	worker := &recordingDeepResearchWorker{failUntil: map[string]int{"overview": 2}}
@@ -211,6 +249,10 @@ func TestDeepResearchControllerHonorsPerNodeMaxAttempts(t *testing.T) {
 
 func TestRuntimeExecuteDeepResearchTaskUsesWorkflowState(t *testing.T) {
 	runtime := testRuntime(t)
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
 	runtime.config.DeepResearch = DeepResearchRuntimeConfig{
 		OrchestratorWorkerEnabled: true,
 		WorkerBackend:             DeepResearchWorkerBackendInline,
@@ -224,7 +266,7 @@ func TestRuntimeExecuteDeepResearchTaskUsesWorkflowState(t *testing.T) {
 	}
 	result, err := runtime.ExecuteDeepResearchTask(context.Background(), DeepAgentTaskRequest{
 		UserID:    "alice",
-		SessionID: "session-1",
+		SessionID: session.ID,
 		JobID:     "job-1",
 		Goal:      "调研 Tolan AI 并生成调研报告",
 	}, staticDeepResearchOrchestrator{plan: DeepResearchPlan{
@@ -386,10 +428,13 @@ func TestParseDeepResearchDeliverableDecisionToleratesNullOptionalFields(t *test
 
 func TestDeepResearchWorkflowDefinitionUsesTotalTimeoutForWorkerGraph(t *testing.T) {
 	def := deepResearchWorkflowDefinition(7 * time.Second)
-	if len(def.Steps) != 4 {
-		t.Fatalf("step count = %d, want 4", len(def.Steps))
+	if len(def.Steps) != 5 {
+		t.Fatalf("step count = %d, want 5", len(def.Steps))
 	}
-	if got := def.Steps[2].Timeout; got != 7*time.Second {
+	if def.Steps[1].Name != "load_context" {
+		t.Fatalf("second step = %q, want load_context", def.Steps[1].Name)
+	}
+	if got := def.Steps[3].Timeout; got != 7*time.Second {
 		t.Fatalf("worker graph timeout = %s, want total timeout", got)
 	}
 }
@@ -532,6 +577,36 @@ type recordingDeepResearchWorker struct {
 	failFirst map[string]bool
 	failUntil map[string]int
 	calls     map[string]int
+}
+
+type concurrencyTrackingDeepResearchWorker struct {
+	mu        sync.Mutex
+	active    int
+	maxActive int
+}
+
+func (w *concurrencyTrackingDeepResearchWorker) ExecuteWorker(ctx context.Context, input DeepResearchWorkerInput) (DeepResearchWorkerResult, error) {
+	w.mu.Lock()
+	w.active++
+	if w.active > w.maxActive {
+		w.maxActive = w.active
+	}
+	w.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return DeepResearchWorkerResult{}, ctx.Err()
+	case <-time.After(10 * time.Millisecond):
+	}
+	w.mu.Lock()
+	w.active--
+	w.mu.Unlock()
+	return DeepResearchWorkerResult{Status: DeepAgentActionStatusSucceeded, Summary: input.Node.ID, Output: input.Node.ID}, nil
+}
+
+func (w *concurrencyTrackingDeepResearchWorker) maxConcurrency() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.maxActive
 }
 
 type staticDeepResearchDeliverableDecider struct {
