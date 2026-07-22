@@ -77,6 +77,7 @@ func queryLoop(
 		pendingMemoryPrefetch = memoryPrefetcher.StartRelevantMemoryPrefetch(
 			ctx,
 			prefetchMessages,
+			params.MemoryDir,
 			surfacedBytes,
 			readFileState,
 		)
@@ -152,12 +153,12 @@ func queryLoop(
 		var snipTokensFreed int
 
 		if shouldAutoCompact(messagesForQuery, tracking, toolUseContext) {
+			if tracking == nil {
+				tracking = &AutoCompactTrackingState{}
+			}
 			result, err := performCompaction(ctx, deps, messagesForQuery, toolUseContext, eventChan)
 			if err != nil {
-				// Handle compaction failure
-				if tracking != nil {
-					tracking.ConsecutiveFailures++
-				}
+				tracking.ConsecutiveFailures++
 			} else {
 				compactionResult = result
 
@@ -356,15 +357,17 @@ func queryLoop(
 		// Handle prompt-too-long recovery
 		if !needsFollowUp {
 			lastMessage := getLastMessage(assistantMessages)
-			if isWithheldPromptTooLong(lastMessage) && !hasAttemptedReactiveCompact {
-				// Attempt reactive compaction
-				result, err := performReactiveCompaction(ctx, deps, messagesForQuery, toolUseContext, eventChan)
-				if err == nil && result != nil {
-					state.Messages = result.Messages
-					state.HasAttemptedReactiveCompact = true
-					state.Transition = &Continue{Reason: ContinueReasonReactiveCompactRetry}
-					continue
+			if isWithheldPromptTooLong(lastMessage) {
+				if !hasAttemptedReactiveCompact {
+					result, err := performReactiveCompaction(ctx, deps, messagesForQuery, toolUseContext, eventChan)
+					if err == nil && result != nil {
+						state.Messages = result.Messages
+						state.HasAttemptedReactiveCompact = true
+						state.Transition = &Continue{Reason: ContinueReasonReactiveCompactRetry}
+						continue
+					}
 				}
+				return Terminal{Reason: TerminalReasonPromptTooLong, Messages: messagesForQuery}, nil
 			}
 		}
 
@@ -399,6 +402,7 @@ func queryLoop(
 				userContext,
 				systemContext,
 				toolUseContext,
+				params.HookExecutor,
 				querySource,
 				stopHookActive,
 				eventChan,
@@ -413,6 +417,15 @@ func queryLoop(
 			}
 
 			if len(stopHookResult.BlockingErrors) > 0 {
+				// A blocking Stop hook gets one model retry with the hook error in
+				// context. If the hook still blocks that retry, terminate instead of
+				// spinning forever without consuming a model/tool turn budget.
+				if stopHookActive != nil && *stopHookActive {
+					terminalMessages := append(messagesForQuery, convertToMessages(assistantMessages)...)
+					terminalMessages = append(terminalMessages, stopHookResult.BlockingErrors...)
+					return Terminal{Reason: TerminalReasonStopHookPrevented, Messages: terminalMessages}, nil
+				}
+
 				// Add blocking errors and retry
 				for _, errMsg := range stopHookResult.BlockingErrors {
 					toolResults = append(toolResults, errMsg)
@@ -613,8 +626,11 @@ func processQueuedCommands(messages []types.Message, commands []QueuedCommand) (
 }
 
 func finalContextTokensFromLastResponse(messages []types.Message) int {
-	// TODO: Implement token counting
-	return 0
+	// Provider usage is normalized into QueryEngine totals rather than stored on
+	// individual public messages. Use the same deterministic estimator that
+	// drives compaction thresholds so task-budget accounting cannot silently
+	// treat a populated context as zero tokens.
+	return estimateMessageTokens(messages)
 }
 
 func getRuntimeMainLoopModel(ctx *tool.ToolUseContext, messages []types.Message) string {
@@ -818,17 +834,20 @@ func isWithheldPromptTooLong(msg *types.AssistantMessage) bool {
 	if msg == nil {
 		return false
 	}
-	if msg.APIError == "prompt_too_long" {
+	if msg.APIError == "prompt_too_long" || msg.Message.Subtype == "prompt_too_long" {
 		return true
 	}
-	return msg.Message.IsApiErrorMessage && strings.Contains(strings.ToLower(messageText(msg.Message)), "prompt too long")
+	text := strings.ToLower(messageText(msg.Message))
+	return msg.Message.IsApiErrorMessage && (strings.Contains(text, "prompt too long") ||
+		strings.Contains(text, "context length") || strings.Contains(text, "context_length") ||
+		strings.Contains(text, "maximum context"))
 }
 
 func isMaxOutputTokensError(msg *types.AssistantMessage) bool {
 	if msg == nil {
 		return false
 	}
-	if msg.APIError == "max_output_tokens" || msg.Message.StopReason == "max_tokens" || msg.Message.StopReason == "max_output_tokens" {
+	if msg.APIError == "max_output_tokens" || msg.Message.Subtype == "max_output_tokens" || msg.Message.StopReason == "max_tokens" || msg.Message.StopReason == "max_output_tokens" {
 		return true
 	}
 	return msg.Message.IsApiErrorMessage && strings.Contains(strings.ToLower(messageText(msg.Message)), "max output")

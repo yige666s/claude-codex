@@ -433,6 +433,7 @@ export type LLMGovernanceConfig = {
   vertex_location?: string;
   model_routes?: string;
   allowed_models?: LLMModelOption[];
+  model_availability?: LLMModelAvailability[];
   max_attempts?: number;
   retry_backoff_ms?: number;
   chat_timeout_ms?: number;
@@ -467,6 +468,13 @@ export type LLMModelOption = {
   label: string;
   provider: string;
   vertex_location: string;
+};
+
+export type LLMModelAvailability = {
+  id: string;
+  provider: string;
+  available: boolean;
+  reason?: string;
 };
 
 export type LLMUsageRecord = {

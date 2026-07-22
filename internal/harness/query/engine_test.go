@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -15,6 +16,37 @@ import (
 
 type runtimePlanner struct {
 	call plannerapi.ToolCall
+}
+
+type endTurnPlanner struct{}
+
+type failingPlanner struct{ err error }
+
+func (p failingPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (plannerapi.Plan, error) {
+	return plannerapi.Plan{}, p.err
+}
+
+func (endTurnPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (plannerapi.Plan, error) {
+	return plannerapi.Plan{AssistantText: "done", StopReason: "end_turn"}, nil
+}
+
+func TestPlannerModelCallerSurfacesPromptTooLongForReactiveCompaction(t *testing.T) {
+	engine, err := NewQueryEngine(&QueryEngineConfig{
+		WorkingDir: "/test",
+		SessionID:  "recoverable-planner-error",
+		Planner:    failingPlanner{err: errors.New("maximum context length exceeded")},
+	})
+	if err != nil {
+		t.Fatalf("new query engine: %v", err)
+	}
+	stream, err := engine.plannerModelCaller(types.SystemPrompt{})(context.Background(), &ModelCallParams{})
+	if err != nil {
+		t.Fatalf("recoverable planner error escaped query loop: %v", err)
+	}
+	message := <-stream
+	if message.Type != types.MessageTypeAssistant || !message.IsApiErrorMessage || message.Subtype != "prompt_too_long" {
+		t.Fatalf("unexpected recoverable error message: %#v", message)
+	}
 }
 
 func (p runtimePlanner) Next(_ context.Context, session *state.Session, _ []toolkit.Descriptor) (plannerapi.Plan, error) {
@@ -67,7 +99,7 @@ func TestConfiguredToolCallValidatesDescriptorSchema(t *testing.T) {
 		Name:        "search",
 		Description: "Search",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
-	}, func(context.Context, string, json.RawMessage) (string, error) {
+	}, func(context.Context, string, string, json.RawMessage) (string, error) {
 		executed = true
 		return "ok", nil
 	})
@@ -208,6 +240,7 @@ func TestQueryEngine_SubmitMessage_String(t *testing.T) {
 		SessionID:      "test-session",
 		FallbackModel:  "claude-sonnet-4-6",
 		PermissionMode: "normal",
+		Planner:        endTurnPlanner{},
 	}
 
 	engine, err := NewQueryEngine(config)
@@ -255,6 +288,7 @@ func TestQueryEngine_SubmitMessage_ContentBlocks(t *testing.T) {
 		SessionID:      "test-session",
 		FallbackModel:  "claude-sonnet-4-6",
 		PermissionMode: "normal",
+		Planner:        endTurnPlanner{},
 	}
 
 	engine, err := NewQueryEngine(config)
@@ -302,6 +336,7 @@ func TestQueryEngine_SubmitMessage_WithOptions(t *testing.T) {
 		SessionID:      "test-session",
 		FallbackModel:  "claude-sonnet-4-6",
 		PermissionMode: "normal",
+		Planner:        endTurnPlanner{},
 	}
 
 	engine, err := NewQueryEngine(config)
@@ -367,9 +402,12 @@ func TestQueryEngine_SubmitMessage_ExecutesOrphanedPermissionTool(t *testing.T) 
 			ToolUseID: "tool-1",
 			Input:     map[string]any{"path": "approved"},
 		},
-		ExecuteTool: func(ctx context.Context, name string, input json.RawMessage) (string, error) {
+		ExecuteTool: func(ctx context.Context, toolUseID, name string, input json.RawMessage) (string, error) {
 			if name != "fake_tool" {
 				t.Fatalf("unexpected tool name %q", name)
+			}
+			if toolUseID != "tool-1" {
+				t.Fatalf("unexpected tool use id %q", toolUseID)
 			}
 			var decoded map[string]string
 			if err := json.Unmarshal(input, &decoded); err != nil {
@@ -425,7 +463,7 @@ func TestQueryEngine_SubmitMessage_UsesPlannerRuntime(t *testing.T) {
 			},
 		},
 		ToolDescriptors: []toolkit.Descriptor{{Name: "fake_tool"}},
-		ExecuteTool: func(context.Context, string, json.RawMessage) (string, error) {
+		ExecuteTool: func(context.Context, string, string, json.RawMessage) (string, error) {
 			return "tool output", nil
 		},
 		MaxTurns: 3,

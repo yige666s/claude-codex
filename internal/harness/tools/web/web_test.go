@@ -4,15 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-func TestFetchToolReturnsTextContent(t *testing.T) {
+func TestFetchToolRejectsLoopbackTargets(t *testing.T) {
 	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_ACCOUNT_ID", "")
 	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_API_TOKEN", "")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -23,6 +25,26 @@ func TestFetchToolReturnsTextContent(t *testing.T) {
 
 	tool := NewFetchTool(server.Client())
 	input, _ := json.Marshal(map[string]any{"url": server.URL})
+	_, err := tool.Execute(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "not publicly routable") {
+		t.Fatalf("expected loopback rejection, got %v", err)
+	}
+}
+
+func TestFetchToolReturnsPublicTextContent(t *testing.T) {
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_ACCOUNT_ID", "")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_API_TOKEN", "")
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"content-type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader("hello from web fetch")),
+			Request:    r,
+		}, nil
+	})}
+	tool := NewFetchTool(client)
+	input, _ := json.Marshal(map[string]any{"url": "https://example.com/page"})
 	result, err := tool.Execute(context.Background(), input)
 	if err != nil {
 		t.Fatalf("fetch execute: %v", err)
@@ -64,7 +86,7 @@ func TestFetchToolUsesCloudflareCrawlWhenConfigured(t *testing.T) {
 	defer server.Close()
 	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_BASE_URL", server.URL+"/client/v4")
 
-	tool := NewFetchTool(server.Client())
+	tool := NewFetchToolWithAllowlist(server.Client(), []string{"example.com"})
 	input, _ := json.Marshal(map[string]any{"url": "https://example.com/page", "prompt": "extract content"})
 	result, err := tool.Execute(context.Background(), input)
 	if err != nil {
@@ -159,7 +181,7 @@ func TestFetchToolFallsBackToCloudflareCDPWhenCrawlFails(t *testing.T) {
 	defer server.Close()
 	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_BASE_URL", server.URL+"/client/v4")
 
-	tool := NewFetchTool(server.Client())
+	tool := NewFetchToolWithAllowlist(server.Client(), []string{"example.com"})
 	input, _ := json.Marshal(map[string]any{"url": "https://example.com/page", "prompt": "extract content"})
 	result, err := tool.Execute(context.Background(), input)
 	if err != nil {
@@ -200,7 +222,7 @@ func TestFetchToolFallsBackWhenCloudflareCrawlFails(t *testing.T) {
 		}, nil
 	})}
 
-	tool := NewFetchTool(client)
+	tool := NewFetchToolWithAllowlist(client, []string{"example.com"})
 	input, _ := json.Marshal(map[string]any{"url": "https://example.com/page", "prompt": "extract content"})
 	result, err := tool.Execute(context.Background(), input)
 	if err != nil {
@@ -262,7 +284,7 @@ func TestFetchToolFallsBackToBrowserlessWhenDirectFetchLooksBlocked(t *testing.T
 		return nil, nil
 	})}
 
-	tool := NewFetchTool(client)
+	tool := NewFetchToolWithAllowlist(client, []string{"example.com"})
 	input, _ := json.Marshal(map[string]any{"url": "https://example.com/page", "prompt": "extract content"})
 	result, err := tool.Execute(context.Background(), input)
 	if err != nil {
@@ -275,6 +297,41 @@ func TestFetchToolFallsBackToBrowserlessWhenDirectFetchLooksBlocked(t *testing.T
 		!strings.Contains(result.Output, "source: browserless_smart_scrape") ||
 		!strings.Contains(result.Output, "Rendered Browserless content") {
 		t.Fatalf("unexpected browserless fallback output: %q", result.Output)
+	}
+}
+
+func TestFetchToolDoesNotDelegateUnallowlistedTargetsToRemoteBrowsers(t *testing.T) {
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_ACCOUNT_ID", "acct-1")
+	t.Setenv("AGENT_API_WEBFETCH_CLOUDFLARE_API_TOKEN", "cf-token")
+	t.Setenv("AGENT_API_WEBFETCH_BROWSERLESS_API_TOKEN", "bl-token")
+	t.Setenv("AGENT_API_WEBFETCH_BROWSERLESS_BASE_URL", "https://browserless.test")
+
+	var remoteRendererCalled bool
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "example.com" {
+			remoteRendererCalled = true
+			t.Fatalf("unallowlisted target delegated to remote renderer: %s", r.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"content-type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader("direct only")),
+			Request:    r,
+		}, nil
+	})}
+
+	tool := NewFetchTool(client)
+	input, _ := json.Marshal(map[string]any{"url": "https://example.com/page"})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("fetch execute: %v", err)
+	}
+	if remoteRendererCalled {
+		t.Fatal("remote renderer must require an explicit target-domain allowlist")
+	}
+	if !strings.Contains(result.Output, "direct only") {
+		t.Fatalf("expected direct fetch result, got %q", result.Output)
 	}
 }
 
@@ -296,6 +353,120 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
 
+type staticIPResolver map[string][]net.IP
+
+func (r staticIPResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	ips := r[host]
+	out := make([]net.IPAddr, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, net.IPAddr{IP: ip})
+	}
+	return out, nil
+}
+
+type rebindingResolver struct {
+	calls int
+}
+
+func disableFetchFallbacks(tool *FetchTool) {
+	tool.cloudflareCrawl = nil
+	tool.cloudflareCDP = nil
+	tool.browserless = nil
+}
+
+func (r *rebindingResolver) LookupIPAddr(_ context.Context, _ string) ([]net.IPAddr, error) {
+	r.calls++
+	if r.calls == 1 {
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+	}
+	return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+}
+
+func TestFetchToolRejectsPrivateDNSResolutionBeforeRequest(t *testing.T) {
+	called := false
+	tool := NewFetchTool(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return nil, nil
+	})})
+	disableFetchFallbacks(tool)
+	tool.resolver = staticIPResolver{"internal.example": {net.ParseIP("10.0.0.9")}}
+	input, _ := json.Marshal(map[string]any{"url": "https://internal.example/data"})
+	_, err := tool.Execute(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "not publicly routable") {
+		t.Fatalf("expected private DNS rejection, got %v", err)
+	}
+	if called {
+		t.Fatal("request executed before private DNS address was rejected")
+	}
+}
+
+func TestFetchToolChecksRedirectBeforeFollowing(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Status:     "302 Found",
+			Header:     http.Header{"Location": []string{"http://127.0.0.1/admin"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    r,
+		}, nil
+	})}
+	tool := NewFetchTool(client)
+	disableFetchFallbacks(tool)
+	tool.resolver = staticIPResolver{"safe.example": {net.ParseIP("93.184.216.34")}}
+	input, _ := json.Marshal(map[string]any{"url": "https://safe.example/page"})
+	_, err := tool.Execute(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "redirect blocked") {
+		t.Fatalf("expected redirect rejection, got %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("private redirect was followed; requests=%d", requests)
+	}
+}
+
+func TestFetchToolDialerRejectsDNSRebinding(t *testing.T) {
+	tool := NewFetchTool(&http.Client{Timeout: time.Second})
+	disableFetchFallbacks(tool)
+	resolver := &rebindingResolver{}
+	tool.resolver = resolver
+	input, _ := json.Marshal(map[string]any{"url": "https://rebind.example/page"})
+	_, err := tool.Execute(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "not publicly routable") {
+		t.Fatalf("expected DNS rebinding rejection, got %v", err)
+	}
+	if resolver.calls < 2 {
+		t.Fatalf("expected validation and dial-time DNS checks, calls=%d", resolver.calls)
+	}
+}
+
+func TestFetchToolCapsMaxBytesAtServerLimit(t *testing.T) {
+	payload := strings.Repeat("x", int(serverFetchMaxBytes*2))
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"content-type": []string{"text/plain"}}, Body: io.NopCloser(strings.NewReader(payload)), Request: r}, nil
+	})}
+	tool := NewFetchTool(client)
+	disableFetchFallbacks(tool)
+	tool.resolver = staticIPResolver{"safe.example": {net.ParseIP("93.184.216.34")}}
+	input, _ := json.Marshal(map[string]any{"url": "https://safe.example/page", "max_bytes": serverFetchMaxBytes * 4})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if len(result.Output) > int(serverFetchMaxBytes)+512 {
+		t.Fatalf("server max_bytes cap was not enforced: output=%d", len(result.Output))
+	}
+}
+
+func TestFetchToolRejectsUnsupportedScheme(t *testing.T) {
+	tool := NewFetchTool(http.DefaultClient)
+	input, _ := json.Marshal(map[string]any{"url": "file:///etc/passwd"})
+	_, err := tool.Execute(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "unsupported URL scheme") {
+		t.Fatalf("expected scheme rejection, got %v", err)
+	}
+}
+
 func TestFetchToolRejectsDomainsOutsideAllowlist(t *testing.T) {
 	tool := NewFetchToolWithAllowlist(http.DefaultClient, []string{"allowed.example.com"})
 	input, _ := json.Marshal(map[string]any{"url": "https://blocked.example.com/resource"})
@@ -312,8 +483,11 @@ func TestSearchToolUsesTavilyAPI(t *testing.T) {
 	t.Setenv("AGENT_API_TAVILY_API_KEY", "tvly-test")
 
 	var sawRequest bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		sawRequest = true
+		if r.URL.Scheme != "https" || r.URL.Host != "api.tavily.com" || r.URL.Path != "/search" {
+			t.Fatalf("unexpected Tavily URL: %s", r.URL)
+		}
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST, got %s", r.Method)
 		}
@@ -333,15 +507,18 @@ func TestSearchToolUsesTavilyAPI(t *testing.T) {
 			t.Fatalf("unexpected domain filters: %#v", body)
 		}
 
-		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"answer":"brief answer","results":[{"title":"Example Result","url":"https://example.com","content":"Useful snippet","score":0.9}]}`))
-	}))
-	defer server.Close()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"content-type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"answer":"brief answer","results":[{"title":"Example Result","url":"https://example.com","content":"Useful snippet","score":0.9}]}`)),
+			Request:    r,
+		}, nil
+	})}
 
-	tool := NewSearchTool(server.Client())
+	tool := NewSearchTool(client)
 	input, _ := json.Marshal(map[string]any{
 		"query":           "example",
-		"endpoint":        server.URL,
 		"max_results":     2,
 		"allowed_domains": []string{"www.example.com"},
 		"blocked_domains": []string{"blocked.example.com"},
@@ -359,33 +536,107 @@ func TestSearchToolUsesTavilyAPI(t *testing.T) {
 }
 
 func TestSearchToolRejectsEndpointOutsideAllowlist(t *testing.T) {
-	tool := NewSearchToolWithAllowlist(http.DefaultClient, []string{"allowed.example.com"})
-	input, _ := json.Marshal(map[string]any{"query": "example", "endpoint": "https://blocked.example.com/html/"})
+	t.Setenv("AGENT_API_TAVILY_API_KEY", "tvly-test")
+	t.Setenv("AGENT_API_TAVILY_SEARCH_ENDPOINT", "https://attacker.example/search")
+	called := false
+	tool := NewSearchTool(&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		called = true
+		return nil, nil
+	})})
+	input, _ := json.Marshal(map[string]any{"query": "example"})
 	_, err := tool.Execute(context.Background(), input)
 	if err == nil {
-		t.Fatal("expected allowlist rejection")
+		t.Fatal("expected untrusted endpoint rejection")
 	}
-	if !strings.Contains(err.Error(), "not allowed") {
-		t.Fatalf("expected not allowed error, got %v", err)
+	if !strings.Contains(err.Error(), "not trusted") {
+		t.Fatalf("expected trusted endpoint error, got %v", err)
+	}
+	if called {
+		t.Fatal("untrusted endpoint must be rejected before any request or credential transmission")
+	}
+}
+
+func TestSearchToolRejectsPrivateTavilyDNSBeforeAttachingCredentials(t *testing.T) {
+	t.Setenv("AGENT_API_TAVILY_API_KEY", "tvly-test")
+	called := false
+	tool := NewSearchTool(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return nil, nil
+	})})
+	tool.resolver = staticIPResolver{"api.tavily.com": {net.ParseIP("127.0.0.1")}}
+	input, _ := json.Marshal(map[string]any{"query": "example"})
+	_, err := tool.Execute(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "not publicly routable") {
+		t.Fatalf("expected private Tavily DNS rejection, got %v", err)
+	}
+	if called {
+		t.Fatal("credential-bearing Tavily request ran before DNS validation")
+	}
+}
+
+func TestSearchToolDoesNotForwardCredentialsAcrossRedirect(t *testing.T) {
+	t.Setenv("AGENT_API_TAVILY_API_KEY", "tvly-test")
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		if r.URL.Host != "api.tavily.com" {
+			t.Fatalf("credential-bearing request reached untrusted host %q", r.URL.Host)
+		}
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Status:     "302 Found",
+			Header:     http.Header{"Location": []string{"https://attacker.example/collect"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    r,
+		}, nil
+	})}
+	tool := NewSearchTool(client)
+	input, _ := json.Marshal(map[string]any{"query": "example"})
+	_, err := tool.Execute(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "redirect blocked") {
+		t.Fatalf("expected Tavily redirect rejection, got %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("untrusted redirect was followed; requests=%d", requests)
+	}
+}
+
+func TestSearchToolSchemaDoesNotExposeEndpoint(t *testing.T) {
+	schema := string(NewSearchTool(http.DefaultClient).InputSchema())
+	if strings.Contains(schema, "endpoint") {
+		t.Fatalf("search endpoint must not be model-controlled: %s", schema)
+	}
+}
+
+func TestFetchToolSchemaMatchesOptionalPromptAndServerByteCap(t *testing.T) {
+	schema := string(NewFetchTool(http.DefaultClient).InputSchema())
+	if strings.Contains(schema, `"required":["url","prompt"]`) {
+		t.Fatalf("optional prompt must not be required: %s", schema)
+	}
+	if !strings.Contains(schema, `"maximum":1048576`) || !strings.Contains(schema, `"additionalProperties":false`) {
+		t.Fatalf("schema must expose the server byte cap and reject unknown fields: %s", schema)
 	}
 }
 
 func TestSearchToolFiltersDomains(t *testing.T) {
 	t.Setenv("AGENT_API_TAVILY_API_KEY", "tvly-test")
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"results":[
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"content-type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"results":[
 			{"title":"Allowed","url":"https://allowed.example.com/one","content":"Allowed content","score":0.9},
 			{"title":"Blocked","url":"https://blocked.example.com/two","content":"Blocked content","score":0.8}
-		]}`))
-	}))
-	defer server.Close()
+		]}`)),
+			Request: r,
+		}, nil
+	})}
 
-	tool := NewSearchTool(server.Client())
+	tool := NewSearchTool(client)
 	input, _ := json.Marshal(map[string]any{
 		"query":           "example",
-		"endpoint":        server.URL,
 		"allowed_domains": []string{"example.com"},
 		"blocked_domains": []string{"blocked.example.com"},
 	})

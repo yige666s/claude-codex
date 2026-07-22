@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	corehooks "claude-codex/internal/harness/hooks"
 	"claude-codex/internal/harness/tool"
 	"claude-codex/internal/public/types"
 	"github.com/stretchr/testify/assert"
@@ -23,6 +25,37 @@ type sequenceModelCaller struct {
 	calls int
 	steps [][]types.Message
 	seen  []*ModelCallParams
+}
+
+type captureStopHook struct {
+	called bool
+	input  *corehooks.HookInput
+}
+
+type persistentBlockingStopHook struct {
+	calls       int
+	activeFlags []bool
+}
+
+func (h *captureStopHook) Name() string               { return "capture-stop" }
+func (h *captureStopHook) Event() corehooks.HookEvent { return corehooks.EventStop }
+func (h *captureStopHook) IsAsync() bool              { return false }
+func (h *captureStopHook) Timeout() time.Duration     { return time.Second }
+func (h *captureStopHook) Execute(_ context.Context, input *corehooks.HookInput) (*corehooks.HookResult, error) {
+	h.called = true
+	h.input = input
+	return &corehooks.HookResult{Continue: true}, nil
+}
+
+func (h *persistentBlockingStopHook) Name() string               { return "persistent-blocking-stop" }
+func (h *persistentBlockingStopHook) Event() corehooks.HookEvent { return corehooks.EventStop }
+func (h *persistentBlockingStopHook) IsAsync() bool              { return false }
+func (h *persistentBlockingStopHook) Timeout() time.Duration     { return time.Second }
+func (h *persistentBlockingStopHook) Execute(_ context.Context, input *corehooks.HookInput) (*corehooks.HookResult, error) {
+	h.calls++
+	active, _ := input.Metadata["stop_hook_active"].(bool)
+	h.activeFlags = append(h.activeFlags, active)
+	return &corehooks.HookResult{Continue: true, BlockingError: "still blocked"}, nil
 }
 
 func (s *sequenceModelCaller) call(ctx context.Context, params *ModelCallParams) (<-chan types.Message, error) {
@@ -126,6 +159,66 @@ func TestQuery_AutoCompactUsesCompactServiceBeforeModel(t *testing.T) {
 	require.Len(t, caller.seen, 1)
 	require.Len(t, caller.seen[0].Messages, 1)
 	assert.Equal(t, "compacted summary", caller.seen[0].Messages[0].Content[0].Text)
+}
+
+func TestQueryRunsConfiguredStopHooksBeforeCompleting(t *testing.T) {
+	hook := &captureStopHook{}
+	registry := corehooks.NewRegistry()
+	require.NoError(t, registry.Register(hook))
+	caller := &sequenceModelCaller{steps: [][]types.Message{{{
+		Type:       types.MessageTypeAssistant,
+		Content:    []types.ContentBlock{{Type: "text", Text: "done"}},
+		StopReason: "end_turn",
+	}}}}
+	toolCtx := tool.NewToolUseContext(context.Background())
+	toolCtx.AbortController = tool.NewAbortController()
+	toolCtx.SessionID = "hook-session"
+
+	events, terminal, err := Query(context.Background(), &QueryParams{
+		ToolUseContext: toolCtx,
+		QuerySource:    "test",
+		HookExecutor:   corehooks.NewExecutor(registry),
+		Deps: &QueryDeps{
+			CallModel: caller.call,
+			UUID:      func() string { return "hook-turn" },
+		},
+	})
+	require.NoError(t, err)
+	for range events {
+	}
+	require.Equal(t, TerminalReasonCompleted, (<-terminal).Reason)
+	require.True(t, hook.called)
+	require.NotNil(t, hook.input)
+	assert.Equal(t, "hook-session", hook.input.SessionID)
+}
+
+func TestQueryPersistentBlockingStopHookRetriesOnceThenTerminates(t *testing.T) {
+	hook := &persistentBlockingStopHook{}
+	registry := corehooks.NewRegistry()
+	require.NoError(t, registry.Register(hook))
+	caller := &sequenceModelCaller{steps: [][]types.Message{
+		{{Type: types.MessageTypeAssistant, Content: []types.ContentBlock{{Type: "text", Text: "first"}}, StopReason: "end_turn"}},
+		{{Type: types.MessageTypeAssistant, Content: []types.ContentBlock{{Type: "text", Text: "retry"}}, StopReason: "end_turn"}},
+	}}
+	toolCtx := tool.NewToolUseContext(context.Background())
+	toolCtx.AbortController = tool.NewAbortController()
+
+	events, terminal, err := Query(context.Background(), &QueryParams{
+		ToolUseContext: toolCtx,
+		QuerySource:    "test",
+		HookExecutor:   corehooks.NewExecutor(registry),
+		Deps: &QueryDeps{
+			CallModel: caller.call,
+			UUID:      func() string { return "hook-turn" },
+		},
+	})
+	require.NoError(t, err)
+	for range events {
+	}
+	require.Equal(t, TerminalReasonStopHookPrevented, (<-terminal).Reason)
+	assert.Equal(t, 2, caller.calls)
+	assert.Equal(t, 2, hook.calls)
+	assert.Equal(t, []bool{false, true}, hook.activeFlags)
 }
 
 func TestQuery_QueuedCommandLifecycle(t *testing.T) {

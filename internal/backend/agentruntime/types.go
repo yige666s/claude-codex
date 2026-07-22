@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -359,11 +360,75 @@ type StreamingRunner interface {
 
 type EngineFactory func(scope Scope) Runner
 
+// ContextEngineFactory constructs a runner for one execution scope. Request-bound
+// callers should use this form so connector discovery and other setup work can be
+// cancelled without terminating the process on a per-turn configuration error.
+type ContextEngineFactory func(ctx context.Context, scope Scope) (Runner, error)
+
+// AdaptContextEngineFactory keeps background services that still accept the
+// legacy factory shape failure-safe. New request paths should retain and pass a
+// ContextEngineFactory directly.
+func AdaptContextEngineFactory(factory ContextEngineFactory) EngineFactory {
+	if factory == nil {
+		return nil
+	}
+	return func(scope Scope) Runner {
+		runner, err := factory(context.Background(), scope)
+		if err != nil {
+			return factoryErrorRunner{err: err}
+		}
+		if runner == nil {
+			return factoryErrorRunner{err: errors.New("engine factory returned nil runner")}
+		}
+		return runner
+	}
+}
+
+type factoryErrorRunner struct {
+	err error
+}
+
+func (r factoryErrorRunner) result(session *state.Session) (engine.Result, error) {
+	err := r.err
+	if err == nil {
+		err = errors.New("engine factory failed")
+	}
+	return engine.Result{Session: session}, err
+}
+
+func (r factoryErrorRunner) Run(_ context.Context, session *state.Session, _ string) (engine.Result, error) {
+	return r.result(session)
+}
+
+func (r factoryErrorRunner) RunGeneratedPrompt(_ context.Context, session *state.Session, _ string) (engine.Result, error) {
+	return r.result(session)
+}
+
+func (r factoryErrorRunner) RunStream(_ context.Context, session *state.Session, _ string, _ func(string)) (engine.Result, error) {
+	return r.result(session)
+}
+
+func (r factoryErrorRunner) RunGeneratedPromptStream(_ context.Context, session *state.Session, _ string, _ func(string)) (engine.Result, error) {
+	return r.result(session)
+}
+
+func (r factoryErrorRunner) RunContent(_ context.Context, session *state.Session, _ []publictypes.ContentBlock) (engine.Result, error) {
+	return r.result(session)
+}
+
+func (r factoryErrorRunner) RunContentStream(_ context.Context, session *state.Session, _ []publictypes.ContentBlock, _ func(string)) (engine.Result, error) {
+	return r.result(session)
+}
+
 type Scope struct {
-	UserID            string
-	SessionID         string
-	WorkingDir        string
-	Prompt            string
+	UserID     string
+	SessionID  string
+	WorkingDir string
+	Prompt     string
+	// InternalToolScope marks a server-created child execution whose explicit
+	// AllowedTools list may include filesystem readers and sandboxed Bash. User
+	// chat requests must never set this flag directly.
+	InternalToolScope bool
 	SkillName         string
 	SkillRoot         string
 	SkillScoped       bool
@@ -447,6 +512,9 @@ type ChatRequest struct {
 	ThinkingMode             bool
 	AgentMode                string
 	ConnectorContext         []string
+	// TurnReserved is set by transports that already acquired the durable
+	// session-turn reservation before entering Runtime.Chat.
+	TurnReserved bool
 }
 
 type ChatAttachmentURL struct {
@@ -497,6 +565,10 @@ type Job struct {
 	UpdatedAt        time.Time           `json:"updated_at"`
 	StartedAt        *time.Time          `json:"started_at,omitempty"`
 	FinishedAt       *time.Time          `json:"finished_at,omitempty"`
+	// Execution ownership is internal fencing state for distributed workers.
+	ExecutionOwner          string     `json:"-"`
+	ExecutionEpoch          int64      `json:"-"`
+	ExecutionLeaseExpiresAt *time.Time `json:"-"`
 }
 
 type JobEvent struct {
@@ -520,6 +592,21 @@ type JobStore interface {
 	DeleteSession(ctx context.Context, userID, sessionID string) error
 	DeleteUser(ctx context.Context, userID string) error
 	PruneBefore(ctx context.Context, cutoff time.Time) (int, error)
+}
+
+// JobStatusTransitionStore provides compare-and-set status updates for job
+// workers and API replicas that may race on cancellation or completion.
+type JobStatusTransitionStore interface {
+	TransitionJobStatus(ctx context.Context, userID, jobID, expectedStatus, status, errorText string, at time.Time) (bool, error)
+}
+
+// JobExecutionLeaseStore fences distributed job execution. Workers must hold
+// an unexpired owner lease both to execute and to publish a terminal status.
+type JobExecutionLeaseStore interface {
+	AcquireJobExecutionLease(ctx context.Context, userID, jobID, owner string, now, expiresAt time.Time) (bool, error)
+	RefreshJobExecutionLease(ctx context.Context, userID, jobID, owner string, now, expiresAt time.Time) (bool, error)
+	ReleaseJobExecutionLease(ctx context.Context, userID, jobID, owner string, at time.Time) error
+	TransitionOwnedJobStatus(ctx context.Context, userID, jobID, owner, status, errorText string, at time.Time) (bool, error)
 }
 
 type JobEventStreamStore interface {
@@ -819,6 +906,7 @@ type ToolPolicy struct {
 	AllowWriteExecute bool
 	AllowedTools      []string
 	SafeWriteTools    []string
+	SafeExecuteTools  []string
 }
 
 type ToolDenialRecord struct {
@@ -848,6 +936,12 @@ func NewProductPermissionCheckerWithReporter(policy ToolPolicy, reporter ToolDen
 			safeWrite[name] = true
 		}
 	}
+	safeExecute := make(map[string]bool, len(policy.SafeExecuteTools))
+	for _, name := range policy.SafeExecuteTools {
+		if name != "" {
+			safeExecute[name] = true
+		}
+	}
 
 	return permissions.NewChecker(permissions.ModeDefault, nil, nil, permissions.WithDecisionHandler(func(ctx context.Context, request permissions.Request) (permissions.Decision, error) {
 		if len(allowed) > 0 && !allowed[request.ToolName] {
@@ -861,6 +955,9 @@ func NewProductPermissionCheckerWithReporter(policy ToolPolicy, reporter ToolDen
 			return permissions.Decision{Behavior: permissions.BehaviorAllow}, nil
 		}
 		if request.Level == permissions.LevelWrite && safeWrite[request.ToolName] {
+			return permissions.Decision{Behavior: permissions.BehaviorAllow}, nil
+		}
+		if request.Level == permissions.LevelExecute && safeExecute[request.ToolName] {
 			return permissions.Decision{Behavior: permissions.BehaviorAllow}, nil
 		}
 		if policy.AllowWriteExecute {

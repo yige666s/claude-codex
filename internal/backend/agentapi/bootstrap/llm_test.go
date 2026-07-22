@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"claude-codex/internal/backend/agentruntime"
@@ -28,6 +29,23 @@ func TestBuildLLMConfigSupportsSimplePlanner(t *testing.T) {
 	}
 	if resp.AssistantText == "" {
 		t.Fatalf("simple planner returned empty assistant text: %#v", resp)
+	}
+}
+
+func TestLLMConfigReadinessCheckNamesDeepSeekCredentialSources(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("AGENT_API_LLM_API_KEY", "")
+	t.Setenv("AGENT_API_LLM_TOKEN", "")
+
+	err := LLMConfigReadinessCheck(LLMConfig{
+		Provider: "deepseek",
+		Model:    "deepseek-chat",
+	})(context.Background())
+	if err == nil {
+		t.Fatal("expected missing credential error")
+	}
+	if !strings.Contains(err.Error(), "DEEPSEEK_API_KEY") || !strings.Contains(err.Error(), "AGENT_API_LLM_API_KEY") {
+		t.Fatalf("missing credential error does not explain DeepSeek setup: %v", err)
 	}
 }
 

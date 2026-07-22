@@ -25,6 +25,10 @@ type SQLSessionStore struct {
 	messageSeq     MessageSequenceAllocator
 }
 
+type sqlExecContext interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 const sqlMessageColumns = `message_id, session_id, user_id, seq_no, parent_id, role, content_type, content,
 	content_parts, tool_call_id, tool_name, tool_input, tool_output, tool_calls,
 	prompt_tokens, completion_tokens, status, is_context_used, model_id, run_id,
@@ -642,12 +646,122 @@ func (s *SQLSessionStore) AppendMessage(ctx context.Context, userID, sessionID s
 	return state.Message{}, lastErr
 }
 
+func (s *SQLSessionStore) WriteSummaryAndMarkMessagesContextUnused(ctx context.Context, userID, sessionID string, summary state.Message, messageIDs []string) (state.Message, int, error) {
+	if strings.TrimSpace(userID) == "" {
+		return state.Message{}, 0, fmt.Errorf("user ID is required")
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return state.Message{}, 0, fmt.Errorf("session ID is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return state.Message{}, 0, err
+	}
+	created, err := s.appendCompactionMessageTx(ctx, tx, userID, sessionID, summary)
+	if err != nil {
+		_ = tx.Rollback()
+		return state.Message{}, 0, err
+	}
+	marked, err := s.markMessagesContextUnusedWithExec(ctx, tx, userID, sessionID, messageIDs)
+	if err != nil {
+		_ = tx.Rollback()
+		return state.Message{}, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return state.Message{}, 0, err
+	}
+	if s.sessionList != nil {
+		_ = s.sessionList.InvalidateUser(ctx, userID)
+	}
+	hydrated, err := s.hydrateSQLMessages(ctx, userID, []state.Message{created})
+	if err != nil {
+		return state.Message{}, 0, err
+	}
+	return hydrated[0], marked, nil
+}
+
 func (s *SQLSessionStore) acquireMessageSeqLock(ctx context.Context, userID, sessionID string) (func(context.Context) error, error) {
 	locker, ok := s.messageSeq.(MessageSequenceLocker)
 	if !ok || locker == nil {
 		return nil, nil
 	}
 	return locker.AcquireMessageSeqLock(ctx, userID, sessionID)
+}
+
+func (s *SQLSessionStore) appendCompactionMessageTx(ctx context.Context, tx *sql.Tx, userID, sessionID string, message state.Message) (state.Message, error) {
+	var sessionStartedRaw any
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		sessionStarted, err := s.queries.WithTx(tx).GetSessionCreatedAt(ctx, dbsqlc.GetSessionCreatedAtParams{
+			UserID:    userID,
+			SessionID: sessionID,
+			Status:    int32(state.SessionStatusDeleted),
+		})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return state.Message{}, fmt.Errorf("session %s not found", sessionID)
+			}
+			return state.Message{}, err
+		}
+		sessionStartedRaw = sessionStarted
+	} else if err := tx.QueryRowContext(ctx, s.dialect.Bind(`SELECT created_at FROM agent_sessions WHERE user_id = ? AND session_id = ? AND status <> ?`), userID, sessionID, state.SessionStatusDeleted).Scan(&sessionStartedRaw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return state.Message{}, fmt.Errorf("session %s not found", sessionID)
+		}
+		return state.Message{}, err
+	}
+	sessionStartedAt, err := parseSQLTime(sessionStartedRaw)
+	if err != nil {
+		return state.Message{}, err
+	}
+	nextSeq, err := s.nextMessageSeq(ctx, tx, userID, sessionID)
+	if err != nil {
+		return state.Message{}, err
+	}
+	message = normalizeMessageForSQL(message, userID, sessionID, nextSeq, sessionStartedAt)
+	if err := insertSQLMessage(ctx, tx, s.dialect, message); err != nil {
+		return state.Message{}, err
+	}
+	tokenDelta := int64(message.PromptTokens + message.CompletionTokens)
+	titleCandidate := sessionTitleCandidateFromMessage(message)
+	if s.dialect == SQLDialectPostgres && s.queries != nil {
+		if err := s.queries.WithTx(tx).UpdateSessionAfterAppend(ctx, dbsqlc.UpdateSessionAfterAppendParams{
+			UserID:          userID,
+			SessionID:       sessionID,
+			Status:          int32(state.MessageStatusDeleted),
+			TotalTokens:     tokenDelta,
+			TitleCandidate:  titleCandidate,
+			UpdatedAt:       message.CreatedAt.UTC(),
+			LastMessageAt:   sqlNullTime(&message.CreatedAt),
+			TargetUserID:    userID,
+			TargetSessionID: sessionID,
+		}); err != nil {
+			return state.Message{}, err
+		}
+	} else if _, err := tx.ExecContext(ctx, s.dialect.Bind(`
+	UPDATE agent_sessions
+	SET message_count = (
+			SELECT COUNT(*) FROM agent_messages
+			WHERE user_id = ? AND session_id = ? AND status <> ?
+		),
+		total_tokens = total_tokens + ?,
+		title = CASE WHEN title = '' AND ? <> '' THEN ? ELSE title END,
+		updated_at = ?,
+		last_message_at = ?
+	WHERE user_id = ? AND session_id = ?`),
+		userID,
+		sessionID,
+		state.MessageStatusDeleted,
+		tokenDelta,
+		titleCandidate,
+		titleCandidate,
+		sqlTimeValue(message.CreatedAt, s.dialect),
+		sqlTimeValue(message.CreatedAt, s.dialect),
+		userID,
+		sessionID,
+	); err != nil {
+		return state.Message{}, err
+	}
+	return message, nil
 }
 
 func (s *SQLSessionStore) appendMessageOnce(ctx context.Context, userID, sessionID string, message state.Message) (state.Message, error) {
@@ -1018,6 +1132,10 @@ LIMIT ?`),
 }
 
 func (s *SQLSessionStore) MarkMessagesContextUnused(ctx context.Context, userID, sessionID string, messageIDs []string) (int, error) {
+	return s.markMessagesContextUnusedWithExec(ctx, s.db, userID, sessionID, messageIDs)
+}
+
+func (s *SQLSessionStore) markMessagesContextUnusedWithExec(ctx context.Context, execer sqlExecContext, userID, sessionID string, messageIDs []string) (int, error) {
 	if len(messageIDs) == 0 {
 		return 0, nil
 	}
@@ -1039,22 +1157,22 @@ func (s *SQLSessionStore) MarkMessagesContextUnused(ctx context.Context, userID,
 		placeholders[i] = "?"
 	}
 	query := s.dialect.Bind(`
-UPDATE agent_messages
-SET is_context_used = 0,
-	status = ?,
-	updated_at = ?
-WHERE user_id = ?
-  AND session_id = ?
-  AND message_id IN (` + strings.Join(placeholders, ",") + `)
-  AND status = ?`)
+	UPDATE agent_messages
+	SET is_context_used = 0,
+		status = ?,
+		updated_at = ?
+	WHERE user_id = ?
+	  AND session_id = ?
+	  AND message_id IN (` + strings.Join(placeholders, ",") + `)
+	  AND status = ?`)
 	args = append(args, state.MessageStatusNormal)
-	result, err := s.db.ExecContext(ctx, query, args...)
+	result, err := execer.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, err
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return 0, nil
+		return 0, err
 	}
 	return int(affected), nil
 }

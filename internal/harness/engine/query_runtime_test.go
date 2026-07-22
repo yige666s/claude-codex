@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"claude-codex/internal/harness/permissions"
+	queryengine "claude-codex/internal/harness/queryengine"
 	"claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 	toolkit "claude-codex/internal/harness/tools"
@@ -181,6 +182,36 @@ func TestQueryRuntimeMessageRoundTripPreservesToolHistory(t *testing.T) {
 	}
 }
 
+func TestMergeNewQueryMessagesPreservesDurableCompactedHistory(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	session.Messages = []state.Message{
+		{ID: "truncated-1", Role: state.MessageRoleUser, Content: "old", Status: state.MessageStatusTruncated, IsContextUsed: false, SeqNo: 1},
+		{ID: "summary-1", Role: state.MessageRoleSystem, ContentType: state.MessageContentTypeSummary, Content: "summary", Status: state.MessageStatusNormal, IsContextUsed: true, SeqNo: 2},
+		{ID: "recent-1", Role: state.MessageRoleUser, Content: "recent", Status: state.MessageStatusNormal, IsContextUsed: true, SeqNo: 3},
+	}
+	initial := sessionToQueryMessages(session)
+	queryMessages := append(append([]queryengine.Message(nil), initial...), queryengine.Message{
+		Type:    "assistant",
+		UUID:    "assistant-new",
+		Content: "answer",
+	})
+
+	mergeNewQueryMessagesIntoSession(session, queryMessages, initial)
+
+	if len(session.Messages) != 4 {
+		t.Fatalf("durable history was replaced: %#v", session.Messages)
+	}
+	if got := session.Messages[0]; got.ID != "truncated-1" || got.Status != state.MessageStatusTruncated || got.IsContextUsed {
+		t.Fatalf("compacted tombstone was not preserved: %#v", got)
+	}
+	if got := session.Messages[1]; got.ID != "summary-1" || got.ContentType != state.MessageContentTypeSummary || got.SeqNo != 2 {
+		t.Fatalf("summary metadata was not preserved: %#v", got)
+	}
+	if got := session.Messages[3]; got.ID != "assistant-new" || got.Role != state.MessageRoleAssistant || got.Content != "answer" || !got.IsContextUsed {
+		t.Fatalf("new query message was not appended correctly: %#v", got)
+	}
+}
+
 func TestQueryRuntimeLastAssistantMessageIgnoresHiddenContext(t *testing.T) {
 	messages := []state.Message{
 		{Role: "user", Content: "do work"},
@@ -209,6 +240,58 @@ func TestQueryRuntimeRejectsEmptyAssistantResponse(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %v, want diagnostic %q", err, want)
 		}
+	}
+}
+
+func TestSessionToQueryMessagesSkipsCompactedHistory(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	session.Messages = []state.Message{
+		{ID: "old", Role: state.MessageRoleUser, Content: "old context", Status: state.MessageStatusTruncated, IsContextUsed: false},
+		{ID: "summary", Role: state.MessageRoleSystem, ContentType: state.MessageContentTypeSummary, Content: "history summary", Status: state.MessageStatusNormal, IsContextUsed: true},
+		{ID: "recent", Role: state.MessageRoleUser, Content: "recent context", Status: state.MessageStatusNormal, IsContextUsed: true},
+	}
+
+	messages := sessionToQueryMessages(session)
+	if len(messages) != 2 {
+		t.Fatalf("expected summary and recent context only, got %#v", messages)
+	}
+	for _, message := range messages {
+		if strings.Contains(fmt.Sprint(message.Content), "old context") {
+			t.Fatalf("truncated context leaked into query messages: %#v", messages)
+		}
+	}
+}
+
+func TestQueryRuntimeToolLedgerReusesSucceededToolResult(t *testing.T) {
+	calls := 0
+	input := json.RawMessage(`{"value":"same"}`)
+	registry := toolkit.NewRegistry(countingTool{count: &calls})
+	engine := New(followupPlanner{call: ToolCall{ID: "tool-1", Name: "counting_tool", Input: input}}, registry, permissions.NewChecker(permissions.ModeBypass, nil, nil), 3)
+	engine.UseQueryRuntime()
+	ledger := newMemoryEngineLedger()
+	engine.SetToolLedger(ledger)
+	engine.SetDefaultToolExecutionScope(ToolExecutionScope{UserID: "alice", SessionID: "session-1"})
+
+	ctx := WithToolExecutionScope(context.Background(), ToolExecutionScope{
+		WorkflowRunID:     "run-1",
+		WorkflowStepID:    "step-1",
+		WorkflowStepIndex: 3,
+	})
+	session := state.NewSession("")
+	first, err := engine.Run(ctx, session, "do the work")
+	if err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	second, err := engine.Run(ctx, session, "do the work again")
+	if err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("expected tool to execute once, executed %d times", calls)
+	}
+	if first.Output != "handled: fresh" || second.Output != "handled: fresh" {
+		t.Fatalf("unexpected outputs: first=%q second=%q", first.Output, second.Output)
 	}
 }
 

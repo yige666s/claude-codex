@@ -44,23 +44,35 @@ func (r *queryRuntime) ExecuteTool(ctx context.Context, name string, input json.
 }
 
 func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt interface{}, recordUserMessage bool) (Result, error) {
+	return r.run(ctx, session, prompt, recordUserMessage, nil)
+}
+
+func (r *queryRuntime) RunStream(ctx context.Context, session *state.Session, prompt interface{}, recordUserMessage bool, onToken func(string)) (Result, error) {
+	return r.run(ctx, session, prompt, recordUserMessage, onToken)
+}
+
+func (r *queryRuntime) run(ctx context.Context, session *state.Session, prompt interface{}, recordUserMessage bool, onToken func(string)) (Result, error) {
 	if session == nil {
 		return Result{}, fmt.Errorf("session is required")
 	}
 
 	promptText := promptToText(prompt)
 	interactionID := fmt.Sprintf("interaction-%d", time.Now().UnixNano())
+	runtimeName := "queryengine"
+	if onToken != nil {
+		runtimeName = "queryengine_streaming"
+	}
 	r.engine.recordTrace(session.ID, "interaction.start", "interaction", map[string]any{
 		"span_id":       interactionID,
 		"prompt":        promptText,
 		"prompt_length": len(promptText),
 		"prompt_source": promptSource(recordUserMessage),
 		"working_dir":   session.WorkingDir,
-		"runtime":       "queryengine",
+		"runtime":       runtimeName,
 	})
 
+	initialSessionMessageCount := len(session.Messages)
 	initialMessages := r.initialQueryMessages(session)
-	initialMessageCount := len(initialMessages)
 	engine := queryengine.NewQueryEngine(queryengine.QueryEngineConfig{
 		Cwd:                    runtimeWorkingDir(r.engine.workingDir, session.WorkingDir),
 		SessionID:              session.ID,
@@ -70,9 +82,10 @@ func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt i
 		IncludePartialMessages: false,
 		Planner:                r.engine.planner,
 		ToolDescriptors:        r.engine.registry.Descriptors(),
-		ExecuteTool: func(ctx context.Context, name string, input []byte) (string, error) {
-			result, err := r.ExecuteTool(contextWithSessionAgent(ctx, session), name, json.RawMessage(input))
-			return result.Output, err
+		MCPClients:             r.engine.mcpClients,
+		HookExecutor:           r.engine.hookExecutor,
+		ExecuteTool: func(ctx context.Context, toolUseID, name string, input []byte) (string, error) {
+			return r.executeQueryTool(ctx, session, interactionID, toolUseID, name, json.RawMessage(input))
 		},
 		MaxTurns: r.engine.maxTurns,
 	})
@@ -85,22 +98,23 @@ func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt i
 			"span_id": interactionID,
 			"status":  "error",
 			"error":   err.Error(),
-			"runtime": "queryengine",
+			"runtime": runtimeName,
 		})
 		return Result{}, err
 	}
 
-	final := drainQueryStream(stream)
+	final := drainQueryStream(stream, onToken)
 
 	if final.IsError && len(final.Errors) > 0 {
 		err := errors.New(strings.Join(final.Errors, "; "))
+		mergeNewQueryMessagesIntoSession(session, engine.GetMessages(), initialMessages)
 		r.engine.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
 			"span_id": interactionID,
 			"status":  "error",
 			"error":   err.Error(),
-			"runtime": "queryengine",
+			"runtime": runtimeName,
 		})
-		return Result{}, err
+		return Result{Session: session}, err
 	}
 
 	for {
@@ -124,28 +138,30 @@ func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt i
 			}
 			stream, err = engine.SubmitMessage(ctx, message, nil)
 			if err != nil {
-				return Result{}, err
+				mergeNewQueryMessagesIntoSession(session, engine.GetMessages(), initialMessages)
+				return Result{Session: session}, err
 			}
-			final = drainQueryStream(stream)
+			final = drainQueryStream(stream, onToken)
 			if final.IsError && len(final.Errors) > 0 {
-				return Result{}, errors.New(strings.Join(final.Errors, "; "))
+				mergeNewQueryMessagesIntoSession(session, engine.GetMessages(), initialMessages)
+				return Result{Session: session}, errors.New(strings.Join(final.Errors, "; "))
 			}
 		}
 	}
 
-	syncSessionFromQueryMessages(session, engine.GetMessages())
+	mergeNewQueryMessagesIntoSession(session, engine.GetMessages(), initialMessages)
 	output := lastAssistantMessage(session.Messages)
 	if output == "" {
 		output = final.Result
 	}
-	if strings.TrimSpace(output) == "" && !hasMeaningfulAssistantAfter(session.Messages, initialMessageCount) {
-		details := queryEmptyResponseDiagnostics(final, session.Messages, initialMessageCount)
+	if strings.TrimSpace(output) == "" && !hasMeaningfulAssistantAfter(session.Messages, initialSessionMessageCount) {
+		details := queryEmptyResponseDiagnostics(final, session.Messages, initialSessionMessageCount)
 		err := fmt.Errorf("queryengine empty response: no assistant text or tool calls (%s)", formatQueryEmptyResponseDiagnostics(details))
 		r.engine.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
 			"span_id": interactionID,
 			"status":  "error",
 			"error":   err.Error(),
-			"runtime": "queryengine",
+			"runtime": runtimeName,
 			"details": details,
 		})
 		return Result{}, err
@@ -156,7 +172,7 @@ func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt i
 		"status":          "ok",
 		"output_chars":    len(output),
 		"tool_call_count": countAssistantToolCalls(session.Messages),
-		"runtime":         "queryengine",
+		"runtime":         runtimeName,
 	})
 
 	return Result{
@@ -165,12 +181,57 @@ func (r *queryRuntime) Run(ctx context.Context, session *state.Session, prompt i
 	}, nil
 }
 
-func drainQueryStream(stream <-chan queryengine.SDKMessage) queryengine.SDKMessage {
+func (r *queryRuntime) executeQueryTool(ctx context.Context, session *state.Session, interactionID, toolUseID, name string, input json.RawMessage) (string, error) {
+	callID := toolUseID
+	if strings.TrimSpace(callID) == "" {
+		callID = fmt.Sprintf("%s-%d", name, time.Now().UnixNano())
+	}
+	result, err := r.engine.executeToolResult(contextWithSessionAgent(ctx, session), session, interactionID, ToolCall{
+		ID:    callID,
+		Name:  name,
+		Input: input,
+	}, toolkit.NoOpProgressReporter{})
+	if err != nil {
+		return "", err
+	}
+	return result.Output, nil
+}
+
+func drainQueryStream(stream <-chan queryengine.SDKMessage, onToken func(string)) queryengine.SDKMessage {
 	var final queryengine.SDKMessage
 	for msg := range stream {
+		if onToken != nil {
+			forwardQueryStreamTokens(msg, onToken)
+		}
 		final = msg
 	}
 	return final
+}
+
+func forwardQueryStreamTokens(msg queryengine.SDKMessage, onToken func(string)) {
+	if onToken == nil || msg.Type != "stream_event" {
+		return
+	}
+
+	var eventType string
+	var delta map[string]any
+	switch typed := msg.Event.(type) {
+	case map[string]any:
+		eventType, _ = typed["type"].(string)
+		delta, _ = typed["delta"].(map[string]any)
+	case queryengine.StreamEvent:
+		eventType = typed.Type
+		delta, _ = typed.Delta.(map[string]any)
+	}
+	if eventType != "content_block_delta" || delta == nil {
+		return
+	}
+	if deltaType, _ := delta["type"].(string); deltaType != "text_delta" {
+		return
+	}
+	if text, _ := delta["text"].(string); text != "" {
+		onToken(text)
+	}
 }
 
 func runtimeWorkingDir(engineDir, sessionDir string) string {
@@ -221,22 +282,32 @@ func (r *queryRuntime) initialQueryMessages(session *state.Session) []queryengin
 	}
 
 	if r.engine.skillManager != nil {
+		if session.Metadata[skillCatalogInjectedVersionKey] == messages.SkillSelectionPolicyVersion || sessionHasHiddenContent(session, messages.SkillSelectionPolicyMarker()) {
+			session.Metadata[skillCatalogInjectedKey] = "true"
+			session.Metadata[skillCatalogInjectedVersionKey] = messages.SkillSelectionPolicyVersion
+			return initial
+		}
 		allSkills := r.engine.skillManager.ListUserInvocableSkills()
 		content := messages.FormatAllSkillDescriptions(allSkills)
-		if strings.TrimSpace(content) != "" {
-			attachment := &messages.SkillListingAttachment{
-				Content:    content,
-				SkillCount: len(allSkills),
-				IsInitial:  len(session.Messages) == 0,
-			}
-			initial = append(initial, queryengine.Message{
-				Type:      "user",
-				Timestamp: time.Now().UTC(),
-				UUID:      fmt.Sprintf("%s-skills", session.ID),
-				IsMeta:    true,
-				Content:   attachment.ToSystemReminder(),
-			})
+		if strings.TrimSpace(content) == "" {
+			session.Metadata[skillCatalogInjectedKey] = "true"
+			session.Metadata[skillCatalogInjectedVersionKey] = messages.SkillSelectionPolicyVersion
+			return initial
 		}
+		attachment := &messages.SkillListingAttachment{
+			Content:    content,
+			SkillCount: len(allSkills),
+			IsInitial:  len(session.Messages) == 0,
+		}
+		initial = append(initial, queryengine.Message{
+			Type:      "user",
+			Timestamp: time.Now().UTC(),
+			UUID:      fmt.Sprintf("%s-skills", session.ID),
+			IsMeta:    true,
+			Content:   attachment.ToSystemReminder(),
+		})
+		session.Metadata[skillCatalogInjectedKey] = "true"
+		session.Metadata[skillCatalogInjectedVersionKey] = messages.SkillSelectionPolicyVersion
 	}
 
 	return initial
@@ -249,6 +320,9 @@ func sessionToQueryMessages(session *state.Session) []queryengine.Message {
 
 	out := make([]queryengine.Message, 0, len(session.Messages))
 	for i, msg := range session.Messages {
+		if msg.Status == state.MessageStatusTruncated || msg.Status == state.MessageStatusDeleted || (msg.ID != "" && !msg.IsContextUsed) {
+			continue
+		}
 		out = append(out, stateToQueryMessage(session.ID, i, msg))
 	}
 	return out
@@ -260,8 +334,12 @@ func stateToQueryMessage(sessionID string, idx int, msg state.Message) queryengi
 		timestamp = time.Now().UTC()
 	}
 
+	uuid := strings.TrimSpace(msg.ID)
+	if uuid == "" {
+		uuid = fmt.Sprintf("%s-%d", sessionID, idx)
+	}
 	queryMsg := queryengine.Message{
-		UUID:      fmt.Sprintf("%s-%d", sessionID, idx),
+		UUID:      uuid,
 		Timestamp: timestamp,
 	}
 
@@ -292,6 +370,59 @@ func stateToQueryMessage(sessionID string, idx int, msg state.Message) queryengi
 	queryMsg.IsMeta = msg.Hidden
 
 	return queryMsg
+}
+
+// mergeNewQueryMessagesIntoSession preserves the original persisted message
+// structs (IDs, sequence numbers, context flags, attachment metadata, and
+// compacted tombstones) and appends only messages created by the query turn.
+// Rebuilding the whole session from SDK messages would resurrect compacted
+// history and break append-only persistence when the active context is shorter
+// than the durable transcript.
+func mergeNewQueryMessagesIntoSession(session *state.Session, messages, initial []queryengine.Message) {
+	if session == nil {
+		return
+	}
+	initialIDs := make(map[string]struct{}, len(initial))
+	for _, message := range initial {
+		if id := strings.TrimSpace(message.UUID); id != "" {
+			initialIDs[id] = struct{}{}
+		}
+	}
+	seenNew := make(map[string]struct{})
+	for _, message := range messages {
+		id := strings.TrimSpace(message.UUID)
+		if _, existed := initialIDs[id]; id != "" && existed {
+			continue
+		}
+		if _, duplicate := seenNew[id]; id != "" && duplicate {
+			continue
+		}
+		converted, ok := queryToStateMessage(message)
+		if !ok {
+			continue
+		}
+		if id != "" {
+			converted.ID = id
+			seenNew[id] = struct{}{}
+		}
+		if converted.Status == 0 {
+			converted.Status = state.MessageStatusNormal
+		}
+		converted.IsContextUsed = true
+		session.Messages = append(session.Messages, converted)
+	}
+	usage := state.Usage{}
+	updatedAt := session.StartedAt
+	for _, message := range session.Messages {
+		recordSessionUsage(&usage, message)
+		if message.CreatedAt.After(updatedAt) {
+			updatedAt = message.CreatedAt
+		}
+	}
+	session.Usage = usage
+	if !updatedAt.IsZero() {
+		session.UpdatedAt = updatedAt
+	}
 }
 
 func assistantContentBlocks(msg state.Message) interface{} {

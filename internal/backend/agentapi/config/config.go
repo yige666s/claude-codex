@@ -1,11 +1,13 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	appconfig "claude-codex/internal/app/config"
 	"claude-codex/internal/backend/agentruntime"
 	"github.com/spf13/cobra"
 )
@@ -218,7 +220,10 @@ type Config struct {
 	TrustedSecret                            string
 	AllowDangerousTools                      bool
 	NetworkAllowlist                         string
+	PluginDir                                string
 	SkillDirs                                string
+	MCPServersJSON                           string
+	MCPServers                               []appconfig.MCPServerConfig
 	RateLimitBackend                         string
 	RateLimit                                int
 	OperationRateLimits                      string
@@ -531,7 +536,9 @@ func Default() Config {
 		TrustedSecret:                            os.Getenv("AGENT_API_TRUSTED_SECRET"),
 		AllowDangerousTools:                      false,
 		NetworkAllowlist:                         os.Getenv("AGENT_API_NETWORK_ALLOWLIST"),
+		PluginDir:                                os.Getenv("AGENT_API_PLUGIN_DIR"),
 		SkillDirs:                                os.Getenv("AGENT_API_SKILL_DIRS"),
+		MCPServersJSON:                           os.Getenv("AGENT_API_MCP_SERVERS"),
 		RateLimitBackend:                         FirstNonEmpty(os.Getenv("AGENT_API_RATE_LIMIT_BACKEND"), "none"),
 		RateLimit:                                EnvInt("AGENT_API_RATE_LIMIT", 60),
 		OperationRateLimits:                      os.Getenv("AGENT_API_OPERATION_RATE_LIMITS"),
@@ -624,7 +631,7 @@ func Default() Config {
 		LoopConnectorTriggersEnabled:             EnvBool("AGENT_API_LOOP_CONNECTOR_TRIGGERS_ENABLED", false),
 		LoopTriggerTTL:                           EnvDuration("AGENT_API_LOOP_TRIGGER_TTL", 7*24*time.Hour),
 		SkillShellTimeout:                        EnvDuration("AGENT_API_SKILL_SHELL_TIMEOUT", 90*time.Second),
-		SkillShellRunner:                         FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SHELL_RUNNER"), agentruntime.DefaultSkillShellRunner),
+		SkillShellRunner:                         FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SHELL_RUNNER"), "docker"),
 		SkillSandboxImage:                        FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_IMAGE"), agentruntime.DefaultSkillSandboxImage),
 		SkillSandboxNetwork:                      FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_NETWORK"), agentruntime.DefaultSkillSandboxNetwork),
 		SkillSandboxMemory:                       FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_MEMORY"), agentruntime.DefaultSkillSandboxMemory),
@@ -852,7 +859,9 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.StringVar(&cfg.TrustedSecret, "trusted-secret", cfg.TrustedSecret, "secret value required for trusted-header auth")
 	flags.BoolVar(&cfg.AllowDangerousTools, "allow-dangerous-tools", cfg.AllowDangerousTools, "enable write/edit/bash tools and write/execute permissions")
 	flags.StringVar(&cfg.NetworkAllowlist, "network-allowlist", cfg.NetworkAllowlist, "comma-separated domains allowed for WebFetch/WebSearch; empty disables app-level web allowlist")
+	flags.StringVar(&cfg.PluginDir, "plugin-dir", cfg.PluginDir, "directory containing plugin manifests")
 	flags.StringVar(&cfg.SkillDirs, "skill-dirs", cfg.SkillDirs, "comma-separated directories containing skill-name/SKILL.md folders")
+	flags.StringVar(&cfg.MCPServersJSON, "mcp-servers", cfg.MCPServersJSON, "JSON array or object describing MCP servers")
 	flags.StringVar(&cfg.RateLimitBackend, "rate-limit-backend", cfg.RateLimitBackend, "rate limit backend: memory, redis, gateway, none")
 	flags.IntVar(&cfg.RateLimit, "rate-limit", cfg.RateLimit, "max requests per user per minute")
 	flags.StringVar(&cfg.OperationRateLimits, "operation-rate-limits", cfg.OperationRateLimits, "comma-separated operation rate limits such as chat_message=60/m,job_create=20/m,data_export=5/h")
@@ -958,12 +967,52 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 
 // Validate checks only cross-cutting startup configuration invariants.
 // Deeper dependency-specific validation stays near the constructors that own those dependencies.
-func (c Config) Validate() error {
+func (c *Config) Validate() error {
+	if c == nil {
+		return fmt.Errorf("config is required")
+	}
 	if strings.TrimSpace(c.Addr) == "" {
 		return fmt.Errorf("addr is required")
 	}
 	if strings.TrimSpace(c.DataDir) == "" {
 		return fmt.Errorf("data-dir is required")
 	}
+	if strings.TrimSpace(c.MCPServersJSON) != "" {
+		servers, err := parseMCPServersJSON(c.MCPServersJSON)
+		if err != nil {
+			return err
+		}
+		c.MCPServers = servers
+	} else if c.MCPServers == nil {
+		c.MCPServers = []appconfig.MCPServerConfig{}
+	}
+	for i, server := range c.MCPServers {
+		if strings.TrimSpace(server.Name) == "" {
+			return fmt.Errorf("mcp-servers[%d].name is required", i)
+		}
+	}
 	return nil
+}
+
+func parseMCPServersJSON(raw string) ([]appconfig.MCPServerConfig, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []appconfig.MCPServerConfig{}, nil
+	}
+	var list []appconfig.MCPServerConfig
+	if err := json.Unmarshal([]byte(raw), &list); err == nil {
+		return normalizeMCPServers(list), nil
+	}
+	var single appconfig.MCPServerConfig
+	if err := json.Unmarshal([]byte(raw), &single); err == nil {
+		return normalizeMCPServers([]appconfig.MCPServerConfig{single}), nil
+	}
+	return nil, fmt.Errorf("mcp-servers must be a JSON array or object")
+}
+
+func normalizeMCPServers(servers []appconfig.MCPServerConfig) []appconfig.MCPServerConfig {
+	if len(servers) == 0 {
+		return []appconfig.MCPServerConfig{}
+	}
+	return append([]appconfig.MCPServerConfig(nil), servers...)
 }

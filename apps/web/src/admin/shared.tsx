@@ -7,7 +7,7 @@ import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { AdminStatusBadge } from "./ui";
-import type { AdminSkill, AuditLogRecord, EvaluationResult, EvaluationReview, EvaluationRun, RiskEvent, Skill, LLMGovernanceConfig, SkillPolicyConfig } from "../types";
+import type { AdminSkill, AuditLogRecord, EvaluationResult, EvaluationReview, EvaluationRun, RiskEvent, Skill, LLMGovernanceConfig, LLMModelAvailability, SkillPolicyConfig } from "../types";
 
 export const terminalJobs = new Set(["succeeded", "failed", "cancelled"]);
 
@@ -113,6 +113,12 @@ export function modelOptionRuntime(config: LLMGovernanceConfig | undefined, mode
   const option = config?.allowed_models?.find((item) => item.id === selected);
   if (!option) return "";
   return [option.provider, option.vertex_location].filter(Boolean).join(" / ");
+}
+
+export function modelAvailabilityFor(config: LLMGovernanceConfig | undefined, model: string | undefined): LLMModelAvailability | undefined {
+  const selected = String(model || "").trim();
+  if (!selected) return undefined;
+  return config?.model_availability?.find((item) => item.id === selected);
 }
 
 export function AdminMetric({ label, value }: { label: string; value: string }) {

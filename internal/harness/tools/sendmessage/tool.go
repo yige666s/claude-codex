@@ -30,6 +30,10 @@ type Tool struct {
 	// Defaults to $HOME/.claude/mailboxes when empty.
 	MailboxDir string
 
+	// TaskManager resolves in-process local-agent and teammate tasks. Defaults to
+	// the process-local runtime task manager when nil.
+	TaskManager *coretasks.TaskManager
+
 	// FindRunningAgent looks up a running in-process agent by name or ID and
 	// returns a channel to deliver messages. Returns nil when the agent is not
 	// running in-process.
@@ -90,6 +94,13 @@ func (t *Tool) InputSchema() json.RawMessage {
 func (t *Tool) Permission() permissions.Level { return permissions.LevelWrite }
 func (t *Tool) IsConcurrencySafe() bool       { return false }
 
+func (t *Tool) taskManager() *coretasks.TaskManager {
+	if t != nil && t.TaskManager != nil {
+		return t.TaskManager
+	}
+	return coretasks.DefaultManager()
+}
+
 func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result, error) {
 	var in sendInput
 	if err := json.Unmarshal(raw, &in); err != nil {
@@ -125,14 +136,15 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result
 		}
 	}
 
-	if task, ok := coretasks.DefaultManager().GetTask(in.To); ok && task.GetType() == coretasks.TaskTypeLocalAgent {
-		if err := coretasks.DefaultManager().QueueLocalAgentMessage(in.To, in.Message); err != nil {
+	manager := t.taskManager()
+	if task, ok := manager.GetTask(in.To); ok && task.GetType() == coretasks.TaskTypeLocalAgent {
+		if err := manager.QueueLocalAgentMessage(in.To, in.Message); err != nil {
 			return toolkit.Result{}, err
 		}
 		return toolkit.Result{Output: fmt.Sprintf("Message queued for local agent task %s.", in.To)}, nil
 	}
-	if teammate, ok := coretasks.DefaultManager().FindInProcessTeammate(in.To); ok {
-		if err := coretasks.DefaultManager().QueueInProcessTeammateMessage(in.To, in.Message); err != nil {
+	if teammate, ok := manager.FindInProcessTeammate(in.To); ok {
+		if err := manager.QueueInProcessTeammateMessage(in.To, in.Message); err != nil {
 			return toolkit.Result{}, err
 		}
 		return toolkit.Result{Output: fmt.Sprintf("Message queued for teammate %s.", teammate.TeammateID)}, nil

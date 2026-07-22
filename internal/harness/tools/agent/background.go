@@ -60,6 +60,8 @@ func (m *BackgroundManager) Start(parent context.Context, req Request, run Runne
 	m.mu.Lock()
 	m.tasks[task.ID] = task
 	m.mu.Unlock()
+	snapshot := *task
+	snapshot.cancel = nil
 
 	go func() {
 		output, err := run(ctx, req)
@@ -80,7 +82,9 @@ func (m *BackgroundManager) Start(parent context.Context, req Request, run Runne
 		}
 	}()
 
-	return task, nil
+	// The stored task is mutated by the worker goroutine. Return a snapshot so
+	// callers can safely inspect the initial state without sharing that pointer.
+	return &snapshot, nil
 }
 
 func (m *BackgroundManager) Get(id string) (*BackgroundTask, bool) {

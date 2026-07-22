@@ -59,7 +59,7 @@ func BuildLLMConfig(providerName, model, apiKey, apiToken, apiBaseURL string, ti
 		cfg.Timeout = defaults.Timeout
 	}
 	if requiresCredential(cfg.Provider) && cfg.APIKey == "" && cfg.Token == "" && !providerHasAmbientCredential(cfg.Provider) {
-		return LLMConfig{}, fmt.Errorf("credential required for llm provider %q", cfg.Provider)
+		return LLMConfig{}, missingProviderCredentialError(cfg.Provider)
 	}
 	if isCustomProvider(providerName) && strings.TrimSpace(cfg.BaseURL) == "" {
 		return LLMConfig{}, fmt.Errorf("custom provider requires -api-base-url or AGENT_API_LLM_BASE_URL")
@@ -412,6 +412,34 @@ func requiresCredential(providerName string) bool {
 	}
 }
 
+func providerCredentialSetupHint(providerName string) string {
+	switch strings.ToLower(strings.TrimSpace(providerName)) {
+	case "anthropic", "claude":
+		return "set ANTHROPIC_API_KEY, CLAUDE_API_KEY, or AGENT_API_LLM_TOKEN and recreate AgentAPI"
+	case "openai", "gpt", "custom", "openai-compatible", "baseurl":
+		return "set OPENAI_API_KEY, AGENT_API_LLM_API_KEY, or AGENT_API_LLM_TOKEN and recreate AgentAPI"
+	case "deepseek":
+		return "set DEEPSEEK_API_KEY, AGENT_API_LLM_API_KEY, or AGENT_API_LLM_TOKEN and recreate AgentAPI"
+	case "nvidia", "nim":
+		return "set NVIDIA_API_KEY, NGC_API_KEY, AGENT_API_LLM_API_KEY, or AGENT_API_LLM_TOKEN and recreate AgentAPI"
+	case "qwen", "dashscope", "aliyun":
+		return "set DASHSCOPE_API_KEY, QWEN_API_KEY, ALIBABA_CLOUD_API_KEY, AGENT_API_LLM_API_KEY, or AGENT_API_LLM_TOKEN and recreate AgentAPI"
+	case "gemini", "google":
+		return "set GEMINI_API_KEY, GOOGLE_API_KEY, or AGENT_API_LLM_TOKEN and recreate AgentAPI"
+	case "shortapi", "short":
+		return "set SHORTAPI_KEY, AGENT_API_LLM_API_KEY, or AGENT_API_LLM_TOKEN and recreate AgentAPI"
+	case "vertex", "gcp":
+		return "set GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_APPLICATION_CREDENTIALS_JSON, or VERTEX_ACCESS_TOKEN and recreate AgentAPI"
+	default:
+		return "set AGENT_API_LLM_API_KEY or AGENT_API_LLM_TOKEN and recreate AgentAPI"
+	}
+}
+
+func missingProviderCredentialError(providerName string) error {
+	provider := strings.ToLower(strings.TrimSpace(providerName))
+	return fmt.Errorf("llm credential is required for provider %q; %s", provider, providerCredentialSetupHint(provider))
+}
+
 func isCustomProvider(providerName string) bool {
 	switch strings.ToLower(strings.TrimSpace(providerName)) {
 	case "custom", "openai-compatible", "baseurl":
@@ -434,7 +462,7 @@ func LLMConfigReadinessCheck(cfg LLMConfig) func(context.Context) error {
 			return fmt.Errorf("custom llm provider requires base URL")
 		}
 		if requiresCredential(provider) && strings.TrimSpace(cfg.APIKey) == "" && strings.TrimSpace(cfg.Token) == "" && !providerHasAmbientCredential(provider) {
-			return fmt.Errorf("llm credential is required for provider %q", provider)
+			return missingProviderCredentialError(provider)
 		}
 		switch provider {
 		case "vertex", "gcp":

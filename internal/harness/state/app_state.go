@@ -8,10 +8,12 @@ import (
 
 // AppState represents the backend application state
 type AppState struct {
-	mu sync.RWMutex
+	// Keep the lock behind a pointer so immutable-style state snapshots share
+	// the same synchronization boundary instead of copying a live mutex.
+	mu *sync.RWMutex
 
 	// Task management
-	Tasks            map[string]tasks.TaskState
+	Tasks             map[string]tasks.TaskState
 	AgentNameRegistry map[string]string // name -> agentId
 
 	// Permission system
@@ -40,12 +42,12 @@ type AppState struct {
 	Verbose  bool
 
 	// Model configuration
-	MainLoopModel          *string
+	MainLoopModel           *string
 	MainLoopModelForSession *string
 
 	// Remote connection
-	RemoteSessionURL        *string
-	RemoteConnectionStatus  string
+	RemoteSessionURL          *string
+	RemoteConnectionStatus    string
 	RemoteBackgroundTaskCount int
 
 	// Agent context
@@ -69,10 +71,10 @@ type AppState struct {
 
 // ToolPermissionContext represents tool permission configuration
 type ToolPermissionContext struct {
-	Mode                            string
+	Mode                             string
 	IsBypassPermissionsModeAvailable bool
-	AllowedTools                    []string
-	DeniedTools                     []string
+	AllowedTools                     []string
+	DeniedTools                      []string
 }
 
 // AgentDefinitionsResult contains agent definitions
@@ -106,11 +108,11 @@ type FileSnapshot struct {
 
 // MCPState represents MCP integration state
 type MCPState struct {
-	Clients             []MCPServerConnection
-	Tools               []MCPTool
-	Commands            []MCPCommand
-	Resources           map[string][]ServerResource
-	PluginReconnectKey  int
+	Clients            []MCPServerConnection
+	Tools              []MCPTool
+	Commands           []MCPCommand
+	Resources          map[string][]ServerResource
+	PluginReconnectKey int
 }
 
 // MCPServerConnection represents an MCP server connection
@@ -218,6 +220,7 @@ type SessionHook struct {
 // NewAppState creates a new application state with default values
 func NewAppState() *AppState {
 	return &AppState{
+		mu:                        &sync.RWMutex{},
 		Tasks:                     make(map[string]tasks.TaskState),
 		AgentNameRegistry:         make(map[string]string),
 		ToolPermissionContext:     GetEmptyToolPermissionContext(),
@@ -240,10 +243,10 @@ func NewAppState() *AppState {
 // GetEmptyToolPermissionContext returns an empty tool permission context
 func GetEmptyToolPermissionContext() ToolPermissionContext {
 	return ToolPermissionContext{
-		Mode:                            "default",
+		Mode:                             "default",
 		IsBypassPermissionsModeAvailable: false,
-		AllowedTools:                    []string{},
-		DeniedTools:                     []string{},
+		AllowedTools:                     []string{},
+		DeniedTools:                      []string{},
 	}
 }
 
@@ -259,11 +262,11 @@ func NewFileHistoryState() FileHistoryState {
 // NewMCPState creates a new MCP state
 func NewMCPState() MCPState {
 	return MCPState{
-		Clients:             []MCPServerConnection{},
-		Tools:               []MCPTool{},
-		Commands:            []MCPCommand{},
-		Resources:           make(map[string][]ServerResource),
-		PluginReconnectKey:  0,
+		Clients:            []MCPServerConnection{},
+		Tools:              []MCPTool{},
+		Commands:           []MCPCommand{},
+		Resources:          make(map[string][]ServerResource),
+		PluginReconnectKey: 0,
 	}
 }
 
@@ -310,5 +313,7 @@ func (s *AppState) SetState(updater func(prev *AppState) *AppState) {
 	newState := updater(s)
 
 	// Update the state
+	mu := s.mu
 	*s = *newState
+	s.mu = mu
 }

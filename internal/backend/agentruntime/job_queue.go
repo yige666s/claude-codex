@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -22,6 +23,19 @@ const (
 	DefaultJobQueueClaimIdle     = time.Minute
 	DefaultJobQueueLockTTL       = 2 * time.Minute
 )
+
+var ErrJobExecutionLeaseLost = errors.New("job execution lease lost")
+
+type jobExecutionLeaseContextKey struct{}
+
+func withJobExecutionLease(ctx context.Context) context.Context {
+	return context.WithValue(ctx, jobExecutionLeaseContextKey{}, true)
+}
+
+func hasJobExecutionLease(ctx context.Context) bool {
+	held, _ := ctx.Value(jobExecutionLeaseContextKey{}).(bool)
+	return held
+}
 
 type JobQueueItem struct {
 	JobID           string `json:"job_id"`
@@ -427,15 +441,29 @@ func (w *JobWorker) process(ctx context.Context, message *JobQueueMessage) (bool
 		lock = acquiredLock
 		defer func() { _ = lock.Release(context.Background()) }()
 	}
-	stopRefresh := startJobLockRefresh(ctx, lock, w.config.LockRefresh)
-	defer stopRefresh()
-	if err := w.runner.RunQueuedJob(ctx, message.Item); err != nil {
+	processCtx, cancelProcess := context.WithCancelCause(ctx)
+	defer cancelProcess(context.Canceled)
+	if lock != nil {
+		processCtx = withJobExecutionLease(processCtx)
+	}
+	stopRefresh := startJobLockRefresh(processCtx, lock, w.config.LockRefresh, func(err error) {
+		cancelProcess(fmt.Errorf("%w: %v", ErrJobExecutionLeaseLost, err))
+	})
+	if err := w.runner.RunQueuedJob(processCtx, message.Item); err != nil {
+		stopRefresh()
+		if cause := context.Cause(processCtx); errors.Is(cause, ErrJobExecutionLeaseLost) {
+			return false, cause
+		}
 		return false, err
+	}
+	stopRefresh()
+	if cause := context.Cause(processCtx); errors.Is(cause, ErrJobExecutionLeaseLost) {
+		return false, cause
 	}
 	return true, nil
 }
 
-func startJobLockRefresh(ctx context.Context, lock JobQueueLock, interval time.Duration) func() {
+func startJobLockRefresh(ctx context.Context, lock JobQueueLock, interval time.Duration, onLost func(error)) func() {
 	if lock == nil {
 		return func() {}
 	}
@@ -443,6 +471,7 @@ func startJobLockRefresh(ctx context.Context, lock JobQueueLock, interval time.D
 		interval = time.Second
 	}
 	done := make(chan struct{})
+	var once sync.Once
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -453,9 +482,14 @@ func startJobLockRefresh(ctx context.Context, lock JobQueueLock, interval time.D
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = lock.Refresh(ctx)
+				if err := lock.Refresh(ctx); err != nil {
+					if onLost != nil {
+						onLost(err)
+					}
+					return
+				}
 			}
 		}
 	}()
-	return func() { close(done) }
+	return func() { once.Do(func() { close(done) }) }
 }

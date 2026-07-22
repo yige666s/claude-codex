@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 
@@ -20,11 +22,17 @@ import (
 
 type FetchTool struct {
 	client          *http.Client
+	resolver        ipResolver
 	allowedDomains  []string
 	cloudflareCrawl *cloudflareCrawlClient
 	cloudflareCDP   *cloudflareCDPClient
 	browserless     *browserlessSmartScrapeClient
 }
+
+const (
+	defaultFetchMaxBytes int64 = 32 * 1024
+	serverFetchMaxBytes  int64 = 1024 * 1024
+)
 
 type fetchInput struct {
 	URL      string `json:"url"`
@@ -68,6 +76,7 @@ func NewFetchToolWithAllowlist(client *http.Client, allowedDomains []string) *Fe
 	}
 	return &FetchTool{
 		client:          client,
+		resolver:        net.DefaultResolver,
 		allowedDomains:  append([]string(nil), allowedDomains...),
 		cloudflareCrawl: newCloudflareCrawlClientFromEnv(client),
 		cloudflareCDP:   newCloudflareCDPClientFromEnv(client),
@@ -84,7 +93,7 @@ func (t *FetchTool) Description() string {
 }
 
 func (t *FetchTool) InputSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch content from"},"prompt":{"type":"string","description":"The prompt describing what information to extract from the fetched content"},"max_bytes":{"type":"integer","description":"Maximum bytes to read before processing"}},"required":["url","prompt"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch content from"},"prompt":{"type":"string","description":"The prompt describing what information to extract from the fetched content"},"max_bytes":{"type":"integer","minimum":1,"maximum":1048576,"description":"Maximum bytes to read before processing"}},"required":["url"],"additionalProperties":false}`)
 }
 
 func (t *FetchTool) Permission() permissions.Level {
@@ -108,11 +117,11 @@ func (t *FetchTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.R
 	if strings.HasPrefix(requestURL, "http://") && !strings.HasPrefix(requestURL, "http://localhost") && !strings.HasPrefix(requestURL, "http://127.0.0.1") {
 		requestURL = "https://" + strings.TrimPrefix(requestURL, "http://")
 	}
-	if err := validateURLAllowed(requestURL, t.allowedDomains); err != nil {
+	if _, err := validateFetchURL(ctx, requestURL, t.allowedDomains, t.resolver); err != nil {
 		return toolkit.Result{}, err
 	}
 
-	if t.cloudflareCrawl != nil && shouldUseCloudflareCrawl(requestURL) {
+	if t.cloudflareCrawl != nil && remoteRendererTargetAllowed(requestURL, t.allowedDomains) && shouldUseCloudflareCrawl(requestURL) {
 		result, err := t.cloudflareCrawl.fetch(ctx, input, requestURL, t.allowedDomains)
 		if err == nil {
 			return result, nil
@@ -177,21 +186,18 @@ func (t *FetchTool) fetchDirect(ctx context.Context, input fetchInput, requestUR
 	}
 	request.Header.Set("user-agent", "claude-codex-phase2/1.0")
 
-	response, err := t.client.Do(request)
+	response, err := publicNetworkHTTPClient(t.client, t.allowedDomains, t.resolver).Do(request)
 	if err != nil {
 		return toolkit.Result{}, err
 	}
 	defer response.Body.Close()
 	if response.Request != nil && response.Request.URL != nil {
-		if err := validateURLAllowed(response.Request.URL.String(), t.allowedDomains); err != nil {
+		if _, err := validateFetchURL(ctx, response.Request.URL.String(), t.allowedDomains, t.resolver); err != nil {
 			return toolkit.Result{}, err
 		}
 	}
 
-	maxBytes := input.MaxBytes
-	if maxBytes <= 0 {
-		maxBytes = 32 * 1024
-	}
+	maxBytes := boundedFetchMaxBytes(input.MaxBytes)
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxBytes))
 	if err != nil {
@@ -218,10 +224,25 @@ func (t *FetchTool) fetchDirect(ctx context.Context, input fetchInput, requestUR
 }
 
 func (t *FetchTool) fetchBrowserless(ctx context.Context, input fetchInput, requestURL string) (toolkit.Result, error) {
-	if t.browserless == nil || !shouldUseBrowserlessSmartScrape(requestURL) {
+	if t.browserless == nil || !remoteRendererTargetAllowed(requestURL, t.allowedDomains) || !shouldUseBrowserlessSmartScrape(requestURL) {
 		return toolkit.Result{}, fmt.Errorf("browserless smart scrape is not configured")
 	}
 	return t.browserless.fetch(ctx, input, requestURL, t.allowedDomains)
+}
+
+// A hosted browser resolves and requests the target outside this process, so
+// the local DNS pinning used by fetchDirect cannot protect it. Only explicit
+// operator allowlists may therefore authorize a URL for remote rendering.
+func remoteRendererTargetAllowed(rawURL string, allowedDomains []string) bool {
+	domains := cleanDomainList(allowedDomains)
+	if len(domains) == 0 {
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Hostname() == "" {
+		return false
+	}
+	return domainListed(parsed.Hostname(), domains)
 }
 
 func newBrowserlessSmartScrapeClientFromEnv(client *http.Client) *browserlessSmartScrapeClient {
@@ -309,10 +330,10 @@ func (c *browserlessSmartScrapeClient) fetch(ctx context.Context, input fetchInp
 		return toolkit.Result{}, fmt.Errorf("browserless smart scrape failed: %s", strings.TrimSpace(parsed.Message))
 	}
 	finalURL := firstNonEmpty(parsed.URL, requestURL)
-	if err := validateURLAllowed(finalURL, allowedDomains); err != nil {
+	if _, err := validateFetchURL(ctx, finalURL, allowedDomains, net.DefaultResolver); err != nil {
 		return toolkit.Result{}, err
 	}
-	content := strings.TrimSpace(firstNonEmpty(parsed.Markdown, browserlessContentString(parsed.Content), stripHTML(parsed.HTML), parsed.Text, parsed.Data))
+	content := limitFetchContent(strings.TrimSpace(firstNonEmpty(parsed.Markdown, browserlessContentString(parsed.Content), stripHTML(parsed.HTML), parsed.Text, parsed.Data)), input.MaxBytes)
 	if content == "" {
 		return toolkit.Result{}, fmt.Errorf("browserless smart scrape returned no readable content for %s", requestURL)
 	}
@@ -427,10 +448,10 @@ func (c *cloudflareCrawlClient) fetch(ctx context.Context, input fetchInput, req
 		return toolkit.Result{}, err
 	}
 	finalURL := firstNonEmpty(record.Metadata.URL, record.URL, requestURL)
-	if err := validateURLAllowed(finalURL, allowedDomains); err != nil {
+	if _, err := validateFetchURL(ctx, finalURL, allowedDomains, net.DefaultResolver); err != nil {
 		return toolkit.Result{}, err
 	}
-	content := strings.TrimSpace(firstNonEmpty(record.Markdown, stripHTML(record.HTML)))
+	content := limitFetchContent(strings.TrimSpace(firstNonEmpty(record.Markdown, stripHTML(record.HTML))), input.MaxBytes)
 	if content == "" {
 		return toolkit.Result{}, fmt.Errorf("cloudflare crawl returned no readable content for %s (job=%s status=%s)", requestURL, jobID, record.Status)
 	}
@@ -588,10 +609,10 @@ func (c *cloudflareCDPClient) fetch(ctx context.Context, input fetchInput, reque
 		return toolkit.Result{}, err
 	}
 	finalURL := firstNonEmpty(page.URL, target.URL, requestURL)
-	if err := validateURLAllowed(finalURL, allowedDomains); err != nil {
+	if _, err := validateFetchURL(ctx, finalURL, allowedDomains, net.DefaultResolver); err != nil {
 		return toolkit.Result{}, err
 	}
-	content := strings.TrimSpace(page.Content)
+	content := limitFetchContent(strings.TrimSpace(page.Content), input.MaxBytes)
 	if content == "" {
 		return toolkit.Result{}, fmt.Errorf("cloudflare cdp returned no readable content for %s", requestURL)
 	}
@@ -609,6 +630,28 @@ func (c *cloudflareCDPClient) fetch(ctx context.Context, input fetchInput, reque
 	}
 	fmt.Fprintf(&builder, "\n%s", content)
 	return toolkit.Result{Output: builder.String()}, nil
+}
+
+func boundedFetchMaxBytes(requested int64) int64 {
+	if requested <= 0 {
+		return defaultFetchMaxBytes
+	}
+	if requested > serverFetchMaxBytes {
+		return serverFetchMaxBytes
+	}
+	return requested
+}
+
+func limitFetchContent(content string, requested int64) string {
+	limit := boundedFetchMaxBytes(requested)
+	if int64(len(content)) <= limit {
+		return content
+	}
+	raw := []byte(content)[:limit]
+	for len(raw) > 0 && !utf8.Valid(raw) {
+		raw = raw[:len(raw)-1]
+	}
+	return string(raw)
 }
 
 func (c *cloudflareCDPClient) createSession(ctx context.Context) (cloudflareCDPSession, error) {

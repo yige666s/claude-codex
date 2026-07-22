@@ -22,6 +22,7 @@ type AsyncHook struct {
 	Done      chan *HookResult
 	Result    *HookResult
 	Error     error
+	cancel    context.CancelFunc
 }
 
 // NewAsyncHookManager creates a new async hook manager.
@@ -35,12 +36,14 @@ func NewAsyncHookManager() *AsyncHookManager {
 func (m *AsyncHookManager) Start(ctx context.Context, hook Hook, input *HookInput) (string, error) {
 	id := fmt.Sprintf("%s-%d", hook.Name(), time.Now().UnixNano())
 
+	execCtx, cancel := context.WithCancel(ctx)
 	asyncHook := &AsyncHook{
 		ID:        id,
 		Hook:      hook,
 		Input:     input,
 		StartedAt: time.Now(),
 		Done:      make(chan *HookResult, 1),
+		cancel:    cancel,
 	}
 
 	m.mu.Lock()
@@ -48,7 +51,7 @@ func (m *AsyncHookManager) Start(ctx context.Context, hook Hook, input *HookInpu
 	m.mu.Unlock()
 
 	// Start execution in background
-	go m.execute(ctx, asyncHook)
+	go m.execute(execCtx, asyncHook)
 
 	return id, nil
 }
@@ -57,12 +60,13 @@ func (m *AsyncHookManager) Start(ctx context.Context, hook Hook, input *HookInpu
 func (m *AsyncHookManager) execute(ctx context.Context, asyncHook *AsyncHook) {
 	defer func() {
 		if r := recover(); r != nil {
-			asyncHook.Error = fmt.Errorf("hook panicked: %v", r)
-			asyncHook.Result = &HookResult{
+			err := fmt.Errorf("hook panicked: %v", r)
+			result := &HookResult{
 				Continue:      true,
-				BlockingError: asyncHook.Error.Error(),
+				BlockingError: err.Error(),
 			}
-			asyncHook.Done <- asyncHook.Result
+			m.setOutcome(asyncHook, result, err)
+			asyncHook.Done <- result
 		}
 		close(asyncHook.Done)
 	}()
@@ -77,12 +81,18 @@ func (m *AsyncHookManager) execute(ctx context.Context, asyncHook *AsyncHook) {
 	defer cancel()
 
 	result, err := asyncHook.Hook.Execute(ctx, asyncHook.Input)
-	asyncHook.Result = result
-	asyncHook.Error = err
+	m.setOutcome(asyncHook, result, err)
 
 	if result != nil {
 		asyncHook.Done <- result
 	}
+}
+
+func (m *AsyncHookManager) setOutcome(asyncHook *AsyncHook, result *HookResult, err error) {
+	m.mu.Lock()
+	asyncHook.Result = result
+	asyncHook.Error = err
+	m.mu.Unlock()
 }
 
 // Wait waits for an async hook to complete.
@@ -98,9 +108,10 @@ func (m *AsyncHookManager) Wait(id string, timeout time.Duration) (*HookResult, 
 	select {
 	case result := <-asyncHook.Done:
 		m.mu.Lock()
+		err := asyncHook.Error
 		delete(m.pending, id)
 		m.mu.Unlock()
-		return result, asyncHook.Error
+		return result, err
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("timeout waiting for async hook %s", id)
 	}
@@ -149,22 +160,16 @@ func (m *AsyncHookManager) ListPending() []*AsyncHookStatus {
 // Cancel cancels an async hook execution.
 func (m *AsyncHookManager) Cancel(id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	asyncHook, exists := m.pending[id]
 	if !exists {
+		m.mu.Unlock()
 		return fmt.Errorf("async hook %s not found", id)
 	}
-
-	// Close the done channel to signal cancellation
-	select {
-	case <-asyncHook.Done:
-		// Already completed
-	default:
-		close(asyncHook.Done)
-	}
-
 	delete(m.pending, id)
+	m.mu.Unlock()
+	if asyncHook.cancel != nil {
+		asyncHook.cancel()
+	}
 	return nil
 }
 

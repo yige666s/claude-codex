@@ -18,64 +18,18 @@ func (ruleDeepResearchOrchestrator) Plan(_ context.Context, req DeepAgentTaskReq
 		return DeepResearchPlan{}, fmt.Errorf("deep research goal is required")
 	}
 	cfg = normalizeDeepResearchRuntimeConfig(cfg)
-	nodes := []DeepResearchTaskNode{
-		{
-			ID:             "overview",
-			Title:          "产品与背景调研",
-			Description:    "收集目标对象的定位、核心能力、目标用户和背景信息。",
-			WorkerRole:     "researcher",
-			AllowedTools:   []string{"WebSearch", "WebFetch"},
-			ExpectedOutput: "facts_with_sources",
-			Required:       true,
-		},
-		{
-			ID:             "market",
-			Title:          "市场、竞品与用户反馈",
-			Description:    "收集市场位置、竞品、用户反馈、优缺点和风险。",
-			WorkerRole:     "researcher",
-			AllowedTools:   []string{"WebSearch", "WebFetch"},
-			ExpectedOutput: "facts_with_sources",
-			Required:       true,
-		},
-		{
-			ID:             "details",
-			Title:          "价格、功能与关键细节",
-			Description:    "收集价格、套餐、限制、功能清单、使用方式和关键细节。",
-			WorkerRole:     "researcher",
-			AllowedTools:   []string{"WebSearch", "WebFetch"},
-			ExpectedOutput: "facts_with_sources",
-			Required:       true,
-		},
-		{
-			ID:             "synthesis",
-			Title:          "综合分析与报告草稿",
-			Description:    "基于前置 worker 输出，生成结构化分析和报告草稿。",
-			DependsOn:      []string{"overview", "market", "details"},
-			WorkerRole:     "writer",
-			AllowedTools:   []string{"model"},
-			ExpectedOutput: "markdown_report",
-			Required:       true,
-		},
-	}
-	if strings.Contains(strings.ToLower(goal), "代码") || strings.Contains(strings.ToLower(goal), "repo") || strings.Contains(strings.ToLower(goal), "项目") {
-		nodes = append(nodes[:3], append([]DeepResearchTaskNode{{
-			ID:             "codebase",
-			Title:          "代码与实现路径调研",
-			Description:    "分析相关代码路径、模块边界、测试入口和实现风险。",
-			WorkerRole:     "code_worker",
-			AllowedTools:   []string{"repo_search", "test"},
-			ExpectedOutput: "code_findings",
-			Required:       false,
-		}}, nodes[3])...)
-		nodes[len(nodes)-1].DependsOn = append(nodes[len(nodes)-1].DependsOn, "codebase")
-	}
-	if cfg.MaxWorkers > 0 && len(nodes) > cfg.MaxWorkers {
-		nodes = nodes[:cfg.MaxWorkers]
-	}
+	category := classifyDeepResearchGoal(goal)
+	nodes := ruleDeepResearchNodesForCategory(category)
+	nodes = truncateDeepResearchNodesToValidDAG(nodes, cfg.MaxWorkers)
 	for idx := range nodes {
 		nodes[idx].MaxAttempts = cfg.MaxRetries + 1
 		nodes[idx].TimeoutMS = cfg.WorkerTimeout.Milliseconds()
-		nodes[idx].Metadata = map[string]any{"orchestrator": "rule_v1"}
+		nodes[idx].Metadata = mergeDeepResearchNodeMetadata(nodes[idx].Metadata, map[string]any{
+			"orchestrator":      "rule_v1",
+			"goal_category":     category,
+			"deliverable_node":  deepResearchNodeLooksDeliverable(nodes[idx]),
+			"max_workers_limit": cfg.MaxWorkers,
+		})
 	}
 	return DeepResearchPlan{Goal: goal, MaxConcurrency: cfg.MaxConcurrency, Nodes: nodes}, nil
 }
@@ -161,6 +115,7 @@ func (a ruleDeepResearchAggregator) Aggregate(_ context.Context, run DeepResearc
 	results := map[string]DeepResearchWorkerResult{}
 	var findings []DeepResearchFinding
 	var sources []DeepAgentSourceRef
+	var trustedSources []DeepAgentSourceRef
 	var artifacts []DeepAgentArtifactRef
 	var errors []string
 	for _, node := range sortedDeepResearchNodes(run.WorkerRuns) {
@@ -173,28 +128,31 @@ func (a ruleDeepResearchAggregator) Aggregate(_ context.Context, run DeepResearc
 		results[node.ID] = *node.Result
 		findings = append(findings, node.Result.Findings...)
 		sources = append(sources, node.Result.Sources...)
+		trustedSources = append(trustedSources, deepResearchTrustedSources(*node.Result)...)
 		artifacts = append(artifacts, node.Result.Artifacts...)
 		errors = append(errors, node.Result.Errors...)
 	}
 	sources = dedupeDeepResearchSources(sources)
+	trustedSources = dedupeDeepResearchSources(trustedSources)
+	findings = deepResearchFindingsWithTrustedCitations(findings, trustedSources)
 	artifacts = dedupeDeepResearchArtifacts(artifacts)
-	if a.requireSources && len(sources) == 0 {
+	if a.requireSources && len(trustedSources) == 0 {
 		return DeepResearchAggregateResult{
 			Status:        DeepResearchRunStatusFailed,
 			WorkerResults: results,
 			Findings:      findings,
-			Errors:        append(errors, "source evidence is required but no worker returned sources"),
+			Errors:        append(errors, "trusted source evidence is required but no worker returned verified sources"),
 			Partial:       true,
-		}, fmt.Errorf("deep research source evidence is missing")
+		}, fmt.Errorf("deep research trusted source evidence is missing")
 	}
-	summary := fmt.Sprintf("Deep research completed with %d worker results and %d sources.", len(results), len(sources))
-	final := buildDeepResearchFinalAnswer(run, findings, sources, errors)
+	summary := fmt.Sprintf("Deep research completed with %d worker results and %d trusted sources.", len(results), len(trustedSources))
+	final := buildDeepResearchFinalAnswer(run, findings, trustedSources, errors)
 	return DeepResearchAggregateResult{
 		Status:        DeepResearchRunStatusSucceeded,
 		Summary:       summary,
 		FinalAnswer:   final,
 		Findings:      findings,
-		Sources:       sources,
+		Sources:       trustedSources,
 		Artifacts:     artifacts,
 		WorkerResults: results,
 		Partial:       len(errors) > 0,
@@ -254,9 +212,7 @@ func normalizeDeepResearchPlan(plan DeepResearchPlan, goal string, cfg DeepResea
 	if plan.MaxConcurrency > cfg.MaxConcurrency {
 		plan.MaxConcurrency = cfg.MaxConcurrency
 	}
-	if cfg.MaxWorkers > 0 && len(plan.Nodes) > cfg.MaxWorkers {
-		plan.Nodes = plan.Nodes[:cfg.MaxWorkers]
-	}
+	plan.Nodes = truncateDeepResearchNodesToValidDAG(plan.Nodes, cfg.MaxWorkers)
 	for idx := range plan.Nodes {
 		node := &plan.Nodes[idx]
 		node.ID = normalizeDeepResearchID(firstNonEmptyString(node.ID, node.Title, fmt.Sprintf("worker-%d", idx+1)))
@@ -712,6 +668,299 @@ func buildDeepResearchFinalAnswer(run DeepResearchRunState, findings []DeepResea
 		}
 	}
 	return b.String()
+}
+
+func classifyDeepResearchGoal(goal string) string {
+	lower := strings.ToLower(strings.TrimSpace(goal))
+	switch {
+	case deepAgentContainsAny(lower, "repo", "repository", "codebase", "architecture", "implementation", "code review", "代码", "仓库", "项目", "架构", "实现", "测试"):
+		return "codebase"
+	case deepAgentContainsAny(lower, "competitor", "competitive", "alternatives", "versus", "compare", "竞品", "竞争", "对比", "替代"):
+		return "competitive"
+	case deepAgentContainsAny(lower, "pricing", "price", "plan", "subscription", "定价", "价格", "套餐"):
+		return "pricing"
+	default:
+		return "product"
+	}
+}
+
+func ruleDeepResearchNodesForCategory(category string) []DeepResearchTaskNode {
+	switch category {
+	case "codebase":
+		return []DeepResearchTaskNode{
+			{
+				ID:             "overview",
+				Title:          "需求与仓库背景",
+				Description:    "确认目标范围、相关模块、调用入口和关键上下文。",
+				WorkerRole:     "researcher",
+				AllowedTools:   []string{"repo_search"},
+				ExpectedOutput: "repo_scope_summary",
+				Required:       true,
+			},
+			{
+				ID:             "codebase",
+				Title:          "代码与实现路径调研",
+				Description:    "分析相关代码路径、模块边界、关键数据流、测试入口和实现风险。",
+				WorkerRole:     "code_worker",
+				AllowedTools:   []string{"repo_search", "test"},
+				ExpectedOutput: "code_findings",
+				Required:       true,
+			},
+			{
+				ID:             "details",
+				Title:          "运行限制与验证要点",
+				Description:    "整理配置、依赖、边界条件、验证方法和剩余风险。",
+				WorkerRole:     "researcher",
+				AllowedTools:   []string{"repo_search", "test"},
+				ExpectedOutput: "verification_notes",
+				Required:       true,
+			},
+			{
+				ID:             "synthesis",
+				Title:          "代码结论与交付草稿",
+				Description:    "基于前置 worker 输出，生成结构化实现结论和交付草稿。",
+				DependsOn:      []string{"overview", "codebase", "details"},
+				WorkerRole:     "writer",
+				AllowedTools:   []string{"model"},
+				ExpectedOutput: "markdown_report",
+				Required:       true,
+			},
+		}
+	case "pricing":
+		return []DeepResearchTaskNode{
+			{
+				ID:             "overview",
+				Title:          "产品与背景调研",
+				Description:    "收集目标对象的定位、核心能力、目标用户和背景信息。",
+				WorkerRole:     "researcher",
+				AllowedTools:   []string{"WebSearch", "WebFetch"},
+				ExpectedOutput: "facts_with_sources",
+				Required:       true,
+			},
+			{
+				ID:             "details",
+				Title:          "价格、功能与关键细节",
+				Description:    "收集价格、套餐、限制、功能清单、使用方式和关键细节。",
+				WorkerRole:     "researcher",
+				AllowedTools:   []string{"WebSearch", "WebFetch"},
+				ExpectedOutput: "facts_with_sources",
+				Required:       true,
+			},
+			{
+				ID:             "market",
+				Title:          "市场对标与用户反馈",
+				Description:    "收集竞品、用户反馈、优缺点和风险。",
+				WorkerRole:     "researcher",
+				AllowedTools:   []string{"WebSearch", "WebFetch"},
+				ExpectedOutput: "facts_with_sources",
+				Required:       true,
+			},
+			{
+				ID:             "synthesis",
+				Title:          "综合分析与报告草稿",
+				Description:    "基于前置 worker 输出，生成结构化分析和报告草稿。",
+				DependsOn:      []string{"overview", "details", "market"},
+				WorkerRole:     "writer",
+				AllowedTools:   []string{"model"},
+				ExpectedOutput: "markdown_report",
+				Required:       true,
+			},
+		}
+	default:
+		return []DeepResearchTaskNode{
+			{
+				ID:             "overview",
+				Title:          "产品与背景调研",
+				Description:    "收集目标对象的定位、核心能力、目标用户和背景信息。",
+				WorkerRole:     "researcher",
+				AllowedTools:   []string{"WebSearch", "WebFetch"},
+				ExpectedOutput: "facts_with_sources",
+				Required:       true,
+			},
+			{
+				ID:             "market",
+				Title:          "市场、竞品与用户反馈",
+				Description:    "收集市场位置、竞品、用户反馈、优缺点和风险。",
+				WorkerRole:     "researcher",
+				AllowedTools:   []string{"WebSearch", "WebFetch"},
+				ExpectedOutput: "facts_with_sources",
+				Required:       true,
+			},
+			{
+				ID:             "details",
+				Title:          "价格、功能与关键细节",
+				Description:    "收集价格、套餐、限制、功能清单、使用方式和关键细节。",
+				WorkerRole:     "researcher",
+				AllowedTools:   []string{"WebSearch", "WebFetch"},
+				ExpectedOutput: "facts_with_sources",
+				Required:       true,
+			},
+			{
+				ID:             "synthesis",
+				Title:          "综合分析与报告草稿",
+				Description:    "基于前置 worker 输出，生成结构化分析和报告草稿。",
+				DependsOn:      []string{"overview", "market", "details"},
+				WorkerRole:     "writer",
+				AllowedTools:   []string{"model"},
+				ExpectedOutput: "markdown_report",
+				Required:       true,
+			},
+		}
+	}
+}
+
+func truncateDeepResearchNodesToValidDAG(nodes []DeepResearchTaskNode, maxWorkers int) []DeepResearchTaskNode {
+	if maxWorkers <= 0 || len(nodes) <= maxWorkers {
+		return append([]DeepResearchTaskNode(nil), nodes...)
+	}
+	if len(nodes) == 0 {
+		return nil
+	}
+	// With a single worker, keep a source-gathering node. Aggregation already
+	// produces the final answer; retaining only a writer node would leave it with
+	// no evidence and make RequireSources impossible to satisfy.
+	if maxWorkers == 1 {
+		out := append([]DeepResearchTaskNode(nil), nodes[:1]...)
+		return deepResearchTrimNodeDependencies(out)
+	}
+	if !deepResearchNodeLooksDeliverable(nodes[len(nodes)-1]) {
+		out := append([]DeepResearchTaskNode(nil), nodes[:maxWorkers]...)
+		return deepResearchTrimNodeDependencies(out)
+	}
+	deliverable := nodes[len(nodes)-1]
+	prereqLimit := maxWorkers - 1
+	if prereqLimit < 0 {
+		prereqLimit = 0
+	}
+	if prereqLimit > len(nodes)-1 {
+		prereqLimit = len(nodes) - 1
+	}
+	out := append([]DeepResearchTaskNode(nil), nodes[:prereqLimit]...)
+	deliverable.DependsOn = filterDeepResearchDependencies(deliverable.DependsOn, deepResearchNodeIDSet(out))
+	out = append(out, deliverable)
+	return deepResearchTrimNodeDependencies(out)
+}
+
+func deepResearchTrimNodeDependencies(nodes []DeepResearchTaskNode) []DeepResearchTaskNode {
+	ids := deepResearchNodeIDSet(nodes)
+	out := append([]DeepResearchTaskNode(nil), nodes...)
+	for idx := range out {
+		out[idx].DependsOn = filterDeepResearchDependencies(out[idx].DependsOn, ids)
+	}
+	return out
+}
+
+func filterDeepResearchDependencies(deps []string, allowed map[string]struct{}) []string {
+	if len(deps) == 0 || len(allowed) == 0 {
+		if len(allowed) == 0 {
+			return nil
+		}
+		return append([]string(nil), deps...)
+	}
+	out := make([]string, 0, len(deps))
+	for _, dep := range deps {
+		if _, ok := allowed[dep]; ok {
+			out = append(out, dep)
+		}
+	}
+	return compactStringSlice(out)
+}
+
+func deepResearchNodeIDSet(nodes []DeepResearchTaskNode) map[string]struct{} {
+	ids := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		if strings.TrimSpace(node.ID) == "" {
+			continue
+		}
+		ids[node.ID] = struct{}{}
+	}
+	return ids
+}
+
+func deepResearchNodeLooksDeliverable(node DeepResearchTaskNode) bool {
+	expected := strings.ToLower(strings.TrimSpace(node.ExpectedOutput))
+	title := strings.ToLower(strings.TrimSpace(node.Title))
+	role := strings.ToLower(strings.TrimSpace(node.WorkerRole))
+	return role == "writer" ||
+		strings.Contains(expected, "report") ||
+		strings.Contains(expected, "markdown") ||
+		strings.Contains(title, "report") ||
+		strings.Contains(title, "总结") ||
+		strings.Contains(title, "报告") ||
+		strings.Contains(title, "草稿")
+}
+
+func mergeDeepResearchNodeMetadata(base map[string]any, values map[string]any) map[string]any {
+	out := cloneWorkflowMap(base)
+	if out == nil {
+		out = map[string]any{}
+	}
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func deepResearchTrustedSources(result DeepResearchWorkerResult) []DeepAgentSourceRef {
+	toolEvidence := deepResearchHasTrustedToolEvidence(result.ToolCalls)
+	out := make([]DeepAgentSourceRef, 0, len(result.Sources))
+	for _, source := range result.Sources {
+		if deepResearchSourceIsTrusted(source, toolEvidence) {
+			out = append(out, source)
+		}
+	}
+	return out
+}
+
+func deepResearchSourceIsTrusted(source DeepAgentSourceRef, toolEvidence bool) bool {
+	provider := strings.ToLower(strings.TrimSpace(source.Provider))
+	sourceKind := strings.ToLower(strings.TrimSpace(source.SourceKind))
+	if provider == "model_text" || strings.HasPrefix(sourceKind, "unverified_") {
+		return false
+	}
+	if sourceKind == "tool_verified" {
+		return true
+	}
+	if provider != "" && provider != "model" && provider != "output" {
+		return true
+	}
+	if !toolEvidence {
+		return false
+	}
+	return strings.TrimSpace(source.URL) != "" && strings.TrimSpace(source.Title) != ""
+}
+
+func deepResearchHasTrustedToolEvidence(calls []DeepAgentToolCallRef) bool {
+	for _, call := range calls {
+		status := strings.ToLower(strings.TrimSpace(call.Status))
+		if status != "" && status != "succeeded" && status != "result" && status != "called" {
+			continue
+		}
+		if deepResearchToolNameCanVerifySources(call.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func deepResearchFindingsWithTrustedCitations(findings []DeepResearchFinding, sources []DeepAgentSourceRef) []DeepResearchFinding {
+	trustedURLs := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		if raw := strings.TrimSpace(source.URL); raw != "" {
+			trustedURLs[raw] = struct{}{}
+		}
+	}
+	out := append([]DeepResearchFinding(nil), findings...)
+	for idx := range out {
+		raw := strings.TrimSpace(out[idx].SourceURL)
+		if raw == "" {
+			continue
+		}
+		if _, ok := trustedURLs[raw]; !ok {
+			out[idx].SourceURL = ""
+		}
+	}
+	return out
 }
 
 func compactStringSlice(in []string) []string {

@@ -6,9 +6,10 @@ import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
 import { cn } from "../lib/utils";
 
-export function AdminShell({ sidebar, children }: { sidebar: ReactNode; children: ReactNode }) {
+export function AdminShell({ rail, sidebar, children, navigationOpen = false }: { rail: ReactNode; sidebar: ReactNode; children: ReactNode; navigationOpen?: boolean }) {
   return (
-    <main className="admin-shell">
+    <main className={cn("admin-shell", navigationOpen && "navigation-open")}>
+      {rail}
       {sidebar}
       <section className="admin-main">{children}</section>
     </main>
@@ -20,21 +21,39 @@ export function AdminSidebar({ children }: { children: ReactNode }) {
 }
 
 export function AdminPageHeader({
+  breadcrumb,
+  leading,
   title,
+  badge,
   description,
+  search,
   action
 }: {
+  breadcrumb?: ReactNode;
+  leading?: ReactNode;
   title: ReactNode;
+  badge?: ReactNode;
   description?: ReactNode;
+  search?: ReactNode;
   action?: ReactNode;
 }) {
   return (
     <header className="admin-header">
-      <div>
-        <h1>{title}</h1>
+      <div className="admin-header-copy">
+        <div className="admin-header-breadcrumb">
+          {leading}
+          {breadcrumb}
+        </div>
+        <div className="admin-header-title-row">
+          <h1>{title}</h1>
+          {badge}
+        </div>
         {description && <p>{description}</p>}
       </div>
-      {action}
+      <div className="admin-header-tools">
+        {search}
+        {action}
+      </div>
     </header>
   );
 }
@@ -66,7 +85,7 @@ export function AdminEmptyState({
     <div className={cn("admin-empty", className)}>
       {icon}
       <strong>{title}</strong>
-      {children && <p>{children}</p>}
+      {children && <div className="admin-empty-content">{children}</div>}
     </div>
   );
 }

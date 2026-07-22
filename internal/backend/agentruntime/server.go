@@ -118,6 +118,9 @@ func (s *Server) SetChatTurnReservationStore(store ChatTurnReservationStore) {
 		return
 	}
 	s.chatTurnReservations = store
+	if s.runtime != nil {
+		s.runtime.SetChatTurnReservationStore(store)
+	}
 }
 
 func (s *Server) SetHTTPInstrumentation(instrument func(http.Handler) http.Handler) {
@@ -3744,7 +3747,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request, user User
 			return
 		}
 	}
-	req := ChatRequest{UserID: user.ID, SessionID: sessionID, RunID: reservation.RunID, IdempotencyKey: idempotencyKey, ClientUserMessageID: reservation.UserMessageID, ClientAssistantMessageID: reservation.AssistantMessageID, Content: body.Content, AttachmentIDs: body.AttachmentIDs, AttachmentURLs: body.AttachmentURLs, ThinkingMode: body.ThinkingMode, AgentMode: body.AgentMode, ConnectorContext: body.ConnectorContext}
+	req := ChatRequest{UserID: user.ID, SessionID: sessionID, RunID: reservation.RunID, IdempotencyKey: idempotencyKey, ClientUserMessageID: reservation.UserMessageID, ClientAssistantMessageID: reservation.AssistantMessageID, Content: body.Content, AttachmentIDs: body.AttachmentIDs, AttachmentURLs: body.AttachmentURLs, ThinkingMode: body.ThinkingMode, AgentMode: body.AgentMode, ConnectorContext: body.ConnectorContext, TurnReserved: s.chatTurnReservations != nil}
 	run, err := s.chatStreams.CreateRunWithID(r.Context(), user.ID, sessionID, reservation.RunID)
 	if err != nil {
 		_ = sink.Send(r.Context(), Event{Type: "error", SessionID: sessionID, Error: err.Error()})

@@ -1,15 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Archive,
-  Briefcase,
-  Database,
-  FileText,
   Info,
-  LogOut,
-  MessageCircle,
+  Menu,
   PlayCircle,
-  ScrollText,
+  Plus,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -19,7 +15,6 @@ import {
 import { ApiClient } from "../api/client";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { BrandLogo } from "../components/brand/BrandLogo";
 import {
   AdminDetailPanel,
   AdminEmptyState,
@@ -28,7 +23,6 @@ import {
   AdminSearchBox,
   AdminSectionNotice,
   AdminShell,
-  AdminSidebar,
   AdminSplitPane
 } from "./ui";
 import {
@@ -59,8 +53,29 @@ import { AdminAuditPanel } from "./panels/AdminAuditPanel";
 import { AdminEvaluationPanel } from "./panels/AdminEvaluationPanel";
 import { AdminHealthCostPanel } from "./panels/AdminHealthCostPanel";
 import { AdminPromptPanel } from "./panels/AdminPromptPanel";
+import {
+  AdminContextSidebar,
+  AdminRail,
+  buildAdminDomains,
+  domainForAdminSection,
+  isAdminSection,
+  type AdminDomain,
+  type AdminSection
+} from "./AdminNavigation";
 
-type AdminSection = "skills" | "users" | "jobs-assets" | "health-cost" | "audit" | "evaluation" | "prompts";
+function readAdminSection(): AdminSection {
+  if (typeof window === "undefined") return "skills";
+  const section = new URLSearchParams(window.location.search).get("section");
+  return isAdminSection(section) ? section : "skills";
+}
+
+function writeAdminSection(section: AdminSection, replace = false) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("section") === section) return;
+  url.searchParams.set("section", section);
+  window.history[replace ? "replaceState" : "pushState"]({}, "", `${url.pathname}${url.search}${url.hash}`);
+}
 
 function AdminConsole({
   api,
@@ -77,7 +92,7 @@ function AdminConsole({
   onExit: () => void;
   onLogout: () => void;
 }) {
-  const [adminSection, setAdminSection] = useState<AdminSection>("skills");
+  const [adminSection, setAdminSection] = useState<AdminSection>(readAdminSection);
   const [skills, setSkills] = useState<AdminSkill[]>([]);
   const [selectedName, setSelectedName] = useState("");
   const [query, setQuery] = useState("");
@@ -93,17 +108,22 @@ function AdminConsole({
   const [summary, setSummary] = useState<SkillExecutionSummary | null>(null);
   const [policyTarget, setPolicyTarget] = useState<AdminSkill | null>(null);
   const [skillTab, setSkillTab] = useState<"overview" | "review" | "executions" | "versions">("overview");
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const [accessOpen, setAccessOpen] = useState(!adminToken.trim());
+  const [adminTokenDraft, setAdminTokenDraft] = useState(adminToken);
+  const [commandQuery, setCommandQuery] = useState("");
+  const [promptEditorSignal, setPromptEditorSignal] = useState(0);
+  const commandInputRef = useRef<HTMLInputElement>(null);
   const token = adminToken.trim();
-  const adminSections: Array<AdminTabOption<AdminSection>> = [
-    { id: "skills", label: "Skills", description: "Publish, review, configure policy, and inspect execution health for registry-backed skills.", icon: <Sparkles size={18} />, count: skills.length },
-    { id: "users", label: "Users", description: "Search users, inspect account state, and disable, ban, or reactivate access.", icon: <Database size={18} /> },
-    { id: "jobs-assets", label: "Jobs & assets", description: "Inspect a user's sessions, queued jobs, replay events, and generated or uploaded assets.", icon: <Briefcase size={18} /> },
-    { id: "health-cost", label: "Health & cost", description: "Watch readiness checks, LLM backend health, token usage, latency, and estimated cost.", icon: <Activity size={18} /> },
-    { id: "audit", label: "Audit", description: "Review sensitive operations, high-risk actions, request IDs, user scope, and metadata for investigations.", icon: <FileText size={18} /> },
-    { id: "evaluation", label: "Evaluation", description: "Run lightweight evaluations over real runtime data, inspect pass/fail findings, and close review items.", icon: <ShieldCheck size={18} /> },
-    { id: "prompts", label: "Prompts", description: "Create candidate prompt versions, preview, evaluate, promote, rollback, and inspect prompt usage.", icon: <ScrollText size={18} /> }
-  ];
+  const adminDomains = useMemo(() => buildAdminDomains(skills.length), [skills.length]);
+  const activeDomain = domainForAdminSection(adminDomains, adminSection);
+  const adminSections = useMemo(() => adminDomains.flatMap((domain) => domain.sections), [adminDomains]);
   const selectedAdminSection = adminSections.find((section) => section.id === adminSection) || adminSections[0];
+  const commandMatches = useMemo(() => {
+    const normalized = commandQuery.trim().toLowerCase();
+    if (!normalized) return [];
+    return adminSections.filter((section) => `${section.label} ${section.description}`.toLowerCase().includes(normalized)).slice(0, 6);
+  }, [adminSections, commandQuery]);
   const selectedSkill = skills.find((skill) => skill.name === selectedName) || null;
   const reviewIssues = review?.issues || [];
   const skillTabs: Array<AdminTabOption<typeof skillTab>> = [
@@ -125,7 +145,7 @@ function AdminConsole({
     ]);
   }).sort(compareSkills), [skills, query, statusFilter]);
 
-  const loadSkills = async () => {
+  const loadSkills = async (notify = false) => {
     if (!token) {
       setError("Enter the admin token to load the console.");
       setSkills([]);
@@ -140,7 +160,7 @@ function AdminConsole({
         if (current && next.some((skill) => skill.name === current)) return current;
         return next[0]?.name || "";
       });
-      setNotice(`Loaded ${next.length} skills`);
+      if (notify) setNotice(`Loaded ${next.length} skills`);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -175,7 +195,29 @@ function AdminConsole({
   };
 
   useEffect(() => {
+    setAdminTokenDraft(adminToken);
+  }, [adminToken]);
+
+  useEffect(() => {
     if (token) void loadSkills();
+  }, [token]);
+
+  useEffect(() => {
+    const focusCommand = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        commandInputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", focusCommand);
+    return () => window.removeEventListener("keydown", focusCommand);
+  }, []);
+
+  useEffect(() => {
+    writeAdminSection(adminSection, true);
+    const syncSectionFromLocation = () => setAdminSection(readAdminSection());
+    window.addEventListener("popstate", syncSectionFromLocation);
+    return () => window.removeEventListener("popstate", syncSectionFromLocation);
   }, []);
 
   useEffect(() => {
@@ -183,7 +225,7 @@ function AdminConsole({
   }, [selectedName, token]);
 
   const refreshSelected = async () => {
-    await loadSkills();
+    await loadSkills(true);
     if (selectedName) await loadSkillDetails(selectedName);
   };
 
@@ -210,50 +252,113 @@ function AdminConsole({
     void loadSkillDetails(updated.name);
   };
 
+  const selectAdminSection = (section: AdminSection) => {
+    if (section !== adminSection) writeAdminSection(section);
+    setAdminSection(section);
+    setCommandQuery("");
+    setNavigationOpen(false);
+  };
+
+  const selectAdminDomain = (domain: AdminDomain) => {
+    const targetDomain = adminDomains.find((item) => item.id === domain);
+    if (!targetDomain) return;
+    const currentInDomain = targetDomain.sections.find((section) => section.id === adminSection);
+    selectAdminSection((currentInDomain || targetDomain.sections[0]).id);
+  };
+
+  const saveAdminAccess = () => {
+    const nextToken = adminTokenDraft.trim();
+    if (!nextToken) return;
+    onAdminTokenChange(nextToken);
+    setAccessOpen(false);
+    if (nextToken === token) void loadSkills();
+  };
+
+  const commandSearch = (
+    <div className="admin-command-search">
+      <Search size={16} />
+      <Input
+        ref={commandInputRef}
+        value={commandQuery}
+        onChange={(event) => setCommandQuery(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setCommandQuery("");
+          if (event.key === "Enter" && commandMatches[0]) selectAdminSection(commandMatches[0].id);
+        }}
+        placeholder="Search or run a command..."
+        aria-label="Search admin sections"
+      />
+      <kbd>⌘ K</kbd>
+      {commandQuery.trim() && (
+        <div className="admin-command-results" role="listbox" aria-label="Admin search results">
+          {commandMatches.map((section) => (
+            <button key={section.id} type="button" onClick={() => selectAdminSection(section.id)} role="option">
+              {section.icon}
+              <span>
+                <strong>{section.label}</strong>
+                <small>{section.description}</small>
+              </span>
+            </button>
+          ))}
+          {!commandMatches.length && <p>No matching admin section.</p>}
+        </div>
+      )}
+    </div>
+  );
+
+  const rail = (
+    <AdminRail
+      domains={adminDomains}
+      activeDomain={activeDomain.id}
+      userLabel={userLabel}
+      onDomainChange={selectAdminDomain}
+      onExit={onExit}
+      onAccess={() => setAccessOpen((current) => !current)}
+      onCloseNavigation={() => setNavigationOpen(false)}
+    />
+  );
+
   const sidebar = (
-      <AdminSidebar>
-        <div className="admin-brand">
-          <BrandLogo />
-          <div>
-            <strong>AgentAPI Admin</strong>
-            <small>{userLabel}</small>
-          </div>
-        </div>
-        <div className="admin-token-box">
-          <label>
-            Admin token
-            <Input
-              type="password"
-              value={adminToken}
-              onChange={(event) => onAdminTokenChange(event.currentTarget.value)}
-              placeholder="AGENT_API_ADMIN_TOKEN"
-              autoComplete="off"
-            />
-          </label>
-          <Button className="wide" variant="primary" onClick={loadSkills} disabled={loading || !token || adminSection !== "skills"}>
-            {loading ? "Loading" : "Load skill data"}
-          </Button>
-        </div>
-        <div className="admin-sidebar-actions">
-          <Button variant="outline" onClick={onExit}><MessageCircle size={16} /> Back to app</Button>
-          <Button variant="outline" onClick={onLogout}><LogOut size={16} /> Log out</Button>
-        </div>
-      </AdminSidebar>
+    <AdminContextSidebar
+      domain={activeDomain}
+      activeSection={adminSection}
+      userLabel={userLabel}
+      accessOpen={accessOpen}
+      tokenConfigured={Boolean(token)}
+      adminTokenDraft={adminTokenDraft}
+      onSectionChange={selectAdminSection}
+      onAccessToggle={() => setAccessOpen((current) => !current)}
+      onAdminTokenDraftChange={setAdminTokenDraft}
+      onSaveAccess={saveAdminAccess}
+      onLogout={onLogout}
+    />
   );
 
   return (
-    <AdminShell sidebar={sidebar}>
+    <AdminShell rail={rail} sidebar={sidebar} navigationOpen={navigationOpen}>
         <AdminPageHeader
-          title={selectedAdminSection.label}
-          description={selectedAdminSection.description}
-          action={adminSection === "skills" && (
-            <Button variant="outline" className="skill-action" onClick={refreshSelected} disabled={loading || !token}>
-              <RefreshCw size={16} />
-              <span>Refresh</span>
+          leading={(
+            <Button variant="ghost" size="icon" className="admin-mobile-menu" onClick={() => setNavigationOpen(true)} aria-label="Open navigation">
+              <Menu size={20} />
             </Button>
           )}
+          breadcrumb={<><span>{activeDomain.label}</span><span aria-hidden="true">/</span><strong>{selectedAdminSection.label}</strong></>}
+          title={selectedAdminSection.label}
+          badge={<StatusBadge value="production" />}
+          description={selectedAdminSection.description}
+          search={commandSearch}
+          action={adminSection === "skills" ? (
+              <Button variant="outline" className="skill-action" onClick={refreshSelected} disabled={loading || !token}>
+                <RefreshCw size={16} />
+                <span>Refresh</span>
+              </Button>
+            ) : adminSection === "prompts" ? (
+              <Button variant="primary" className="skill-action" onClick={() => setPromptEditorSignal((current) => current + 1)} disabled={!token}>
+                <Plus size={16} />
+                <span>New candidate</span>
+              </Button>
+            ) : null}
         />
-        <AdminTabs tabs={adminSections} active={adminSection} onChange={setAdminSection} label="Admin sections" />
         {(error || notice) && (
           <AdminSectionNotice
             tone={error ? "destructive" : "success"}
@@ -267,7 +372,18 @@ function AdminConsole({
         )}
         {!token ? (
           <AdminEmptyState icon={<ShieldCheck size={26} />} title="Admin token required">
-            Enter `AGENT_API_ADMIN_TOKEN` to load protected admin APIs. This console is separate from the C-end workspace.
+            <span>Enter the protected Admin API credential to open this workspace.</span>
+            <form className="admin-access-gate" onSubmit={(event) => { event.preventDefault(); saveAdminAccess(); }}>
+              <Input
+                type="password"
+                value={adminTokenDraft}
+                onChange={(event) => setAdminTokenDraft(event.currentTarget.value)}
+                placeholder="AGENT_API_ADMIN_TOKEN"
+                aria-label="Admin token"
+                autoComplete="off"
+              />
+              <Button type="submit" variant="primary" disabled={!adminTokenDraft.trim()}>Open admin</Button>
+            </form>
           </AdminEmptyState>
         ) : adminSection === "users" ? (
           <AdminUsersPanel api={api} adminToken={adminToken} />
@@ -280,7 +396,7 @@ function AdminConsole({
         ) : adminSection === "evaluation" ? (
           <AdminEvaluationPanel api={api} adminToken={adminToken} />
         ) : adminSection === "prompts" ? (
-          <AdminPromptPanel api={api} adminToken={adminToken} />
+          <AdminPromptPanel api={api} adminToken={adminToken} openEditorSignal={promptEditorSignal} />
         ) : (
           <AdminSplitPane>
             <AdminListPanel>

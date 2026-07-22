@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"claude-codex/internal/harness/hooks"
 	"claude-codex/internal/harness/mcp"
 	"claude-codex/internal/harness/tool"
 	"claude-codex/internal/public/types"
@@ -12,6 +13,7 @@ import (
 // QueryParams contains all parameters needed to execute a query.
 type QueryParams struct {
 	Messages                []types.Message
+	MemoryDir               string
 	SystemPrompt            types.SystemPrompt
 	UserContext             map[string]string
 	SystemContext           map[string]string
@@ -31,7 +33,9 @@ type QueryParams struct {
 	// MCPClients are connected MCP server clients whose instructions should
 	// be injected into the system prompt.
 	MCPClients []*mcp.Client
-	Deps       *QueryDeps
+	// HookExecutor runs lifecycle hooks registered by plugins or the host.
+	HookExecutor *hooks.Executor
+	Deps         *QueryDeps
 }
 
 // TaskBudget represents the API task budget configuration.

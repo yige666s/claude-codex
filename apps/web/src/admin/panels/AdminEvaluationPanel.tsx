@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, AlertCircle, Archive, Briefcase, Clock, Database, Download, FileText, FileUp, Info, MessageCircle, PlayCircle, Settings, RefreshCw, Search, ShieldCheck, Sparkles, Square, UserX, X } from "lucide-react";
+import { Activity, AlertCircle, Archive, Briefcase, Clock, Database, Download, FileText, FileUp, Info, MessageCircle, PlayCircle, Settings, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Sparkles, Square, UserX, X } from "lucide-react";
 import { ApiClient } from "../../api/client";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -777,36 +777,45 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
               <option value="passed">Passed</option>
             </select>
           </div>
-          <div className="admin-filter-row">
-            <label className="admin-field">
-              <span>Session ID</span>
-              <Input value={sessionID} onChange={(event) => setSessionID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation session ID" />
-            </label>
-            <label className="admin-field">
-              <span>Job ID</span>
-              <Input value={jobID} onChange={(event) => setJobID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation job ID" />
-            </label>
-          </div>
-          <label className="admin-field">
-            <span>Skill / model</span>
-            <Input value={skillName} onChange={(event) => setSkillName(event.currentTarget.value)} placeholder="skill name" aria-label="Evaluation skill name" />
-          </label>
-          <div className="admin-filter-row">
-            <Input value={provider} onChange={(event) => setProvider(event.currentTarget.value)} placeholder="provider" aria-label="Evaluation provider" />
-            <Input value={model} onChange={(event) => setModel(event.currentTarget.value)} placeholder="model" aria-label="Evaluation model" />
-          </div>
-          <div className="admin-filter-row">
-            <Input value={promptResultID} onChange={(event) => setPromptResultID(event.currentTarget.value)} placeholder="prompt id" aria-label="Evaluation prompt ID" />
-            <Input value={promptResultVersion} onChange={(event) => setPromptResultVersion(event.currentTarget.value)} placeholder="prompt version" aria-label="Evaluation prompt version" />
-          </div>
-          <label className="admin-field">
-            <span>Prompt hash</span>
-            <Input value={promptResultHash} onChange={(event) => setPromptResultHash(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation prompt hash" />
-          </label>
-          <div className="admin-filter-row">
-            <Input value={experimentID} onChange={(event) => setExperimentID(event.currentTarget.value)} placeholder="experiment id" aria-label="Evaluation experiment ID" />
-            <Input value={variantID} onChange={(event) => setVariantID(event.currentTarget.value)} placeholder="variant id" aria-label="Evaluation variant ID" />
-          </div>
+          <details className="evaluation-advanced-filters">
+            <summary>
+              <SlidersHorizontal size={14} />
+              <span>Advanced filters</span>
+              <small>IDs, model, prompt, experiment</small>
+            </summary>
+            <div>
+              <div className="admin-filter-row">
+                <label className="admin-field">
+                  <span>Session ID</span>
+                  <Input value={sessionID} onChange={(event) => setSessionID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation session ID" />
+                </label>
+                <label className="admin-field">
+                  <span>Job ID</span>
+                  <Input value={jobID} onChange={(event) => setJobID(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation job ID" />
+                </label>
+              </div>
+              <label className="admin-field">
+                <span>Skill</span>
+                <Input value={skillName} onChange={(event) => setSkillName(event.currentTarget.value)} placeholder="skill name" aria-label="Evaluation skill name" />
+              </label>
+              <div className="admin-filter-row">
+                <Input value={provider} onChange={(event) => setProvider(event.currentTarget.value)} placeholder="provider" aria-label="Evaluation provider" />
+                <Input value={model} onChange={(event) => setModel(event.currentTarget.value)} placeholder="model" aria-label="Evaluation model" />
+              </div>
+              <div className="admin-filter-row">
+                <Input value={promptResultID} onChange={(event) => setPromptResultID(event.currentTarget.value)} placeholder="prompt id" aria-label="Evaluation prompt ID" />
+                <Input value={promptResultVersion} onChange={(event) => setPromptResultVersion(event.currentTarget.value)} placeholder="prompt version" aria-label="Evaluation prompt version" />
+              </div>
+              <label className="admin-field">
+                <span>Prompt hash</span>
+                <Input value={promptResultHash} onChange={(event) => setPromptResultHash(event.currentTarget.value)} placeholder="optional" aria-label="Evaluation prompt hash" />
+              </label>
+              <div className="admin-filter-row">
+                <Input value={experimentID} onChange={(event) => setExperimentID(event.currentTarget.value)} placeholder="experiment id" aria-label="Evaluation experiment ID" />
+                <Input value={variantID} onChange={(event) => setVariantID(event.currentTarget.value)} placeholder="variant id" aria-label="Evaluation variant ID" />
+              </div>
+            </div>
+          </details>
           <div className="admin-action-row compact evaluation-actions">
             <Button className="primary skill-action" onClick={createRun} disabled={running || !token || (isGoldenSubject ? goldenBusy === "run" || !selectedGoldenSet?.cases.length : !cleanUserID)}>
               {isGoldenSubject ? <Sparkles size={16} /> : <PlayCircle size={16} />}
@@ -862,6 +871,16 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
           <AdminMetric label="Results" value={String(totalResults)} />
           <AdminMetric label="Failed / warning" value={`${failedResults} / ${warningResults}`} />
           <AdminMetric label="P95 latency" value={`${formatNumber(Math.round(p95LatencyMS))} ms`} />
+          <AdminMetric label="Token cost" value={formatUSD(estimatedCostUSD)} />
+          <AdminMetric label="Pending reviews" value={String(reviews.filter((review) => review.status === "pending").length)} />
+        </div>
+        <details className="evaluation-runtime-metrics">
+          <summary>
+            <SlidersHorizontal size={14} />
+            <span>Advanced runtime metrics</span>
+            <small>Latency, reliability, token and RAGAS detail</small>
+          </summary>
+          <div className="admin-metrics evaluation-metrics compact">
           <AdminMetric label="Avg latency" value={`${formatNumber(Math.round(averageLatencyMS))} ms`} />
           <AdminMetric label="TTFT P95" value={`${formatLatencyMetric(firstTokenP95MS)}`} />
           <AdminMetric label="Chat LLM P95" value={`${formatLatencyMetric(chatLLMP95MS)}`} />
@@ -869,7 +888,6 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
           <AdminMetric label="Skill P95" value={`${formatLatencyMetric(skillExecutionP95MS)}`} />
           <AdminMetric label="Sandbox start P95" value={`${formatLatencyMetric(sandboxStartupP95MS)}`} />
           <AdminMetric label="Artifact P95" value={`${formatLatencyMetric(artifactGenerationP95MS)}`} />
-          <AdminMetric label="Token cost" value={formatUSD(estimatedCostUSD)} />
           <AdminMetric label="Tokens" value={formatNumber(totalTokens)} />
           <AdminMetric label="Tool fail rate" value={formatPercent(toolErrorRate)} />
           <AdminMetric label="LLM fail rate" value={formatPercent(llmErrorRate)} />
@@ -878,8 +896,8 @@ export function AdminEvaluationPanel({ api, adminToken }: { api: ApiClient; admi
           {hasRagasMetrics && <AdminMetric label="Faithfulness" value={formatPercent(faithfulness)} />}
           {hasRagasMetrics && <AdminMetric label="Context precision" value={formatPercent(contextPrecision)} />}
           {hasRagasMetrics && <AdminMetric label="Context recall" value={formatPercent(contextRecall)} />}
-          <AdminMetric label="Pending reviews" value={String(reviews.filter((review) => review.status === "pending").length)} />
-        </div>
+          </div>
+        </details>
         <AdminTabs tabs={evaluationTabs} active={evaluationTab} onChange={setEvaluationTab} label="Evaluation detail sections" compact />
         <div className="admin-detail-grid">
           {evaluationTab === "results" && <section className="admin-card wide">

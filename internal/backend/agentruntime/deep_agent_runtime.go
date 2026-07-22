@@ -26,7 +26,7 @@ func (p *RuntimeDeepAgentPlanner) CreatePlan(ctx context.Context, req DeepAgentT
 	if p == nil || p.runtime == nil {
 		return DeepAgentPlan{}, fmt.Errorf("runtime deep agent planner is not configured")
 	}
-	runner := p.runtime.runnerForScope(Scope{
+	runner := p.runtime.runnerForScope(ctx, Scope{
 		UserID:    req.UserID,
 		SessionID: req.SessionID,
 		Prompt:    req.Goal,
@@ -417,7 +417,7 @@ func (p *RuntimeDeepAgentPlanner) llmRouteStep(ctx context.Context, agentState *
 		DeepAgentToolModeModel, DeepAgentToolModeModelArtifact, DeepAgentToolModeSkill, DeepAgentToolModeRAGSearch, DeepAgentToolModeTest, DeepAgentToolModeWeb, DeepAgentToolModeCodePatch, DeepAgentToolModeConnector, DeepAgentToolModeMulti, DeepAgentToolModeModel,
 		strings.TrimSpace(firstNonEmptyString(step.Intent, step.Title)), strings.TrimSpace(step.DoneCondition), p.stepContextSummary(agentState, step))
 	prompt := renderedPrompt.Content
-	runner := p.runtime.runnerForScope(Scope{UserID: userID, SessionID: sessionID, Prompt: prompt})
+	runner := p.runtime.runnerForScope(ctx, Scope{UserID: userID, SessionID: sessionID, Prompt: prompt})
 	result, err := runner.RunGeneratedPrompt(WithPromptMetadata(ctx, renderedPrompt.Metadata), state.NewSession(""), prompt)
 	if err != nil {
 		return ""
@@ -754,7 +754,7 @@ func (e *RuntimeDeepAgentExecutor) executeModelAction(ctx context.Context, actio
 	if len(allowedTools) > 0 {
 		scope.AllowedTools = allowedTools
 	}
-	runner := e.runtime.runnerForScope(scope)
+	runner := e.runtime.runnerForScope(ctx, scope)
 	beforeArtifacts := e.deepAgentArtifactIDSet(ctx, userID, session.ID)
 	startMessageCount := len(session.Messages)
 	result, hiddenPromptCount, err := runDeepAgentExecutionPrompt(ctx, runner, session, prompt, startMessageCount)
@@ -1012,22 +1012,23 @@ func deepAgentModelActionSourceRefs(output string, session *state.Session, start
 			out = append(out, ref)
 		}
 	}
+	// Prefer sources actually returned by a web tool. Appending them first also
+	// prevents a duplicate URL echoed by the model from downgrading provenance.
+	if session != nil {
+		if startIndex < 0 || startIndex > len(session.Messages) {
+			startIndex = 0
+		}
+		for _, message := range session.Messages[startIndex:] {
+			if message.Role != state.MessageRoleTool {
+				continue
+			}
+			if !strings.EqualFold(message.ToolName, "WebSearch") && !strings.EqualFold(message.ToolName, "WebFetch") {
+				continue
+			}
+			appendRefs(deepAgentSourceRefsFromToolOutput(message.ToolOutput, message.ToolName))
+		}
+	}
 	appendRefs(deepAgentSourceRefsFromText(output))
-	if session == nil {
-		return curateDeepAgentSourceRefsWithPolicy(out, deepAgentModelActionMaxSources, sourcePolicy)
-	}
-	if startIndex < 0 || startIndex > len(session.Messages) {
-		startIndex = 0
-	}
-	for _, message := range session.Messages[startIndex:] {
-		if message.Role != state.MessageRoleTool {
-			continue
-		}
-		if !strings.EqualFold(message.ToolName, "WebSearch") && !strings.EqualFold(message.ToolName, "WebFetch") {
-			continue
-		}
-		appendRefs(deepAgentSourceRefsFromText(message.ToolOutput))
-	}
 	return curateDeepAgentSourceRefsWithPolicy(out, deepAgentModelActionMaxSources, sourcePolicy)
 }
 

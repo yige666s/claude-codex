@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 
+	corehooks "claude-codex/internal/harness/hooks"
 	"claude-codex/internal/harness/tool"
 	"claude-codex/internal/public/types"
 )
@@ -17,12 +18,24 @@ func handleStopHooks(
 	userContext map[string]string,
 	systemContext map[string]string,
 	toolUseContext *tool.ToolUseContext,
+	hookExecutor *corehooks.Executor,
 	querySource string,
 	stopHookActive *bool,
 	eventChan chan<- interface{},
 ) (*StopHookResult, error) {
-	// Execute configured stop hooks (shell hooks from settings).
-	_, _ = executeStopHooks(ctx, nil)
+	hookResult, err := executeStopHooks(ctx, hookExecutor, &corehooks.HookInput{
+		Event:     corehooks.EventStop,
+		SessionID: toolContextSessionID(toolUseContext),
+		AgentID:   toolContextAgentID(toolUseContext),
+		Metadata: map[string]any{
+			"query_source":     querySource,
+			"message_count":    len(messagesForQuery),
+			"stop_hook_active": stopHookActive != nil && *stopHookActive,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	// Execute task/teammate hooks (no-op until Agent/Coordinator is implemented).
 	_, _ = executeTaskCompletedHooks(ctx, nil)
@@ -40,16 +53,38 @@ func handleStopHooks(
 		SystemCtx:    systemContext,
 	})
 
-	return &StopHookResult{
+	result := &StopHookResult{
 		BlockingErrors:      []types.Message{},
-		PreventContinuation: false,
-	}, nil
+		PreventContinuation: hookResult != nil && !hookResult.Continue,
+	}
+	if hookResult != nil {
+		for _, blocking := range hookResult.BlockingErrors {
+			result.BlockingErrors = append(result.BlockingErrors, createUserMessage(blocking, true))
+		}
+	}
+	return result, nil
 }
 
 // executeStopHooks runs configured stop hooks (shell hooks).
-func executeStopHooks(ctx context.Context, hookContext interface{}) ([]HookResult, error) {
-	// TODO: Integrate with the hooks.Registry once available.
-	return nil, nil
+func executeStopHooks(ctx context.Context, executor *corehooks.Executor, input *corehooks.HookInput) (*corehooks.AggregatedResult, error) {
+	if executor == nil {
+		return &corehooks.AggregatedResult{Continue: true}, nil
+	}
+	return executor.Execute(ctx, corehooks.EventStop, input)
+}
+
+func toolContextSessionID(ctx *tool.ToolUseContext) string {
+	if ctx == nil {
+		return ""
+	}
+	return ctx.SessionID
+}
+
+func toolContextAgentID(ctx *tool.ToolUseContext) string {
+	if ctx == nil {
+		return ""
+	}
+	return ctx.AgentID
 }
 
 // executeTaskCompletedHooks runs task completed hooks.
@@ -70,4 +105,3 @@ type HookResult struct {
 	PreventContinuation bool
 	StopReason          string
 }
-

@@ -315,11 +315,12 @@ func toQueryConfig(config QueryEngineConfig, sessionID string) *query.QueryEngin
 	}
 
 	queryConfig.Tools = append([]tool.Tool(nil), config.Tools...)
-	queryConfig.MCPClients = toQueryMCPClients(config.MCPClients)
+	queryConfig.MCPClients = append([]*mcp.Client(nil), config.MCPClients...)
+	queryConfig.HookExecutor = config.HookExecutor
 	queryConfig.CanUseTool = wrapCanUseTool(config)
 	if config.ExecuteTool != nil {
-		queryConfig.ExecuteTool = func(ctx context.Context, name string, input json.RawMessage) (string, error) {
-			return config.ExecuteTool(ctx, name, input)
+		queryConfig.ExecuteTool = func(ctx context.Context, toolUseID, name string, input json.RawMessage) (string, error) {
+			return config.ExecuteTool(ctx, toolUseID, name, input)
 		}
 	}
 
@@ -346,16 +347,6 @@ func wrapCanUseTool(config QueryEngineConfig) query.CanUseToolFunc {
 			Reason:   result.Reason,
 		}, nil
 	}
-}
-
-func toQueryMCPClients(clients []interface{}) []*mcp.Client {
-	out := make([]*mcp.Client, 0, len(clients))
-	for _, client := range clients {
-		if typed, ok := client.(*mcp.Client); ok {
-			out = append(out, typed)
-		}
-	}
-	return out
 }
 
 func asQueryFileStateCache(cache interface{}) *query.FileStateCache {

@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -430,6 +431,37 @@ func TestLLMGovernanceConfigManagerRejectsInvalidUpdateBeforePersist(t *testing.
 	}
 	if store.config.Provider != "simple" || store.config.Model != "simple" {
 		t.Fatalf("stored config changed after rejected update: %#v", store.config)
+	}
+}
+
+func TestLLMGovernanceConfigManagerReportsModelAvailability(t *testing.T) {
+	manager := NewLLMGovernanceConfigManager(LLMGovernanceConfig{
+		Provider:    "simple",
+		Model:       "simple",
+		ModelRoutes: "default=simple,chat=simple",
+	}, nil)
+	manager.SetValidator(func(_ context.Context, config LLMGovernanceConfig) error {
+		if config.Provider == "deepseek" {
+			return errors.New("llm credential is required for provider \"deepseek\"; set DEEPSEEK_API_KEY or AGENT_API_LLM_API_KEY and recreate AgentAPI")
+		}
+		return nil
+	})
+
+	status := manager.StatusMap()
+	availability, ok := status["model_availability"].([]LLMModelAvailability)
+	if !ok {
+		t.Fatalf("model availability was not typed: %#v", status["model_availability"])
+	}
+	byID := make(map[string]LLMModelAvailability, len(availability))
+	for _, item := range availability {
+		byID[item.ID] = item
+	}
+	if !byID["simple"].Available {
+		t.Fatalf("simple model should be available: %#v", byID["simple"])
+	}
+	deepseek := byID["deepseek-chat"]
+	if deepseek.Available || deepseek.Provider != "deepseek" || !strings.Contains(deepseek.Reason, "DEEPSEEK_API_KEY") {
+		t.Fatalf("unexpected deepseek availability: %#v", deepseek)
 	}
 }
 

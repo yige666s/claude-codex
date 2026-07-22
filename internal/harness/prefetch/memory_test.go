@@ -2,6 +2,8 @@ package prefetch
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -41,6 +43,7 @@ func TestStartRelevantMemoryPrefetch_Disabled(t *testing.T) {
 	result := prefetcher.StartRelevantMemoryPrefetch(
 		context.Background(),
 		messages,
+		t.TempDir(),
 		0,
 		make(map[string]bool),
 	)
@@ -60,6 +63,7 @@ func TestStartRelevantMemoryPrefetch_NoUserMessage(t *testing.T) {
 	result := prefetcher.StartRelevantMemoryPrefetch(
 		context.Background(),
 		messages,
+		t.TempDir(),
 		0,
 		make(map[string]bool),
 	)
@@ -79,13 +83,15 @@ func TestStartRelevantMemoryPrefetch_SingleWord(t *testing.T) {
 	result := prefetcher.StartRelevantMemoryPrefetch(
 		context.Background(),
 		messages,
+		t.TempDir(),
 		0,
 		make(map[string]bool),
 	)
 
-	if result != nil {
-		t.Error("Expected nil result for single-word prompt")
+	if result == nil {
+		t.Fatal("expected a meaningful single-word prompt to start prefetch")
 	}
+	<-result.ResultChan
 }
 
 func TestStartRelevantMemoryPrefetch_MaxBytesExceeded(t *testing.T) {
@@ -102,6 +108,7 @@ func TestStartRelevantMemoryPrefetch_MaxBytesExceeded(t *testing.T) {
 	result := prefetcher.StartRelevantMemoryPrefetch(
 		context.Background(),
 		messages,
+		t.TempDir(),
 		2000, // Exceeds max
 		make(map[string]bool),
 	)
@@ -121,6 +128,7 @@ func TestStartRelevantMemoryPrefetch_Success(t *testing.T) {
 	result := prefetcher.StartRelevantMemoryPrefetch(
 		context.Background(),
 		messages,
+		t.TempDir(),
 		0,
 		make(map[string]bool),
 	)
@@ -133,12 +141,12 @@ func TestStartRelevantMemoryPrefetch_Success(t *testing.T) {
 		t.Error("Expected non-nil result channel")
 	}
 
-	if result.SettledAt != nil {
+	if result.SettledAt() != nil {
 		t.Error("Expected nil SettledAt initially")
 	}
 
-	if result.ConsumedOnIteration != -1 {
-		t.Errorf("Expected ConsumedOnIteration -1, got %d", result.ConsumedOnIteration)
+	if result.ConsumedOnIteration() != -1 {
+		t.Errorf("Expected ConsumedOnIteration -1, got %d", result.ConsumedOnIteration())
 	}
 
 	// Wait for result
@@ -150,15 +158,39 @@ func TestStartRelevantMemoryPrefetch_Success(t *testing.T) {
 	}
 
 	// Check settled
-	if result.SettledAt == nil {
+	if result.SettledAt() == nil {
 		t.Error("Expected SettledAt to be set after completion")
+	}
+}
+
+func TestStartRelevantMemoryPrefetch_ReturnsMatchingMemoryContent(t *testing.T) {
+	memoryDir := t.TempDir()
+	relevantPath := filepath.Join(memoryDir, "database.md")
+	if err := os.WriteFile(relevantPath, []byte("---\ndescription: database rollback procedure\ntype: runbook\n---\nUse the rollback command."), 0o600); err != nil {
+		t.Fatalf("write relevant memory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(memoryDir, "frontend.md"), []byte("---\ndescription: css color palette\n---\nUse blue."), 0o600); err != nil {
+		t.Fatalf("write unrelated memory: %v", err)
+	}
+
+	prefetcher := NewMemoryPrefetcher(nil)
+	result := prefetcher.StartRelevantMemoryPrefetch(context.Background(), []Message{{Type: "user", Text: "database rollback"}}, memoryDir, 0, nil)
+	if result == nil {
+		t.Fatal("expected memory prefetch")
+	}
+	attachments := <-result.ResultChan
+	if len(attachments) != 1 {
+		t.Fatalf("expected one relevant memory, got %#v", attachments)
+	}
+	if attachments[0].Path != relevantPath || attachments[0].Content == "" {
+		t.Fatalf("unexpected memory attachment: %#v", attachments[0])
 	}
 }
 
 func TestMemoryPrefetch_IsSettled(t *testing.T) {
 	now := time.Now()
 	prefetch := &MemoryPrefetch{
-		SettledAt: &now,
+		settledAt: &now,
 	}
 
 	if !prefetch.IsSettled() {
@@ -166,7 +198,7 @@ func TestMemoryPrefetch_IsSettled(t *testing.T) {
 	}
 
 	prefetch2 := &MemoryPrefetch{
-		SettledAt: nil,
+		settledAt: nil,
 	}
 
 	if prefetch2.IsSettled() {
@@ -176,7 +208,7 @@ func TestMemoryPrefetch_IsSettled(t *testing.T) {
 
 func TestMemoryPrefetch_IsConsumed(t *testing.T) {
 	prefetch := &MemoryPrefetch{
-		ConsumedOnIteration: 0,
+		consumedOnIteration: 0,
 	}
 
 	if !prefetch.IsConsumed() {
@@ -184,7 +216,7 @@ func TestMemoryPrefetch_IsConsumed(t *testing.T) {
 	}
 
 	prefetch2 := &MemoryPrefetch{
-		ConsumedOnIteration: -1,
+		consumedOnIteration: -1,
 	}
 
 	if prefetch2.IsConsumed() {
@@ -234,8 +266,8 @@ func TestExtractSearchTerms(t *testing.T) {
 		expected int
 	}{
 		{"hello world test", 3},
-		{"the quick brown fox", 3}, // "the" is filtered
-		{"a b c", 0},                // All too short
+		{"the quick brown fox", 3},   // "the" is filtered
+		{"a b c", 0},                 // All too short
 		{"testing one two three", 3}, // "one" and "two" are short but >= 3
 	}
 

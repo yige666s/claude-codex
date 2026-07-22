@@ -557,7 +557,7 @@ services:
       - -skill-dirs
       - "${AGENT_API_SKILL_DIRS:-/workspace/.claude/skills}"
       - -skill-shell-runner
-      - "${AGENT_API_SKILL_SHELL_RUNNER:-local}"
+      - "${AGENT_API_SKILL_SHELL_RUNNER:-docker}"
       - -skill-sandbox-image
       - "${AGENT_API_SKILL_SANDBOX_IMAGE:-python:3.12-slim}"
       - -skill-sandbox-network

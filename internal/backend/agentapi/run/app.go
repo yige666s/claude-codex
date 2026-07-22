@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -10,6 +11,8 @@ import (
 	startupconfig "claude-codex/internal/backend/agentapi/config"
 	"claude-codex/internal/backend/agentruntime"
 	workerlifecycle "claude-codex/internal/backend/workers"
+	"claude-codex/internal/harness/coordinator"
+	coretasks "claude-codex/internal/harness/tasks"
 )
 
 const (
@@ -28,9 +31,9 @@ const (
 	workerSkillSandboxWarmPool  = "skill_sandbox_warm_pool"
 )
 
-func Run(_ context.Context, cfg startupconfig.Config) {
+func Run(ctx context.Context, cfg startupconfig.Config) error {
 	appLogger := slog.Default()
-	workerGroup := workerlifecycle.New(context.Background(), appLogger)
+	workerGroup := workerlifecycle.New(ctx, appLogger)
 	llmCfg := buildStartupLLMConfig(cfg)
 	storeCfg := storeConfigFromStartup(cfg)
 	llmUsageStore := buildLLMUsageStore(storeCfg)
@@ -56,11 +59,20 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	llmGovernanceCfg := llmGovernanceConfigFromStartup(cfg, llmCfg)
 	llmConfigManager := agentruntime.NewLLMGovernanceConfigManager(llmGovernanceCfg, buildRuntimeConfigStore(storeCfg))
 	llmConfigManager.SetValidator(runtimeLLMGovernanceConfigValidator(llmCfg))
-	if err := llmConfigManager.LoadAndSyncStartupConfig(context.Background()); err != nil {
-		logFatalf("sync startup llm governance config: %v", err)
+	if err := llmConfigManager.LoadAndSyncStartupConfig(ctx); err != nil {
+		return fmt.Errorf("sync startup llm governance config: %w", err)
 	}
 
 	skillManager := loadSkills(startupconfig.SplitCSV(cfg.SkillDirs))
+	runtimeComponents := newRuntimeComponents(&cfg)
+	defer func() {
+		if err := runtimeComponents.Close(); err != nil {
+			logInfof("close runtime components: %v", err)
+		}
+	}()
+	if err := runtimeComponents.loadPlugins(skillManager); err != nil {
+		return err
+	}
 	skillRegistrySetup := buildSkillRegistrySetup(storeCfg, skillManager)
 	skillCatalog := skillRegistrySetup.catalog
 	skillShellSandboxConfig := skillShellSandboxConfigFromStartup(cfg)
@@ -76,6 +88,8 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		})
 	}
 	var runtime *agentruntime.Runtime
+	sharedTaskManager := coretasks.NewTaskManager()
+	sharedCoordinatorManager := coordinator.NewManager(coordinator.Config{ScratchpadDir: cfg.Workspace})
 	engineFactory, llmStatusFn := buildEngineFactory(engineFactoryConfig{
 		startupCfg:              cfg,
 		llmCfg:                  llmCfg,
@@ -85,10 +99,14 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		llmUsageStore:           llmUsageStore,
 		riskStore:               riskStore,
 		toolCallLedger:          toolCallLedgerStore,
+		coordinatorManager:      sharedCoordinatorManager,
+		taskManager:             sharedTaskManager,
+		runtimeComponents:       runtimeComponents,
 		runtimeProvider: func() *agentruntime.Runtime {
 			return runtime
 		},
 	})
+	legacyEngineFactory := agentruntime.AdaptContextEngineFactory(engineFactory)
 
 	sessionStore, memoryService := buildStores(storeCfg)
 	auth := buildAuthenticator(authConfigFromStartup(cfg))
@@ -120,13 +138,18 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	runtimeConfig.CacheDefaultTTL = cfg.CacheDefaultTTL
 	runtimeConfig.CacheFailOpen = cfg.CacheFailOpen
 	runtimeConfig.LLMGovernanceProvider = llmConfigManager.Get
-	runtime = agentruntime.NewRuntime(
+	runtime = agentruntime.NewRuntimeWithContextEngineFactory(
 		runtimeConfig,
 		sessionStore,
 		memoryService,
 		skillCatalog,
 		engineFactory,
 	)
+	if runtimeOutputSQLStore != nil {
+		runtime.SetChatTurnReservationStore(runtimeOutputSQLStore)
+	} else if runtimeOutputMemoryStore != nil {
+		runtime.SetChatTurnReservationStore(runtimeOutputMemoryStore)
+	}
 	runtime.SetWorkflowStore(workflowStore)
 	runtime.SetDeepResearchHarnessAgentRunner(agentruntime.NewEngineDeepResearchHarnessAgentRunner(runtime))
 	runtime.SetDeepAgentEvidenceRepository(deepAgentEvidenceRepo)
@@ -242,13 +265,13 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 	if kafkaMessagePublisher != nil {
 		runtime.SetMessageEventPublisher(kafkaMessagePublisher)
 	}
-	llmMemoryExtractor := agentruntime.NewLLMMemoryExtractor(engineFactory)
+	llmMemoryExtractor := agentruntime.NewLLMMemoryExtractor(legacyEngineFactory)
 	llmMemoryExtractor.PromptResolver = agentruntime.NewCachedPromptResolver(promptStore, nil, cacheStore, cfg.CacheDefaultTTL, cfg.CacheFailOpen, cacheMetrics)
 	runtime.SetMemoryExtractor(agentruntime.NewHybridMemoryExtractor(
 		llmMemoryExtractor,
 		agentruntime.NewRuleMemoryExtractorWithProvider(runtimeConfig.MemoryPolicyProvider),
 	))
-	llmEpisodeSummarizer := agentruntime.NewLLMMemoryEpisodeSummarizer(engineFactory)
+	llmEpisodeSummarizer := agentruntime.NewLLMMemoryEpisodeSummarizer(legacyEngineFactory)
 	llmEpisodeSummarizer.Timeout = cfg.EpisodicMemorySummarizeTimeout
 	llmEpisodeSummarizer.PromptResolver = agentruntime.NewCachedPromptResolver(promptStore, nil, cacheStore, cfg.CacheDefaultTTL, cfg.CacheFailOpen, cacheMetrics)
 	runtime.SetMemoryEpisodeSummarizer(agentruntime.NewHybridMemoryEpisodeSummarizer(
@@ -256,7 +279,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		agentruntime.RuleMemoryEpisodeSummarizer{},
 	))
 	runtime.SetMemoryOrganizer(agentruntime.NewHybridMemoryOrganizer(
-		agentruntime.NewLLMMemoryOrganizer(engineFactory),
+		agentruntime.NewLLMMemoryOrganizer(legacyEngineFactory),
 		agentruntime.NewRuleMemoryOrganizer(),
 	))
 	runtime.SetArtifactService(artifactService)
@@ -464,7 +487,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		EnableCSRF:           cfg.CSRFEnabled,
 		RequestTimeout:       cfg.RequestTimeout,
 	}); err != nil {
-		logFatal(err)
+		return err
 	}
 	startRetentionPruneWorker(workerGroup, runtime, authService, cfg.RetentionDays)
 	startLocalUploadedArtifactPruneWorker(workerGroup, runtime, cfg.LocalArtifactStagingRetention, 24*time.Hour)
@@ -488,6 +511,7 @@ func Run(_ context.Context, cfg startupconfig.Config) {
 		MessageSearchIndexManagerStarted: messageSearchIndexManagerStarted,
 	})
 	if err := httpListenAndServe(cfg.Addr, server, cfg.ShutdownTimeout); err != nil {
-		logFatal(err)
+		return err
 	}
+	return nil
 }

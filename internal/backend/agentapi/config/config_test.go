@@ -12,6 +12,7 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	t.Setenv("AGENT_API_STORE_BACKEND", "sql")
 	t.Setenv("AGENT_API_LLM_PROVIDER", "openai")
 	t.Setenv("AGENT_API_MODEL", "gemini-2.5-pro")
+	t.Setenv("AGENT_API_PLUGIN_DIR", "/tmp/plugins")
 	t.Setenv("AGENT_API_OBJECT_TIMEOUT", "3s")
 	t.Setenv("AGENT_API_TIMEZONE", "Asia/Shanghai")
 	t.Setenv("AGENT_API_LOCALE", "zh-CN")
@@ -41,6 +42,9 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	}
 	if cfg.StoreBackend != "sql" {
 		t.Fatalf("StoreBackend = %q, want sql", cfg.StoreBackend)
+	}
+	if cfg.PluginDir != "/tmp/plugins" {
+		t.Fatalf("PluginDir = %q, want /tmp/plugins", cfg.PluginDir)
 	}
 	if cfg.LLMProvider != "openai" {
 		t.Fatalf("LLMProvider = %q, want openai", cfg.LLMProvider)
@@ -133,6 +137,8 @@ func TestBindFlagsOverridesConfig(t *testing.T) {
 		"--live-voice-name", "Puck",
 		"--live-language-code", "en-US",
 		"--object-timeout", "4s",
+		"--plugin-dir", "/opt/plugins",
+		"--mcp-servers", `{"name":"notes","transport":"sdk"}`,
 		"--timezone", "UTC",
 		"--locale", "en-US",
 		"--memory-policy-path", "/tmp/policy.json",
@@ -152,6 +158,12 @@ func TestBindFlagsOverridesConfig(t *testing.T) {
 	}
 	if !cfg.LiveEnabled {
 		t.Fatal("LiveEnabled = false, want true")
+	}
+	if cfg.PluginDir != "/opt/plugins" {
+		t.Fatalf("PluginDir = %q, want /opt/plugins", cfg.PluginDir)
+	}
+	if len(cfg.MCPServers) != 1 || cfg.MCPServers[0].Name != "notes" || cfg.MCPServers[0].Transport != "sdk" {
+		t.Fatalf("MCPServers = %#v, want notes/sdk", cfg.MCPServers)
 	}
 	if cfg.LiveVoiceName != "Puck" {
 		t.Fatalf("LiveVoiceName = %q, want Puck", cfg.LiveVoiceName)
@@ -182,5 +194,29 @@ func TestValidateRequiresAddress(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want addr error")
+	}
+}
+
+func TestValidateParsesMCPServersJSON(t *testing.T) {
+	cfg := Default()
+	cfg.MCPServersJSON = `[{"name":"notes","transport":"stdio","command":["echo","hello"]}]`
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("MCPServers len = %d, want 1", len(cfg.MCPServers))
+	}
+	if cfg.MCPServers[0].Name != "notes" {
+		t.Fatalf("MCPServers[0].Name = %q, want notes", cfg.MCPServers[0].Name)
+	}
+}
+
+func TestValidateRejectsInvalidMCPServersJSON(t *testing.T) {
+	cfg := Default()
+	cfg.MCPServersJSON = `not-json`
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want JSON parse failure")
 	}
 }

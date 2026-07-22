@@ -325,7 +325,7 @@ func (s *MemoryChatStreamStore) Subscribe(runID string) (<-chan *ChatStreamEvent
 
 func chatStreamTerminal(eventType string) bool {
 	switch strings.TrimSpace(eventType) {
-	case "done", "error", "cancelled":
+	case "done", "error", "cancelled", "job_handoff":
 		return true
 	default:
 		return false
@@ -338,6 +338,8 @@ func chatStreamTerminalStatus(eventType string) string {
 		return "succeeded"
 	case "cancelled":
 		return "cancelled"
+	case "job_handoff":
+		return "handed_off"
 	case "error":
 		return "failed"
 	default:

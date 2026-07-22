@@ -91,6 +91,18 @@ func (p adapterPlanner) Next(_ context.Context, session *state.Session, _ []tool
 	}, nil
 }
 
+type streamingAdapterPlanner struct{}
+
+func (streamingAdapterPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (plannerapi.Plan, error) {
+	return plannerapi.Plan{AssistantText: "hello", StopReason: "end_turn"}, nil
+}
+
+func (streamingAdapterPlanner) StreamNext(_ context.Context, _ *state.Session, _ []toolkit.Descriptor, onChunk func(string)) (plannerapi.Plan, error) {
+	onChunk("hel")
+	onChunk("lo")
+	return plannerapi.Plan{AssistantText: "hello", StopReason: "end_turn"}, nil
+}
+
 type terminalPlanner struct{}
 
 func (terminalPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (plannerapi.Plan, error) {
@@ -239,7 +251,7 @@ func TestQueryEngineSubmitMessage_RunsPlannerBackedRuntime(t *testing.T) {
 			},
 		},
 		ToolDescriptors: []toolkit.Descriptor{{Name: "fake_tool"}},
-		ExecuteTool: func(context.Context, string, []byte) (string, error) {
+		ExecuteTool: func(context.Context, string, string, []byte) (string, error) {
 			return "tool output", nil
 		},
 		MaxTurns: 3,
@@ -260,6 +272,43 @@ func TestQueryEngineSubmitMessage_RunsPlannerBackedRuntime(t *testing.T) {
 	require.NotEmpty(t, stored)
 	assert.Equal(t, "assistant", stored[len(stored)-1].Type)
 	assert.Equal(t, "handled: tool output", stored[len(stored)-1].Content)
+}
+
+func TestQueryEngineSubmitMessage_EmitsStreamingPlannerEventsWithoutPersistingThem(t *testing.T) {
+	engine := NewQueryEngine(QueryEngineConfig{
+		Cwd:           t.TempDir(),
+		SessionID:     "streaming-session",
+		FallbackModel: "claude-sonnet-4-6",
+		CanUseTool:    allowAllCanUseTool,
+		Planner:       streamingAdapterPlanner{},
+	})
+
+	ch, err := engine.SubmitMessage(context.Background(), "say hi", nil)
+	require.NoError(t, err)
+
+	var sawDelta bool
+	for msg := range ch {
+		if msg.Type != "stream_event" {
+			continue
+		}
+		event, ok := msg.Event.(map[string]any)
+		require.True(t, ok)
+		if event["type"] != "content_block_delta" {
+			continue
+		}
+		delta, ok := event["delta"].(map[string]any)
+		require.True(t, ok)
+		if delta["type"] == "text_delta" && delta["text"] == "hel" {
+			sawDelta = true
+		}
+	}
+	assert.True(t, sawDelta)
+
+	stored := engine.GetMessages()
+	require.Len(t, stored, 2)
+	assert.Equal(t, "user", stored[0].Type)
+	assert.Equal(t, "assistant", stored[1].Type)
+	assert.Equal(t, "hello", stored[1].Content)
 }
 
 func TestQueryEngineSubmitMessage_ParsesTokenBudget(t *testing.T) {

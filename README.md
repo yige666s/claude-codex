@@ -73,7 +73,7 @@ export VERTEX_LOCATION="us-central1"
 export AGENT_API_ARTIFACT_S3_ACCESS_KEY="REPLACE_WITH_R2_ACCESS_KEY_ID"
 export AGENT_API_ARTIFACT_S3_SECRET_KEY="REPLACE_WITH_R2_SECRET_ACCESS_KEY"
 
-docker compose -f deploy/local/docker-compose.yml up --build
+docker compose --env-file .env -f deploy/local/docker-compose.yml up --build
 ```
 
 Open:

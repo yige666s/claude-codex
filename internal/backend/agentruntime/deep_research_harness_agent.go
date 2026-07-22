@@ -16,9 +16,10 @@ const deepResearchHarnessAgentOutputSchema = `Return a single JSON object with t
   "summary": "one concise paragraph",
   "output": "worker notes or markdown",
   "findings": [{"claim":"...", "evidence":"...", "source_url":"...", "confidence":"high|medium|low"}],
-  "sources": [{"url":"https://...", "title":"...", "snippet":"...", "provider":"WebSearch|WebFetch|model"}],
+  "sources": [{"url":"https://... or empty for a local file", "title":"URL title or repository file path", "snippet":"...", "provider":"WebSearch|WebFetch|Read|Grep"}],
   "open_questions": ["..."]
 }
+Only list sources that were actually returned by a research tool in this run; never infer or invent a citation.
 If a tool is unavailable, explain that limitation in output.`
 
 var deepResearchHarnessURLPattern = regexp.MustCompile(`https?://[^\s<>"')\]]+`)
@@ -44,15 +45,16 @@ func (r *EngineDeepResearchHarnessAgentRunner) RunDeepResearchAgent(ctx context.
 	agentRunID := deepResearchAgentRunID(input)
 	childSession := deepResearchChildSession(r.runtime, input, agentRunID)
 	scope := Scope{
-		UserID:           input.UserID,
-		SessionID:        input.SessionID,
-		WorkingDir:       childSession.WorkingDir,
-		Prompt:           input.Goal,
-		AllowedTools:     deepResearchHarnessAllowedTools(input.Node.AllowedTools),
-		ConnectorContext: append([]string(nil), input.ConnectorContext...),
-		ArtifactTypes:    []string{"text/markdown", "application/json", "text/plain"},
+		UserID:            input.UserID,
+		SessionID:         input.SessionID,
+		WorkingDir:        childSession.WorkingDir,
+		Prompt:            input.Goal,
+		InternalToolScope: true,
+		AllowedTools:      deepResearchHarnessAllowedTools(input.Node.AllowedTools),
+		ConnectorContext:  append([]string(nil), input.ConnectorContext...),
+		ArtifactTypes:     []string{"text/markdown", "application/json", "text/plain"},
 	}
-	runner := r.runtime.runnerForScope(scope)
+	runner := r.runtime.runnerForScope(ctx, scope)
 	if runner == nil {
 		return DeepResearchWorkerResult{}, fmt.Errorf("deep research harness agent runner factory returned nil")
 	}
@@ -201,6 +203,17 @@ func deepResearchWorkerResultFromHarnessOutput(node DeepResearchTaskNode, result
 		out.Errors = append(out.Errors, parsed.Errors...)
 	}
 	out.Sources = append(out.Sources, deepResearchSourcesFromText(text)...)
+	out.ToolCalls = deepResearchHarnessToolCalls(result.Session)
+	for idx := range out.Sources {
+		if out.Sources[idx].SourceKind == "unverified_model_text" {
+			continue
+		}
+		if deepResearchHarnessSourceBackedByToolResult(out.Sources[idx], result.Session) {
+			out.Sources[idx].SourceKind = "tool_verified"
+		} else {
+			out.Sources[idx].SourceKind = "unverified_model_report"
+		}
+	}
 	out.Sources = dedupeDeepResearchSources(out.Sources)
 	out.Artifacts = dedupeDeepResearchArtifacts(out.Artifacts)
 	if len(out.Findings) == 0 {
@@ -215,6 +228,72 @@ func deepResearchWorkerResultFromHarnessOutput(node DeepResearchTaskNode, result
 		out.Findings = []DeepResearchFinding{finding}
 	}
 	return out
+}
+
+func deepResearchHarnessToolCalls(session *state.Session) []DeepAgentToolCallRef {
+	if session == nil {
+		return nil
+	}
+	byID := map[string]int{}
+	out := make([]DeepAgentToolCallRef, 0)
+	for _, message := range session.Messages {
+		for _, call := range message.ToolCalls {
+			id := strings.TrimSpace(call.ID)
+			if id == "" {
+				continue
+			}
+			if _, exists := byID[id]; exists {
+				continue
+			}
+			byID[id] = len(out)
+			out = append(out, DeepAgentToolCallRef{ID: id, Name: call.Name, Status: "called"})
+		}
+		if message.Role != "tool" || strings.TrimSpace(message.ToolCallID) == "" {
+			continue
+		}
+		idx, exists := byID[message.ToolCallID]
+		if !exists {
+			byID[message.ToolCallID] = len(out)
+			out = append(out, DeepAgentToolCallRef{ID: message.ToolCallID, Name: message.ToolName, Status: "result"})
+			continue
+		}
+		out[idx].Name = firstNonEmptyString(message.ToolName, out[idx].Name)
+		out[idx].Status = "result"
+	}
+	return out
+}
+
+func deepResearchHarnessSourceBackedByToolResult(source DeepAgentSourceRef, session *state.Session) bool {
+	if session == nil {
+		return false
+	}
+	urlNeedle := strings.TrimSpace(source.URL)
+	titleNeedle := strings.TrimSpace(source.Title)
+	for _, message := range session.Messages {
+		if message.Role != "tool" || !deepResearchToolNameCanVerifySources(message.ToolName) {
+			continue
+		}
+		evidenceText := strings.TrimSpace(message.ToolOutput + "\n" + string(message.ToolInput))
+		if evidenceText == "" {
+			continue
+		}
+		if urlNeedle != "" && strings.Contains(evidenceText, urlNeedle) {
+			return true
+		}
+		if urlNeedle == "" && len(titleNeedle) >= 3 && strings.Contains(strings.ToLower(evidenceText), strings.ToLower(titleNeedle)) {
+			return true
+		}
+	}
+	return false
+}
+
+func deepResearchToolNameCanVerifySources(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "websearch", "webfetch", "read", "glob", "grep", "repo_search", "repo-search", "code_search", "code-search", "bash", "test":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseDeepResearchHarnessJSON(text string) (DeepResearchWorkerResult, bool) {
@@ -253,9 +332,10 @@ func deepResearchSourcesFromText(text string) []DeepAgentSourceRef {
 		}
 		seen[raw] = true
 		out = append(out, DeepAgentSourceRef{
-			URL:      raw,
-			Title:    raw,
-			Provider: "model",
+			URL:        raw,
+			Title:      raw,
+			Provider:   "model_text",
+			SourceKind: "unverified_model_text",
 		})
 	}
 	return out

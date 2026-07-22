@@ -93,11 +93,17 @@ func TestEngineDeepResearchHarnessAgentRunnerUsesEngineFactoryScope(t *testing.T
 	if len(result.Sources) != 1 || result.Sources[0].URL != "https://example.com/pricing" {
 		t.Fatalf("expected deduped parsed source, got %#v", result.Sources)
 	}
+	if result.Sources[0].SourceKind != "unverified_model_report" {
+		t.Fatalf("model-reported source without tool evidence must stay unverified: %#v", result.Sources[0])
+	}
 	if captured.UserID != "user-1" || captured.SessionID != "parent-session" {
 		t.Fatalf("unexpected scope identity: %#v", captured)
 	}
 	if captured.WorkingDir != root {
 		t.Fatalf("expected working dir %q, got %q", root, captured.WorkingDir)
+	}
+	if !captured.InternalToolScope {
+		t.Fatalf("expected internal tool scope for deep research child runner")
 	}
 	if !containsString(captured.AllowedTools, "WebSearch") || !containsString(captured.AllowedTools, "WebFetch") || !containsString(captured.AllowedTools, "Grep") {
 		t.Fatalf("expected mapped allowed tools, got %#v", captured.AllowedTools)
@@ -107,6 +113,52 @@ func TestEngineDeepResearchHarnessAgentRunnerUsesEngineFactoryScope(t *testing.T
 	}
 	if result.Metadata["runner"] != "engine_factory" {
 		t.Fatalf("expected engine factory metadata, got %#v", result.Metadata)
+	}
+}
+
+func TestDeepResearchWorkerResultTrustsOnlyToolBackedHarnessSources(t *testing.T) {
+	session := state.NewSession(t.TempDir())
+	session.AddAssistantMessageWithTools("", []state.ToolCall{{ID: "call-web", Name: "WebFetch"}})
+	session.AddToolResult("call-web", "WebFetch", nil, "Fetched official pricing from https://example.com/pricing")
+	output := `{"summary":"found pricing","sources":[{"url":"https://example.com/pricing","title":"Pricing","provider":"WebFetch"},{"url":"https://attacker.example/fabricated","title":"Fabricated","provider":"WebFetch"}]}`
+	session.AddAssistantMessage(output)
+
+	result := deepResearchWorkerResultFromHarnessOutput(DeepResearchTaskNode{ID: "pricing"}, engine.Result{Output: output, Session: session}, nil)
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].Name != "WebFetch" || result.ToolCalls[0].Status != "result" {
+		t.Fatalf("actual harness tool calls were not captured: %#v", result.ToolCalls)
+	}
+	byURL := map[string]DeepAgentSourceRef{}
+	for _, source := range result.Sources {
+		byURL[source.URL] = source
+	}
+	if byURL["https://example.com/pricing"].SourceKind != "tool_verified" {
+		t.Fatalf("tool-backed source was not verified: %#v", byURL)
+	}
+	if byURL["https://attacker.example/fabricated"].SourceKind != "unverified_model_report" {
+		t.Fatalf("fabricated source was trusted: %#v", byURL)
+	}
+	trusted := deepResearchTrustedSources(result)
+	if len(trusted) != 1 || trusted[0].URL != "https://example.com/pricing" {
+		t.Fatalf("trusted sources = %#v, want only tool-backed URL", trusted)
+	}
+}
+
+func TestDeepResearchWorkerResultFromHarnessOutputMarksBareTextURLsUnverified(t *testing.T) {
+	result := deepResearchWorkerResultFromHarnessOutput(DeepResearchTaskNode{
+		ID:    "overview",
+		Title: "Overview",
+	}, engine.Result{
+		Output: "Official pricing might be at https://example.com/pricing",
+	}, nil)
+
+	if len(result.Sources) != 1 {
+		t.Fatalf("source count = %d, want 1", len(result.Sources))
+	}
+	if got := result.Sources[0].Provider; got != "model_text" {
+		t.Fatalf("source provider = %q, want model_text", got)
+	}
+	if got := result.Sources[0].SourceKind; got != "unverified_model_text" {
+		t.Fatalf("source kind = %q, want unverified_model_text", got)
 	}
 }
 

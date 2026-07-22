@@ -159,7 +159,7 @@ func (r *Runtime) extractImageMemoryCandidates(ctx context.Context, userID strin
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	runner := r.runnerForScope(Scope{UserID: userID, SessionID: asset.SessionID})
+	runner := r.runnerForScope(ctx, Scope{UserID: userID, SessionID: asset.SessionID})
 	blocks := []publictypes.ContentBlock{
 		{
 			Type: "text",

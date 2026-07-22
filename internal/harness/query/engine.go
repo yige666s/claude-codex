@@ -10,8 +10,10 @@ import (
 
 	appconfig "claude-codex/internal/app/config"
 	"claude-codex/internal/harness/compact"
+	"claude-codex/internal/harness/hooks"
 	"claude-codex/internal/harness/input"
 	"claude-codex/internal/harness/mcp"
+	"claude-codex/internal/harness/memdir"
 	"claude-codex/internal/harness/plannerapi"
 	"claude-codex/internal/harness/state"
 	"claude-codex/internal/harness/storage"
@@ -53,13 +55,15 @@ type QueryEngineConfig struct {
 	ToolDescriptors []toolkit.Descriptor
 
 	// ExecuteTool executes a planned tool call
-	ExecuteTool func(ctx context.Context, name string, input json.RawMessage) (string, error)
+	ExecuteTool func(ctx context.Context, toolUseID, name string, input json.RawMessage) (string, error)
 
 	// Commands available for execution
 	Commands []Command
 
 	// MCPClients for MCP integration
 	MCPClients []*mcp.Client
+
+	HookExecutor *hooks.Executor
 
 	// Agents available for delegation
 	Agents []Agent
@@ -560,7 +564,7 @@ func (qe *QueryEngine) handleOrphanedPermission(
 		if err != nil {
 			output = fmt.Sprintf("failed to encode tool input: %v", err)
 			isError = true
-		} else if result, err := qe.config.ExecuteTool(ctx, toolUseBlock.Name, inputJSON); err != nil {
+		} else if result, err := qe.config.ExecuteTool(ctx, orphaned.ToolUseID, toolUseBlock.Name, inputJSON); err != nil {
 			output = err.Error()
 			isError = true
 		} else {
@@ -611,10 +615,12 @@ func (qe *QueryEngine) executeQueryLoop(
 	deps.CompactService = NewLocalCompactService(qe.selectedModel())
 	if qe.config.Planner != nil {
 		deps.CallModel = qe.plannerModelCaller(systemPrompt)
+		deps.CompactService = NewLocalCompactServiceWithSummarizer(qe.selectedModel(), qe.compactSummarizer(systemPrompt))
 	}
 
 	events, terminal, err := Query(ctx, &QueryParams{
 		Messages:       qe.mutableMessages,
+		MemoryDir:      queryMemoryDir(qe.config.WorkingDir),
 		SystemPrompt:   systemPrompt,
 		CanUseTool:     qe.toolPermissionAdapter(),
 		ToolUseContext: toolCtx,
@@ -623,6 +629,7 @@ func (qe *QueryEngine) executeQueryLoop(
 		MaxTurns:       maxTurnsPtr,
 		TokenBudget:    tokenBudget,
 		TaskBudget:     qe.config.TaskBudget,
+		HookExecutor:   qe.config.HookExecutor,
 		Deps:           deps,
 	})
 	if err != nil {
@@ -633,7 +640,9 @@ func (qe *QueryEngine) executeQueryLoop(
 	for event := range events {
 		switch msg := event.(type) {
 		case types.Message:
-			emitted = append(emitted, msg)
+			if msg.Type != types.MessageTypeStreamEvent {
+				emitted = append(emitted, msg)
+			}
 			messageChan <- msg
 		case types.AssistantMessage:
 			emitted = append(emitted, msg.Message)
@@ -659,6 +668,13 @@ func (qe *QueryEngine) executeQueryLoop(
 	return nil
 }
 
+func queryMemoryDir(workingDir string) string {
+	if !memdir.IsAutoMemoryEnabled() || strings.TrimSpace(workingDir) == "" {
+		return ""
+	}
+	return memdir.GetAutoMemPath(workingDir)
+}
+
 func (qe *QueryEngine) runtimeTools() []htool.Tool {
 	if len(qe.config.Tools) > 0 {
 		return append([]htool.Tool(nil), qe.config.Tools...)
@@ -670,7 +686,7 @@ func (qe *QueryEngine) executePlannedTool(ctx context.Context, call plannerapi.T
 	if qe.config.ExecuteTool == nil {
 		return "", fmt.Errorf("tool executor not configured for %s", call.Name)
 	}
-	return qe.config.ExecuteTool(ctx, call.Name, call.Input)
+	return qe.config.ExecuteTool(ctx, call.ID, call.Name, call.Input)
 }
 
 func (qe *QueryEngine) selectedModel() string {
@@ -704,22 +720,174 @@ func (qe *QueryEngine) plannerModelCaller(systemPrompt types.SystemPrompt) Model
 	return func(ctx context.Context, params *ModelCallParams) (<-chan types.Message, error) {
 		session := qe.runtimeSession(systemPrompt)
 		session.Messages = publicMessagesToStateMessages(params.Messages)
-		plan, err := qe.config.Planner.Next(ctx, session, qe.config.ToolDescriptors)
-		if err != nil {
-			return nil, err
+		ch := make(chan types.Message, 16)
+		streamingPlanner, ok := qe.config.Planner.(interface {
+			StreamNext(ctx context.Context, session *state.Session, tools []toolkit.Descriptor, onChunk func(string)) (plannerapi.Plan, error)
+		})
+		if !ok {
+			plan, err := qe.config.Planner.Next(ctx, session, qe.config.ToolDescriptors)
+			if err != nil {
+				if recoverable := plannerRecoverableErrorMessage(err); recoverable != nil {
+					ch <- *recoverable
+					close(ch)
+					return ch, nil
+				}
+				return nil, err
+			}
+			ch <- plannerAssistantMessage(plan)
+			close(ch)
+			return ch, nil
 		}
-		msg := types.Message{
-			Type:       types.MessageTypeAssistant,
-			UUID:       types.UUID(),
-			Timestamp:  time.Now().UTC(),
-			StopReason: plan.StopReason,
-			Content:    plannerContentBlocks(plan),
-		}
-		ch := make(chan types.Message, 1)
-		ch <- msg
-		close(ch)
+
+		go func() {
+			defer close(ch)
+
+			send := func(msg types.Message) bool {
+				select {
+				case ch <- msg:
+					return true
+				case <-ctx.Done():
+					return false
+				}
+			}
+
+			if !send(plannerStreamEventMessage(map[string]any{
+				"type":          "request_start",
+				"model":         params.Model,
+				"max_tokens":    params.MaxTokens,
+				"message_count": len(params.Messages),
+			})) {
+				return
+			}
+
+			textBlockStarted := false
+			plan, err := streamingPlanner.StreamNext(ctx, session, qe.config.ToolDescriptors, func(token string) {
+				if strings.TrimSpace(token) == "" && token == "" {
+					return
+				}
+				if !textBlockStarted {
+					textBlockStarted = send(plannerStreamEventMessage(map[string]any{
+						"type":  "content_block_start",
+						"index": 0,
+						"content_block": map[string]any{
+							"type": "text",
+						},
+					}))
+					if !textBlockStarted {
+						return
+					}
+				}
+				send(plannerStreamEventMessage(map[string]any{
+					"type":  "content_block_delta",
+					"index": 0,
+					"delta": map[string]any{
+						"type": "text_delta",
+						"text": token,
+					},
+				}))
+			})
+			if err != nil {
+				if recoverable := plannerRecoverableErrorMessage(err); recoverable != nil {
+					send(*recoverable)
+				} else {
+					send(plannerErrorMessage(err))
+				}
+				return
+			}
+			if textBlockStarted {
+				if !send(plannerStreamEventMessage(map[string]any{
+					"type":  "content_block_stop",
+					"index": 0,
+				})) {
+					return
+				}
+			}
+			if !send(plannerStreamEventMessage(map[string]any{
+				"type":        "message_complete",
+				"stop_reason": plan.StopReason,
+			})) {
+				return
+			}
+			send(plannerAssistantMessage(plan))
+		}()
 		return ch, nil
 	}
+}
+
+func (qe *QueryEngine) compactSummarizer(systemPrompt types.SystemPrompt) CompactSummarizer {
+	return func(ctx context.Context, messages []types.Message) (string, error) {
+		if qe.config.Planner == nil {
+			return "", fmt.Errorf("compact summary planner is not configured")
+		}
+		session := qe.runtimeSession(systemPrompt)
+		session.Messages = publicMessagesToStateMessages(messages)
+		session.AddUserMessage("Summarize the conversation above for continued agent execution. Preserve the user goal, verified facts, decisions, completed work, tool results, unresolved tasks, constraints, file paths, and exact identifiers. Do not invent information. Return only the compact summary and do not call tools.")
+		plan, err := qe.config.Planner.Next(ctx, session, nil)
+		if err != nil {
+			return "", err
+		}
+		if len(plan.ToolCalls) > 0 {
+			return "", fmt.Errorf("compact summary planner attempted tool calls")
+		}
+		summary := strings.TrimSpace(plan.AssistantText)
+		if summary == "" {
+			return "", fmt.Errorf("compact summary planner returned empty summary")
+		}
+		return summary, nil
+	}
+}
+
+func plannerAssistantMessage(plan plannerapi.Plan) types.Message {
+	return types.Message{
+		Type:       types.MessageTypeAssistant,
+		UUID:       types.UUID(),
+		Timestamp:  time.Now().UTC(),
+		StopReason: plan.StopReason,
+		Content:    plannerContentBlocks(plan),
+	}
+}
+
+func plannerStreamEventMessage(event map[string]any) types.Message {
+	return types.Message{
+		Type:      types.MessageTypeStreamEvent,
+		UUID:      types.UUID(),
+		Timestamp: time.Now().UTC(),
+		Event:     event,
+	}
+}
+
+func plannerErrorMessage(err error) types.Message {
+	return types.Message{
+		Type:              types.MessageTypeSystem,
+		UUID:              types.UUID(),
+		Timestamp:         time.Now().UTC(),
+		IsApiErrorMessage: true,
+		Content: []types.ContentBlock{{
+			Type: "text",
+			Text: "Error: " + err.Error(),
+		}},
+	}
+}
+
+func plannerRecoverableErrorMessage(err error) *types.Message {
+	if err == nil {
+		return nil
+	}
+	text := strings.ToLower(err.Error())
+	subtype := ""
+	switch {
+	case strings.Contains(text, "prompt too long"),
+		strings.Contains(text, "context length"),
+		strings.Contains(text, "context_length"),
+		strings.Contains(text, "maximum context"):
+		subtype = "prompt_too_long"
+	case strings.Contains(text, "max output"), strings.Contains(text, "maximum output"):
+		subtype = "max_output_tokens"
+	default:
+		return nil
+	}
+	message := createAssistantAPIErrorMessage(err.Error(), subtype)
+	return &message
 }
 
 func plannerContentBlocks(plan plannerapi.Plan) []types.ContentBlock {
@@ -807,6 +975,8 @@ func publicMessageToStateMessage(msg types.Message) (state.Message, bool) {
 			ToolOutput: publicToolOutput(msg.Content),
 			CreatedAt:  createdAt,
 		}, true
+	case types.MessageTypeStreamEvent:
+		return state.Message{}, false
 	default:
 		if toolMsg, ok := publicToolResultStateMessage(msg, createdAt); ok {
 			return toolMsg, true

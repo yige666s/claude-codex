@@ -122,6 +122,93 @@ func TestDeepResearchControllerRetriesFailedWorker(t *testing.T) {
 	}
 }
 
+func TestDeepResearchControllerSchedulesReadyNodesAcrossBatches(t *testing.T) {
+	store := NewMemoryWorkflowStore()
+	worker := &recordingDeepResearchWorker{}
+	controller := NewDeepResearchController(store, ContextWorkflowEventSink{}, staticDeepResearchOrchestrator{plan: DeepResearchPlan{
+		Goal:           "batched ready scheduling",
+		MaxConcurrency: 2,
+		Nodes: []DeepResearchTaskNode{
+			{ID: "a", Title: "A", Required: true},
+			{ID: "b", Title: "B", Required: true},
+			{ID: "c", Title: "C", Required: true},
+			{ID: "report", Title: "Report", DependsOn: []string{"a", "b", "c"}, Required: true, WorkerRole: "writer"},
+		},
+	}}, worker, nil, DeepResearchRuntimeConfig{
+		OrchestratorWorkerEnabled: true,
+		WorkerBackend:             DeepResearchWorkerBackendInline,
+		MaxWorkers:                4,
+		MaxConcurrency:            2,
+		WorkerTimeout:             time.Second,
+		TotalTimeout:              5 * time.Second,
+		RequireSources:            true,
+		MinSuccessfulWorkers:      1,
+	})
+
+	result, err := controller.Execute(context.Background(), DeepAgentTaskRequest{
+		UserID:    "alice",
+		SessionID: "session-1",
+		JobID:     "job-1",
+		Goal:      "batched ready scheduling",
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	drRun, _ := deepResearchRunStateFromAny(result.Run.State["deep_research"])
+	for _, id := range []string{"a", "b", "c", "report"} {
+		if got := drRun.WorkerRuns[id].Status; got != DeepResearchTaskStatusSucceeded {
+			t.Fatalf("%s status = %q, want succeeded", id, got)
+		}
+	}
+	if got := worker.callCount("c"); got != 1 {
+		t.Fatalf("worker c calls = %d, want 1", got)
+	}
+	if !worker.sawDependenciesFor("report", 3) {
+		t.Fatalf("report did not receive all dependency outputs: %#v", worker.inputs)
+	}
+}
+
+func TestDeepResearchControllerHonorsPerNodeMaxAttempts(t *testing.T) {
+	store := NewMemoryWorkflowStore()
+	worker := &recordingDeepResearchWorker{failUntil: map[string]int{"overview": 2}}
+	controller := NewDeepResearchController(store, ContextWorkflowEventSink{}, staticDeepResearchOrchestrator{plan: DeepResearchPlan{
+		Goal: "per-node max attempts",
+		Nodes: []DeepResearchTaskNode{
+			{ID: "overview", Title: "Overview", Required: true, MaxAttempts: 3},
+		},
+	}}, worker, nil, DeepResearchRuntimeConfig{
+		OrchestratorWorkerEnabled: true,
+		WorkerBackend:             DeepResearchWorkerBackendInline,
+		MaxWorkers:                2,
+		MaxConcurrency:            1,
+		WorkerTimeout:             time.Second,
+		TotalTimeout:              5 * time.Second,
+		MaxRetries:                0,
+		RequireSources:            true,
+		MinSuccessfulWorkers:      1,
+	})
+
+	result, err := controller.Execute(context.Background(), DeepAgentTaskRequest{
+		UserID:    "alice",
+		SessionID: "session-1",
+		JobID:     "job-1",
+		Goal:      "per-node max attempts",
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	drRun, _ := deepResearchRunStateFromAny(result.Run.State["deep_research"])
+	if got := drRun.WorkerRuns["overview"].Attempt; got != 3 {
+		t.Fatalf("overview attempts = %d, want 3", got)
+	}
+	if got := drRun.WorkerRuns["overview"].Status; got != DeepResearchTaskStatusSucceeded {
+		t.Fatalf("overview status = %q, want succeeded", got)
+	}
+	if got := worker.callCount("overview"); got != 3 {
+		t.Fatalf("worker overview calls = %d, want 3", got)
+	}
+}
+
 func TestRuntimeExecuteDeepResearchTaskUsesWorkflowState(t *testing.T) {
 	runtime := testRuntime(t)
 	runtime.config.DeepResearch = DeepResearchRuntimeConfig{
@@ -297,6 +384,136 @@ func TestParseDeepResearchDeliverableDecisionToleratesNullOptionalFields(t *test
 	}
 }
 
+func TestDeepResearchWorkflowDefinitionUsesTotalTimeoutForWorkerGraph(t *testing.T) {
+	def := deepResearchWorkflowDefinition(7 * time.Second)
+	if len(def.Steps) != 4 {
+		t.Fatalf("step count = %d, want 4", len(def.Steps))
+	}
+	if got := def.Steps[2].Timeout; got != 7*time.Second {
+		t.Fatalf("worker graph timeout = %s, want total timeout", got)
+	}
+}
+
+func TestRuleDeepResearchOrchestratorTruncatesToDeliverableDAG(t *testing.T) {
+	plan, err := (ruleDeepResearchOrchestrator{}).Plan(context.Background(), DeepAgentTaskRequest{
+		Goal: "调研 Tolan AI 并生成报告",
+	}, DeepResearchRuntimeConfig{
+		MaxWorkers:     2,
+		MaxConcurrency: 2,
+		WorkerTimeout:  time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if len(plan.Nodes) != 2 {
+		t.Fatalf("node count = %d, want 2", len(plan.Nodes))
+	}
+	if got := plan.Nodes[len(plan.Nodes)-1].ID; got != "synthesis" {
+		t.Fatalf("last node id = %q, want synthesis", got)
+	}
+	deps := plan.Nodes[len(plan.Nodes)-1].DependsOn
+	if len(deps) != 1 || deps[0] != plan.Nodes[0].ID {
+		t.Fatalf("synthesis deps = %#v, want only retained prerequisite", deps)
+	}
+}
+
+func TestRuleDeepResearchOrchestratorSingleWorkerKeepsSourceGathering(t *testing.T) {
+	plan, err := (ruleDeepResearchOrchestrator{}).Plan(context.Background(), DeepAgentTaskRequest{
+		Goal: "调研 Tolan AI 并生成报告",
+	}, DeepResearchRuntimeConfig{
+		MaxWorkers:     1,
+		MaxConcurrency: 1,
+		WorkerTimeout:  time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if len(plan.Nodes) != 1 {
+		t.Fatalf("node count = %d, want 1", len(plan.Nodes))
+	}
+	if deepResearchNodeLooksDeliverable(plan.Nodes[0]) || !containsString(plan.Nodes[0].AllowedTools, "WebSearch") {
+		t.Fatalf("single worker must gather evidence before aggregation: %#v", plan.Nodes[0])
+	}
+}
+
+func TestRuleDeepResearchOrchestratorCategorizesCodeGoals(t *testing.T) {
+	plan, err := (ruleDeepResearchOrchestrator{}).Plan(context.Background(), DeepAgentTaskRequest{
+		Goal: "分析这个 repo 的代码架构并输出总结",
+	}, DeepResearchRuntimeConfig{
+		MaxWorkers:     4,
+		MaxConcurrency: 2,
+		WorkerTimeout:  time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if got := plan.Nodes[0].Metadata["goal_category"]; got != "codebase" {
+		t.Fatalf("goal category = %#v, want codebase", got)
+	}
+	if !hasDeepResearchNode(plan.Nodes, "codebase") {
+		t.Fatalf("expected codebase node in plan: %#v", plan.Nodes)
+	}
+}
+
+func TestDeepResearchAggregatorRejectsUnverifiedModelTextSources(t *testing.T) {
+	aggregate, err := (ruleDeepResearchAggregator{requireSources: true}).Aggregate(context.Background(), DeepResearchRunState{
+		Goal: "sources required",
+		WorkerRuns: map[string]DeepResearchTaskNode{
+			"overview": {
+				ID:       "overview",
+				Required: true,
+				Status:   DeepResearchTaskStatusSucceeded,
+				Result: &DeepResearchWorkerResult{
+					Status:  DeepAgentActionStatusSucceeded,
+					Summary: "found a URL in plain text",
+					Output:  "see https://example.com/pricing",
+					Sources: []DeepAgentSourceRef{{
+						URL:      "https://example.com/pricing",
+						Title:    "https://example.com/pricing",
+						Provider: "model_text",
+					}},
+				},
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "trusted source evidence") {
+		t.Fatalf("Aggregate() error = %v, want trusted source evidence failure", err)
+	}
+	if !aggregate.Partial {
+		t.Fatalf("expected partial aggregate when trusted sources are missing: %#v", aggregate)
+	}
+}
+
+func TestDeepResearchAggregatorRemovesUntrustedFindingCitations(t *testing.T) {
+	aggregate, err := (ruleDeepResearchAggregator{requireSources: true}).Aggregate(context.Background(), DeepResearchRunState{
+		Goal: "source integrity",
+		WorkerRuns: map[string]DeepResearchTaskNode{
+			"overview": {
+				ID:       "overview",
+				Required: true,
+				Status:   DeepResearchTaskStatusSucceeded,
+				Result: &DeepResearchWorkerResult{
+					Status:  DeepAgentActionStatusSucceeded,
+					Sources: []DeepAgentSourceRef{{URL: "https://example.com/verified", Title: "Verified", Provider: "test"}},
+					Findings: []DeepResearchFinding{
+						{Claim: "verified claim", SourceURL: "https://example.com/verified"},
+						{Claim: "uncited claim", SourceURL: "https://attacker.example/fabricated"},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Aggregate() error = %v", err)
+	}
+	if len(aggregate.Findings) != 2 || aggregate.Findings[0].SourceURL != "https://example.com/verified" || aggregate.Findings[1].SourceURL != "" {
+		t.Fatalf("untrusted finding citation was retained: %#v", aggregate.Findings)
+	}
+	if strings.Contains(aggregate.FinalAnswer, "https://attacker.example/fabricated") {
+		t.Fatalf("final answer contains an untrusted citation: %s", aggregate.FinalAnswer)
+	}
+}
+
 type staticDeepResearchOrchestrator struct {
 	plan DeepResearchPlan
 	err  error
@@ -313,6 +530,7 @@ type recordingDeepResearchWorker struct {
 	mu        sync.Mutex
 	inputs    []DeepResearchWorkerInput
 	failFirst map[string]bool
+	failUntil map[string]int
 	calls     map[string]int
 }
 
@@ -344,7 +562,7 @@ func (w *recordingDeepResearchWorker) ExecuteWorker(_ context.Context, input Dee
 	w.calls[input.Node.ID]++
 	call := w.calls[input.Node.ID]
 	w.inputs = append(w.inputs, input)
-	shouldFail := w.failFirst != nil && w.failFirst[input.Node.ID] && call == 1
+	shouldFail := (w.failFirst != nil && w.failFirst[input.Node.ID] && call == 1) || (w.failUntil != nil && call <= w.failUntil[input.Node.ID])
 	w.mu.Unlock()
 	if shouldFail {
 		return DeepResearchWorkerResult{Status: DeepAgentActionStatusFailed, Summary: "temporary failure"}, fmt.Errorf("temporary failure")
@@ -369,6 +587,21 @@ func (w *recordingDeepResearchWorker) sawDependenciesFor(nodeID string, count in
 	defer w.mu.Unlock()
 	for _, input := range w.inputs {
 		if input.Node.ID == nodeID && len(input.DependencyOutput) == count {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *recordingDeepResearchWorker) callCount(nodeID string) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.calls[nodeID]
+}
+
+func hasDeepResearchNode(nodes []DeepResearchTaskNode, id string) bool {
+	for _, node := range nodes {
+		if node.ID == id {
 			return true
 		}
 	}

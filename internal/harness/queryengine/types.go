@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"claude-codex/internal/harness/hooks"
+	"claude-codex/internal/harness/mcp"
 	"claude-codex/internal/harness/plannerapi"
 	"claude-codex/internal/harness/tool"
 	toolkit "claude-codex/internal/harness/tools"
@@ -30,13 +32,16 @@ type QueryEngineConfig struct {
 	ToolDescriptors []toolkit.Descriptor
 
 	// ExecuteTool executes a planned tool call when runtime-backed execution is enabled
-	ExecuteTool func(ctx context.Context, name string, input []byte) (string, error)
+	ExecuteTool func(ctx context.Context, toolUseID, name string, input []byte) (string, error)
 
 	// Commands available (slash commands, etc.)
 	Commands []interface{}
 
 	// MCP client connections
-	MCPClients []interface{}
+	MCPClients []*mcp.Client
+
+	// HookExecutor runs host and plugin lifecycle hooks inside the query loop.
+	HookExecutor *hooks.Executor
 
 	// Agent definitions
 	Agents []interface{}

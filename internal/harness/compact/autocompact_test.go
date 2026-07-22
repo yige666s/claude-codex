@@ -45,7 +45,7 @@ func TestShouldTriggerAutoCompact_AboveThreshold(t *testing.T) {
 		Enabled:                true,
 		Model:                  "claude-sonnet-4-6",
 		ContextWindowSize:      200000,
-		CurrentTokenUsage:      180000, // Above threshold
+		CurrentTokenUsage:      167003, // Just above threshold; microcompact can bring it below.
 		MaxConsecutiveFailures: 3,
 	}
 
@@ -235,7 +235,7 @@ func TestCompactMessages_Microcompact(t *testing.T) {
 		Enabled:                true,
 		Model:                  "claude-sonnet-4-6",
 		ContextWindowSize:      200000,
-		CurrentTokenUsage:      180000, // Above threshold
+		CurrentTokenUsage:      167003, // Just above threshold; microcompact can bring it below.
 		MaxConsecutiveFailures: 3,
 	}
 

@@ -13,6 +13,7 @@ type runtimeSpy struct {
 	descriptorsCalled bool
 	executeCalled     bool
 	runCalls          []bool
+	streamCalls       []bool
 	result            Result
 }
 
@@ -28,6 +29,11 @@ func (s *runtimeSpy) ExecuteTool(context.Context, string, json.RawMessage) (tool
 
 func (s *runtimeSpy) Run(_ context.Context, _ *state.Session, _ interface{}, recordUserMessage bool) (Result, error) {
 	s.runCalls = append(s.runCalls, recordUserMessage)
+	return s.result, nil
+}
+
+func (s *runtimeSpy) RunStream(_ context.Context, _ *state.Session, _ interface{}, recordUserMessage bool, _ func(string)) (Result, error) {
+	s.streamCalls = append(s.streamCalls, recordUserMessage)
 	return s.result, nil
 }
 
@@ -75,6 +81,22 @@ func TestEnginePublicMethodsDelegateToRuntime(t *testing.T) {
 	}
 	if spy.runCalls[1] {
 		t.Fatal("expected RunGeneratedPrompt() to delegate with recordUserMessage=false")
+	}
+
+	if _, err := engine.RunStream(context.Background(), session, "stream", nil); err != nil {
+		t.Fatalf("RunStream() error = %v", err)
+	}
+	if _, err := engine.RunGeneratedPromptStream(context.Background(), session, "generated stream", nil); err != nil {
+		t.Fatalf("RunGeneratedPromptStream() error = %v", err)
+	}
+	if len(spy.streamCalls) != 2 {
+		t.Fatalf("expected two delegated stream calls, got %d", len(spy.streamCalls))
+	}
+	if !spy.streamCalls[0] {
+		t.Fatal("expected RunStream() to delegate with recordUserMessage=true")
+	}
+	if spy.streamCalls[1] {
+		t.Fatal("expected RunGeneratedPromptStream() to delegate with recordUserMessage=false")
 	}
 }
 

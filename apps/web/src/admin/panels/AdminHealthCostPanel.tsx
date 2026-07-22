@@ -29,6 +29,7 @@ import {
   metricNumber,
   llmConfigDraftFromConfig,
   llmConfigFromDraft,
+  modelAvailabilityFor,
   modelOptionRuntime,
   riskEventSummary,
   selectedRunPassRate,
@@ -60,6 +61,15 @@ export function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; admi
   const readiness = health?.readiness;
   const llm = health?.llm;
   const live = health?.live;
+  const selectedModelAvailability = modelAvailabilityFor(llm?.config, configDraft.model);
+  const selectedModelUnavailable = selectedModelAvailability?.available === false;
+  const unavailableProviders = useMemo(() => {
+    const byProvider = new Map<string, NonNullable<LLMGovernanceConfig["model_availability"]>[number]>();
+    for (const item of llm?.config?.model_availability || []) {
+      if (!item.available && !byProvider.has(item.provider)) byProvider.set(item.provider, item);
+    }
+    return Array.from(byProvider.values());
+  }, [llm?.config?.model_availability]);
   const healthyBackends = (llm?.backends || []).filter((backend) => backend.healthy).length;
   const healthTabs: Array<AdminTabOption<typeof healthTab>> = [
     { id: "runtime", label: "Runtime", icon: <Activity size={15} />, count: readiness?.checks?.length ?? 0 },
@@ -104,6 +114,10 @@ export function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; admi
 
   const saveLLMConfig = async () => {
     if (!token) return;
+    if (selectedModelUnavailable) {
+      setError(selectedModelAvailability?.reason || "The selected provider is not configured on this AgentAPI instance.");
+      return;
+    }
     let patch: LLMGovernanceConfig;
     try {
       patch = llmConfigFromDraft(configDraft);
@@ -289,7 +303,7 @@ export function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; admi
           {healthTab === "governance" && <section className="admin-card wide">
             <div className="admin-card-head">
               <h3>Governance config</h3>
-              <Button className="skill-action" onClick={saveLLMConfig} disabled={configBusy || !token}>
+              <Button className="skill-action" onClick={saveLLMConfig} disabled={configBusy || !token || selectedModelUnavailable}>
                 <Settings size={15} />
                 <span>{configBusy ? "Saving" : "Save"}</span>
               </Button>
@@ -298,9 +312,11 @@ export function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; admi
               <label className="admin-field">
                 <span>Model</span>
                 <select value={configDraft.model || ""} onChange={(event) => updateConfigDraft("model", event.currentTarget.value)}>
-                  {(llm?.config?.allowed_models || []).map((option) => (
-                    <option key={option.id} value={option.id}>{option.label}</option>
-                  ))}
+                  {(llm?.config?.allowed_models || []).map((option) => {
+                    const availability = modelAvailabilityFor(llm?.config, option.id);
+                    const unavailable = availability?.available === false;
+                    return <option key={option.id} value={option.id} disabled={unavailable}>{option.label}{unavailable ? " — setup required" : ""}</option>;
+                  })}
                   {!llm?.config?.allowed_models?.length && <option value={configDraft.model || ""}>{configDraft.model || "No model loaded"}</option>}
                 </select>
               </label>
@@ -308,6 +324,24 @@ export function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; admi
                 <span>Provider / location</span>
                 <Input value={modelOptionRuntime(llm?.config, configDraft.model) || [configDraft.provider, configDraft.vertex_location].filter(Boolean).join(" / ")} readOnly aria-label="Selected model provider and location" />
               </label>
+              {selectedModelAvailability && (
+                <div className={`admin-provider-readiness ${selectedModelUnavailable ? "unavailable" : "available"}`} role="status">
+                  {selectedModelUnavailable ? <AlertCircle size={17} /> : <ShieldCheck size={17} />}
+                  <span>
+                    <strong>{selectedModelUnavailable ? "Provider setup required" : "Provider ready"}</strong>
+                    <small>{selectedModelAvailability.reason || `${selectedModelAvailability.provider} credentials are available to this AgentAPI instance.`}</small>
+                  </span>
+                </div>
+              )}
+              {unavailableProviders.length > 0 && (
+                <div className="admin-provider-setup" role="note">
+                  <Info size={17} />
+                  <span>
+                    <strong>{unavailableProviders.length} provider{unavailableProviders.length === 1 ? "" : "s"} require deployment setup</strong>
+                    {unavailableProviders.map((item) => <small key={item.provider}><b>{item.provider}</b>: {item.reason}</small>)}
+                  </span>
+                </div>
+              )}
               <label className="admin-field">
                 <span>Daily token quota</span>
                 <Input inputMode="numeric" value={configDraft.daily_token_quota || ""} onChange={(event) => updateConfigDraft("daily_token_quota", event.currentTarget.value)} placeholder="0 disables" />

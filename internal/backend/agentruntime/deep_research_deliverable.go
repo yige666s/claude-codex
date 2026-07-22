@@ -31,7 +31,7 @@ func (d *RuntimeDeepResearchDeliverableDecider) DecideDeepResearchDeliverable(ct
 	if d == nil || d.runtime == nil || d.runtime.engineFactory == nil {
 		return fallback, nil
 	}
-	runner := d.runtime.runnerForScope(Scope{
+	runner := d.runtime.runnerForScope(ctx, Scope{
 		UserID:       req.UserID,
 		SessionID:    req.SessionID,
 		Prompt:       req.Goal,

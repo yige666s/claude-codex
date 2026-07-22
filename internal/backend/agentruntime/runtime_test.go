@@ -281,6 +281,168 @@ func TestRuntimeChatPersistsUserMessageBeforeRunnerCompletes(t *testing.T) {
 	}
 }
 
+func TestRuntimeChatRejectsConcurrentTurnBeforePersistingMessage(t *testing.T) {
+	store := newRuntimeMessageWriteStore(t.TempDir())
+	runner := &releaseRunner{started: make(chan struct{}), release: make(chan struct{})}
+	runtime := NewRuntime(RuntimeConfig{TurnTimeout: time.Minute}, store, nil, nil, func(Scope) Runner { return runner })
+	session, err := store.Create(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	firstErr := make(chan error, 1)
+	go func() {
+		firstErr <- runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "first message"}, &collectSink{})
+	}()
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("first runner did not start")
+	}
+
+	err = runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "second message"}, &collectSink{})
+	if !errors.Is(err, ErrSessionTurnRunning) {
+		t.Fatalf("expected ErrSessionTurnRunning, got %v", err)
+	}
+	messages, err := store.LoadSessionMessages(context.Background(), "alice", session.ID, SessionLoadOptions{MaxMessages: 10, IncludeSystem: true})
+	if err != nil {
+		t.Fatalf("load messages while first turn is blocked: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "first message" {
+		t.Fatalf("concurrent turn must not persist a second user message, got %#v", messages)
+	}
+
+	close(runner.release)
+	select {
+	case err := <-firstErr:
+		if err != nil {
+			t.Fatalf("first chat: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first chat did not complete")
+	}
+}
+
+func TestRuntimeChatRejectsConcurrentTurnAcrossRuntimeInstances(t *testing.T) {
+	store := newRuntimeMessageWriteStore(t.TempDir())
+	reservations := NewMemoryRuntimeOutputStore()
+	firstRunner := &releaseRunner{started: make(chan struct{}), release: make(chan struct{})}
+	firstRuntime := NewRuntime(RuntimeConfig{TurnTimeout: time.Minute}, store, nil, nil, func(Scope) Runner { return firstRunner })
+	secondRuntime := NewRuntime(RuntimeConfig{TurnTimeout: time.Minute}, store, nil, nil, func(Scope) Runner { return echoRunner{} })
+	firstRuntime.SetChatTurnReservationStore(reservations)
+	secondRuntime.SetChatTurnReservationStore(reservations)
+	session, err := store.Create(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	firstErr := make(chan error, 1)
+	go func() {
+		firstErr <- firstRuntime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "first message"}, &collectSink{})
+	}()
+	select {
+	case <-firstRunner.started:
+	case <-time.After(time.Second):
+		t.Fatal("first runtime did not start")
+	}
+
+	err = secondRuntime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "second message"}, &collectSink{})
+	if !errors.Is(err, ErrSessionTurnRunning) {
+		t.Fatalf("cross-runtime concurrent Chat() error = %v, want %v", err, ErrSessionTurnRunning)
+	}
+	messages, err := store.LoadSessionMessages(context.Background(), "alice", session.ID, SessionLoadOptions{MaxMessages: 10, IncludeSystem: true})
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "first message" {
+		t.Fatalf("cross-runtime rejected turn must not persist a message, got %#v", messages)
+	}
+
+	close(firstRunner.release)
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first chat: %v", err)
+	}
+}
+
+func TestRunnerForScopeReturnsRequestScopedFactoryError(t *testing.T) {
+	factoryErr := errors.New("planner configuration is invalid")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var receivedContext context.Context
+	runtime := NewRuntimeWithContextEngineFactory(
+		RuntimeConfig{DefaultWorkingDir: t.TempDir()},
+		NewFileSessionStore(t.TempDir()),
+		nil,
+		nil,
+		func(ctx context.Context, _ Scope) (Runner, error) {
+			receivedContext = ctx
+			return nil, factoryErr
+		},
+	)
+
+	runner := runtime.runnerForScope(ctx, Scope{UserID: "alice", SessionID: "session-1"})
+	result, err := runner.Run(ctx, state.NewSession(t.TempDir()), "hello")
+	if !errors.Is(err, factoryErr) {
+		t.Fatalf("expected request-scoped factory error, got result=%#v err=%v", result, err)
+	}
+	if receivedContext != ctx || !errors.Is(receivedContext.Err(), context.Canceled) {
+		t.Fatalf("factory did not receive the cancelled request context: %#v", receivedContext)
+	}
+}
+
+func TestLoadSessionForModelTurnRunsDurableCompaction(t *testing.T) {
+	baseStore := newRuntimeMessageWriteStore(t.TempDir())
+	store := &compactionRuntimeStore{runtimeMessageWriteStore: baseStore}
+	session, err := store.Create(context.Background(), "alice", t.TempDir())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	for i := 0; i < defaultCompactionMaxMessages+1; i++ {
+		message := state.Message{
+			ID:            fmt.Sprintf("message-%d", i),
+			Role:          state.MessageRoleUser,
+			Content:       "history",
+			Status:        state.MessageStatusNormal,
+			IsContextUsed: true,
+		}
+		if _, err := store.AppendMessage(context.Background(), "alice", session.ID, message); err != nil {
+			t.Fatalf("append message %d: %v", i, err)
+		}
+	}
+	runtime := NewRuntime(RuntimeConfig{TurnTimeout: time.Minute}, store, nil, nil, func(Scope) Runner { return echoRunner{} })
+	generator := &captureSummaryGenerator{summary: "durable turn summary"}
+	runtime.SetContextCompactionService(NewContextCompactionService(
+		NewSessionLoadService(store, NoopSessionContextCache{}),
+		NewMessageWriteService(store, NoopSessionContextCache{}, NoopMessageEventPublisher{}),
+		store,
+		generator,
+	))
+
+	loaded, err := runtime.loadSessionForModelTurn(context.Background(), "alice", session.ID)
+	if err != nil {
+		t.Fatalf("load session for model turn: %v", err)
+	}
+	if !generator.called {
+		t.Fatal("pre-turn durable compaction was not invoked")
+	}
+	activeOrdinary := 0
+	activeSummaries := 0
+	for _, message := range loaded.Messages {
+		if message.Status != state.MessageStatusNormal || !message.IsContextUsed {
+			continue
+		}
+		if message.ContentType == state.MessageContentTypeSummary {
+			activeSummaries++
+		} else if message.Role != state.MessageRoleSystem {
+			activeOrdinary++
+		}
+	}
+	if activeSummaries != 1 || activeOrdinary != DefaultContextCompactionOptions().PreserveRecent {
+		t.Fatalf("unexpected active context after pre-turn compaction: summaries=%d ordinary=%d", activeSummaries, activeOrdinary)
+	}
+}
+
 func TestRuntimeChatDoesNotDuplicatePrewrittenImageAttachmentUserMessage(t *testing.T) {
 	store := newRuntimeMessageWriteStore(t.TempDir())
 	runner := &captureContentRunner{}
@@ -2653,11 +2815,15 @@ func TestProductPermissionCheckerDeniesWriteByDefault(t *testing.T) {
 	}
 
 	artifactChecker := NewProductPermissionChecker(ToolPolicy{
-		AllowedTools:   []string{ArtifactToolName},
-		SafeWriteTools: []string{ArtifactToolName},
+		AllowedTools:     []string{ArtifactToolName, "Agent"},
+		SafeWriteTools:   []string{ArtifactToolName},
+		SafeExecuteTools: []string{"Agent"},
 	})
 	if err := artifactChecker.Authorize(context.Background(), ArtifactToolName, permissions.LevelWrite); err != nil {
 		t.Fatalf("artifact safe write should be allowed: %v", err)
+	}
+	if err := artifactChecker.Authorize(context.Background(), "Agent", permissions.LevelExecute); err != nil {
+		t.Fatalf("agent safe execute should be allowed: %v", err)
 	}
 }
 
@@ -2718,6 +2884,115 @@ func TestSkillShellEnvironmentFallsBackToConfiguredVertexAccessToken(t *testing.
 	env := runtime.skillShellEnvironment("/tmp/workspace", "/tmp/skill", []string{"VERTEX_ACCESS_TOKEN"})
 	if env["VERTEX_ACCESS_TOKEN"] != "configured-token" {
 		t.Fatalf("expected configured Vertex access token fallback, got %#v", env)
+	}
+}
+
+func TestLocalSkillShellRuntimeUsesMinimalEnvAndAllowedEnvOnly(t *testing.T) {
+	t.Setenv("UNLISTED_SECRET", "do-not-pass")
+	workingDir := t.TempDir()
+	runtime := NewLocalSkillShellRuntime(
+		SkillShellSandboxConfig{Runner: "local", Network: "host"},
+		skills.ShellBash,
+		workingDir,
+		filepath.Join(workingDir, ".claude", "skills", "demo"),
+		map[string]string{"SAFE_KEY": "safe-value"},
+		nil,
+		[]string{"Bash(printf *)"},
+	)
+
+	output, err := runtime.ExecuteCommand(context.Background(), `printf '%s|%s' "$SAFE_KEY" "${UNLISTED_SECRET:-}"`)
+	if err != nil {
+		t.Fatalf("execute command: %v", err)
+	}
+	if output != "safe-value|" {
+		t.Fatalf("unexpected sandbox env output: %q", output)
+	}
+}
+
+func TestLocalSkillShellRuntimePreservesRuntimeWorkspaceEnv(t *testing.T) {
+	workspace := t.TempDir()
+	skillRoot := filepath.Join(t.TempDir(), "demo")
+	if err := os.MkdirAll(skillRoot, 0o755); err != nil {
+		t.Fatalf("create skill root: %v", err)
+	}
+	runtime := NewLocalSkillShellRuntime(
+		SkillShellSandboxConfig{Runner: "local", Network: "host"},
+		skills.ShellBash,
+		skillRoot,
+		skillRoot,
+		map[string]string{"AGENT_WORKSPACE_DIR": workspace, "CLAUDE_SKILL_DIR": skillRoot},
+		nil,
+		[]string{"Bash(printf *)"},
+	)
+
+	output, err := runtime.ExecuteCommand(context.Background(), `printf '%s|%s' "$AGENT_WORKSPACE_DIR" "$CLAUDE_SKILL_DIR"`)
+	if err != nil {
+		t.Fatalf("execute command: %v", err)
+	}
+	if output != workspace+"|"+skillRoot {
+		t.Fatalf("runtime workspace env was replaced by command cwd: %q", output)
+	}
+}
+
+func TestLocalSkillShellRuntimeNetworkNoneBlocksLoopback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("should-not-be-reachable"))
+	}))
+	defer server.Close()
+	runtime := NewLocalSkillShellRuntime(
+		SkillShellSandboxConfig{Runner: "local", Network: "none"},
+		skills.ShellBash,
+		t.TempDir(),
+		t.TempDir(),
+		nil,
+		nil,
+		[]string{"Bash(curl *)"},
+	)
+
+	if output, err := runtime.ExecuteCommand(context.Background(), "curl --silent --show-error --max-time 1 "+server.URL); err == nil {
+		t.Fatalf("network=none reached loopback endpoint: %q", output)
+	}
+}
+
+func TestLocalSkillShellRuntimeRejectsNetworkAllowlist(t *testing.T) {
+	workingDir := t.TempDir()
+	runtime := NewLocalSkillShellRuntime(
+		SkillShellSandboxConfig{Runner: "local", Network: "none"},
+		skills.ShellBash,
+		workingDir,
+		filepath.Join(workingDir, ".claude", "skills", "demo"),
+		nil,
+		[]string{"api.example.com"},
+		[]string{"Bash(echo *)"},
+	)
+
+	_, err := runtime.ExecuteCommand(context.Background(), "echo blocked")
+	if err == nil {
+		t.Fatal("expected network allowlist to be rejected by local runner")
+	}
+	if !strings.Contains(err.Error(), "network allowlist") {
+		t.Fatalf("expected network allowlist error, got %v", err)
+	}
+}
+
+func TestLocalSkillShellRuntimeRejectsNonNoneNetworkMode(t *testing.T) {
+	workingDir := t.TempDir()
+	runtime := NewLocalSkillShellRuntime(
+		SkillShellSandboxConfig{Runner: "local", Network: "bridge"},
+		skills.ShellBash,
+		workingDir,
+		filepath.Join(workingDir, ".claude", "skills", "demo"),
+		nil,
+		nil,
+		[]string{"Bash(echo *)"},
+	)
+
+	_, err := runtime.ExecuteCommand(context.Background(), "echo blocked")
+	if err == nil {
+		t.Fatal("expected non-none network mode to be rejected by local runner")
+	}
+	if !strings.Contains(err.Error(), "controlled container") {
+		t.Fatalf("expected controlled container error, got %v", err)
 	}
 }
 
@@ -4376,7 +4651,7 @@ func TestArtifactToolWritesThroughScopedWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	_ = runtime.runnerForScope(Scope{UserID: "alice", SessionID: session.ID, WorkingDir: session.WorkingDir})
+	_ = runtime.runnerForScope(context.Background(), Scope{UserID: "alice", SessionID: session.ID, WorkingDir: session.WorkingDir})
 	if captured.Artifacts == nil {
 		t.Fatal("expected scoped artifact writer")
 	}
@@ -4670,7 +4945,7 @@ func TestArtifactWriterRejectsDisallowedSkillContentType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	_ = runtime.runnerForScope(Scope{UserID: "alice", SessionID: session.ID, WorkingDir: session.WorkingDir, ArtifactTypes: []string{"image/*"}})
+	_ = runtime.runnerForScope(context.Background(), Scope{UserID: "alice", SessionID: session.ID, WorkingDir: session.WorkingDir, ArtifactTypes: []string{"image/*"}})
 
 	tool := NewArtifactTool(captured.Artifacts)
 	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"filename":"note.txt","content_type":"text/plain","content":"hello"}`)); err == nil {
@@ -5436,8 +5711,10 @@ func TestRuntimeChatPlanExecuteCreatesDeepAgentJob(t *testing.T) {
 	runtime := testRuntime(t)
 	jobs := NewMemoryJobStore()
 	queue := &captureJobQueue{}
+	reservations := NewMemoryRuntimeOutputStore()
 	runtime.SetJobStore(jobs)
 	runtime.SetJobQueue(queue)
+	runtime.SetChatTurnReservationStore(reservations)
 	session, err := runtime.CreateSession(context.Background(), "alice", "")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -5470,11 +5747,28 @@ func TestRuntimeChatPlanExecuteCreatesDeepAgentJob(t *testing.T) {
 	sink.mu.Lock()
 	events := append([]Event(nil), sink.events...)
 	sink.mu.Unlock()
-	if len(events) != 1 || events[0].Type != "job" || events[0].Job == nil || events[0].Job.Type != JobTypeDeepAgent {
-		t.Fatalf("expected one deep-agent job event, got %#v", events)
+	if len(events) != 2 || events[0].Type != "job" || events[0].Job == nil || events[0].Job.Type != JobTypeDeepAgent || events[1].Type != "job_handoff" {
+		t.Fatalf("expected deep-agent job and handoff events, got %#v", events)
 	}
 	if events[0].JobReason != "user selected plan-and-execute mode" {
 		t.Fatalf("unexpected job reason: %#v", events[0])
+	}
+	adopted, err := reservations.ReserveChatTurn(context.Background(), ChatTurnReservation{
+		UserID:         "alice",
+		SessionID:      session.ID,
+		IdempotencyKey: "job:" + storedJobs[0].ID,
+		RunID:          storedJobs[0].ID,
+	})
+	if err != nil || adopted.Reserved || adopted.Status != "reserved" {
+		t.Fatalf("job did not own handed-off session turn: %#v, %v", adopted, err)
+	}
+	if _, err := reservations.ReserveChatTurn(context.Background(), ChatTurnReservation{
+		UserID:         "alice",
+		SessionID:      session.ID,
+		IdempotencyKey: "another-chat",
+		RunID:          "another-run",
+	}); !errors.Is(err, ErrSessionTurnRunning) {
+		t.Fatalf("session turn was not held by queued job: %v", err)
 	}
 }
 
@@ -6550,7 +6844,7 @@ func TestArtifactProducingSkillRegistersPromptGeneratedArtifactFile(t *testing.T
 	}
 	executions := NewMemorySkillExecutionStore()
 	runtime := NewRuntime(
-		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute},
+		RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute, SkillShellSandbox: SkillShellSandboxConfig{Runner: "local", Network: "host"}},
 		NewFileSessionStore(storeRoot),
 		NewFileMemoryService(storeRoot),
 		fakeSkillCatalog{skills: loadedSkills},
@@ -8399,6 +8693,30 @@ type runtimeMessageWriteStore struct {
 	messages      []state.Message
 	saveCalls     int
 	metadataSaves int
+}
+
+type compactionRuntimeStore struct {
+	*runtimeMessageWriteStore
+}
+
+func (s *compactionRuntimeStore) MarkMessagesContextUnused(_ context.Context, _, _ string, messageIDs []string) (int, error) {
+	idSet := make(map[string]struct{}, len(messageIDs))
+	for _, id := range messageIDs {
+		idSet[id] = struct{}{}
+	}
+	marked := 0
+	for i := range s.messages {
+		if _, ok := idSet[s.messages[i].ID]; !ok {
+			continue
+		}
+		s.messages[i].Status = state.MessageStatusTruncated
+		s.messages[i].IsContextUsed = false
+		marked++
+	}
+	if s.session != nil {
+		s.session.Messages = cloneStateMessages(s.messages)
+	}
+	return marked, nil
 }
 
 func newRuntimeMessageWriteStore(workingDir string) *runtimeMessageWriteStore {

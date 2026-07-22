@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io/fs"
 	"os"
 	"regexp"
@@ -60,7 +61,58 @@ func TestRunPostgresGooseMigrationsFreshSchema(t *testing.T) {
 		assertPostgresTableExists(t, db, table)
 	}
 	assertPostgresColumnExists(t, db, "agent_jobs", "loop_goal_id")
+	assertPostgresColumnExists(t, db, "agent_jobs", "execution_owner")
+	assertPostgresColumnExists(t, db, "agent_jobs", "execution_epoch")
+	assertPostgresColumnExists(t, db, "agent_jobs", "execution_lease_expires_at")
 	assertPostgresGooseAtLatest(t, db)
+}
+
+func TestSQLJobExecutionLeaseFencesOwnersPostgres(t *testing.T) {
+	db := openPostgresMigrationTestDB(t)
+	ctx := context.Background()
+	if err := RunPostgresGooseMigrations(ctx, db, SQLDialectPostgres); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	store := NewSQLJobStoreWithDialect(db, SQLDialectPostgres)
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("init job store: %v", err)
+	}
+	now := time.Now().UTC()
+	job := &Job{ID: NewJobID(), UserID: "lease-user", SessionID: "lease-session", Type: JobTypeDeepAgent, Status: JobStatusQueued, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	acquired, err := store.AcquireJobExecutionLease(ctx, job.UserID, job.ID, "owner-1", now, now.Add(time.Minute))
+	if err != nil || !acquired {
+		t.Fatalf("first acquire = %t, %v", acquired, err)
+	}
+	loaded, err := store.GetJob(ctx, job.UserID, job.ID)
+	if err != nil || loaded.ExecutionOwner != "owner-1" || loaded.ExecutionEpoch != 1 || loaded.ExecutionLeaseExpiresAt == nil {
+		t.Fatalf("loaded first lease = %#v, %v", loaded, err)
+	}
+	acquired, err = store.AcquireJobExecutionLease(ctx, job.UserID, job.ID, "owner-2", now.Add(time.Second), now.Add(2*time.Minute))
+	if err != nil || acquired {
+		t.Fatalf("competing acquire = %t, %v", acquired, err)
+	}
+	transitioned, err := store.TransitionOwnedJobStatus(ctx, job.UserID, job.ID, "owner-2", JobStatusSucceeded, "", now.Add(2*time.Second))
+	if err != nil || transitioned {
+		t.Fatalf("non-owner transition = %t, %v", transitioned, err)
+	}
+	if err := store.ReleaseJobExecutionLease(ctx, job.UserID, job.ID, "owner-1", now.Add(3*time.Second)); err != nil {
+		t.Fatalf("release first owner: %v", err)
+	}
+	acquired, err = store.AcquireJobExecutionLease(ctx, job.UserID, job.ID, "owner-2", now.Add(4*time.Second), now.Add(2*time.Minute))
+	if err != nil || !acquired {
+		t.Fatalf("takeover = %t, %v", acquired, err)
+	}
+	transitioned, err = store.TransitionOwnedJobStatus(ctx, job.UserID, job.ID, "owner-2", JobStatusSucceeded, "", now.Add(5*time.Second))
+	if err != nil || !transitioned {
+		t.Fatalf("active owner transition = %t, %v", transitioned, err)
+	}
+	loaded, err = store.GetJob(ctx, job.UserID, job.ID)
+	if err != nil || loaded.Status != JobStatusSucceeded || loaded.ExecutionOwner != "" || loaded.ExecutionLeaseExpiresAt != nil {
+		t.Fatalf("loaded terminal lease = %#v, %v", loaded, err)
+	}
 }
 
 func TestRunPostgresGooseMigrationsLegacySeedsGoose(t *testing.T) {
@@ -141,6 +193,44 @@ INSERT INTO agent_sessions (
 	}
 	assertPostgresGooseVersionApplied(t, db, 6)
 	assertPostgresGooseVersionApplied(t, db, 7)
+}
+
+func TestSQLRuntimeOutputStoreRejectsConcurrentSessionTurnPostgres(t *testing.T) {
+	db := openPostgresMigrationTestDB(t)
+	ctx := context.Background()
+	if err := RunPostgresGooseMigrations(ctx, db, SQLDialectPostgres); err != nil {
+		t.Fatalf("RunPostgresGooseMigrations() error = %v", err)
+	}
+	store := NewSQLRuntimeOutputStoreWithDialect(db, SQLDialectPostgres)
+	first, err := store.ReserveChatTurn(ctx, ChatTurnReservation{
+		UserID:         "user-1",
+		SessionID:      "session-1",
+		IdempotencyKey: "turn-1",
+		RunID:          "run-1",
+	})
+	if err != nil || !first.Reserved {
+		t.Fatalf("first ReserveChatTurn() = %#v, %v", first, err)
+	}
+	if _, err := store.ReserveChatTurn(ctx, ChatTurnReservation{
+		UserID:         "user-1",
+		SessionID:      "session-1",
+		IdempotencyKey: "turn-2",
+		RunID:          "run-2",
+	}); !errors.Is(err, ErrSessionTurnRunning) {
+		t.Fatalf("concurrent ReserveChatTurn() error = %v, want %v", err, ErrSessionTurnRunning)
+	}
+	if err := store.UpdateChatTurnReservationStatus(ctx, "user-1", "session-1", "run-1", "succeeded"); err != nil {
+		t.Fatalf("finish first reservation: %v", err)
+	}
+	second, err := store.ReserveChatTurn(ctx, ChatTurnReservation{
+		UserID:         "user-1",
+		SessionID:      "session-1",
+		IdempotencyKey: "turn-2",
+		RunID:          "run-2",
+	})
+	if err != nil || !second.Reserved {
+		t.Fatalf("second ReserveChatTurn() after release = %#v, %v", second, err)
+	}
 }
 
 func openPostgresMigrationTestDB(t *testing.T) *sql.DB {
@@ -261,7 +351,7 @@ func assertPostgresColumnExists(t *testing.T, db *sql.DB, table, column string) 
 SELECT EXISTS (
 	SELECT 1
 	FROM information_schema.columns
-	WHERE table_schema = 'public'
+	WHERE table_schema = current_schema()
 	  AND table_name = $1
 	  AND column_name = $2
 )`, table, column).Scan(&exists); err != nil {

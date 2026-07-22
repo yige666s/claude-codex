@@ -127,8 +127,112 @@ func (s *MemoryJobStore) UpdateJobStatus(_ context.Context, userID, jobID, statu
 	}
 	if isTerminalJobStatus(status) {
 		job.FinishedAt = &at
+		job.ExecutionOwner = ""
+		job.ExecutionLeaseExpiresAt = nil
 	}
 	return nil
+}
+
+func (s *MemoryJobStore) TransitionJobStatus(_ context.Context, userID, jobID, expectedStatus, status, errorText string, at time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[jobID]
+	if !ok || job.UserID != userID {
+		return false, sql.ErrNoRows
+	}
+	if job.Status != expectedStatus {
+		return false, nil
+	}
+	job.Status = status
+	job.Error = errorText
+	job.UpdatedAt = at
+	if status == JobStatusRunning && job.StartedAt == nil {
+		job.StartedAt = &at
+	}
+	if isTerminalJobStatus(status) {
+		job.FinishedAt = &at
+		job.ExecutionOwner = ""
+		job.ExecutionLeaseExpiresAt = nil
+	}
+	return true, nil
+}
+
+func (s *MemoryJobStore) AcquireJobExecutionLease(_ context.Context, userID, jobID, owner string, now, expiresAt time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[jobID]
+	if !ok || job.UserID != userID {
+		return false, sql.ErrNoRows
+	}
+	leaseExpired := job.ExecutionLeaseExpiresAt == nil || !job.ExecutionLeaseExpiresAt.After(now)
+	if job.Status != JobStatusQueued && !(job.Status == JobStatusRunning && leaseExpired) {
+		return false, nil
+	}
+	job.Status = JobStatusRunning
+	job.Error = ""
+	job.ExecutionOwner = owner
+	job.ExecutionEpoch++
+	leaseExpiry := expiresAt.UTC()
+	job.ExecutionLeaseExpiresAt = &leaseExpiry
+	job.UpdatedAt = now.UTC()
+	if job.StartedAt == nil {
+		startedAt := now.UTC()
+		job.StartedAt = &startedAt
+	}
+	return true, nil
+}
+
+func (s *MemoryJobStore) RefreshJobExecutionLease(_ context.Context, userID, jobID, owner string, now, expiresAt time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[jobID]
+	if !ok || job.UserID != userID {
+		return false, sql.ErrNoRows
+	}
+	if job.Status != JobStatusRunning || job.ExecutionOwner != owner || job.ExecutionLeaseExpiresAt == nil || !job.ExecutionLeaseExpiresAt.After(now) {
+		return false, nil
+	}
+	leaseExpiry := expiresAt.UTC()
+	job.ExecutionLeaseExpiresAt = &leaseExpiry
+	job.UpdatedAt = now.UTC()
+	return true, nil
+}
+
+func (s *MemoryJobStore) ReleaseJobExecutionLease(_ context.Context, userID, jobID, owner string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[jobID]
+	if !ok || job.UserID != userID {
+		return sql.ErrNoRows
+	}
+	if job.Status == JobStatusRunning && job.ExecutionOwner == owner {
+		expiresAt := at.UTC()
+		job.ExecutionLeaseExpiresAt = &expiresAt
+		job.UpdatedAt = expiresAt
+	}
+	return nil
+}
+
+func (s *MemoryJobStore) TransitionOwnedJobStatus(_ context.Context, userID, jobID, owner, status, errorText string, at time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[jobID]
+	if !ok || job.UserID != userID {
+		return false, sql.ErrNoRows
+	}
+	if job.Status != JobStatusRunning || job.ExecutionOwner != owner || job.ExecutionLeaseExpiresAt == nil || !job.ExecutionLeaseExpiresAt.After(at) {
+		return false, nil
+	}
+	job.Status = status
+	job.Error = errorText
+	job.UpdatedAt = at.UTC()
+	if isTerminalJobStatus(status) {
+		finishedAt := at.UTC()
+		job.FinishedAt = &finishedAt
+		job.ExecutionOwner = ""
+		job.ExecutionLeaseExpiresAt = nil
+	}
+	return true, nil
 }
 
 func (s *MemoryJobStore) AddJobEvent(_ context.Context, event *JobEvent) error {
@@ -217,7 +321,7 @@ func NewSQLJobStoreWithDialect(db *sql.DB, dialect SQLDialect) *SQLJobStore {
 func (s *SQLJobStore) Init(ctx context.Context) error {
 	if err := requireSQLColumns(ctx, s.db, "agent_jobs",
 		"job_id", "user_id", "session_id", "loop_goal_id", "type", "status", "content", "attachments", "error",
-		"created_at", "updated_at", "started_at", "finished_at",
+		"created_at", "updated_at", "started_at", "finished_at", "execution_owner", "execution_epoch", "execution_lease_expires_at",
 	); err != nil {
 		return err
 	}
@@ -269,7 +373,8 @@ func (s *SQLJobStore) GetJob(ctx context.Context, userID, jobID string) (*Job, e
 		return jobFromSQLC(job), nil
 	}
 	return s.scanJob(s.db.QueryRowContext(ctx, s.dialect.Bind(`
-SELECT job_id, user_id, session_id, loop_goal_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at
+SELECT job_id, user_id, session_id, loop_goal_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at,
+	execution_owner, execution_epoch, execution_lease_expires_at
 FROM agent_jobs WHERE user_id = ? AND job_id = ?`), userID, jobID))
 }
 
@@ -281,7 +386,7 @@ func (s *SQLJobStore) ListJobs(ctx context.Context, userID, sessionID string) ([
 		}
 		return jobsFromSQLC(rows), nil
 	}
-	query := `SELECT job_id, user_id, session_id, loop_goal_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at FROM agent_jobs WHERE user_id = ?`
+	query := `SELECT job_id, user_id, session_id, loop_goal_id, type, status, content, attachments, error, created_at, updated_at, started_at, finished_at, execution_owner, execution_epoch, execution_lease_expires_at FROM agent_jobs WHERE user_id = ?`
 	args := []any{userID}
 	if strings.TrimSpace(sessionID) != "" {
 		query += ` AND session_id = ?`
@@ -336,10 +441,111 @@ func (s *SQLJobStore) UpdateJobStatus(ctx context.Context, userID, jobID, status
 UPDATE agent_jobs
 SET status = ?, error = ?, updated_at = ?,
 	started_at = COALESCE(started_at, ?),
-	finished_at = COALESCE(?, finished_at)
+	finished_at = COALESCE(?, finished_at),
+	execution_owner = CASE WHEN ? IN ('succeeded', 'failed', 'cancelled') THEN '' ELSE execution_owner END,
+	execution_lease_expires_at = CASE WHEN ? IN ('succeeded', 'failed', 'cancelled') THEN NULL ELSE execution_lease_expires_at END
 WHERE user_id = ? AND job_id = ?`),
-		status, errorText, sqlTimeValue(at, s.dialect), startedAt, finishedAt, userID, jobID)
+		status, errorText, sqlTimeValue(at, s.dialect), startedAt, finishedAt, status, status, userID, jobID)
 	return err
+}
+
+func (s *SQLJobStore) TransitionJobStatus(ctx context.Context, userID, jobID, expectedStatus, status, errorText string, at time.Time) (bool, error) {
+	var startedAt any
+	if status == JobStatusRunning {
+		startedAt = sqlTimeValue(at, s.dialect)
+	}
+	var finishedAt any
+	if isTerminalJobStatus(status) {
+		finishedAt = sqlTimeValue(at, s.dialect)
+	}
+	result, err := s.db.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_jobs
+SET status = ?, error = ?, updated_at = ?,
+	started_at = COALESCE(started_at, ?),
+	finished_at = COALESCE(?, finished_at),
+	execution_owner = CASE WHEN ? IN ('succeeded', 'failed', 'cancelled') THEN '' ELSE execution_owner END,
+	execution_lease_expires_at = CASE WHEN ? IN ('succeeded', 'failed', 'cancelled') THEN NULL ELSE execution_lease_expires_at END
+WHERE user_id = ? AND job_id = ? AND status = ?`),
+		status, errorText, sqlTimeValue(at, s.dialect), startedAt, finishedAt, status, status, userID, jobID, expectedStatus)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected == 1, nil
+}
+
+func (s *SQLJobStore) AcquireJobExecutionLease(ctx context.Context, userID, jobID, owner string, now, expiresAt time.Time) (bool, error) {
+	result, err := s.db.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_jobs
+SET status = ?, error = '', updated_at = ?,
+	started_at = COALESCE(started_at, ?),
+	execution_owner = ?,
+	execution_epoch = COALESCE(execution_epoch, 0) + 1,
+	execution_lease_expires_at = ?
+WHERE user_id = ? AND job_id = ?
+	AND (
+		status = ?
+		OR (status = ? AND (execution_lease_expires_at IS NULL OR execution_lease_expires_at <= ?))
+	)`),
+		JobStatusRunning, sqlTimeValue(now, s.dialect), sqlTimeValue(now, s.dialect), owner,
+		sqlTimeValue(expiresAt, s.dialect), userID, jobID, JobStatusQueued, JobStatusRunning, sqlTimeValue(now, s.dialect),
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
+func (s *SQLJobStore) RefreshJobExecutionLease(ctx context.Context, userID, jobID, owner string, now, expiresAt time.Time) (bool, error) {
+	result, err := s.db.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_jobs
+SET updated_at = ?, execution_lease_expires_at = ?
+WHERE user_id = ? AND job_id = ? AND status = ? AND execution_owner = ?
+	AND execution_lease_expires_at > ?`),
+		sqlTimeValue(now, s.dialect), sqlTimeValue(expiresAt, s.dialect), userID, jobID,
+		JobStatusRunning, owner, sqlTimeValue(now, s.dialect),
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
+func (s *SQLJobStore) ReleaseJobExecutionLease(ctx context.Context, userID, jobID, owner string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_jobs
+SET updated_at = ?, execution_lease_expires_at = ?
+WHERE user_id = ? AND job_id = ? AND status = ? AND execution_owner = ?`),
+		sqlTimeValue(at, s.dialect), sqlTimeValue(at, s.dialect), userID, jobID, JobStatusRunning, owner,
+	)
+	return err
+}
+
+func (s *SQLJobStore) TransitionOwnedJobStatus(ctx context.Context, userID, jobID, owner, status, errorText string, at time.Time) (bool, error) {
+	var finishedAt any
+	if isTerminalJobStatus(status) {
+		finishedAt = sqlTimeValue(at, s.dialect)
+	}
+	result, err := s.db.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_jobs
+SET status = ?, error = ?, updated_at = ?,
+	finished_at = COALESCE(?, finished_at),
+	execution_owner = '', execution_lease_expires_at = NULL
+WHERE user_id = ? AND job_id = ? AND status = ? AND execution_owner = ?
+	AND execution_lease_expires_at > ?`),
+		status, errorText, sqlTimeValue(at, s.dialect), finishedAt,
+		userID, jobID, JobStatusRunning, owner, sqlTimeValue(at, s.dialect),
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
 }
 
 func (s *SQLJobStore) AddJobEvent(ctx context.Context, event *JobEvent) error {
@@ -508,9 +714,9 @@ type jobAttachments struct {
 
 func scanJobRows(row jobScanner) (*Job, error) {
 	var job Job
-	var createdAt, updatedAt, startedAt, finishedAt any
+	var createdAt, updatedAt, startedAt, finishedAt, executionLeaseExpiresAt any
 	var attachments string
-	if err := row.Scan(&job.ID, &job.UserID, &job.SessionID, &job.LoopGoalID, &job.Type, &job.Status, &job.Content, &attachments, &job.Error, &createdAt, &updatedAt, &startedAt, &finishedAt); err != nil {
+	if err := row.Scan(&job.ID, &job.UserID, &job.SessionID, &job.LoopGoalID, &job.Type, &job.Status, &job.Content, &attachments, &job.Error, &createdAt, &updatedAt, &startedAt, &finishedAt, &job.ExecutionOwner, &job.ExecutionEpoch, &executionLeaseExpiresAt); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(attachments) != "" {
@@ -534,23 +740,29 @@ func scanJobRows(row jobScanner) (*Job, error) {
 	if job.FinishedAt, err = parseNullableSQLTime(finishedAt); err != nil {
 		return nil, err
 	}
+	if job.ExecutionLeaseExpiresAt, err = parseNullableSQLTime(executionLeaseExpiresAt); err != nil {
+		return nil, err
+	}
 	return &job, nil
 }
 
 func jobFromSQLC(row dbsqlc.AgentJob) *Job {
 	job := &Job{
-		ID:         row.JobID,
-		UserID:     row.UserID,
-		SessionID:  row.SessionID,
-		LoopGoalID: row.LoopGoalID,
-		Type:       row.Type,
-		Status:     row.Status,
-		Content:    row.Content.String,
-		Error:      row.Error.String,
-		CreatedAt:  row.CreatedAt.UTC(),
-		UpdatedAt:  row.UpdatedAt.UTC(),
-		StartedAt:  timeFromNull(row.StartedAt),
-		FinishedAt: timeFromNull(row.FinishedAt),
+		ID:                      row.JobID,
+		UserID:                  row.UserID,
+		SessionID:               row.SessionID,
+		LoopGoalID:              row.LoopGoalID,
+		Type:                    row.Type,
+		Status:                  row.Status,
+		Content:                 row.Content.String,
+		Error:                   row.Error.String,
+		CreatedAt:               row.CreatedAt.UTC(),
+		UpdatedAt:               row.UpdatedAt.UTC(),
+		StartedAt:               timeFromNull(row.StartedAt),
+		FinishedAt:              timeFromNull(row.FinishedAt),
+		ExecutionOwner:          row.ExecutionOwner,
+		ExecutionEpoch:          row.ExecutionEpoch,
+		ExecutionLeaseExpiresAt: timeFromNull(row.ExecutionLeaseExpiresAt),
 	}
 	if strings.TrimSpace(row.Attachments) != "" {
 		var parsed jobAttachments
@@ -621,6 +833,10 @@ func cloneJob(job *Job) *Job {
 	if job.FinishedAt != nil {
 		finishedAt := *job.FinishedAt
 		clone.FinishedAt = &finishedAt
+	}
+	if job.ExecutionLeaseExpiresAt != nil {
+		expiresAt := *job.ExecutionLeaseExpiresAt
+		clone.ExecutionLeaseExpiresAt = &expiresAt
 	}
 	return &clone
 }

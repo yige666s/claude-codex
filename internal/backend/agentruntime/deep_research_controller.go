@@ -257,7 +257,7 @@ func (c *DeepResearchController) Execute(ctx context.Context, req DeepAgentTaskR
 	})
 
 	run, err := engine.Execute(ctx, WorkflowRequest{
-		Definition: deepResearchWorkflowDefinition(c.config.WorkerTimeout),
+		Definition: deepResearchWorkflowDefinition(c.config.TotalTimeout),
 		UserID:     req.UserID,
 		SessionID:  req.SessionID,
 		JobID:      firstNonEmptyString(req.JobID, jobIDFromContext(ctx)),
@@ -285,14 +285,14 @@ func (c *DeepResearchController) Execute(ctx context.Context, req DeepAgentTaskR
 	return result, nil
 }
 
-func deepResearchWorkflowDefinition(stepTimeout time.Duration) WorkflowDefinition {
+func deepResearchWorkflowDefinition(workerGraphTimeout time.Duration) WorkflowDefinition {
 	return WorkflowDefinition{
 		Name:    deepAgentTaskWorkflowName,
 		Version: deepResearchWorkflowVersion,
 		Steps: []WorkflowStepDefinition{
 			{Name: "initialize_task"},
 			{Name: "plan_deep_research"},
-			{Name: "execute_deep_research_workers", Timeout: stepTimeout},
+			{Name: "execute_deep_research_workers", Timeout: workerGraphTimeout},
 			{Name: "aggregate_deep_research"},
 		},
 	}
@@ -333,12 +333,30 @@ func (c *DeepResearchController) executeWorkerGraph(ctx context.Context, run *Wo
 		batch := ready[:limit]
 		var wg sync.WaitGroup
 		var mu sync.Mutex
+		type workerInput struct {
+			node             DeepResearchTaskNode
+			goal             string
+			dependencyOutput []DeepResearchWorkerResult
+			workingMemory    map[string]any
+		}
+		inputs := make([]workerInput, 0, len(batch))
+		// Snapshot every worker input before any goroutine starts. WorkingMemory
+		// contains the live deep-research run, so cloning it after the first worker
+		// starts would race with updates to drRun.WorkerRuns.
 		for _, node := range batch {
-			node := node
+			inputs = append(inputs, workerInput{
+				node:             node,
+				goal:             drRun.Goal,
+				dependencyOutput: deepResearchDependencyResults(*drRun, node),
+				workingMemory:    cloneWorkflowMap(state.WorkingMemory),
+			})
+		}
+		for _, input := range inputs {
+			input := input
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				updated := c.executeSingleWorker(ctx, req, state, *drRun, node)
+				updated := c.executeSingleWorker(ctx, req, input.goal, input.dependencyOutput, input.workingMemory, input.node)
 				mu.Lock()
 				drRun.WorkerRuns[updated.ID] = updated
 				for idx := range drRun.Plan.Nodes {
@@ -351,6 +369,12 @@ func (c *DeepResearchController) executeWorkerGraph(ctx context.Context, run *Wo
 			}()
 		}
 		wg.Wait()
+		for _, node := range batch {
+			updated := drRun.WorkerRuns[node.ID]
+			if updated.Status == DeepResearchTaskStatusSucceeded && updated.Result != nil {
+				c.evidence.PutStepEvidence(state, deepResearchEvidenceFromWorker(updated, *updated.Result))
+			}
+		}
 		c.syncDeepAgentPlanStatuses(state, drRun)
 		c.persistDeepResearchState(ctx, run, state, *drRun)
 	}
@@ -364,7 +388,7 @@ func (c *DeepResearchController) executeWorkerGraph(ctx context.Context, run *Wo
 	return nil
 }
 
-func (c *DeepResearchController) executeSingleWorker(ctx context.Context, req DeepAgentTaskRequest, state *DeepAgentState, drRun DeepResearchRunState, node DeepResearchTaskNode) DeepResearchTaskNode {
+func (c *DeepResearchController) executeSingleWorker(ctx context.Context, req DeepAgentTaskRequest, goal string, dependencyOutput []DeepResearchWorkerResult, workingMemory map[string]any, node DeepResearchTaskNode) DeepResearchTaskNode {
 	now := c.now()
 	node.Status = DeepResearchTaskStatusRunning
 	node.Attempt++
@@ -388,11 +412,11 @@ func (c *DeepResearchController) executeSingleWorker(ctx context.Context, req De
 		UserID:           req.UserID,
 		SessionID:        req.SessionID,
 		JobID:            firstNonEmptyString(req.JobID, jobIDFromContext(ctx)),
-		Goal:             drRun.Goal,
+		Goal:             goal,
 		Node:             node,
-		DependencyOutput: deepResearchDependencyResults(drRun, node),
+		DependencyOutput: dependencyOutput,
 		ConnectorContext: normalizeConnectorScopes(req.ConnectorContext),
-		WorkingMemory:    cloneWorkflowMap(state.WorkingMemory),
+		WorkingMemory:    workingMemory,
 		Backend:          c.config.WorkerBackend,
 	})
 	completed := c.now()
@@ -405,7 +429,14 @@ func (c *DeepResearchController) executeSingleWorker(ctx context.Context, req De
 	node.AgentRunID = firstNonEmptyString(result.AgentRunID, fmt.Sprintf("worker-%s-attempt-%d", node.ID, node.Attempt))
 	node.Result = &result
 	if err != nil || result.Status == DeepAgentActionStatusFailed {
-		if node.Attempt <= c.config.MaxRetries {
+		maxAttempts := node.MaxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = c.config.MaxRetries + 1
+		}
+		if maxAttempts <= 0 {
+			maxAttempts = 1
+		}
+		if node.Attempt < maxAttempts {
 			node.Status = DeepResearchTaskStatusRetrying
 			emitDeepResearchEvent(ctx, "deep_research_worker_retrying", req.SessionID, firstNonEmptyString(req.JobID, jobIDFromContext(ctx)), firstNonEmptyString(node.Error, "Deep research worker retrying"), map[string]any{
 				"event_group":  "deep_research",
@@ -429,7 +460,6 @@ func (c *DeepResearchController) executeSingleWorker(ctx context.Context, req De
 		return node
 	}
 	node.Status = DeepResearchTaskStatusSucceeded
-	c.evidence.PutStepEvidence(state, deepResearchEvidenceFromWorker(node, result))
 	emitDeepResearchEvent(ctx, "deep_research_worker_succeeded", req.SessionID, firstNonEmptyString(req.JobID, jobIDFromContext(ctx)), firstNonEmptyString(result.Summary, node.Title), map[string]any{
 		"event_group":     "deep_research",
 		"worker_id":       node.ID,
@@ -451,13 +481,17 @@ func (c *DeepResearchController) readyDeepResearchNodes(run *DeepResearchRunStat
 	}
 	out := []DeepResearchTaskNode{}
 	for _, node := range run.WorkerRuns {
-		if node.Status != DeepResearchTaskStatusPending && node.Status != "" {
-			continue
-		}
-		if deepResearchDependenciesSucceeded(run.WorkerRuns, node) {
-			node.Status = DeepResearchTaskStatusReady
-			run.WorkerRuns[node.ID] = node
-			out = append(out, node)
+		switch node.Status {
+		case "", DeepResearchTaskStatusPending:
+			if deepResearchDependenciesSucceeded(run.WorkerRuns, node) {
+				node.Status = DeepResearchTaskStatusReady
+				run.WorkerRuns[node.ID] = node
+				out = append(out, node)
+			}
+		case DeepResearchTaskStatusReady:
+			if deepResearchDependenciesSucceeded(run.WorkerRuns, node) {
+				out = append(out, node)
+			}
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
