@@ -555,6 +555,7 @@ func (c *DeepResearchController) maybeReplan(ctx context.Context, run *WorkflowR
 		ToRevision:   fromRevision,
 		Trigger:      trigger,
 		Reason:       trigger.Kind,
+		PreviousPlan: drRun.Plan,
 		CreatedAt:    c.now(),
 	}
 	if err != nil {

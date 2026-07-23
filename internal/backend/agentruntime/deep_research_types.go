@@ -101,6 +101,7 @@ type DeepResearchReplanRecord struct {
 	Reason       string                    `json:"reason,omitempty"`
 	Changed      bool                      `json:"changed"`
 	Error        string                    `json:"error,omitempty"`
+	PreviousPlan DeepResearchPlan          `json:"previous_plan,omitempty"`
 	Plan         DeepResearchPlan          `json:"plan,omitempty"`
 	CreatedAt    time.Time                 `json:"created_at"`
 }

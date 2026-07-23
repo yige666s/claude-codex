@@ -1365,6 +1365,8 @@ export type DeepResearchReplanRecord = {
   changed?: boolean;
   error?: string;
   created_at?: string;
+  previous_plan?: DeepResearchRunState["plan"];
+  plan?: DeepResearchRunState["plan"];
   trigger?: {
     kind?: string;
     reason?: string;

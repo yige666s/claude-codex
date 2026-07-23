@@ -62,6 +62,9 @@ func TestDeepResearchControllerReplansRequiredFailureAndCompletesReplacementGrap
 	if len(drRun.ReplanHistory) != 1 || !drRun.ReplanHistory[0].Changed || drRun.ReplanHistory[0].Trigger.Kind != DeepResearchReplanReasonRequiredFailure {
 		t.Fatalf("unexpected replan history: %#v", drRun.ReplanHistory)
 	}
+	if !hasDeepResearchNode(drRun.ReplanHistory[0].PreviousPlan.Nodes, "pricing") || drRun.ReplanHistory[0].PreviousPlan.Nodes[0].Status != DeepResearchTaskStatusFailedFinal {
+		t.Fatalf("replan history did not preserve the failed prior plan: %#v", drRun.ReplanHistory[0].PreviousPlan)
+	}
 	if _, exists := drRun.WorkerRuns["pricing"]; exists {
 		t.Fatalf("failed obsolete node remained in active graph: %#v", drRun.WorkerRuns)
 	}
