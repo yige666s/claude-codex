@@ -129,6 +129,7 @@ const chatRunEventTypes = [
   "deep_research_started", "deep_research_plan_created", "deep_research_worker_queued", "deep_research_worker_started",
   "deep_research_worker_progress", "deep_research_worker_succeeded", "deep_research_worker_failed", "deep_research_worker_retrying",
   "deep_research_worker_blocked", "deep_research_aggregate_started", "deep_research_conflict_detected", "deep_research_completed",
+  "deep_research_replan_started", "deep_research_replan_applied", "deep_research_replan_skipped", "deep_research_replan_failed", "deep_research_replan_limit_reached",
   "deep_research_deliverable_decision_fallback", "deep_research_fallback_legacy",
   "structured_output", "structured_output_validation", "structured_output_repair", "structured_output_fallback",
   "workflow_run_started", "workflow_run_resumed", "workflow_run_succeeded", "workflow_run_failed", "workflow_run_cancelled",

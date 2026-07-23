@@ -13,6 +13,10 @@ type DeepResearchOrchestrator interface {
 	Plan(ctx context.Context, req DeepAgentTaskRequest, cfg DeepResearchRuntimeConfig) (DeepResearchPlan, error)
 }
 
+type DeepResearchReplanner interface {
+	Replan(ctx context.Context, req DeepAgentTaskRequest, run DeepResearchRunState, trigger DeepResearchReplanTrigger, cfg DeepResearchRuntimeConfig) (DeepResearchPlan, error)
+}
+
 type DeepResearchWorkerExecutor interface {
 	ExecuteWorker(ctx context.Context, input DeepResearchWorkerInput) (DeepResearchWorkerResult, error)
 }
@@ -212,6 +216,7 @@ func (c *DeepResearchController) Execute(ctx context.Context, req DeepAgentTaskR
 			return nil, err
 		}
 		drRun.Plan = plan
+		drRun.PlanRevision = 1
 		drRun.WorkerRuns = map[string]DeepResearchTaskNode{}
 		for _, node := range plan.Nodes {
 			node.Status = DeepResearchTaskStatusPending
@@ -221,6 +226,7 @@ func (c *DeepResearchController) Execute(ctx context.Context, req DeepAgentTaskR
 		c.persistDeepResearchState(ctx, run, state, drRun)
 		emitDeepResearchEvent(ctx, "deep_research_plan_created", req.SessionID, firstNonEmptyString(req.JobID, jobIDFromContext(ctx)), "Deep research task graph created", map[string]any{
 			"event_group":     "deep_research",
+			"plan_revision":   drRun.PlanRevision,
 			"node_count":      len(plan.Nodes),
 			"max_concurrency": plan.MaxConcurrency,
 			"task_graph":      plan,
@@ -363,13 +369,33 @@ func (c *DeepResearchController) executeWorkerGraph(ctx context.Context, run *Wo
 	if len(drRun.Plan.Nodes) == 0 {
 		return fmt.Errorf("deep research plan has no nodes")
 	}
+	if drRun.PlanRevision <= 0 {
+		drRun.PlanRevision = 1
+	}
+	if strings.TrimSpace(drRun.Version) == "" || drRun.Version != deepResearchWorkflowVersion {
+		drRun.Version = deepResearchWorkflowVersion
+	}
 	ctx, cancel := context.WithTimeout(ctx, c.config.TotalTimeout)
 	defer cancel()
+	completedBatches := 0
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if allDeepResearchTasksTerminal(drRun.WorkerRuns) {
+			if reason, ok := shouldDeepResearchReplanForConfig(*drRun, c.config); ok {
+				trigger := DeepResearchReplanTrigger{
+					Kind:       reason,
+					Reason:     deepResearchReplanTriggerDescription(reason, *drRun),
+					Batch:      completedBatches,
+					NodeIDs:    deepResearchReplanTriggerNodeIDs(reason, *drRun),
+					Hard:       true,
+					OccurredAt: c.now(),
+				}
+				if c.maybeReplan(ctx, run, req, state, drRun, trigger) {
+					continue
+				}
+			}
 			break
 		}
 		ready := c.readyDeepResearchNodes(drRun)
@@ -380,7 +406,17 @@ func (c *DeepResearchController) executeWorkerGraph(ctx context.Context, run *Wo
 				continue
 			}
 			if allDeepResearchTasksTerminal(drRun.WorkerRuns) {
-				break
+				continue
+			}
+			trigger := DeepResearchReplanTrigger{
+				Kind:       DeepResearchReplanReasonSchedulerStalled,
+				Reason:     "no runnable node remains while unfinished tasks still exist",
+				Batch:      completedBatches,
+				Hard:       true,
+				OccurredAt: c.now(),
+			}
+			if c.maybeReplan(ctx, run, req, state, drRun, trigger) {
+				continue
 			}
 			return fmt.Errorf("deep research scheduler made no progress")
 		}
@@ -430,6 +466,7 @@ func (c *DeepResearchController) executeWorkerGraph(ctx context.Context, run *Wo
 			}()
 		}
 		wg.Wait()
+		completedBatches++
 		for _, node := range batch {
 			updated := drRun.WorkerRuns[node.ID]
 			if updated.Status == DeepResearchTaskStatusSucceeded && updated.Result != nil {
@@ -438,6 +475,23 @@ func (c *DeepResearchController) executeWorkerGraph(ctx context.Context, run *Wo
 		}
 		c.syncDeepAgentPlanStatuses(state, drRun)
 		c.persistDeepResearchState(ctx, run, state, *drRun)
+		reason, hard := shouldDeepResearchReplanForConfig(*drRun, c.config)
+		if !hard && c.config.ReplanEnabled && c.config.ReplanEveryBatches > 0 && completedBatches%c.config.ReplanEveryBatches == 0 && !allDeepResearchTasksTerminal(drRun.WorkerRuns) && !deepResearchHasRetryableFailure(drRun.WorkerRuns) {
+			reason = DeepResearchReplanReasonBatchCompleted
+		}
+		if strings.TrimSpace(reason) != "" {
+			trigger := DeepResearchReplanTrigger{
+				Kind:       reason,
+				Reason:     deepResearchReplanTriggerDescription(reason, *drRun),
+				Batch:      completedBatches,
+				NodeIDs:    deepResearchReplanTriggerNodeIDs(reason, *drRun),
+				Hard:       hard,
+				OccurredAt: c.now(),
+			}
+			if c.maybeReplan(ctx, run, req, state, drRun, trigger) {
+				continue
+			}
+		}
 	}
 	successes, requiredFailures := countDeepResearchWorkerOutcomes(drRun.WorkerRuns)
 	if successes < c.config.MinSuccessfulWorkers {
@@ -447,6 +501,162 @@ func (c *DeepResearchController) executeWorkerGraph(ctx context.Context, run *Wo
 		return fmt.Errorf("deep research required workers failed: %d", requiredFailures)
 	}
 	return nil
+}
+
+func (c *DeepResearchController) maybeReplan(ctx context.Context, run *WorkflowRun, req DeepAgentTaskRequest, state *DeepAgentState, drRun *DeepResearchRunState, trigger DeepResearchReplanTrigger) bool {
+	if c == nil || drRun == nil || !c.config.ReplanEnabled {
+		return false
+	}
+	replanner, ok := c.orchestrator.(DeepResearchReplanner)
+	if !ok || replanner == nil {
+		return false
+	}
+	attemptLimit := c.config.MaxReplans
+	if !trigger.Hard {
+		// Keep one model call in reserve for a terminal failure/evidence gap so
+		// periodic checkpoints cannot consume the entire recovery budget.
+		attemptLimit--
+	}
+	if attemptLimit < 0 {
+		attemptLimit = 0
+	}
+	if drRun.ReplanAttempts >= attemptLimit {
+		emitDeepResearchEvent(ctx, "deep_research_replan_limit_reached", req.SessionID, firstNonEmptyString(req.JobID, jobIDFromContext(ctx)), "Deep research replan limit reached", map[string]any{
+			"event_group":     "deep_research",
+			"plan_revision":   drRun.PlanRevision,
+			"replan_attempts": drRun.ReplanAttempts,
+			"max_replans":     c.config.MaxReplans,
+			"trigger":         trigger,
+		})
+		return false
+	}
+	if trigger.OccurredAt.IsZero() {
+		trigger.OccurredAt = c.now()
+	}
+	drRun.ReplanAttempts++
+	drRun.LastReplanReason = trigger.Kind
+	attempt := drRun.ReplanAttempts
+	fromRevision := drRun.PlanRevision
+	c.persistDeepResearchState(ctx, run, state, *drRun)
+	emitDeepResearchEvent(ctx, "deep_research_replan_started", req.SessionID, firstNonEmptyString(req.JobID, jobIDFromContext(ctx)), "Deep research execution checkpoint is revising the remaining plan", map[string]any{
+		"event_group":   "deep_research",
+		"attempt":       attempt,
+		"from_revision": fromRevision,
+		"trigger":       trigger,
+	})
+
+	callReq := req
+	callReq.State = cloneWorkflowMap(state.WorkingMemory)
+	callReq.State["deep_research"] = *drRun
+	plan, err := replanner.Replan(ctx, callReq, *drRun, trigger, c.config)
+	record := DeepResearchReplanRecord{
+		Attempt:      attempt,
+		FromRevision: fromRevision,
+		ToRevision:   fromRevision,
+		Trigger:      trigger,
+		Reason:       trigger.Kind,
+		CreatedAt:    c.now(),
+	}
+	if err != nil {
+		record.Error = err.Error()
+		drRun.ReplanHistory = append(drRun.ReplanHistory, record)
+		c.persistDeepResearchState(ctx, run, state, *drRun)
+		emitDeepResearchEvent(ctx, "deep_research_replan_failed", req.SessionID, firstNonEmptyString(req.JobID, jobIDFromContext(ctx)), "Deep research kept the current plan because replanning failed", map[string]any{
+			"event_group":   "deep_research",
+			"attempt":       attempt,
+			"plan_revision": fromRevision,
+			"trigger":       trigger,
+			"error":         err.Error(),
+		})
+		return false
+	}
+
+	candidate := *drRun
+	candidate.WorkerRuns = make(map[string]DeepResearchTaskNode, len(drRun.WorkerRuns))
+	for id, node := range drRun.WorkerRuns {
+		candidate.WorkerRuns[id] = node
+	}
+	proposal := DeepResearchReplan{
+		Revision: fromRevision + 1,
+		Reason:   trigger.Kind,
+		Plan:     plan,
+	}
+	allowedTools, _ := deepResearchOrchestratorAllowedTools(callReq.State)
+	if err := applyDeepResearchReplan(&candidate, proposal, allowedTools); err != nil {
+		record.Error = err.Error()
+		record.Plan = plan
+		drRun.ReplanHistory = append(drRun.ReplanHistory, record)
+		c.persistDeepResearchState(ctx, run, state, *drRun)
+		emitDeepResearchEvent(ctx, "deep_research_replan_failed", req.SessionID, firstNonEmptyString(req.JobID, jobIDFromContext(ctx)), "Deep research rejected an invalid replacement plan", map[string]any{
+			"event_group":   "deep_research",
+			"attempt":       attempt,
+			"plan_revision": fromRevision,
+			"trigger":       trigger,
+			"error":         err.Error(),
+		})
+		return false
+	}
+	if len(candidate.Plan.Nodes) > c.config.MaxWorkers {
+		err := fmt.Errorf("deep research replan has %d active nodes, maximum is %d", len(candidate.Plan.Nodes), c.config.MaxWorkers)
+		record.Error = err.Error()
+		record.Plan = candidate.Plan
+		drRun.ReplanHistory = append(drRun.ReplanHistory, record)
+		c.persistDeepResearchState(ctx, run, state, *drRun)
+		emitDeepResearchEvent(ctx, "deep_research_replan_failed", req.SessionID, firstNonEmptyString(req.JobID, jobIDFromContext(ctx)), "Deep research rejected an oversized replacement plan", map[string]any{
+			"event_group": "deep_research",
+			"attempt":     attempt,
+			"trigger":     trigger,
+			"error":       err.Error(),
+		})
+		return false
+	}
+	if trigger.Hard && !deepResearchHasUnfinishedNode(candidate.WorkerRuns) {
+		err := fmt.Errorf("deep research hard replan did not add a runnable recovery path")
+		record.Error = err.Error()
+		record.Plan = candidate.Plan
+		drRun.ReplanHistory = append(drRun.ReplanHistory, record)
+		c.persistDeepResearchState(ctx, run, state, *drRun)
+		emitDeepResearchEvent(ctx, "deep_research_replan_failed", req.SessionID, firstNonEmptyString(req.JobID, jobIDFromContext(ctx)), "Deep research rejected a replacement without a recovery path", map[string]any{
+			"event_group": "deep_research",
+			"attempt":     attempt,
+			"trigger":     trigger,
+			"error":       err.Error(),
+		})
+		return false
+	}
+	if equivalentDeepResearchPlans(drRun.Plan, candidate.Plan) {
+		record.Plan = candidate.Plan
+		drRun.ReplanHistory = append(drRun.ReplanHistory, record)
+		c.persistDeepResearchState(ctx, run, state, *drRun)
+		emitDeepResearchEvent(ctx, "deep_research_replan_skipped", req.SessionID, firstNonEmptyString(req.JobID, jobIDFromContext(ctx)), "Deep research kept the current remaining plan", map[string]any{
+			"event_group":   "deep_research",
+			"attempt":       attempt,
+			"plan_revision": fromRevision,
+			"trigger":       trigger,
+		})
+		return false
+	}
+
+	candidate.ReplanCount = drRun.ReplanCount + 1
+	record.Changed = true
+	record.ToRevision = candidate.PlanRevision
+	record.Plan = candidate.Plan
+	candidate.ReplanHistory = append(candidate.ReplanHistory, record)
+	*drRun = candidate
+	state.Plan = deepAgentPlanFromDeepResearchPlan(drRun.Plan)
+	c.syncDeepAgentPlanStatuses(state, drRun)
+	c.persistDeepResearchState(ctx, run, state, *drRun)
+	emitDeepResearchEvent(ctx, "deep_research_replan_applied", req.SessionID, firstNonEmptyString(req.JobID, jobIDFromContext(ctx)), "Deep research applied a revised remaining task graph", map[string]any{
+		"event_group":   "deep_research",
+		"attempt":       attempt,
+		"from_revision": fromRevision,
+		"to_revision":   drRun.PlanRevision,
+		"replan_count":  drRun.ReplanCount,
+		"node_count":    len(drRun.Plan.Nodes),
+		"trigger":       trigger,
+		"task_graph":    drRun.Plan,
+	})
+	return true
 }
 
 func (c *DeepResearchController) executeSingleWorker(ctx context.Context, req DeepAgentTaskRequest, goal string, dependencyOutput []DeepResearchWorkerResult, workingMemory map[string]any, node DeepResearchTaskNode) DeepResearchTaskNode {

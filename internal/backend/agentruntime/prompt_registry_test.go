@@ -529,6 +529,7 @@ func TestBuiltinSystemPromptBaselinesHaveUniqueSeedIDs(t *testing.T) {
 		PromptIDRuntimeDeepAgentPlanner,
 		PromptIDRuntimeDeepAgentRouter,
 		PromptIDRuntimeDeepResearchOrchestrator,
+		PromptIDRuntimeDeepResearchReplanner,
 		PromptIDRuntimeDeepResearchPlanRepair,
 		PromptIDMemoryExtractDefault,
 		PromptIDEvalJudgeDefault,

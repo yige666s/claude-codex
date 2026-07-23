@@ -4,7 +4,8 @@ import "time"
 
 const (
 	deepResearchWorkflowVersionV1 = "deep_research_orchestrator_worker_v1"
-	deepResearchWorkflowVersion   = "deep_research_orchestrator_worker_v2"
+	deepResearchWorkflowVersionV2 = "deep_research_orchestrator_worker_v2"
+	deepResearchWorkflowVersion   = "deep_research_orchestrator_worker_v3"
 
 	DeepResearchWorkerBackendInline       = "inline"
 	DeepResearchWorkerBackendHarnessAgent = "harness_agent"
@@ -29,7 +30,7 @@ const (
 
 func isDeepResearchWorkflowVersion(version string) bool {
 	switch version {
-	case deepResearchWorkflowVersion, deepResearchWorkflowVersionV1:
+	case deepResearchWorkflowVersion, deepResearchWorkflowVersionV2, deepResearchWorkflowVersionV1:
 		return true
 	default:
 		return false
@@ -66,16 +67,42 @@ type DeepResearchTaskNode struct {
 }
 
 type DeepResearchRunState struct {
-	Version      string                            `json:"version"`
-	Status       string                            `json:"status"`
-	Goal         string                            `json:"goal"`
-	Plan         DeepResearchPlan                  `json:"plan"`
-	WorkerRuns   map[string]DeepResearchTaskNode   `json:"worker_runs,omitempty"`
-	Aggregate    DeepResearchAggregateResult       `json:"aggregate,omitempty"`
-	StartedAt    time.Time                         `json:"started_at,omitempty"`
-	CompletedAt  *time.Time                        `json:"completed_at,omitempty"`
-	Config       DeepResearchRuntimeConfigSnapshot `json:"config,omitempty"`
-	RecoveryHint string                            `json:"recovery_hint,omitempty"`
+	Version          string                            `json:"version"`
+	Status           string                            `json:"status"`
+	Goal             string                            `json:"goal"`
+	Plan             DeepResearchPlan                  `json:"plan"`
+	PlanRevision     int                               `json:"plan_revision,omitempty"`
+	ReplanAttempts   int                               `json:"replan_attempts,omitempty"`
+	ReplanCount      int                               `json:"replan_count,omitempty"`
+	LastReplanReason string                            `json:"last_replan_reason,omitempty"`
+	ReplanHistory    []DeepResearchReplanRecord        `json:"replan_history,omitempty"`
+	WorkerRuns       map[string]DeepResearchTaskNode   `json:"worker_runs,omitempty"`
+	Aggregate        DeepResearchAggregateResult       `json:"aggregate,omitempty"`
+	StartedAt        time.Time                         `json:"started_at,omitempty"`
+	CompletedAt      *time.Time                        `json:"completed_at,omitempty"`
+	Config           DeepResearchRuntimeConfigSnapshot `json:"config,omitempty"`
+	RecoveryHint     string                            `json:"recovery_hint,omitempty"`
+}
+
+type DeepResearchReplanTrigger struct {
+	Kind       string    `json:"kind"`
+	Reason     string    `json:"reason"`
+	Batch      int       `json:"batch,omitempty"`
+	NodeIDs    []string  `json:"node_ids,omitempty"`
+	Hard       bool      `json:"hard,omitempty"`
+	OccurredAt time.Time `json:"occurred_at,omitempty"`
+}
+
+type DeepResearchReplanRecord struct {
+	Attempt      int                       `json:"attempt"`
+	FromRevision int                       `json:"from_revision"`
+	ToRevision   int                       `json:"to_revision"`
+	Trigger      DeepResearchReplanTrigger `json:"trigger"`
+	Reason       string                    `json:"reason,omitempty"`
+	Changed      bool                      `json:"changed"`
+	Error        string                    `json:"error,omitempty"`
+	Plan         DeepResearchPlan          `json:"plan,omitempty"`
+	CreatedAt    time.Time                 `json:"created_at"`
 }
 
 type DeepResearchRuntimeConfigSnapshot struct {
@@ -85,6 +112,9 @@ type DeepResearchRuntimeConfigSnapshot struct {
 	WorkerTimeoutMS      int64  `json:"worker_timeout_ms,omitempty"`
 	TotalTimeoutMS       int64  `json:"total_timeout_ms,omitempty"`
 	MaxRetries           int    `json:"max_retries,omitempty"`
+	ReplanEnabled        bool   `json:"replan_enabled,omitempty"`
+	MaxReplans           int    `json:"max_replans,omitempty"`
+	ReplanEveryBatches   int    `json:"replan_every_batches,omitempty"`
 	RequireSources       bool   `json:"require_sources,omitempty"`
 	MinSuccessfulWorkers int    `json:"min_successful_workers,omitempty"`
 }

@@ -126,6 +126,79 @@ func TestRuntimeDeepResearchOrchestratorRejectsUnavailableTools(t *testing.T) {
 	}
 }
 
+func TestRuntimeDeepResearchOrchestratorReplansFromExecutionEvidence(t *testing.T) {
+	runner := &sequenceDeepResearchRunner{outputs: []string{`{
+		"goal":"research Acme",
+		"max_concurrency":1,
+		"nodes":[{
+			"id":"official-pricing",
+			"title":"Official pricing evidence",
+			"description":"Fetch an official source to close the pricing evidence gap.",
+			"depends_on":["overview"],
+			"worker_role":"researcher",
+			"allowed_tools":["WebFetch"],
+			"expected_output":"official pricing facts with a traceable URL",
+			"required":true
+		}]
+	}`}}
+	orchestrator := NewRuntimeDeepResearchOrchestrator(newDeepResearchTestRuntime(t, runner))
+	run := DeepResearchRunState{
+		Goal:         "research Acme",
+		PlanRevision: 1,
+		Plan: DeepResearchPlan{Goal: "research Acme", MaxConcurrency: 1, Nodes: []DeepResearchTaskNode{
+			{ID: "overview", Title: "Overview", Description: "collect overview", WorkerRole: "researcher", AllowedTools: []string{"WebSearch"}, ExpectedOutput: "overview", Required: true},
+		}},
+		WorkerRuns: map[string]DeepResearchTaskNode{
+			"overview": {
+				ID:             "overview",
+				Title:          "Overview",
+				Description:    "collect overview",
+				WorkerRole:     "researcher",
+				AllowedTools:   []string{"WebSearch"},
+				ExpectedOutput: "overview",
+				Required:       true,
+				Status:         DeepResearchTaskStatusSucceeded,
+				Attempt:        1,
+				Result: &DeepResearchWorkerResult{
+					Status:        DeepAgentActionStatusSucceeded,
+					Summary:       "pricing remains unresolved",
+					OpenQuestions: []string{"What is the official price?"},
+				},
+			},
+		},
+	}
+
+	plan, err := orchestrator.Replan(context.Background(), DeepAgentTaskRequest{Goal: "research Acme"}, run, DeepResearchReplanTrigger{
+		Kind:   DeepResearchReplanReasonEvidenceGap,
+		Reason: "missing official pricing source",
+		Hard:   true,
+	}, DeepResearchRuntimeConfig{MaxWorkers: 4, MaxConcurrency: 2, WorkerTimeout: time.Minute, MaxRetries: 1, RequireSources: true})
+	if err != nil {
+		t.Fatalf("Replan() error = %v", err)
+	}
+	if len(plan.Nodes) != 1 || plan.Nodes[0].ID != "official-pricing" || len(plan.Nodes[0].DependsOn) != 1 || plan.Nodes[0].DependsOn[0] != "overview" {
+		t.Fatalf("unexpected replan: %#v", plan)
+	}
+	if got := deepAgentWorkflowString(plan.Nodes[0].Metadata, "prompt_id"); got != PromptIDRuntimeDeepResearchReplanner {
+		t.Fatalf("replanner prompt metadata = %q", got)
+	}
+	prompts := runner.recordedPrompts()
+	if len(prompts) != 1 || !strings.Contains(prompts[0], "pricing remains unresolved") || !strings.Contains(prompts[0], "missing official pricing source") {
+		t.Fatalf("replan prompt missing execution evidence: %#v", prompts)
+	}
+}
+
+func TestRuntimeDeepResearchOrchestratorReplanDoesNotUseFullPlanFallback(t *testing.T) {
+	runner := &sequenceDeepResearchRunner{errs: []error{errors.New("provider unavailable")}}
+	orchestrator := NewRuntimeDeepResearchOrchestrator(newDeepResearchTestRuntime(t, runner))
+	_, err := orchestrator.Replan(context.Background(), DeepAgentTaskRequest{Goal: "research Acme"}, DeepResearchRunState{Goal: "research Acme"}, DeepResearchReplanTrigger{Kind: DeepResearchReplanReasonBatchCompleted}, DeepResearchRuntimeConfig{
+		MaxWorkers: 4, MaxConcurrency: 2, WorkerTimeout: time.Minute,
+	})
+	if err == nil || !strings.Contains(err.Error(), "provider unavailable") {
+		t.Fatalf("Replan() error = %v, want provider failure without rule-plan overwrite", err)
+	}
+}
+
 func TestParseRuntimeDeepResearchPlanEnforcesGraphAndRuntimeLimits(t *testing.T) {
 	allowed, _ := deepResearchOrchestratorAllowedTools(nil)
 	valid := validDeepResearchPlanJSON("WebSearch")

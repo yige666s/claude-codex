@@ -27,6 +27,9 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	t.Setenv("AGENT_API_DEEP_RESEARCH_WORKER_TIMEOUT", "7m")
 	t.Setenv("AGENT_API_DEEP_RESEARCH_TOTAL_TIMEOUT", "21m")
 	t.Setenv("AGENT_API_DEEP_RESEARCH_MAX_RETRIES", "3")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_REPLAN_ENABLED", "true")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_MAX_REPLANS", "4")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_REPLAN_EVERY_BATCHES", "2")
 	t.Setenv("AGENT_API_DEEP_RESEARCH_FALLBACK_LEGACY", "false")
 	t.Setenv("AGENT_API_DEEP_RESEARCH_REQUIRE_SOURCES", "false")
 	t.Setenv("AGENT_API_DEEP_RESEARCH_MIN_SUCCESSFUL_WORKERS", "2")
@@ -77,6 +80,9 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 		cfg.DeepResearchWorkerTimeout != 7*time.Minute ||
 		cfg.DeepResearchTotalTimeout != 21*time.Minute ||
 		cfg.DeepResearchMaxRetries != 3 ||
+		!cfg.DeepResearchReplanEnabled ||
+		cfg.DeepResearchMaxReplans != 4 ||
+		cfg.DeepResearchReplanEveryBatches != 2 ||
 		cfg.DeepResearchFallbackLegacy ||
 		cfg.DeepResearchRequireSources ||
 		cfg.DeepResearchMinSuccessfulWorkers != 2 {

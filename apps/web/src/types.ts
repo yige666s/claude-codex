@@ -1321,6 +1321,11 @@ export type DeepResearchRunState = {
   version?: string;
   status?: string;
   goal?: string;
+  plan_revision?: number;
+  replan_attempts?: number;
+  replan_count?: number;
+  last_replan_reason?: string;
+  replan_history?: DeepResearchReplanRecord[];
   plan?: {
     goal?: string;
     max_concurrency?: number;
@@ -1343,10 +1348,31 @@ export type DeepResearchRunState = {
     worker_timeout_ms?: number;
     total_timeout_ms?: number;
     max_retries?: number;
+    replan_enabled?: boolean;
+    max_replans?: number;
+    replan_every_batches?: number;
     require_sources?: boolean;
     min_successful_workers?: number;
   };
   recovery_hint?: string;
+};
+
+export type DeepResearchReplanRecord = {
+  attempt?: number;
+  from_revision?: number;
+  to_revision?: number;
+  reason?: string;
+  changed?: boolean;
+  error?: string;
+  created_at?: string;
+  trigger?: {
+    kind?: string;
+    reason?: string;
+    batch?: number;
+    node_ids?: string[];
+    hard?: boolean;
+    occurred_at?: string;
+  };
 };
 
 export type DeepResearchTaskNode = {

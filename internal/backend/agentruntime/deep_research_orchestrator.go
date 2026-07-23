@@ -90,6 +90,64 @@ func (o *RuntimeDeepResearchOrchestrator) Plan(ctx context.Context, req DeepAgen
 	return o.fallbackPlan(ctx, req, cfg, fallbackCause)
 }
 
+// Replan reviews execution evidence and returns a replacement for the
+// unfinished graph. Unlike initial planning, it has no deterministic full-plan
+// fallback: retaining the current graph is safer than overwriting executed
+// history when the model or structured repair fails.
+func (o *RuntimeDeepResearchOrchestrator) Replan(ctx context.Context, req DeepAgentTaskRequest, run DeepResearchRunState, trigger DeepResearchReplanTrigger, cfg DeepResearchRuntimeConfig) (DeepResearchPlan, error) {
+	if o == nil || o.runtime == nil {
+		return DeepResearchPlan{}, fmt.Errorf("runtime deep research replanner is not configured")
+	}
+	cfg = normalizeDeepResearchRuntimeConfig(cfg)
+	runner := o.runtime.runnerForScope(ctx, Scope{
+		UserID:    req.UserID,
+		SessionID: req.SessionID,
+		Prompt:    req.Goal,
+	})
+	if runner == nil {
+		return DeepResearchPlan{}, fmt.Errorf("deep research replanner model runner is not configured")
+	}
+	allowedTools, toolPrompt := deepResearchOrchestratorAllowedTools(req.State)
+	rendered := o.renderReplanPrompt(ctx, req, run, trigger, cfg, toolPrompt)
+	result, err := runner.RunGeneratedPrompt(WithPromptMetadata(ctx, rendered.Metadata), state.NewSession(""), rendered.Content)
+	if err != nil {
+		return DeepResearchPlan{}, err
+	}
+	plan, parseErr := parseRuntimeDeepResearchReplanPlan(result.Output, req.Goal, run, cfg, allowedTools)
+	if parseErr == nil {
+		return annotateRuntimeDeepResearchPlan(plan, rendered.Metadata), nil
+	}
+
+	schema := deepResearchPlanStructuredSchema()
+	validation := ExtractAndValidateStructuredObject(result.Output, schema)
+	if validation.Valid() {
+		validation.Errors = []StructuredValidationError{{
+			Field:      "$.nodes",
+			Expected:   "valid unfinished DAG preserving successful execution history",
+			Actual:     "semantically invalid replacement graph",
+			Message:    parseErr.Error(),
+			Repairable: true,
+		}}
+	}
+	emitStructuredOutputValidationFailure(ctx, schema, "deep_research_replanner", validation)
+	repaired, repairErr := repairStructuredJSONWithRunner(
+		WithPromptMetadata(ctx, rendered.Metadata),
+		runner,
+		schema,
+		result.Output,
+		parseErr,
+		rendered.Content,
+	)
+	if repairErr != nil {
+		return DeepResearchPlan{}, fmt.Errorf("deep research replan invalid: %v; repair failed: %w", parseErr, repairErr)
+	}
+	plan, parseErr = parseRuntimeDeepResearchReplanPlan(string(repaired), req.Goal, run, cfg, allowedTools)
+	if parseErr != nil {
+		return DeepResearchPlan{}, parseErr
+	}
+	return annotateRuntimeDeepResearchPlan(plan, rendered.Metadata), nil
+}
+
 func (o *RuntimeDeepResearchOrchestrator) renderPlanPrompt(ctx context.Context, req DeepAgentTaskRequest, cfg DeepResearchRuntimeConfig, toolPrompt string) deepAgentRenderedPrompt {
 	rubric := deepAgentRubricPrompt(req.Rubric)
 	if strings.TrimSpace(rubric) == "" {
@@ -133,6 +191,24 @@ func (o *RuntimeDeepResearchOrchestrator) renderRepairContext(ctx context.Contex
 		cfg.MaxWorkers,
 		cfg.MaxConcurrency,
 		toolPrompt,
+	)
+}
+
+func (o *RuntimeDeepResearchOrchestrator) renderReplanPrompt(ctx context.Context, req DeepAgentTaskRequest, run DeepResearchRunState, trigger DeepResearchReplanTrigger, cfg DeepResearchRuntimeConfig, toolPrompt string) deepAgentRenderedPrompt {
+	triggerJSON, _ := json.Marshal(trigger)
+	return renderRuntimeDeepAgentPrompt(
+		ctx,
+		o.runtime,
+		PromptIDRuntimeDeepResearchReplanner,
+		req.UserID,
+		req.SessionID,
+		cfg.MaxWorkers,
+		cfg.MaxConcurrency,
+		cfg.RequireSources,
+		toolPrompt,
+		strings.TrimSpace(req.Goal),
+		string(triggerJSON),
+		deepResearchReplanStateJSON(run),
 	)
 }
 
@@ -199,6 +275,121 @@ func parseRuntimeDeepResearchPlan(output, goal string, cfg DeepResearchRuntimeCo
 		return DeepResearchPlan{}, err
 	}
 	return plan, nil
+}
+
+func parseRuntimeDeepResearchReplanPlan(output, goal string, run DeepResearchRunState, cfg DeepResearchRuntimeConfig, allowedTools map[string]string) (DeepResearchPlan, error) {
+	validation := ExtractAndValidateStructuredObject(output, deepResearchPlanStructuredSchema())
+	if !validation.Valid() {
+		return DeepResearchPlan{}, validation.Error()
+	}
+	data, err := json.Marshal(validation.Value)
+	if err != nil {
+		return DeepResearchPlan{}, err
+	}
+	var plan DeepResearchPlan
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return DeepResearchPlan{}, err
+	}
+	cfg = normalizeDeepResearchRuntimeConfig(cfg)
+	if strings.TrimSpace(plan.Goal) != strings.TrimSpace(goal) {
+		return DeepResearchPlan{}, fmt.Errorf("deep research replan cannot change the goal")
+	}
+	if plan.MaxConcurrency <= 0 || plan.MaxConcurrency > cfg.MaxConcurrency {
+		return DeepResearchPlan{}, fmt.Errorf("deep research max_concurrency must be between 1 and %d", cfg.MaxConcurrency)
+	}
+	for idx := range plan.Nodes {
+		node := &plan.Nodes[idx]
+		id := strings.TrimSpace(node.ID)
+		if id == "" || normalizeDeepResearchID(id) != id {
+			return DeepResearchPlan{}, fmt.Errorf("deep research node %d id %q must use lowercase letters, digits, and hyphens", idx, node.ID)
+		}
+		if strings.TrimSpace(node.Title) == "" || strings.TrimSpace(node.Description) == "" {
+			return DeepResearchPlan{}, fmt.Errorf("deep research node %s requires title and description", id)
+		}
+		if strings.TrimSpace(node.WorkerRole) == "" || strings.TrimSpace(node.ExpectedOutput) == "" {
+			return DeepResearchPlan{}, fmt.Errorf("deep research node %s requires worker_role and expected_output", id)
+		}
+		if len(node.AllowedTools) == 0 {
+			return DeepResearchPlan{}, fmt.Errorf("deep research node %s requires at least one allowed tool", id)
+		}
+		node.MaxAttempts = cfg.MaxRetries + 1
+		node.TimeoutMS = cfg.WorkerTimeout.Milliseconds()
+	}
+	if err := canonicalizeDeepResearchPlanAllowedTools(&plan, allowedTools); err != nil {
+		return DeepResearchPlan{}, err
+	}
+	testRun := run
+	testRun.WorkerRuns = make(map[string]DeepResearchTaskNode, len(run.WorkerRuns))
+	for id, node := range run.WorkerRuns {
+		testRun.WorkerRuns[id] = node
+	}
+	if testRun.PlanRevision <= 0 {
+		testRun.PlanRevision = 1
+	}
+	if err := applyDeepResearchReplan(&testRun, DeepResearchReplan{
+		Revision: testRun.PlanRevision + 1,
+		Plan:     plan,
+	}, allowedTools); err != nil {
+		return DeepResearchPlan{}, err
+	}
+	if len(testRun.Plan.Nodes) > cfg.MaxWorkers {
+		return DeepResearchPlan{}, fmt.Errorf("deep research replan has %d active nodes, maximum is %d", len(testRun.Plan.Nodes), cfg.MaxWorkers)
+	}
+	return plan, nil
+}
+
+func deepResearchReplanStateJSON(run DeepResearchRunState) string {
+	type nodeState struct {
+		ID             string               `json:"id"`
+		Title          string               `json:"title,omitempty"`
+		Description    string               `json:"description,omitempty"`
+		DependsOn      []string             `json:"depends_on,omitempty"`
+		WorkerRole     string               `json:"worker_role,omitempty"`
+		AllowedTools   []string             `json:"allowed_tools,omitempty"`
+		ExpectedOutput string               `json:"expected_output,omitempty"`
+		Required       bool                 `json:"required"`
+		Status         string               `json:"status,omitempty"`
+		Attempt        int                  `json:"attempt,omitempty"`
+		Error          string               `json:"error,omitempty"`
+		Summary        string               `json:"summary,omitempty"`
+		Output         string               `json:"output,omitempty"`
+		Sources        []DeepAgentSourceRef `json:"sources,omitempty"`
+		OpenQuestions  []string             `json:"open_questions,omitempty"`
+	}
+	nodes := make([]nodeState, 0, len(run.WorkerRuns))
+	for _, node := range sortedDeepResearchNodes(run.WorkerRuns) {
+		item := nodeState{
+			ID:             node.ID,
+			Title:          node.Title,
+			Description:    node.Description,
+			DependsOn:      append([]string(nil), node.DependsOn...),
+			WorkerRole:     node.WorkerRole,
+			AllowedTools:   append([]string(nil), node.AllowedTools...),
+			ExpectedOutput: node.ExpectedOutput,
+			Required:       node.Required,
+			Status:         node.Status,
+			Attempt:        node.Attempt,
+			Error:          truncateDeepAgentDiagnosticText(node.Error, 1200),
+		}
+		if node.Result != nil {
+			item.Summary = truncateDeepAgentDiagnosticText(node.Result.Summary, 1600)
+			item.Output = truncateDeepAgentDiagnosticText(node.Result.Output, 2400)
+			item.Sources = append([]DeepAgentSourceRef(nil), node.Result.Sources...)
+			item.OpenQuestions = append([]string(nil), node.Result.OpenQuestions...)
+		}
+		nodes = append(nodes, item)
+	}
+	payload := map[string]any{
+		"plan_revision":   run.PlanRevision,
+		"replan_attempts": run.ReplanAttempts,
+		"replan_count":    run.ReplanCount,
+		"nodes":           nodes,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
 }
 
 func canonicalizeDeepResearchPlanAllowedTools(plan *DeepResearchPlan, allowedTools map[string]string) error {

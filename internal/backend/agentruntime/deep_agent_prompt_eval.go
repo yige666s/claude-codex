@@ -81,7 +81,7 @@ func DefaultDeepAgentPromptGoldenSets() []GoldenSet {
 			Version:     DeepAgentPromptEvalSetVersion,
 			Metadata: map[string]any{
 				"phase":      deepResearchWorkflowVersion,
-				"prompt_ids": []any{PromptIDRuntimeDeepResearchOrchestrator, PromptIDRuntimeDeepResearchPlanRepair},
+				"prompt_ids": []any{PromptIDRuntimeDeepResearchOrchestrator, PromptIDRuntimeDeepResearchReplanner, PromptIDRuntimeDeepResearchPlanRepair},
 			},
 			Cases: []GoldenCase{
 				{

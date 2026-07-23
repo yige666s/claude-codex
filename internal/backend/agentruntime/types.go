@@ -773,6 +773,9 @@ type DeepResearchRuntimeConfig struct {
 	WorkerTimeout             time.Duration
 	TotalTimeout              time.Duration
 	MaxRetries                int
+	ReplanEnabled             bool
+	MaxReplans                int
+	ReplanEveryBatches        int
 	FallbackLegacy            bool
 	RequireSources            bool
 	MinSuccessfulWorkers      int

@@ -183,6 +183,14 @@ func normalizeDeepResearchRuntimeConfig(cfg DeepResearchRuntimeConfig) DeepResea
 	if cfg.MaxRetries < 0 {
 		cfg.MaxRetries = 0
 	}
+	if cfg.ReplanEnabled {
+		if cfg.MaxReplans <= 0 {
+			cfg.MaxReplans = 3
+		}
+		if cfg.ReplanEveryBatches <= 0 {
+			cfg.ReplanEveryBatches = 1
+		}
+	}
 	if cfg.MinSuccessfulWorkers <= 0 {
 		cfg.MinSuccessfulWorkers = 1
 	}
@@ -198,6 +206,9 @@ func deepResearchConfigSnapshot(cfg DeepResearchRuntimeConfig) DeepResearchRunti
 		WorkerTimeoutMS:      cfg.WorkerTimeout.Milliseconds(),
 		TotalTimeoutMS:       cfg.TotalTimeout.Milliseconds(),
 		MaxRetries:           cfg.MaxRetries,
+		ReplanEnabled:        cfg.ReplanEnabled,
+		MaxReplans:           cfg.MaxReplans,
+		ReplanEveryBatches:   cfg.ReplanEveryBatches,
 		RequireSources:       cfg.RequireSources,
 		MinSuccessfulWorkers: cfg.MinSuccessfulWorkers,
 	}
@@ -351,6 +362,17 @@ func deepResearchWorkerPrompt(input DeepResearchWorkerInput) string {
 	b.WriteString(firstNonEmptyString(input.Node.WorkerRole, "researcher"))
 	b.WriteString("\nExpected output: ")
 	b.WriteString(firstNonEmptyString(input.Node.ExpectedOutput, "facts_with_sources"))
+	if input.Node.Attempt > 1 && (input.Node.Result != nil || strings.TrimSpace(input.Node.Error) != "") {
+		b.WriteString("\n\nPrevious attempt failed. Change the strategy instead of repeating the same approach.")
+		if input.Node.Result != nil && strings.TrimSpace(input.Node.Result.Summary) != "" {
+			b.WriteString("\nPrevious failure summary: ")
+			b.WriteString(truncateDeepAgentDiagnosticText(input.Node.Result.Summary, 800))
+		}
+		if strings.TrimSpace(input.Node.Error) != "" {
+			b.WriteString("\nPrevious error: ")
+			b.WriteString(truncateDeepAgentDiagnosticText(input.Node.Error, 800))
+		}
+	}
 	if len(input.DependencyOutput) > 0 {
 		b.WriteString("\n\nDependency outputs:")
 		for _, dep := range input.DependencyOutput {

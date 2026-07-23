@@ -305,6 +305,9 @@ type Config struct {
 	DeepResearchWorkerTimeout                time.Duration
 	DeepResearchTotalTimeout                 time.Duration
 	DeepResearchMaxRetries                   int
+	DeepResearchReplanEnabled                bool
+	DeepResearchMaxReplans                   int
+	DeepResearchReplanEveryBatches           int
 	DeepResearchFallbackLegacy               bool
 	DeepResearchRequireSources               bool
 	DeepResearchMinSuccessfulWorkers         int
@@ -620,6 +623,9 @@ func Default() Config {
 		DeepResearchWorkerTimeout:                EnvDuration("AGENT_API_DEEP_RESEARCH_WORKER_TIMEOUT", 5*time.Minute),
 		DeepResearchTotalTimeout:                 EnvDuration("AGENT_API_DEEP_RESEARCH_TOTAL_TIMEOUT", 20*time.Minute),
 		DeepResearchMaxRetries:                   EnvInt("AGENT_API_DEEP_RESEARCH_MAX_RETRIES", 2),
+		DeepResearchReplanEnabled:                EnvBool("AGENT_API_DEEP_RESEARCH_REPLAN_ENABLED", true),
+		DeepResearchMaxReplans:                   EnvInt("AGENT_API_DEEP_RESEARCH_MAX_REPLANS", 3),
+		DeepResearchReplanEveryBatches:           EnvInt("AGENT_API_DEEP_RESEARCH_REPLAN_EVERY_BATCHES", 1),
 		DeepResearchFallbackLegacy:               EnvBool("AGENT_API_DEEP_RESEARCH_FALLBACK_LEGACY", true),
 		DeepResearchRequireSources:               EnvBool("AGENT_API_DEEP_RESEARCH_REQUIRE_SOURCES", true),
 		DeepResearchMinSuccessfulWorkers:         EnvInt("AGENT_API_DEEP_RESEARCH_MIN_SUCCESSFUL_WORKERS", 1),
@@ -943,6 +949,9 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.DurationVar(&cfg.DeepResearchWorkerTimeout, "deep-research-worker-timeout", cfg.DeepResearchWorkerTimeout, "timeout per deep research worker")
 	flags.DurationVar(&cfg.DeepResearchTotalTimeout, "deep-research-total-timeout", cfg.DeepResearchTotalTimeout, "total timeout for a deep research run")
 	flags.IntVar(&cfg.DeepResearchMaxRetries, "deep-research-max-retries", cfg.DeepResearchMaxRetries, "maximum retries per failed deep research worker")
+	flags.BoolVar(&cfg.DeepResearchReplanEnabled, "deep-research-replan-enabled", cfg.DeepResearchReplanEnabled, "allow the Deep Research orchestrator to revise the remaining task graph from execution evidence")
+	flags.IntVar(&cfg.DeepResearchMaxReplans, "deep-research-max-replans", cfg.DeepResearchMaxReplans, "maximum execution-time Deep Research replan attempts")
+	flags.IntVar(&cfg.DeepResearchReplanEveryBatches, "deep-research-replan-every-batches", cfg.DeepResearchReplanEveryBatches, "successful worker batches between adaptive Deep Research replan checkpoints")
 	flags.BoolVar(&cfg.DeepResearchFallbackLegacy, "deep-research-fallback-legacy", cfg.DeepResearchFallbackLegacy, "fallback to legacy DeepAgent when orchestrator-worker planning fails before workers start")
 	flags.BoolVar(&cfg.DeepResearchRequireSources, "deep-research-require-sources", cfg.DeepResearchRequireSources, "require sourced evidence for deep research aggregation")
 	flags.IntVar(&cfg.DeepResearchMinSuccessfulWorkers, "deep-research-min-successful-workers", cfg.DeepResearchMinSuccessfulWorkers, "minimum successful workers required before aggregation")

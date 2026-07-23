@@ -4797,7 +4797,8 @@ func (r *Runtime) ResumeDeepResearchWorkflowRun(ctx context.Context, runID strin
 	if run.StartedAt == nil {
 		run.StartedAt = &now
 	}
-	controller := NewDeepResearchController(r.workflowStore, ContextWorkflowEventSink{}, nil, newRuntimeDeepResearchWorkerExecutor(r, NewRuntimeDeepAgentExecutor(r)), nil, normalizeDeepResearchRuntimeConfig(r.config.DeepResearch))
+	controller := NewDeepResearchController(r.workflowStore, ContextWorkflowEventSink{}, NewRuntimeDeepResearchOrchestrator(r), newRuntimeDeepResearchWorkerExecutor(r, NewRuntimeDeepAgentExecutor(r)), nil, normalizeDeepResearchRuntimeConfig(r.config.DeepResearch))
+	controller.SetContextLoader(r)
 	controller.SetDeliverableDecider(NewRuntimeDeepResearchDeliverableDecider(r))
 	controller.SetArtifactPublisher(NewRuntimeDeepResearchArtifactPublisher(r))
 	req := DeepAgentTaskRequest{

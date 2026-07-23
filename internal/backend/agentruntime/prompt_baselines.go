@@ -13,6 +13,7 @@ const (
 	PromptIDRuntimeDeepAgentPlanner           = "runtime/deep_agent/planner"
 	PromptIDRuntimeDeepAgentPlanRepair        = "runtime/deep_agent/plan_repair"
 	PromptIDRuntimeDeepResearchOrchestrator   = "runtime/deep_research/orchestrator"
+	PromptIDRuntimeDeepResearchReplanner      = "runtime/deep_research/replanner"
 	PromptIDRuntimeDeepResearchPlanRepair     = "runtime/deep_research/plan_repair"
 	PromptIDMemoryExtractDefault              = "memory/extract/default"
 	PromptIDMemoryExtractRepair               = "memory/extract/repair"
@@ -57,6 +58,7 @@ func BuiltinSystemPromptBaselines() []SystemPromptBaseline {
 		baseline(PromptIDRuntimeDeepAgentPlanner, "DeepAgent Planner", "runtime/deep_agent", "L0", "P0", "fmt", PromptDeepAgentPlannerTemplate, "internal/backend/agentruntime/prompt_constants.go:PromptDeepAgentPlannerTemplate", "Plans DeepAgent user goals into verifiable steps."),
 		baseline(PromptIDRuntimeDeepAgentPlanRepair, "DeepAgent Plan Repair Context", "runtime/deep_agent", "L4", "P1", "fmt", PromptDeepAgentPlanRepairContextTemplate, "internal/backend/agentruntime/prompt_constants.go:PromptDeepAgentPlanRepairContextTemplate", "Context template for repairing DeepAgent plans."),
 		baseline(PromptIDRuntimeDeepResearchOrchestrator, "Deep Research Orchestrator", "runtime/deep_research", "L0", "P0", "fmt", PromptDeepResearchOrchestratorTemplate, "internal/backend/agentruntime/prompt_constants.go:PromptDeepResearchOrchestratorTemplate", "Builds a task-specific Deep Research worker DAG."),
+		baseline(PromptIDRuntimeDeepResearchReplanner, "Deep Research Replanner", "runtime/deep_research", "L0", "P0", "fmt", PromptDeepResearchReplannerTemplate, "internal/backend/agentruntime/prompt_constants.go:PromptDeepResearchReplannerTemplate", "Revises the unfinished Deep Research worker DAG from execution evidence."),
 		baseline(PromptIDRuntimeDeepResearchPlanRepair, "Deep Research Plan Repair Context", "runtime/deep_research", "L4", "P1", "fmt", PromptDeepResearchPlanRepairContextTemplate, "internal/backend/agentruntime/prompt_constants.go:PromptDeepResearchPlanRepairContextTemplate", "Context template for repairing Deep Research task graphs."),
 		baselineWithAliases(PromptIDMemoryExtractDefault, "Memory Extract", "memory", "L0", "P0", "handlebars", memoryExtractionPromptTemplate(), "internal/backend/agentruntime/prompt_constants.go:PromptMemoryExtractionTemplate", "Extracts durable memory candidates from conversation.", []string{PromptIDMemoryExtract}, map[string]any{"required": []any{"conversation_json"}}),
 		baseline(PromptIDMemoryExtractRepair, "Memory Extract Repair", "memory", "L0", "P1", "fmt", PromptMemoryExtractionRepairTemplate, "internal/backend/agentruntime/prompt_constants.go:PromptMemoryExtractionRepairTemplate", "Repairs invalid memory extraction JSON."),
