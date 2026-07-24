@@ -2,11 +2,157 @@ package query
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 
 	corehooks "claude-codex/internal/harness/hooks"
 	"claude-codex/internal/harness/tool"
 	"claude-codex/internal/public/types"
 )
+
+var errToolHookStopped = errors.New("tool execution stopped by hook")
+
+type toolHookLifecycle struct {
+	executor    *corehooks.Executor
+	toolCtx     *tool.ToolUseContext
+	querySource string
+}
+
+func newToolHookLifecycle(executor *corehooks.Executor, toolCtx *tool.ToolUseContext, querySource string) tool.ExecutionLifecycle {
+	if executor == nil {
+		return nil
+	}
+	return &toolHookLifecycle{executor: executor, toolCtx: toolCtx, querySource: querySource}
+}
+
+func (l *toolHookLifecycle) BeforeTool(ctx context.Context, toolUseID, toolName string, input map[string]interface{}) (map[string]interface{}, error) {
+	baseInput := cloneToolInput(input)
+	result, err := l.executor.Execute(ctx, corehooks.EventPreToolUse, l.hookInput(
+		corehooks.EventPreToolUse,
+		toolUseID,
+		toolName,
+		baseInput,
+		nil,
+		nil,
+	))
+	if err != nil {
+		return nil, err
+	}
+	if reason := blockingToolHookReason(result); reason != "" {
+		return nil, fmt.Errorf("%w: %s", errToolHookStopped, reason)
+	}
+	for key, value := range result.UpdatedInput {
+		baseInput[key] = value
+	}
+	if result.PermissionBehavior == "deny" {
+		reason := result.PermissionDecisionReason
+		if reason == "" {
+			reason = "permission denied by PreToolUse hook"
+		}
+		return nil, fmt.Errorf("%w: %s", errToolHookStopped, reason)
+	}
+	if result.PermissionBehavior == "ask" && l.toolCtx != nil && l.toolCtx.IsNonInteractiveSession {
+		reason := result.PermissionDecisionReason
+		if reason == "" {
+			reason = "PreToolUse hook requires interactive permission"
+		}
+		return nil, fmt.Errorf("%w: %s", errToolHookStopped, reason)
+	}
+	return baseInput, nil
+}
+
+func (l *toolHookLifecycle) AfterTool(
+	ctx context.Context,
+	toolUseID, toolName string,
+	input map[string]interface{},
+	result *tool.ToolResult,
+	executionErr error,
+) (*tool.ToolResult, error) {
+	event := corehooks.EventPostToolUse
+	if executionErr != nil {
+		event = corehooks.EventPostToolUseFailure
+	}
+	hookResult, err := l.executor.Execute(ctx, event, l.hookInput(
+		event,
+		toolUseID,
+		toolName,
+		cloneToolInput(input),
+		result,
+		executionErr,
+	))
+	if err != nil {
+		return result, err
+	}
+	if reason := blockingToolHookReason(hookResult); reason != "" {
+		return result, fmt.Errorf("%w: %s", errToolHookStopped, reason)
+	}
+	if hookResult.UpdatedMCPToolOutput != nil {
+		if result == nil {
+			result = &tool.ToolResult{}
+		}
+		result.Data = hookResult.UpdatedMCPToolOutput
+	}
+	return result, nil
+}
+
+func (l *toolHookLifecycle) hookInput(
+	event corehooks.HookEvent,
+	toolUseID, toolName string,
+	input map[string]interface{},
+	result *tool.ToolResult,
+	executionErr error,
+) *corehooks.HookInput {
+	output := ""
+	if result != nil {
+		output = toolResultContent(result)
+	}
+	workingDir := ""
+	if l.toolCtx != nil && l.toolCtx.Callbacks != nil && l.toolCtx.Callbacks.GetWorkingDirectory != nil {
+		workingDir = l.toolCtx.Callbacks.GetWorkingDirectory()
+	}
+	return &corehooks.HookInput{
+		Event:      event,
+		SessionID:  toolContextSessionID(l.toolCtx),
+		WorkingDir: workingDir,
+		AgentID:    toolContextAgentID(l.toolCtx),
+		Tool: &corehooks.ToolInfo{
+			Name:   toolName,
+			Input:  input,
+			Output: output,
+			Error:  executionErr,
+			IsMCP:  strings.HasPrefix(toolName, "mcp__"),
+		},
+		Metadata: map[string]any{
+			"tool_use_id":  toolUseID,
+			"query_source": l.querySource,
+		},
+	}
+}
+
+func cloneToolInput(input map[string]interface{}) map[string]interface{} {
+	cloned := make(map[string]interface{}, len(input))
+	for key, value := range input {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func blockingToolHookReason(result *corehooks.AggregatedResult) string {
+	if result == nil {
+		return ""
+	}
+	if !result.Continue {
+		if result.StopReason != "" {
+			return result.StopReason
+		}
+		return "hook prevented tool execution"
+	}
+	if len(result.BlockingErrors) > 0 {
+		return strings.Join(result.BlockingErrors, "; ")
+	}
+	return ""
+}
 
 // handleStopHooks executes stop hooks and returns the result.
 // It also triggers session memory extraction when thresholds are met.

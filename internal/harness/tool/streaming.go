@@ -2,10 +2,20 @@ package tool
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 
 	"claude-codex/internal/public/types"
 )
+
+// ExecutionLifecycle provides host/plugin callbacks around every tool call.
+// Implementations may rewrite input before permission checks and may rewrite
+// successful results after execution.
+type ExecutionLifecycle interface {
+	BeforeTool(ctx context.Context, toolUseID, toolName string, input map[string]interface{}) (map[string]interface{}, error)
+	AfterTool(ctx context.Context, toolUseID, toolName string, input map[string]interface{}, result *ToolResult, executionErr error) (*ToolResult, error)
+}
 
 // Update represents a streaming update from tool execution.
 type Update struct {
@@ -22,6 +32,7 @@ type Update struct {
 type StreamingExecutor struct {
 	canUseTool     CanUseToolFn
 	toolUseContext *ToolUseContext
+	lifecycle      ExecutionLifecycle
 
 	mu        sync.Mutex
 	queue     []types.ToolUseBlock
@@ -33,11 +44,16 @@ type StreamingExecutor struct {
 }
 
 // NewStreamingExecutor creates a new streaming executor.
-func NewStreamingExecutor(canUseTool CanUseToolFn, toolUseContext *ToolUseContext) *StreamingExecutor {
+func NewStreamingExecutor(canUseTool CanUseToolFn, toolUseContext *ToolUseContext, lifecycles ...ExecutionLifecycle) *StreamingExecutor {
 	ctx, cancel := context.WithCancel(toolUseContext.Ctx)
+	var lifecycle ExecutionLifecycle
+	if len(lifecycles) > 0 {
+		lifecycle = lifecycles[0]
+	}
 	return &StreamingExecutor{
 		canUseTool:     canUseTool,
 		toolUseContext: toolUseContext,
+		lifecycle:      lifecycle,
 		queue:          make([]types.ToolUseBlock, 0),
 		results:        make(chan *Update, 10),
 		ctx:            ctx,
@@ -74,12 +90,7 @@ func (se *StreamingExecutor) executeTool(toolUse types.ToolUseBlock) {
 	// Find the tool
 	tool := se.toolUseContext.FindToolByName(toolUse.Name)
 	if tool == nil {
-		se.results <- &Update{
-			ToolUseID: toolUse.ID,
-			ToolName:  toolUse.Name,
-			Status:    "failed",
-			Error:     ErrToolNotFound,
-		}
+		se.sendFailure(toolUse, nil, nil, ErrToolNotFound)
 		return
 	}
 
@@ -94,15 +105,20 @@ func (se *StreamingExecutor) executeTool(toolUse types.ToolUseBlock) {
 	if input == nil {
 		input = map[string]interface{}{}
 	}
+	if se.lifecycle != nil {
+		updatedInput, err := se.lifecycle.BeforeTool(se.ctx, toolUse.ID, toolUse.Name, input)
+		if err != nil {
+			se.sendFailure(toolUse, input, nil, err)
+			return
+		}
+		if updatedInput != nil {
+			input = updatedInput
+		}
+	}
 	if se.canUseTool != nil {
 		permission, err := se.canUseTool(tool, input, se.toolUseContext, nil, toolUse.ID, nil)
 		if err != nil {
-			se.results <- &Update{
-				ToolUseID: toolUse.ID,
-				ToolName:  toolUse.Name,
-				Status:    "failed",
-				Error:     err,
-			}
+			se.sendFailure(toolUse, input, nil, err)
 			return
 		}
 		if permission != nil {
@@ -110,12 +126,7 @@ func (se *StreamingExecutor) executeTool(toolUse types.ToolUseBlock) {
 				input = permission.UpdatedInput
 			}
 			if permission.Behavior == PermissionDeny {
-				se.results <- &Update{
-					ToolUseID: toolUse.ID,
-					ToolName:  toolUse.Name,
-					Status:    "failed",
-					Error:     ErrPermissionDenied,
-				}
+				se.sendFailure(toolUse, input, nil, ErrPermissionDenied)
 				return
 			}
 		}
@@ -125,13 +136,20 @@ func (se *StreamingExecutor) executeTool(toolUse types.ToolUseBlock) {
 	result, err := tool.Call(se.ctx, input, se.toolUseContext)
 
 	if err != nil {
-		se.results <- &Update{
-			ToolUseID: toolUse.ID,
-			ToolName:  toolUse.Name,
-			Status:    "failed",
-			Error:     err,
-		}
+		se.sendFailure(toolUse, input, nil, err)
 		return
+	}
+	if se.lifecycle != nil {
+		result, err = se.lifecycle.AfterTool(se.ctx, toolUse.ID, toolUse.Name, input, result, nil)
+		if err != nil {
+			se.results <- &Update{
+				ToolUseID: toolUse.ID,
+				ToolName:  toolUse.Name,
+				Status:    "failed",
+				Error:     err,
+			}
+			return
+		}
 	}
 
 	// Send completed status
@@ -140,6 +158,29 @@ func (se *StreamingExecutor) executeTool(toolUse types.ToolUseBlock) {
 		ToolName:  toolUse.Name,
 		Status:    "completed",
 		Result:    result,
+	}
+}
+
+func (se *StreamingExecutor) sendFailure(toolUse types.ToolUseBlock, input map[string]interface{}, result *ToolResult, executionErr error) {
+	finalErr := executionErr
+	if se.lifecycle != nil {
+		_, hookErr := se.lifecycle.AfterTool(se.ctx, toolUse.ID, toolUse.Name, input, result, executionErr)
+		if hookErr != nil {
+			if finalErr == nil {
+				finalErr = hookErr
+			} else {
+				finalErr = errors.Join(finalErr, hookErr)
+			}
+		}
+	}
+	if finalErr == nil {
+		finalErr = fmt.Errorf("tool %s failed without an error", toolUse.Name)
+	}
+	se.results <- &Update{
+		ToolUseID: toolUse.ID,
+		ToolName:  toolUse.Name,
+		Status:    "failed",
+		Error:     finalErr,
 	}
 }
 

@@ -47,7 +47,7 @@ func (f *Factory) CreateProvider(cfg Config) (Provider, error) {
 
 // ListProviders returns a list of supported providers
 func (f *Factory) ListProviders() []string {
-	return []string{"anthropic", "openai", "deepseek", "nvidia", "qwen", "gemini", "bedrock", "vertex", "shortapi", "custom"}
+	return []string{"anthropic", "openai", "deepseek", "nvidia", "qwen", "gemini", "vertex", "shortapi", "custom"}
 }
 
 // GetProviderInfo returns information about a specific provider
@@ -77,8 +77,7 @@ func (f *Factory) GetProviderInfo(providerName string) (string, []string, error)
 		p := &GeminiProvider{}
 		return p.Name(), p.SupportedModels(), nil
 	case "bedrock", "aws":
-		p := &BedrockProvider{}
-		return p.Name(), p.SupportedModels(), nil
+		return "", nil, ErrBedrockNotImplemented
 	case "vertex", "gcp":
 		p := &VertexProvider{}
 		return p.Name(), p.SupportedModels(), nil
@@ -97,6 +96,9 @@ func (f *Factory) ValidateConfig(cfg Config) error {
 	}
 
 	provider := strings.ToLower(cfg.Provider)
+	if provider == "bedrock" || provider == "aws" {
+		return ErrBedrockNotImplemented
+	}
 	if provider != "anthropic" && provider != "claude" &&
 		provider != "openai" && provider != "gpt" &&
 		provider != "deepseek" &&
@@ -104,7 +106,6 @@ func (f *Factory) ValidateConfig(cfg Config) error {
 		provider != "custom" && provider != "openai-compatible" && provider != "baseurl" &&
 		provider != "qwen" && provider != "dashscope" && provider != "aliyun" &&
 		provider != "gemini" && provider != "google" &&
-		provider != "bedrock" && provider != "aws" &&
 		provider != "vertex" && provider != "gcp" &&
 		provider != "shortapi" && provider != "short" {
 		return fmt.Errorf("unsupported provider: %s", cfg.Provider)

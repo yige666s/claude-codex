@@ -7,11 +7,9 @@ import (
 	"claude-codex/internal/public/types"
 )
 
-// handleMaxOutputTokensRecovery handles recovery from max_output_tokens errors.
-// It attempts up to 3 recovery strategies:
-// 1. First attempt: Increase max_output_tokens by 4096
-// 2. Second attempt: Increase max_output_tokens by another 4096
-// 3. Third attempt: Escalate to a larger model
+// handleMaxOutputTokensRecovery retries max_output_tokens errors with a larger
+// output allowance. Model selection is deliberately unchanged: the runtime has
+// no provider-independent way to infer a "larger" model.
 func handleMaxOutputTokensRecovery(
 	state *State,
 	assistantMessages []types.AssistantMessage,
@@ -27,18 +25,10 @@ func handleMaxOutputTokensRecovery(
 
 	newState := *state
 	newState.MaxOutputTokensRecoveryCount++
-
-	if state.MaxOutputTokensRecoveryCount < 2 {
-		// First two attempts: increase max_output_tokens
-		currentMax := getMaxTokens(state.MaxOutputTokensOverride)
-		newMax := currentMax + 4096
-		newState.MaxOutputTokensOverride = &newMax
-		newState.Transition = &Continue{Reason: ContinueReasonMaxOutputTokensRecovery}
-	} else {
-		// Third attempt: escalate to larger model
-		// This would typically switch from Sonnet to Opus
-		newState.Transition = &Continue{Reason: ContinueReasonMaxOutputTokensEscalate}
-	}
+	currentMax := getMaxTokens(state.MaxOutputTokensOverride)
+	newMax := currentMax + 4096
+	newState.MaxOutputTokensOverride = &newMax
+	newState.Transition = &Continue{Reason: ContinueReasonMaxOutputTokensRecovery}
 
 	return &newState, true
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +36,56 @@ type captureStopHook struct {
 type persistentBlockingStopHook struct {
 	calls       int
 	activeFlags []bool
+}
+
+type recordingToolHook struct {
+	event  corehooks.HookEvent
+	mu     sync.Mutex
+	inputs []*corehooks.HookInput
+	result *corehooks.HookResult
+}
+
+type countingEchoTool struct {
+	*tool.BaseTool
+	mu    sync.Mutex
+	calls int
+}
+
+func (h *recordingToolHook) Name() string               { return "record-" + string(h.event) }
+func (h *recordingToolHook) Event() corehooks.HookEvent { return h.event }
+func (h *recordingToolHook) IsAsync() bool              { return false }
+func (h *recordingToolHook) Timeout() time.Duration     { return time.Second }
+func (h *recordingToolHook) Execute(_ context.Context, input *corehooks.HookInput) (*corehooks.HookResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.inputs = append(h.inputs, input)
+	if h.result != nil {
+		return h.result, nil
+	}
+	return &corehooks.HookResult{Continue: true}, nil
+}
+
+func (h *recordingToolHook) callCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.inputs)
+}
+
+func newCountingEchoTool() *countingEchoTool {
+	return &countingEchoTool{BaseTool: tool.NewToolBuilder("echo").Build()}
+}
+
+func (t *countingEchoTool) Call(_ context.Context, args map[string]interface{}, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+	t.mu.Lock()
+	t.calls++
+	t.mu.Unlock()
+	return &tool.ToolResult{Data: fmt.Sprintf("echo:%v", args["value"])}, nil
+}
+
+func (t *countingEchoTool) callCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.calls
 }
 
 func (h *captureStopHook) Name() string               { return "capture-stop" }
@@ -440,6 +491,200 @@ func TestQuery_ToolUseFeedsToolResultBackToModel(t *testing.T) {
 	require.NotNil(t, toolResult)
 	require.Len(t, toolResult.Content, 1)
 	assert.Equal(t, "echo:ok", toolResult.Content[0].Content)
+}
+
+func TestQuery_ToolLifecycleHooksWrapStreamingExecution(t *testing.T) {
+	ctx := context.Background()
+	caller := &sequenceModelCaller{steps: [][]types.Message{
+		{{
+			Type: types.MessageTypeAssistant,
+			Content: []types.ContentBlock{{
+				Type:  "tool_use",
+				ID:    "tool-hook-1",
+				Name:  "echo",
+				Input: map[string]interface{}{"value": "original"},
+			}},
+			StopReason: "tool_use",
+		}},
+		{{
+			Type:       types.MessageTypeAssistant,
+			Content:    []types.ContentBlock{{Type: "text", Text: "done"}},
+			StopReason: "end_turn",
+		}},
+	}}
+	pre := &recordingToolHook{
+		event: corehooks.EventPreToolUse,
+		result: &corehooks.HookResult{
+			Continue:     true,
+			UpdatedInput: map[string]any{"value": "rewritten"},
+		},
+	}
+	post := &recordingToolHook{
+		event: corehooks.EventPostToolUse,
+		result: &corehooks.HookResult{
+			Continue:             true,
+			UpdatedMCPToolOutput: "post-processed",
+		},
+	}
+	failed := &recordingToolHook{event: corehooks.EventPostToolUseFailure}
+	registry := corehooks.NewRegistry()
+	require.NoError(t, registry.Register(pre))
+	require.NoError(t, registry.Register(post))
+	require.NoError(t, registry.Register(failed))
+
+	toolCtx := tool.NewToolUseContext(ctx)
+	toolCtx.SetTools([]tool.Tool{newEchoTool()})
+	toolCtx.Options.MainLoopModel = "claude-test"
+	toolCtx.AbortController = tool.NewAbortController()
+	toolCtx.SessionID = "tool-hook-session"
+
+	events, terminal, err := Query(ctx, &QueryParams{
+		ToolUseContext: toolCtx,
+		HookExecutor:   corehooks.NewExecutor(registry),
+		Deps: &QueryDeps{
+			CallModel: caller.call,
+			UUID:      func() string { return "tool-hook-turn" },
+		},
+	})
+	require.NoError(t, err)
+	var output string
+	for event := range events {
+		msg, ok := event.(types.Message)
+		if !ok {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type == "tool_result" && block.ToolUseID == "tool-hook-1" {
+				output = block.Content
+			}
+		}
+	}
+	require.Equal(t, TerminalReasonCompleted, (<-terminal).Reason)
+	assert.Equal(t, "post-processed", output)
+	assert.Equal(t, 1, pre.callCount())
+	assert.Equal(t, 1, post.callCount())
+	assert.Zero(t, failed.callCount())
+	require.Len(t, post.inputs, 1)
+	assert.Equal(t, "rewritten", post.inputs[0].Tool.Input["value"])
+	assert.Equal(t, "echo:rewritten", post.inputs[0].Tool.Output)
+	assert.Equal(t, "tool-hook-session", post.inputs[0].SessionID)
+}
+
+func TestQuery_BlockingPreToolHookPreventsToolCall(t *testing.T) {
+	ctx := context.Background()
+	caller := &sequenceModelCaller{steps: [][]types.Message{{{
+		Type: types.MessageTypeAssistant,
+		Content: []types.ContentBlock{{
+			Type:  "tool_use",
+			ID:    "tool-hook-blocked",
+			Name:  "echo",
+			Input: map[string]interface{}{"value": "blocked"},
+		}},
+		StopReason: "tool_use",
+	}}}}
+	pre := &recordingToolHook{
+		event: corehooks.EventPreToolUse,
+		result: &corehooks.HookResult{
+			Continue:   false,
+			StopReason: "policy blocked tool",
+		},
+	}
+	failed := &recordingToolHook{event: corehooks.EventPostToolUseFailure}
+	registry := corehooks.NewRegistry()
+	require.NoError(t, registry.Register(pre))
+	require.NoError(t, registry.Register(failed))
+	echo := newCountingEchoTool()
+	toolCtx := tool.NewToolUseContext(ctx)
+	toolCtx.SetTools([]tool.Tool{echo})
+	toolCtx.AbortController = tool.NewAbortController()
+
+	events, terminal, err := Query(ctx, &QueryParams{
+		ToolUseContext: toolCtx,
+		HookExecutor:   corehooks.NewExecutor(registry),
+		Deps: &QueryDeps{
+			CallModel: caller.call,
+			UUID:      func() string { return "tool-hook-blocked-turn" },
+		},
+	})
+	require.NoError(t, err)
+	for range events {
+	}
+	assert.Equal(t, TerminalReasonHookStopped, (<-terminal).Reason)
+	assert.Zero(t, echo.callCount())
+	assert.Equal(t, 1, pre.callCount())
+	assert.Equal(t, 1, failed.callCount())
+}
+
+func TestRunTools_MissingToolTriggersFailureHook(t *testing.T) {
+	failed := &recordingToolHook{event: corehooks.EventPostToolUseFailure}
+	registry := corehooks.NewRegistry()
+	require.NoError(t, registry.Register(failed))
+
+	toolCtx := tool.NewToolUseContext(context.Background())
+	updates := runTools(
+		[]types.ToolUseBlock{{
+			ID:    "missing-tool-use",
+			Name:  "missing-tool",
+			Input: map[string]interface{}{"value": "input"},
+		}},
+		nil,
+		nil,
+		toolCtx,
+		newToolHookLifecycle(corehooks.NewExecutor(registry), toolCtx, "test"),
+	)
+
+	update := <-updates
+	require.NotNil(t, update)
+	assert.ErrorIs(t, update.Error, tool.ErrToolNotFound)
+	assert.Equal(t, "failed", update.Status)
+	assert.Equal(t, 1, failed.callCount())
+	require.Len(t, failed.inputs, 1)
+	assert.ErrorIs(t, failed.inputs[0].Tool.Error, tool.ErrToolNotFound)
+}
+
+func TestQuery_MaxOutputRecoveryIncreasesTokensWithoutFakeModelEscalation(t *testing.T) {
+	maxed := func() types.Message {
+		return types.Message{
+			Type:       types.MessageTypeAssistant,
+			Content:    []types.ContentBlock{{Type: "text", Text: "partial"}},
+			StopReason: "max_tokens",
+		}
+	}
+	caller := &sequenceModelCaller{steps: [][]types.Message{
+		{maxed()},
+		{maxed()},
+		{maxed()},
+		{{
+			Type:       types.MessageTypeAssistant,
+			Content:    []types.ContentBlock{{Type: "text", Text: "done"}},
+			StopReason: "end_turn",
+		}},
+	}}
+	toolCtx := tool.NewToolUseContext(context.Background())
+	toolCtx.Options.MainLoopModel = "configured-model"
+	toolCtx.AbortController = tool.NewAbortController()
+
+	events, terminal, err := Query(context.Background(), &QueryParams{
+		ToolUseContext: toolCtx,
+		Deps: &QueryDeps{
+			CallModel: caller.call,
+			UUID:      func() string { return "max-output-turn" },
+		},
+	})
+	require.NoError(t, err)
+	for range events {
+	}
+	require.Equal(t, TerminalReasonCompleted, (<-terminal).Reason)
+	require.Len(t, caller.seen, 4)
+	assert.Equal(t, []int{8192, 12288, 16384, 20480}, []int{
+		caller.seen[0].MaxTokens,
+		caller.seen[1].MaxTokens,
+		caller.seen[2].MaxTokens,
+		caller.seen[3].MaxTokens,
+	})
+	for _, call := range caller.seen {
+		assert.Equal(t, "configured-model", call.Model)
+	}
 }
 
 func TestQuery_ToolUseDenialFeedsErroredToolResult(t *testing.T) {

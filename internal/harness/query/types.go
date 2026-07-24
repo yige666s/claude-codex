@@ -206,7 +206,6 @@ const (
 	ContinueReasonToolUse                 = "tool_use"
 	ContinueReasonReactiveCompactRetry    = "reactive_compact_retry"
 	ContinueReasonMaxOutputTokensRecovery = "max_output_tokens_recovery"
-	ContinueReasonMaxOutputTokensEscalate = "max_output_tokens_escalate"
 	ContinueReasonCollapseDrainRetry      = "collapse_drain_retry"
 	ContinueReasonStopHookBlocking        = "stop_hook_blocking"
 	ContinueReasonTokenBudgetContinuation = "token_budget_continuation"

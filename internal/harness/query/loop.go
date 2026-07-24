@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -122,7 +123,6 @@ func queryLoop(
 		messagesForQuery := state.Messages
 		toolUseContext := state.ToolUseContext
 		tracking := state.AutoCompactTracking
-		maxOutputTokensRecoveryCount := state.MaxOutputTokensRecoveryCount
 		hasAttemptedReactiveCompact := state.HasAttemptedReactiveCompact
 		maxOutputTokensOverride := state.MaxOutputTokensOverride
 		pendingToolUseSummary := state.PendingToolUseSummary
@@ -202,10 +202,12 @@ func queryLoop(
 
 		// Streaming tool executor setup
 		var streamingToolExecutor *tool.StreamingExecutor
+		toolLifecycle := newToolHookLifecycle(params.HookExecutor, toolUseContext, querySource)
 		if config.Gates.StreamingToolExecution {
 			streamingToolExecutor = tool.NewStreamingExecutor(
 				canUseTool,
 				toolUseContext,
+				toolLifecycle,
 			)
 		}
 
@@ -264,6 +266,7 @@ func queryLoop(
 						streamingToolExecutor = tool.NewStreamingExecutor(
 							canUseTool,
 							toolUseContext,
+							toolLifecycle,
 						)
 					}
 
@@ -373,20 +376,8 @@ func queryLoop(
 
 		// Handle max_output_tokens recovery
 		if !needsFollowUp {
-			lastMessage := getLastMessage(assistantMessages)
-			if isMaxOutputTokensError(lastMessage) && maxOutputTokensRecoveryCount < MaxOutputTokensRecoveryLimit {
-				// Retry with increased tokens or escalated model
-				state.MaxOutputTokensRecoveryCount++
-
-				if maxOutputTokensRecoveryCount < 2 {
-					// First two attempts: increase max_output_tokens
-					newMax := getMaxTokens(maxOutputTokensOverride) + 4096
-					state.MaxOutputTokensOverride = &newMax
-					state.Transition = &Continue{Reason: ContinueReasonMaxOutputTokensRecovery}
-				} else {
-					// Third attempt: escalate to larger model
-					state.Transition = &Continue{Reason: ContinueReasonMaxOutputTokensEscalate}
-				}
+			if recoveredState, recovered := handleMaxOutputTokensRecovery(state, assistantMessages); recovered {
+				state = recoveredState
 				continue
 			}
 		}
@@ -473,10 +464,13 @@ func queryLoop(
 		if streamingToolExecutor != nil {
 			toolUpdates = streamingToolExecutor.GetRemainingResults()
 		} else {
-			toolUpdates = runTools(toolUseBlocks, assistantMessages, canUseTool, toolUseContext)
+			toolUpdates = runTools(toolUseBlocks, assistantMessages, canUseTool, toolUseContext, toolLifecycle)
 		}
 
 		for update := range toolUpdates {
+			if update != nil && errors.Is(update.Error, errToolHookStopped) {
+				shouldPreventContinuation = true
+			}
 			if msg := messageFromToolUpdate(update); msg != nil {
 				eventChan <- *msg
 
@@ -866,23 +860,50 @@ func isHookStoppedContinuation(msg types.Message) bool {
 	return false
 }
 
-func runTools(toolUseBlocks []types.ToolUseBlock, assistantMessages []types.AssistantMessage, canUseTool tool.CanUseToolFn, ctx *tool.ToolUseContext) <-chan *tool.Update {
+func runTools(toolUseBlocks []types.ToolUseBlock, assistantMessages []types.AssistantMessage, canUseTool tool.CanUseToolFn, ctx *tool.ToolUseContext, lifecycle tool.ExecutionLifecycle) <-chan *tool.Update {
 	ch := make(chan *tool.Update, len(toolUseBlocks))
 	go func() {
 		defer close(ch)
 		for _, block := range toolUseBlocks {
 			toolDef := ctx.FindToolByName(block.Name)
 			if toolDef == nil {
-				ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "failed", Error: tool.ErrToolNotFound}
+				err := tool.ErrToolNotFound
+				if lifecycle != nil {
+					_, hookErr := lifecycle.AfterTool(ctx.Ctx, block.ID, block.Name, block.Input, nil, err)
+					if hookErr != nil {
+						err = errors.Join(err, hookErr)
+					}
+				}
+				ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "failed", Error: err}
 				continue
 			}
 			input := block.Input
 			if input == nil {
 				input = map[string]interface{}{}
 			}
+			if lifecycle != nil {
+				updatedInput, err := lifecycle.BeforeTool(ctx.Ctx, block.ID, block.Name, input)
+				if err != nil {
+					_, hookErr := lifecycle.AfterTool(ctx.Ctx, block.ID, block.Name, input, nil, err)
+					if hookErr != nil {
+						err = errors.Join(err, hookErr)
+					}
+					ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "failed", Error: err}
+					continue
+				}
+				if updatedInput != nil {
+					input = updatedInput
+				}
+			}
 			if canUseTool != nil {
 				permission, err := canUseTool(toolDef, input, ctx, assistantMessages, block.ID, nil)
 				if err != nil {
+					if lifecycle != nil {
+						_, hookErr := lifecycle.AfterTool(ctx.Ctx, block.ID, block.Name, input, nil, err)
+						if hookErr != nil {
+							err = errors.Join(err, hookErr)
+						}
+					}
 					ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "failed", Error: err}
 					continue
 				}
@@ -891,15 +912,35 @@ func runTools(toolUseBlocks []types.ToolUseBlock, assistantMessages []types.Assi
 						input = permission.UpdatedInput
 					}
 					if permission.Behavior == tool.PermissionDeny {
-						ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "failed", Error: fmt.Errorf("permission denied: %s", permission.Reason)}
+						err := fmt.Errorf("permission denied: %s", permission.Reason)
+						if lifecycle != nil {
+							_, hookErr := lifecycle.AfterTool(ctx.Ctx, block.ID, block.Name, input, nil, err)
+							if hookErr != nil {
+								err = errors.Join(err, hookErr)
+							}
+						}
+						ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "failed", Error: err}
 						continue
 					}
 				}
 			}
 			result, err := toolDef.Call(ctx.Ctx, input, ctx)
 			if err != nil {
+				if lifecycle != nil {
+					_, hookErr := lifecycle.AfterTool(ctx.Ctx, block.ID, block.Name, input, result, err)
+					if hookErr != nil {
+						err = errors.Join(err, hookErr)
+					}
+				}
 				ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "failed", Error: err}
 				continue
+			}
+			if lifecycle != nil {
+				result, err = lifecycle.AfterTool(ctx.Ctx, block.ID, block.Name, input, result, nil)
+				if err != nil {
+					ch <- &tool.Update{ToolUseID: block.ID, ToolName: block.Name, Status: "failed", Error: err}
+					continue
+				}
 			}
 			if result != nil && result.ContextModifier != nil {
 				nextCtx := *ctx
