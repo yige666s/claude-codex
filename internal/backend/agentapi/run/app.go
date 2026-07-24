@@ -19,11 +19,13 @@ const (
 	workerKafkaMessageConsumer  = "kafka_message_event_consumer"
 	workerMessageAttachment     = "message_attachment_worker"
 	workerMessageArchive        = "message_archive_worker"
+	workerMessageEventOutbox    = "message_event_outbox_worker"
 	workerMessageSearchIndex    = "message_search_index_manager"
 	workerMessageSearchBackfill = "message_search_backfill"
 	workerMemoryPolicyReload    = "memory_policy_reload"
 	workerJobEventFanout        = "job_event_fanout"
 	workerJobQueue              = "job_worker"
+	workerJobQueueOutbox        = "job_queue_outbox_worker"
 	workerConnectorRefresh      = "connector_refresh_worker"
 	workerRetentionPrune        = "retention_prune"
 	workerLocalArtifactPrune    = "local_artifact_prune"
@@ -265,6 +267,13 @@ func Run(ctx context.Context, cfg startupconfig.Config) error {
 	if kafkaMessagePublisher != nil {
 		runtime.SetMessageEventPublisher(kafkaMessagePublisher)
 	}
+	if outbox, ok := sessionStore.(agentruntime.MessageEventOutboxStore); ok {
+		workerGroup.Start(workerMessageEventOutbox, agentruntime.NewMessageEventOutboxWorker(
+			outbox,
+			runtime,
+			runLogger("message_event_outbox"),
+		).Run)
+	}
 	llmMemoryExtractor := agentruntime.NewLLMMemoryExtractor(legacyEngineFactory)
 	llmMemoryExtractor.PromptResolver = agentruntime.NewCachedPromptResolver(promptStore, nil, cacheStore, cfg.CacheDefaultTTL, cfg.CacheFailOpen, cacheMetrics)
 	runtime.SetMemoryExtractor(agentruntime.NewHybridMemoryExtractor(
@@ -371,6 +380,13 @@ func Run(ctx context.Context, cfg startupconfig.Config) error {
 		LockTTL:      cfg.JobQueueLockTTL,
 	})
 	runtime.SetJobQueue(jobQueue)
+	if outbox, ok := jobStore.(agentruntime.JobQueueOutboxStore); ok {
+		workerGroup.Start(workerJobQueueOutbox, agentruntime.NewJobQueueOutboxWorker(
+			outbox,
+			jobQueue,
+			runLogger("job_queue_outbox"),
+		).Run)
+	}
 	defer func() {
 		if err := jobQueueRedisClient.Close(); err != nil {
 			logInfof("close job queue redis client: %v", err)

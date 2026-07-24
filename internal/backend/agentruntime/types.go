@@ -609,6 +609,11 @@ type JobExecutionLeaseStore interface {
 	TransitionOwnedJobStatus(ctx context.Context, userID, jobID, owner, status, errorText string, at time.Time) (bool, error)
 }
 
+type JobTerminalEventStore interface {
+	TransitionJobStatusWithEvent(ctx context.Context, userID, jobID, expectedStatus, status, errorText string, at time.Time, event *JobEvent) (bool, error)
+	TransitionOwnedJobStatusWithEvent(ctx context.Context, userID, jobID, owner, status, errorText string, at time.Time, event *JobEvent) (bool, error)
+}
+
 type JobEventStreamStore interface {
 	AppendJobEvent(ctx context.Context, event *JobEvent) error
 	BlockReadJobEvents(ctx context.Context, userID, jobID, afterID string, limit int, block time.Duration) ([]*JobEvent, error)

@@ -71,6 +71,10 @@ type MessageEventPublisher interface {
 	PublishMessageEvent(ctx context.Context, event MessageEvent) error
 }
 
+type DurableMessageEventRepository interface {
+	MessageEventOutboxEnabled() bool
+}
+
 type CompositeMessageEventPublisher []MessageEventPublisher
 
 func (p CompositeMessageEventPublisher) PublishMessageEvent(ctx context.Context, event MessageEvent) error {
@@ -161,7 +165,11 @@ func (s *MessageWriteService) applyCreatedMessageSideEffects(ctx context.Context
 			return err
 		}
 	}
-	if s.publisher != nil {
+	durablePublisher := false
+	if repo, ok := s.repo.(DurableMessageEventRepository); ok {
+		durablePublisher = repo.MessageEventOutboxEnabled()
+	}
+	if s.publisher != nil && !durablePublisher {
 		if err := s.publisher.PublishMessageEvent(ctx, MessageEvent{
 			Type:      MessageEventCreated,
 			UserID:    userID,

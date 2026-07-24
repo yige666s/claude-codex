@@ -352,6 +352,23 @@ func (r *Runtime) SetMessageEventPublisher(publisher MessageEventPublisher) {
 	r.configureMessageServices()
 }
 
+func (r *Runtime) PublishMessageEvent(ctx context.Context, event MessageEvent) error {
+	if r == nil {
+		return fmt.Errorf("runtime is not configured")
+	}
+	if r.messagePublisher != nil {
+		if err := r.messagePublisher.PublishMessageEvent(ctx, event); err != nil {
+			return err
+		}
+	}
+	if r.localVectorIndex && r.vectorIndexer != nil {
+		if err := r.vectorIndexer.PublishMessageEventSynchronously(ctx, event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *Runtime) SetLocalMessageVectorIndexing(enabled bool) {
 	if r == nil {
 		return
@@ -4045,11 +4062,26 @@ func (r *Runtime) StartJob(ctx context.Context, job *Job) error {
 	}
 	hideUserMessage := r.consumeJobUserMessageHidden(job.ID)
 	if r.jobQueue != nil {
-		return r.jobQueue.EnqueueJob(ctx, JobQueueItem{
+		item := JobQueueItem{
 			JobID:           job.ID,
 			UserID:          job.UserID,
 			RequestID:       requestIDFromContext(ctx),
 			HideUserMessage: hideUserMessage,
+		}
+		if scheduler, ok := r.jobs.(JobQueueScheduleStore); ok {
+			if err := scheduler.ScheduleJob(ctx, job.UserID, job.ID, item, time.Now().UTC()); err != nil {
+				return err
+			}
+			job.Status = JobStatusQueued
+			job.UpdatedAt = time.Now().UTC()
+			return nil
+		}
+		job.Status = JobStatusQueued
+		return r.jobQueue.EnqueueJob(ctx, JobQueueItem{
+			JobID:           item.JobID,
+			UserID:          item.UserID,
+			RequestID:       item.RequestID,
+			HideUserMessage: item.HideUserMessage,
 		})
 	}
 	workerCtx, cancel := context.WithCancel(context.Background())
@@ -4203,47 +4235,65 @@ func (r *Runtime) runJob(ctx context.Context, job *Job) error {
 	}
 	switch {
 	case err == nil:
-		updated, updateErr := r.transitionJobTerminalStatus(context.Background(), job.UserID, job.ID, executionOwner, JobStatusSucceeded, "", finishedAt)
+		updated, updateErr := r.transitionJobTerminalStatusWithEvent(
+			context.Background(),
+			job,
+			executionOwner,
+			JobStatusSucceeded,
+			"",
+			finishedAt,
+			baseSink,
+			Event{Type: "done", SessionID: job.SessionID, JobID: job.ID},
+		)
 		if updateErr != nil {
 			return updateErr
 		}
 		if !updated {
 			return nil
 		}
-		sendErr := baseSink.Send(context.Background(), Event{Type: "done", SessionID: job.SessionID, JobID: job.ID})
-		if sendErr == nil {
-			go r.notifyTaskInboxJob(context.Background(), job, JobStatusSucceeded, "")
-		}
-		return sendErr
+		go r.notifyTaskInboxJob(context.Background(), job, JobStatusSucceeded, "")
+		return nil
 	case errors.Is(err, context.Canceled) || errors.Is(err, ErrRuntimeShuttingDown):
-		updated, updateErr := r.transitionJobTerminalStatus(context.Background(), job.UserID, job.ID, executionOwner, JobStatusCancelled, err.Error(), finishedAt)
+		updated, updateErr := r.transitionJobTerminalStatusWithEvent(
+			context.Background(),
+			job,
+			executionOwner,
+			JobStatusCancelled,
+			err.Error(),
+			finishedAt,
+			baseSink,
+			Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID},
+		)
 		if updateErr != nil {
 			return updateErr
 		}
 		if !updated {
 			return nil
 		}
-		sendErr := baseSink.Send(context.Background(), Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
-		if sendErr == nil {
-			go r.notifyTaskInboxJob(context.Background(), job, JobStatusCancelled, err.Error())
-		}
-		return sendErr
+		go r.notifyTaskInboxJob(context.Background(), job, JobStatusCancelled, err.Error())
+		return nil
 	default:
-		updated, updateErr := r.transitionJobTerminalStatus(context.Background(), job.UserID, job.ID, executionOwner, JobStatusFailed, err.Error(), finishedAt)
+		updated, updateErr := r.transitionJobTerminalStatusWithEvent(
+			context.Background(),
+			job,
+			executionOwner,
+			JobStatusFailed,
+			err.Error(),
+			finishedAt,
+			baseSink,
+			Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()},
+		)
 		if updateErr != nil {
 			return updateErr
 		}
 		if !updated {
 			return nil
 		}
-		sendErr := baseSink.Send(context.Background(), Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
-		if sendErr == nil {
-			go r.notifyTaskInboxJob(context.Background(), job, JobStatusFailed, err.Error())
-		}
+		go r.notifyTaskInboxJob(context.Background(), job, JobStatusFailed, err.Error())
 		if !strings.HasPrefix(strings.TrimSpace(job.Content), "/") {
 			r.recordExecutionDenialRisk(executionCtx, job.UserID, job.SessionID, "", err, map[string]any{"phase": "job", "job_type": job.Type})
 		}
-		return sendErr
+		return nil
 	}
 }
 
@@ -5013,6 +5063,8 @@ func (r *Runtime) CancelJob(ctx context.Context, userID, jobID string) error {
 		return fmt.Errorf("job store is not configured")
 	}
 	var job *Job
+	var terminalRecord *JobEvent
+	sink := &jobEventSink{store: r.jobs, stream: r.jobEventStream, bus: r.jobEvents, fanout: r.jobEventFanout, logger: componentLogger(r.logger, "job_event_fanout")}
 	for attempts := 0; attempts < 3; attempts++ {
 		current, err := r.jobs.GetJob(ctx, userID, jobID)
 		if err != nil {
@@ -5021,7 +5073,24 @@ func (r *Runtime) CancelJob(ctx context.Context, userID, jobID string) error {
 		if isTerminalJobStatus(current.Status) {
 			return nil
 		}
-		updated, err := r.transitionJobStatus(ctx, userID, jobID, current.Status, JobStatusCancelled, "cancelled by user", time.Now().UTC())
+		sink.job = current
+		cancelledAt := time.Now().UTC()
+		var updated bool
+		if store, ok := r.jobs.(JobTerminalEventStore); ok {
+			terminalRecord = sink.newRecord(Event{Type: "cancelled", SessionID: current.SessionID, JobID: current.ID}, cancelledAt)
+			updated, err = store.TransitionJobStatusWithEvent(
+				ctx,
+				userID,
+				jobID,
+				current.Status,
+				JobStatusCancelled,
+				"cancelled by user",
+				cancelledAt,
+				terminalRecord,
+			)
+		} else {
+			updated, err = r.transitionJobStatus(ctx, userID, jobID, current.Status, JobStatusCancelled, "cancelled by user", cancelledAt)
+		}
 		if err != nil {
 			return err
 		}
@@ -5040,7 +5109,13 @@ func (r *Runtime) CancelJob(ctx context.Context, userID, jobID string) error {
 		}
 		return fmt.Errorf("job %s status kept changing while cancelling", jobID)
 	}
-	sendErr := (&jobEventSink{store: r.jobs, stream: r.jobEventStream, bus: r.jobEvents, fanout: r.jobEventFanout, job: job, logger: componentLogger(r.logger, "job_event_fanout")}).Send(ctx, Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
+	sink.job = job
+	var sendErr error
+	if terminalRecord != nil {
+		sendErr = sink.publishPersisted(ctx, terminalRecord)
+	} else {
+		sendErr = sink.Send(ctx, Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
+	}
 	r.mu.Lock()
 	cancel := r.runningJobs[jobID]
 	r.mu.Unlock()
@@ -5088,6 +5163,51 @@ func (r *Runtime) transitionJobTerminalStatus(ctx context.Context, userID, jobID
 		}
 	}
 	return r.transitionJobStatus(ctx, userID, jobID, JobStatusRunning, status, errorText, at)
+}
+
+func (r *Runtime) transitionJobTerminalStatusWithEvent(
+	ctx context.Context,
+	job *Job,
+	executionOwner string,
+	status string,
+	errorText string,
+	at time.Time,
+	sink *jobEventSink,
+	event Event,
+) (bool, error) {
+	if r == nil || r.jobs == nil || job == nil || sink == nil {
+		return false, fmt.Errorf("job terminal transition is not configured")
+	}
+	if strings.TrimSpace(executionOwner) != "" {
+		if store, ok := r.jobs.(JobTerminalEventStore); ok {
+			record := sink.newRecord(event, at)
+			updated, err := store.TransitionOwnedJobStatusWithEvent(
+				ctx,
+				job.UserID,
+				job.ID,
+				executionOwner,
+				status,
+				errorText,
+				at,
+				record,
+			)
+			if err != nil || !updated {
+				return updated, err
+			}
+			if err := sink.publishPersisted(ctx, record); err != nil {
+				return true, err
+			}
+			return true, nil
+		}
+	}
+	updated, err := r.transitionJobTerminalStatus(ctx, job.UserID, job.ID, executionOwner, status, errorText, at)
+	if err != nil || !updated {
+		return updated, err
+	}
+	if err := sink.Send(ctx, event); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func startDurableJobExecutionLeaseRefresh(ctx context.Context, store JobExecutionLeaseStore, userID, jobID, owner string, cancel context.CancelCauseFunc) func() {
@@ -7477,21 +7597,32 @@ func (s *jobEventSink) Send(ctx context.Context, event Event) error {
 	if s == nil || s.store == nil || s.job == nil {
 		return fmt.Errorf("job event sink is not configured")
 	}
+	record := s.newRecord(event, time.Now().UTC())
+	if err := s.store.AddJobEvent(ctx, record); err != nil {
+		return err
+	}
+	return s.publishPersisted(ctx, record)
+}
+
+func (s *jobEventSink) newRecord(event Event, createdAt time.Time) *JobEvent {
 	if event.SessionID == "" {
 		event.SessionID = s.job.SessionID
 	}
 	event.JobID = s.job.ID
-	record := &JobEvent{
+	return &JobEvent{
 		ID:        NewJobEventID(),
 		JobID:     s.job.ID,
 		UserID:    s.job.UserID,
 		SessionID: s.job.SessionID,
 		Type:      event.Type,
 		Event:     event,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: createdAt.UTC(),
 	}
-	if err := s.store.AddJobEvent(ctx, record); err != nil {
-		return err
+}
+
+func (s *jobEventSink) publishPersisted(ctx context.Context, record *JobEvent) error {
+	if s == nil || record == nil {
+		return fmt.Errorf("persisted job event is required")
 	}
 	if s.stream != nil {
 		if err := s.stream.AppendJobEvent(ctx, record); err != nil {

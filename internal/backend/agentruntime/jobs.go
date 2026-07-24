@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -235,6 +236,62 @@ func (s *MemoryJobStore) TransitionOwnedJobStatus(_ context.Context, userID, job
 	return true, nil
 }
 
+func (s *MemoryJobStore) TransitionOwnedJobStatusWithEvent(_ context.Context, userID, jobID, owner, status, errorText string, at time.Time, event *JobEvent) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[jobID]
+	if !ok || job.UserID != userID {
+		return false, sql.ErrNoRows
+	}
+	if event == nil {
+		return false, errors.New("job event is required")
+	}
+	if job.Status != JobStatusRunning || job.ExecutionOwner != owner || job.ExecutionLeaseExpiresAt == nil || !job.ExecutionLeaseExpiresAt.After(at) {
+		return false, nil
+	}
+	job.Status = status
+	job.Error = errorText
+	job.UpdatedAt = at.UTC()
+	if isTerminalJobStatus(status) {
+		finishedAt := at.UTC()
+		job.FinishedAt = &finishedAt
+		job.ExecutionOwner = ""
+		job.ExecutionLeaseExpiresAt = nil
+	}
+	s.events[event.JobID] = append(s.events[event.JobID], cloneJobEvent(event))
+	return true, nil
+}
+
+func (s *MemoryJobStore) TransitionJobStatusWithEvent(_ context.Context, userID, jobID, expectedStatus, status, errorText string, at time.Time, event *JobEvent) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[jobID]
+	if !ok || job.UserID != userID {
+		return false, sql.ErrNoRows
+	}
+	if event == nil {
+		return false, errors.New("job event is required")
+	}
+	if job.Status != expectedStatus {
+		return false, nil
+	}
+	job.Status = status
+	job.Error = errorText
+	job.UpdatedAt = at.UTC()
+	if status == JobStatusRunning && job.StartedAt == nil {
+		startedAt := at.UTC()
+		job.StartedAt = &startedAt
+	}
+	if isTerminalJobStatus(status) {
+		finishedAt := at.UTC()
+		job.FinishedAt = &finishedAt
+		job.ExecutionOwner = ""
+		job.ExecutionLeaseExpiresAt = nil
+	}
+	s.events[event.JobID] = append(s.events[event.JobID], cloneJobEvent(event))
+	return true, nil
+}
+
 func (s *MemoryJobStore) AddJobEvent(_ context.Context, event *JobEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -325,8 +382,18 @@ func (s *SQLJobStore) Init(ctx context.Context) error {
 	); err != nil {
 		return err
 	}
-	return requireSQLColumns(ctx, s.db, "agent_job_events",
+	if err := requireSQLColumns(ctx, s.db, "agent_job_events",
 		"event_id", "job_id", "user_id", "session_id", "type", "payload", "created_at",
+	); err != nil {
+		return err
+	}
+	if s.dialect != SQLDialectPostgres {
+		return nil
+	}
+	return requireSQLColumns(ctx, s.db, "agent_job_queue_outbox",
+		"job_id", "user_id", "request_id", "hide_user_message", "attempts",
+		"available_at", "claimed_by", "claimed_until", "last_error",
+		"published_at", "created_at", "updated_at",
 	)
 }
 
@@ -548,6 +615,96 @@ WHERE user_id = ? AND job_id = ? AND status = ? AND execution_owner = ?
 	return affected == 1, err
 }
 
+func (s *SQLJobStore) TransitionOwnedJobStatusWithEvent(ctx context.Context, userID, jobID, owner, status, errorText string, at time.Time, event *JobEvent) (bool, error) {
+	if event == nil {
+		return false, errors.New("job event is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	var finishedAt any
+	if isTerminalJobStatus(status) {
+		finishedAt = sqlTimeValue(at, s.dialect)
+	}
+	result, err := tx.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_jobs
+SET status = ?, error = ?, updated_at = ?,
+	finished_at = COALESCE(?, finished_at),
+	execution_owner = '', execution_lease_expires_at = NULL
+WHERE user_id = ? AND job_id = ? AND status = ? AND execution_owner = ?
+	AND execution_lease_expires_at > ?`),
+		status, errorText, sqlTimeValue(at, s.dialect), finishedAt,
+		userID, jobID, JobStatusRunning, owner, sqlTimeValue(at, s.dialect),
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected != 1 {
+		return false, nil
+	}
+	if err := s.insertJobEventTx(ctx, tx, event); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *SQLJobStore) TransitionJobStatusWithEvent(ctx context.Context, userID, jobID, expectedStatus, status, errorText string, at time.Time, event *JobEvent) (bool, error) {
+	if event == nil {
+		return false, errors.New("job event is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	var startedAt any
+	if status == JobStatusRunning {
+		startedAt = sqlTimeValue(at, s.dialect)
+	}
+	var finishedAt any
+	if isTerminalJobStatus(status) {
+		finishedAt = sqlTimeValue(at, s.dialect)
+	}
+	result, err := tx.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_jobs
+SET status = ?, error = ?, updated_at = ?,
+	started_at = COALESCE(started_at, ?),
+	finished_at = COALESCE(?, finished_at),
+	execution_owner = CASE WHEN ? IN ('succeeded', 'failed', 'cancelled') THEN '' ELSE execution_owner END,
+	execution_lease_expires_at = CASE WHEN ? IN ('succeeded', 'failed', 'cancelled') THEN NULL ELSE execution_lease_expires_at END
+WHERE user_id = ? AND job_id = ? AND status = ?`),
+		status, errorText, sqlTimeValue(at, s.dialect), startedAt, finishedAt, status, status, userID, jobID, expectedStatus,
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected != 1 {
+		return false, nil
+	}
+	if err := s.insertJobEventTx(ctx, tx, event); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *SQLJobStore) AddJobEvent(ctx context.Context, event *JobEvent) error {
 	payload, err := json.Marshal(event.Event)
 	if err != nil {
@@ -565,6 +722,29 @@ func (s *SQLJobStore) AddJobEvent(ctx context.Context, event *JobEvent) error {
 		})
 	}
 	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
+INSERT INTO agent_job_events (event_id, job_id, user_id, session_id, type, payload, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`),
+		event.ID, event.JobID, event.UserID, event.SessionID, event.Type, string(payload), sqlTimeValue(event.CreatedAt, s.dialect))
+	return err
+}
+
+func (s *SQLJobStore) insertJobEventTx(ctx context.Context, tx *sql.Tx, event *JobEvent) error {
+	payload, err := json.Marshal(event.Event)
+	if err != nil {
+		return err
+	}
+	if s.dialect == SQLDialectPostgres {
+		return dbsqlc.New(tx).InsertJobEvent(ctx, dbsqlc.InsertJobEventParams{
+			EventID:   event.ID,
+			JobID:     event.JobID,
+			UserID:    event.UserID,
+			SessionID: event.SessionID,
+			Type:      event.Type,
+			Payload:   string(payload),
+			CreatedAt: event.CreatedAt.UTC(),
+		})
+	}
+	_, err = tx.ExecContext(ctx, s.dialect.Bind(`
 INSERT INTO agent_job_events (event_id, job_id, user_id, session_id, type, payload, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)`),
 		event.ID, event.JobID, event.UserID, event.SessionID, event.Type, string(payload), sqlTimeValue(event.CreatedAt, s.dialect))

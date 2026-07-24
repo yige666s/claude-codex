@@ -102,9 +102,19 @@ func (s *SQLSessionStore) Init(ctx context.Context) error {
 	); err != nil {
 		return err
 	}
-	return requireSQLColumns(ctx, s.db, "agent_message_embedding_meta",
+	if err := requireSQLColumns(ctx, s.db, "agent_message_embedding_meta",
 		"embedding_id", "message_id", "session_id", "user_id", "chunk_index",
 		"vector_id", "model_version", "created_at",
+	); err != nil {
+		return err
+	}
+	if s.dialect != SQLDialectPostgres {
+		return nil
+	}
+	return requireSQLColumns(ctx, s.db, "agent_message_event_outbox",
+		"event_id", "message_id", "user_id", "session_id", "event_type", "payload",
+		"attempts", "available_at", "claimed_by", "claimed_until", "last_error",
+		"published_at", "created_at", "updated_at",
 	)
 }
 
@@ -776,6 +786,16 @@ func (s *SQLSessionStore) appendMessageOnce(ctx context.Context, userID, session
 			return state.Message{}, err
 		}
 		if ok {
+			if err := enqueueSQLMessageEventTx(ctx, tx, s.dialect, MessageEvent{
+				Type:      MessageEventCreated,
+				UserID:    userID,
+				SessionID: sessionID,
+				Message:   existing,
+				CreatedAt: existing.CreatedAt,
+			}); err != nil {
+				_ = tx.Rollback()
+				return state.Message{}, err
+			}
 			if err := tx.Commit(); err != nil {
 				return state.Message{}, err
 			}
@@ -862,6 +882,16 @@ WHERE user_id = ? AND session_id = ?`),
 		userID,
 		sessionID,
 	); err != nil {
+		_ = tx.Rollback()
+		return state.Message{}, err
+	}
+	if err := enqueueSQLMessageEventTx(ctx, tx, s.dialect, MessageEvent{
+		Type:      MessageEventCreated,
+		UserID:    userID,
+		SessionID: sessionID,
+		Message:   message,
+		CreatedAt: message.CreatedAt,
+	}); err != nil {
 		_ = tx.Rollback()
 		return state.Message{}, err
 	}

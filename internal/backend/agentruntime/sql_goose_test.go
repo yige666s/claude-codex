@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"claude-codex/internal/harness/state"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -28,12 +30,14 @@ func TestRunPostgresGooseMigrationsFreshSchema(t *testing.T) {
 		"agent_sessions",
 		"agent_messages",
 		"agent_message_attachments",
+		"agent_message_event_outbox",
 		"agent_audit_logs",
 		"agent_users",
 		"agent_refresh_tokens",
 		"agent_artifacts",
 		"agent_jobs",
 		"agent_job_events",
+		"agent_job_queue_outbox",
 		"agent_skills",
 		"agent_skill_executions",
 		"agent_eval_runs",
@@ -65,6 +69,143 @@ func TestRunPostgresGooseMigrationsFreshSchema(t *testing.T) {
 	assertPostgresColumnExists(t, db, "agent_jobs", "execution_epoch")
 	assertPostgresColumnExists(t, db, "agent_jobs", "execution_lease_expires_at")
 	assertPostgresGooseAtLatest(t, db)
+}
+
+func TestSQLMessageAppendCreatesDurableEventOutbox(t *testing.T) {
+	db := openPostgresMigrationTestDB(t)
+	ctx := context.Background()
+	if err := RunPostgresGooseMigrations(ctx, db, SQLDialectPostgres); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	store := NewSQLSessionStoreWithDialect(db, SQLDialectPostgres)
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("init session store: %v", err)
+	}
+	session, err := store.Create(ctx, "outbox-user", "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	message, err := store.AppendMessage(ctx, "outbox-user", session.ID, state.Message{
+		ID:          "message-outbox-" + newSortableID(),
+		Role:        state.MessageRoleUser,
+		ContentType: state.MessageContentTypeText,
+		Content:     "durable event",
+	})
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `
+SELECT count(*)
+FROM agent_message_event_outbox
+WHERE event_id = $1 AND message_id = $2 AND published_at IS NULL
+`, messageEventOutboxID(MessageEventCreated, message.ID), message.ID).Scan(&count); err != nil {
+		t.Fatalf("count message outbox: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("message outbox count = %d, want 1", count)
+	}
+	items, err := store.ClaimMessageEventOutbox(ctx, "message-publisher", time.Minute, 10)
+	if err != nil {
+		t.Fatalf("claim message outbox: %v", err)
+	}
+	var claimed *MessageEventOutboxItem
+	for i := range items {
+		if items[i].ID == messageEventOutboxID(MessageEventCreated, message.ID) {
+			claimed = &items[i]
+			break
+		}
+	}
+	if claimed == nil || claimed.Event.Message.ID != message.ID {
+		t.Fatalf("claimed message outbox = %#v", items)
+	}
+	if err := store.MarkMessageEventOutboxPublished(ctx, claimed.ID, "message-publisher"); err != nil {
+		t.Fatalf("mark message event published: %v", err)
+	}
+}
+
+func TestSQLJobSchedulingAndTerminalEventAreDurable(t *testing.T) {
+	db := openPostgresMigrationTestDB(t)
+	ctx := context.Background()
+	if err := RunPostgresGooseMigrations(ctx, db, SQLDialectPostgres); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	store := NewSQLJobStoreWithDialect(db, SQLDialectPostgres)
+	if err := store.Init(ctx); err != nil {
+		t.Fatalf("init job store: %v", err)
+	}
+	now := time.Now().UTC().Add(-10 * time.Second)
+	job := &Job{
+		ID:        NewJobID(),
+		UserID:    "job-outbox-user",
+		SessionID: "job-outbox-session",
+		Type:      JobTypeChat,
+		Status:    JobStatusQueued,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	recovered, err := store.RecoverJobQueueOutbox(ctx, time.Now().UTC(), 10)
+	if err != nil || recovered < 1 {
+		t.Fatalf("recover queued job outbox = %d, %v", recovered, err)
+	}
+	items, err := store.ClaimJobQueueOutbox(ctx, "job-publisher", time.Minute, 10)
+	if err != nil {
+		t.Fatalf("claim job outbox: %v", err)
+	}
+	var claimed bool
+	for _, item := range items {
+		if item.Item.JobID == job.ID {
+			claimed = true
+			if err := store.MarkJobQueueOutboxPublished(ctx, job.ID, "job-publisher"); err != nil {
+				t.Fatalf("mark job outbox published: %v", err)
+			}
+		}
+	}
+	if !claimed {
+		t.Fatalf("job %s was not claimed from outbox: %#v", job.ID, items)
+	}
+
+	leaseNow := time.Now().UTC()
+	acquired, err := store.AcquireJobExecutionLease(ctx, job.UserID, job.ID, "job-owner", leaseNow, leaseNow.Add(time.Minute))
+	if err != nil || !acquired {
+		t.Fatalf("acquire job lease = %t, %v", acquired, err)
+	}
+	duplicateID := NewJobEventID()
+	existing := &JobEvent{
+		ID: duplicateID, JobID: job.ID, UserID: job.UserID, SessionID: job.SessionID,
+		Type: "progress", Event: Event{Type: "progress", JobID: job.ID}, CreatedAt: leaseNow,
+	}
+	if err := store.AddJobEvent(ctx, existing); err != nil {
+		t.Fatalf("insert existing job event: %v", err)
+	}
+	terminal := &JobEvent{
+		ID: duplicateID, JobID: job.ID, UserID: job.UserID, SessionID: job.SessionID,
+		Type: "done", Event: Event{Type: "done", JobID: job.ID}, CreatedAt: leaseNow.Add(time.Second),
+	}
+	updated, err := store.TransitionOwnedJobStatusWithEvent(
+		ctx, job.UserID, job.ID, "job-owner", JobStatusSucceeded, "", leaseNow.Add(time.Second), terminal,
+	)
+	if err == nil || updated {
+		t.Fatalf("duplicate terminal event transition = %t, %v; want rollback", updated, err)
+	}
+	loaded, err := store.GetJob(ctx, job.UserID, job.ID)
+	if err != nil || loaded.Status != JobStatusRunning {
+		t.Fatalf("job status after rolled-back terminal = %#v, %v", loaded, err)
+	}
+	terminal.ID = NewJobEventID()
+	updated, err = store.TransitionOwnedJobStatusWithEvent(
+		ctx, job.UserID, job.ID, "job-owner", JobStatusSucceeded, "", leaseNow.Add(2*time.Second), terminal,
+	)
+	if err != nil || !updated {
+		t.Fatalf("terminal transition = %t, %v", updated, err)
+	}
+	loaded, err = store.GetJob(ctx, job.UserID, job.ID)
+	if err != nil || loaded.Status != JobStatusSucceeded {
+		t.Fatalf("final job status = %#v, %v", loaded, err)
+	}
 }
 
 func TestSQLJobExecutionLeaseFencesOwnersPostgres(t *testing.T) {

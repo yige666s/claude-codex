@@ -654,6 +654,26 @@ type terminalStatusCheckingJobStore struct {
 	terminalStatuses []string
 }
 
+func (s *terminalStatusCheckingJobStore) TransitionOwnedJobStatusWithEvent(
+	ctx context.Context,
+	userID, jobID, owner, status, errorText string,
+	at time.Time,
+	event *JobEvent,
+) (bool, error) {
+	updated, err := s.MemoryJobStore.TransitionOwnedJobStatusWithEvent(ctx, userID, jobID, owner, status, errorText, at, event)
+	if err != nil || !updated {
+		return updated, err
+	}
+	job, err := s.MemoryJobStore.GetJob(ctx, userID, jobID)
+	if err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	s.terminalStatuses = append(s.terminalStatuses, job.Status)
+	s.mu.Unlock()
+	return true, nil
+}
+
 type leaseFailingJobQueue struct {
 	*captureJobQueue
 }
