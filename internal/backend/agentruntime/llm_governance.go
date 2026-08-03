@@ -29,9 +29,17 @@ type LLMScope struct {
 	SkillName        string
 	SkillLongRunning bool
 	RequestID        string
+	quotaAdmission   *llmQuotaAdmission
 }
 
 func WithLLMScope(ctx context.Context, scope LLMScope) context.Context {
+	if scope.quotaAdmission == nil {
+		if parent, ok := ctx.Value(llmScopeContextKey{}).(LLMScope); ok && parent.quotaAdmission != nil {
+			scope.quotaAdmission = parent.quotaAdmission
+		} else {
+			scope.quotaAdmission = &llmQuotaAdmission{}
+		}
+	}
 	return context.WithValue(ctx, llmScopeContextKey{}, scope)
 }
 
@@ -41,6 +49,27 @@ func llmScopeFromContext(ctx context.Context) LLMScope {
 		scope.RequestID = requestIDFromContext(ctx)
 	}
 	return scope
+}
+
+type llmQuotaAdmission struct {
+	mu       sync.Mutex
+	admitted bool
+}
+
+func (a *llmQuotaAdmission) admitIfAllowed(check func() error) error {
+	if a == nil {
+		return check()
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.admitted {
+		return nil
+	}
+	if err := check(); err != nil {
+		return err
+	}
+	a.admitted = true
+	return nil
 }
 
 type LLMGovernanceConfig struct {
@@ -554,20 +583,22 @@ func (p *GovernedPlanner) checkQuota(ctx context.Context, scope LLMScope) error 
 	if p.config.DailyTokenQuota <= 0 && p.config.DailyRequestQuota <= 0 && p.config.DailyCostQuotaUSD <= 0 {
 		return nil
 	}
-	summary, err := p.store.SumLLMUsage(ctx, scope.UserID, startOfUTCDay(time.Now()))
-	if err != nil {
-		return fmt.Errorf("check llm quota: %w", err)
-	}
-	if p.config.DailyRequestQuota > 0 && summary.Requests >= p.config.DailyRequestQuota {
-		return fmt.Errorf("daily LLM request quota exceeded")
-	}
-	if p.config.DailyTokenQuota > 0 && summary.TotalTokens >= p.config.DailyTokenQuota {
-		return fmt.Errorf("daily LLM token quota exceeded")
-	}
-	if p.config.DailyCostQuotaUSD > 0 && summary.EstimatedCostUSD >= p.config.DailyCostQuotaUSD {
-		return fmt.Errorf("daily LLM cost quota exceeded")
-	}
-	return nil
+	return scope.quotaAdmission.admitIfAllowed(func() error {
+		summary, err := p.store.SumLLMUsage(ctx, scope.UserID, startOfUTCDay(time.Now()))
+		if err != nil {
+			return fmt.Errorf("check llm quota: %w", err)
+		}
+		if p.config.DailyRequestQuota > 0 && summary.Requests >= p.config.DailyRequestQuota {
+			return fmt.Errorf("daily LLM request quota exceeded")
+		}
+		if p.config.DailyTokenQuota > 0 && summary.TotalTokens >= p.config.DailyTokenQuota {
+			return fmt.Errorf("daily LLM token quota exceeded")
+		}
+		if p.config.DailyCostQuotaUSD > 0 && summary.EstimatedCostUSD >= p.config.DailyCostQuotaUSD {
+			return fmt.Errorf("daily LLM cost quota exceeded")
+		}
+		return nil
+	})
 }
 
 func (p *GovernedPlanner) record(ctx context.Context, scope LLMScope, backend LLMBackend, attempt int, status, errorText string, inputTokens, outputTokens int, latencyMs, ttftMs int64) error {

@@ -51,7 +51,10 @@ SELECT
 	created_at,
 	updated_at,
 	started_at,
-	finished_at
+	finished_at,
+	execution_owner,
+	execution_epoch,
+	execution_lease_expires_at
 FROM agent_jobs
 WHERE user_id = $1
   AND job_id = $2
@@ -79,6 +82,9 @@ func (q *Queries) GetJob(ctx context.Context, arg GetJobParams) (AgentJob, error
 		&i.UpdatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.ExecutionOwner,
+		&i.ExecutionEpoch,
+		&i.ExecutionLeaseExpiresAt,
 	)
 	return i, err
 }
@@ -267,7 +273,10 @@ SELECT
 	created_at,
 	updated_at,
 	started_at,
-	finished_at
+	finished_at,
+	execution_owner,
+	execution_epoch,
+	execution_lease_expires_at
 FROM agent_jobs
 WHERE user_id = $1
   AND ($2::text = '' OR session_id = $2::text)
@@ -302,6 +311,9 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]AgentJob,
 			&i.UpdatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.ExecutionOwner,
+			&i.ExecutionEpoch,
+			&i.ExecutionLeaseExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -348,7 +360,9 @@ SET status = $1,
 	error = $2,
 	updated_at = $3,
 	started_at = COALESCE(started_at, $4),
-	finished_at = COALESCE($5, finished_at)
+	finished_at = COALESCE($5, finished_at),
+	execution_owner = CASE WHEN $1 IN ('succeeded', 'failed', 'cancelled') THEN '' ELSE execution_owner END,
+	execution_lease_expires_at = CASE WHEN $1 IN ('succeeded', 'failed', 'cancelled') THEN NULL ELSE execution_lease_expires_at END
 WHERE user_id = $6
   AND job_id = $7
 `

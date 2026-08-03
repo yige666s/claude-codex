@@ -43,12 +43,13 @@ type SummaryGenerator interface {
 }
 
 type LLMSummaryGenerator struct {
-	RunnerFactory EngineFactory
-	Scope         Scope
+	RunnerFactory        any
+	ContextRunnerFactory ContextEngineFactory
+	Scope                Scope
 }
 
 func (g LLMSummaryGenerator) GenerateSummary(ctx context.Context, userID, sessionID string, messages []state.Message) (string, error) {
-	if g.RunnerFactory == nil {
+	if g.ContextRunnerFactory == nil && g.RunnerFactory == nil {
 		return "", fmt.Errorf("runner factory is required")
 	}
 	scope := g.Scope
@@ -58,7 +59,36 @@ func (g LLMSummaryGenerator) GenerateSummary(ctx context.Context, userID, sessio
 	if scope.SessionID == "" {
 		scope.SessionID = sessionID
 	}
-	runner := g.RunnerFactory(scope)
+	var (
+		runner Runner
+		err    error
+	)
+	if g.ContextRunnerFactory != nil {
+		runner, err = g.ContextRunnerFactory(ctx, scope)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		switch factory := g.RunnerFactory.(type) {
+		case nil:
+		case EngineFactory:
+			runner = factory(scope)
+		case ContextEngineFactory:
+			runner, err = factory(ctx, scope)
+			if err != nil {
+				return "", err
+			}
+		case func(scope Scope) Runner:
+			runner = factory(scope)
+		case func(context.Context, Scope) (Runner, error):
+			runner, err = factory(ctx, scope)
+			if err != nil {
+				return "", err
+			}
+		default:
+			return "", fmt.Errorf("unsupported runner factory type %T", g.RunnerFactory)
+		}
+	}
 	if runner == nil {
 		return "", fmt.Errorf("summary runner is required")
 	}
@@ -114,8 +144,13 @@ func (s *ContextCompactionService) Compact(ctx context.Context, userID, sessionI
 		return ContextCompactionResult{}, fmt.Errorf("session ID is required")
 	}
 	opts = normalizeContextCompactionOptions(opts)
+	// Read one message beyond the configured count limit so message-count based
+	// compaction can be detected instead of silently dropping older context from
+	// the load window. The latest summary is loaded separately because it may be
+	// older than that window and still needs to be folded into the replacement
+	// summary.
 	messages, err := s.loader.LoadContext(ctx, userID, sessionID, SessionLoadOptions{
-		MaxMessages:   opts.MaxMessages,
+		MaxMessages:   opts.MaxMessages + 1,
 		MaxTokens:     1 << 30,
 		LoadStrategy:  SessionLoadStrategyRecent,
 		IncludeSystem: opts.IncludeSystem,
@@ -123,8 +158,15 @@ func (s *ContextCompactionService) Compact(ctx context.Context, userID, sessionI
 	if err != nil {
 		return ContextCompactionResult{}, err
 	}
+	if opts.IncludeSystem {
+		if summary, ok, summaryErr := s.loader.loadLatestSummary(ctx, userID, sessionID, messages); summaryErr != nil {
+			return ContextCompactionResult{}, summaryErr
+		} else if ok {
+			messages = prependMessageIfMissing(summary, messages)
+		}
+	}
 	tokensBefore := estimateMessagesTokens(messages)
-	if tokensBefore <= opts.MaxTokens {
+	if tokensBefore <= opts.MaxTokens && activeOrdinaryMessageCount(messages) <= opts.MaxMessages {
 		return ContextCompactionResult{TokensBefore: tokensBefore, TokensAfter: tokensBefore}, nil
 	}
 	overflow, preserved := splitMessagesForCompaction(messages, opts)
@@ -136,29 +178,51 @@ func (s *ContextCompactionService) Compact(ctx context.Context, userID, sessionI
 		return ContextCompactionResult{}, err
 	}
 	ids := messageIDs(overflow)
-	marked, err := s.marker.MarkMessagesContextUnused(ctx, userID, sessionID, ids)
-	if err != nil {
-		return ContextCompactionResult{}, err
+	summaryMessage := state.Message{
+		Role:          state.MessageRoleSystem,
+		ContentType:   state.MessageContentTypeSummary,
+		Content:       "[历史摘要] " + summary,
+		Status:        state.MessageStatusNormal,
+		IsContextUsed: true,
+		CreatedAt:     s.now(),
 	}
-	summaryMessage, err := s.writer.Write(ctx, MessageWriteRequest{
+	if compactor, ok := any(s.writer.repo).(MessageContextCompactionWriter); ok {
+		created, marked, err := compactor.WriteSummaryAndMarkMessagesContextUnused(ctx, userID, sessionID, summaryMessage, ids)
+		if err != nil {
+			return ContextCompactionResult{}, err
+		}
+		if err := s.writer.applyCreatedMessageSideEffects(ctx, created, true); err != nil {
+			return ContextCompactionResult{}, err
+		}
+		tokensAfter := created.EstimateTokens() + estimateMessagesTokens(preserved)
+		return ContextCompactionResult{
+			Compacted:       true,
+			SummaryMessage:  &created,
+			CompactedCount:  len(overflow),
+			TokensBefore:    tokensBefore,
+			TokensAfter:     tokensAfter,
+			MarkedTruncated: marked,
+		}, nil
+	}
+	created, err := s.writer.persist(ctx, MessageWriteRequest{
 		UserID:    userID,
 		SessionID: sessionID,
-		Message: state.Message{
-			Role:          state.MessageRoleSystem,
-			ContentType:   state.MessageContentTypeSummary,
-			Content:       "[历史摘要] " + summary,
-			Status:        state.MessageStatusNormal,
-			IsContextUsed: true,
-			CreatedAt:     s.now(),
-		},
+		Message:   summaryMessage,
 	})
 	if err != nil {
 		return ContextCompactionResult{}, err
 	}
-	tokensAfter := summaryMessage.EstimateTokens() + estimateMessagesTokens(preserved)
+	marked, err := s.marker.MarkMessagesContextUnused(ctx, userID, sessionID, ids)
+	if err != nil {
+		return ContextCompactionResult{}, err
+	}
+	if err := s.writer.applyCreatedMessageSideEffects(ctx, created, true); err != nil {
+		return ContextCompactionResult{}, err
+	}
+	tokensAfter := created.EstimateTokens() + estimateMessagesTokens(preserved)
 	return ContextCompactionResult{
 		Compacted:       true,
-		SummaryMessage:  &summaryMessage,
+		SummaryMessage:  &created,
 		CompactedCount:  len(overflow),
 		TokensBefore:    tokensBefore,
 		TokensAfter:     tokensAfter,
@@ -191,6 +255,7 @@ func normalizeContextCompactionOptions(opts ContextCompactionOptions) ContextCom
 
 func splitMessagesForCompaction(messages []state.Message, opts ContextCompactionOptions) ([]state.Message, []state.Message) {
 	candidates := make([]state.Message, 0, len(messages))
+	previousSummaries := make([]state.Message, 0, 1)
 	for _, message := range messages {
 		if message.Status != 0 && message.Status != state.MessageStatusNormal {
 			continue
@@ -198,21 +263,43 @@ func splitMessagesForCompaction(messages []state.Message, opts ContextCompaction
 		if !message.IsContextUsed {
 			continue
 		}
-		if message.ContentType == state.MessageContentTypeSummary || message.Role == state.MessageRoleSystem {
+		if message.ContentType == state.MessageContentTypeSummary {
+			previousSummaries = append(previousSummaries, message)
+			continue
+		}
+		if message.Role == state.MessageRoleSystem {
 			continue
 		}
 		candidates = append(candidates, message)
 	}
 	if len(candidates) <= opts.PreserveRecent {
-		return nil, candidates
+		if len(previousSummaries) == 0 {
+			return nil, candidates
+		}
+		return previousSummaries, candidates
 	}
 	preserved := append([]state.Message(nil), candidates[len(candidates)-opts.PreserveRecent:]...)
-	overflow := append([]state.Message(nil), candidates[:len(candidates)-opts.PreserveRecent]...)
+	overflow := append([]state.Message(nil), previousSummaries...)
+	overflow = append(overflow, candidates[:len(candidates)-opts.PreserveRecent]...)
 	for estimateMessagesTokens(preserved) > opts.TargetTokens && len(preserved) > 1 {
 		overflow = append(overflow, preserved[0])
 		preserved = preserved[1:]
 	}
 	return overflow, preserved
+}
+
+func activeOrdinaryMessageCount(messages []state.Message) int {
+	count := 0
+	for _, message := range messages {
+		if message.Status != 0 && message.Status != state.MessageStatusNormal {
+			continue
+		}
+		if !message.IsContextUsed || message.ContentType == state.MessageContentTypeSummary || message.Role == state.MessageRoleSystem {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func buildContextSummaryPrompt(messages []state.Message) string {

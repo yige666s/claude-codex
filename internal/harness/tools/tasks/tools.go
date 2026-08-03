@@ -436,9 +436,12 @@ func (t *taskCreateTool) Execute(_ context.Context, raw json.RawMessage) (toolki
 	})
 }
 
-type taskGetTool struct{}
+type taskGetTool struct{ manager *coretasks.TaskManager }
 
-func NewTaskGetTool() toolkit.Tool { return &taskGetTool{} }
+func NewTaskGetTool() toolkit.Tool { return NewTaskGetToolWithManager(coretasks.DefaultManager()) }
+func NewTaskGetToolWithManager(manager *coretasks.TaskManager) toolkit.Tool {
+	return &taskGetTool{manager: manager}
+}
 
 func (t *taskGetTool) Name() string { return "TaskGet" }
 func (t *taskGetTool) Description() string {
@@ -450,6 +453,13 @@ func (t *taskGetTool) InputSchema() json.RawMessage {
 func (t *taskGetTool) Permission() permissions.Level { return permissions.LevelRead }
 func (t *taskGetTool) IsConcurrencySafe() bool       { return true }
 
+func (t *taskGetTool) taskManager() *coretasks.TaskManager {
+	if t != nil && t.manager != nil {
+		return t.manager
+	}
+	return coretasks.DefaultManager()
+}
+
 func (t *taskGetTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Result, error) {
 	var in struct {
 		TaskID string `json:"taskId"`
@@ -457,7 +467,7 @@ func (t *taskGetTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.R
 	if err := decodeStrict(raw, &in); err != nil {
 		return toolkit.Result{}, err
 	}
-	if runtimeTask, ok := coretasks.DefaultManager().GetTask(in.TaskID); ok {
+	if runtimeTask, ok := t.taskManager().GetTask(in.TaskID); ok {
 		return writeJSON(map[string]any{"task": runtimeTaskOutputPayload(runtimeTask)})
 	}
 	task, err := readTask(currentTaskListID(), in.TaskID)
@@ -479,9 +489,12 @@ func (t *taskGetTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.R
 	})
 }
 
-type taskListTool struct{}
+type taskListTool struct{ manager *coretasks.TaskManager }
 
-func NewTaskListTool() toolkit.Tool { return &taskListTool{} }
+func NewTaskListTool() toolkit.Tool { return NewTaskListToolWithManager(coretasks.DefaultManager()) }
+func NewTaskListToolWithManager(manager *coretasks.TaskManager) toolkit.Tool {
+	return &taskListTool{manager: manager}
+}
 
 func (t *taskListTool) Name() string { return "TaskList" }
 func (t *taskListTool) Description() string {
@@ -492,6 +505,13 @@ func (t *taskListTool) InputSchema() json.RawMessage {
 }
 func (t *taskListTool) Permission() permissions.Level { return permissions.LevelRead }
 func (t *taskListTool) IsConcurrencySafe() bool       { return true }
+
+func (t *taskListTool) taskManager() *coretasks.TaskManager {
+	if t != nil && t.manager != nil {
+		return t.manager
+	}
+	return coretasks.DefaultManager()
+}
 
 func (t *taskListTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Result, error) {
 	var in struct{}
@@ -517,7 +537,8 @@ func (t *taskListTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.
 		Owner     string     `json:"owner,omitempty"`
 		BlockedBy []string   `json:"blockedBy"`
 	}
-	output := make([]any, 0, len(allTasks)+len(coretasks.DefaultManager().ListTasks()))
+	manager := t.taskManager()
+	output := make([]any, 0, len(allTasks)+len(manager.ListTasks()))
 	for _, task := range allTasks {
 		if internal, _ := task.Metadata["_internal"].(bool); internal {
 			continue
@@ -536,7 +557,7 @@ func (t *taskListTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.
 			BlockedBy: blockedBy,
 		})
 	}
-	for _, task := range coretasks.DefaultManager().ListTasks() {
+	for _, task := range manager.ListTasks() {
 		output = append(output, runtimeTaskOutputPayload(task))
 	}
 	return writeJSON(map[string]any{"tasks": output})
@@ -714,9 +735,12 @@ func (t *taskUpdateTool) Execute(_ context.Context, raw json.RawMessage) (toolki
 	return writeJSON(result)
 }
 
-type taskStopTool struct{}
+type taskStopTool struct{ manager *coretasks.TaskManager }
 
-func NewTaskStopTool() toolkit.Tool { return &taskStopTool{} }
+func NewTaskStopTool() toolkit.Tool { return NewTaskStopToolWithManager(coretasks.DefaultManager()) }
+func NewTaskStopToolWithManager(manager *coretasks.TaskManager) toolkit.Tool {
+	return &taskStopTool{manager: manager}
+}
 
 func (t *taskStopTool) Name() string { return "TaskStop" }
 func (t *taskStopTool) Description() string {
@@ -727,6 +751,13 @@ func (t *taskStopTool) InputSchema() json.RawMessage {
 }
 func (t *taskStopTool) Permission() permissions.Level { return permissions.LevelWrite }
 func (t *taskStopTool) IsConcurrencySafe() bool       { return true }
+
+func (t *taskStopTool) taskManager() *coretasks.TaskManager {
+	if t != nil && t.manager != nil {
+		return t.manager
+	}
+	return coretasks.DefaultManager()
+}
 
 func (t *taskStopTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.Result, error) {
 	var in struct {
@@ -743,11 +774,12 @@ func (t *taskStopTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.
 	if id == "" {
 		return toolkit.Result{}, fmt.Errorf("missing required parameter: task_id")
 	}
-	if runtimeTask, ok := coretasks.DefaultManager().GetTask(id); ok {
+	manager := t.taskManager()
+	if runtimeTask, ok := manager.GetTask(id); ok {
 		if runtimeTask.GetStatus() != coretasks.TaskStatusRunning {
 			return toolkit.Result{}, fmt.Errorf("task %s is not running (status: %s)", id, runtimeTask.GetStatus())
 		}
-		if err := coretasks.DefaultManager().KillTask(id, func(updater func(prev interface{}) interface{}) {}); err != nil {
+		if err := manager.KillTask(id, func(updater func(prev interface{}) interface{}) {}); err != nil {
 			return toolkit.Result{}, err
 		}
 		return writeJSON(map[string]any{
@@ -782,9 +814,14 @@ func (t *taskStopTool) Execute(_ context.Context, raw json.RawMessage) (toolkit.
 	})
 }
 
-type taskOutputTool struct{}
+type taskOutputTool struct{ manager *coretasks.TaskManager }
 
-func NewTaskOutputTool() toolkit.Tool { return &taskOutputTool{} }
+func NewTaskOutputTool() toolkit.Tool {
+	return NewTaskOutputToolWithManager(coretasks.DefaultManager())
+}
+func NewTaskOutputToolWithManager(manager *coretasks.TaskManager) toolkit.Tool {
+	return &taskOutputTool{manager: manager}
+}
 
 func (t *taskOutputTool) Name() string { return "TaskOutput" }
 func (t *taskOutputTool) Description() string {
@@ -795,6 +832,13 @@ func (t *taskOutputTool) InputSchema() json.RawMessage {
 }
 func (t *taskOutputTool) Permission() permissions.Level { return permissions.LevelRead }
 func (t *taskOutputTool) IsConcurrencySafe() bool       { return true }
+
+func (t *taskOutputTool) taskManager() *coretasks.TaskManager {
+	if t != nil && t.manager != nil {
+		return t.manager
+	}
+	return coretasks.DefaultManager()
+}
 
 func (t *taskOutputTool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result, error) {
 	var in struct {
@@ -813,7 +857,7 @@ func (t *taskOutputTool) Execute(ctx context.Context, raw json.RawMessage) (tool
 	if in.Timeout != nil {
 		timeoutMs = *in.Timeout
 	}
-	if _, ok := coretasks.DefaultManager().GetTask(in.TaskID); ok {
+	if _, ok := t.taskManager().GetTask(in.TaskID); ok {
 		return t.executeRuntimeTaskOutput(ctx, in.TaskID, block, timeoutMs)
 	}
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
@@ -864,8 +908,9 @@ func (t *taskOutputTool) Execute(ctx context.Context, raw json.RawMessage) (tool
 
 func (t *taskOutputTool) executeRuntimeTaskOutput(ctx context.Context, taskID string, block bool, timeoutMs int) (toolkit.Result, error) {
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	manager := t.taskManager()
 	for {
-		task, ok := coretasks.DefaultManager().GetTask(taskID)
+		task, ok := manager.GetTask(taskID)
 		if !ok {
 			return toolkit.Result{}, fmt.Errorf("no task found with ID: %s", taskID)
 		}

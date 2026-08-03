@@ -2,6 +2,7 @@ package prefetch
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -13,16 +14,10 @@ type MemoryPrefetch struct {
 	// Result channel that delivers the memory attachments
 	ResultChan <-chan []MemoryAttachment
 
-	// SettledAt is set when the prefetch completes (success or error)
-	// nil until the promise settles
-	SettledAt *time.Time
-
-	// ConsumedOnIteration tracks which iteration consumed this prefetch
-	// -1 until consumed
-	ConsumedOnIteration int
-
-	// Error holds any error that occurred during prefetch
-	Error error
+	mu                  sync.RWMutex
+	settledAt           *time.Time
+	consumedOnIteration int
+	err                 error
 
 	// cancel function to abort the prefetch
 	cancel context.CancelFunc
@@ -64,26 +59,94 @@ func DefaultPrefetchConfig() *PrefetchConfig {
 // Dispose cancels the prefetch and emits terminal telemetry.
 // This is called automatically when the prefetch is no longer needed.
 func (p *MemoryPrefetch) Dispose() {
+	if p == nil {
+		return
+	}
 	if p.cancel != nil {
 		p.cancel()
 	}
 
 	// Emit telemetry
 	latencyMs := time.Since(p.firedAt).Milliseconds()
-	hiddenByFirstIteration := p.SettledAt != nil && p.ConsumedOnIteration == 0
+	p.mu.RLock()
+	hiddenByFirstIteration := p.settledAt != nil && p.consumedOnIteration == 0
+	consumedOnIteration := p.consumedOnIteration
+	p.mu.RUnlock()
 
 	// Log telemetry event
-	logPrefetchTelemetry(hiddenByFirstIteration, p.ConsumedOnIteration, latencyMs)
+	logPrefetchTelemetry(hiddenByFirstIteration, consumedOnIteration, latencyMs)
 }
 
 // IsSettled returns true if the prefetch has completed.
 func (p *MemoryPrefetch) IsSettled() bool {
-	return p.SettledAt != nil
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.settledAt != nil
 }
 
 // IsConsumed returns true if the prefetch result has been consumed.
 func (p *MemoryPrefetch) IsConsumed() bool {
-	return p.ConsumedOnIteration >= 0
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.consumedOnIteration >= 0
+}
+
+// SettledAt returns when the prefetch completed.
+func (p *MemoryPrefetch) SettledAt() *time.Time {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.settledAt == nil {
+		return nil
+	}
+	settledAt := *p.settledAt
+	return &settledAt
+}
+
+// Error returns the terminal prefetch error, if any.
+func (p *MemoryPrefetch) Error() error {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.err
+}
+
+// ConsumedOnIteration reports the iteration that consumed the result.
+func (p *MemoryPrefetch) ConsumedOnIteration() int {
+	if p == nil {
+		return -1
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.consumedOnIteration
+}
+
+// MarkConsumed records which query iteration consumed the result.
+func (p *MemoryPrefetch) MarkConsumed(iteration int) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.consumedOnIteration = iteration
+	p.mu.Unlock()
+}
+
+func (p *MemoryPrefetch) settle(err error) {
+	now := time.Now()
+	p.mu.Lock()
+	p.settledAt = &now
+	p.err = err
+	p.mu.Unlock()
 }
 
 // logPrefetchTelemetry logs telemetry for memory prefetch.

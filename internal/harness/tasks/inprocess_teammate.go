@@ -146,6 +146,7 @@ func (m *TaskManager) StartInProcessTeammate(parent context.Context, opts StartI
 	}
 	m.AddTask(state)
 	upsertTeammateMember(teamName, state, opts.WorkingDir)
+	snapshot := cloneTaskState(state).(*InProcessTeammateTaskState)
 
 	go m.runInProcessTeammate(ctx, taskID, InProcessTeammateRunRequest{
 		TaskID:          taskID,
@@ -160,7 +161,7 @@ func (m *TaskManager) StartInProcessTeammate(parent context.Context, opts StartI
 		WorkingDir:      opts.WorkingDir,
 	}, opts.Runner, outputFile)
 
-	return state, nil
+	return snapshot, nil
 }
 
 func (m *TaskManager) runInProcessTeammate(ctx context.Context, taskID string, request InProcessTeammateRunRequest, runner InProcessTeammateRunner, outputFile string) {

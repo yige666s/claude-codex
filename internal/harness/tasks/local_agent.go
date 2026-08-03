@@ -137,6 +137,7 @@ func (m *TaskManager) StartLocalAgent(parent context.Context, opts StartLocalAge
 		Messages: []interface{}{},
 	}
 	m.AddTask(state)
+	snapshot := cloneTaskState(state).(*LocalAgentTaskState)
 
 	go m.runLocalAgent(ctx, taskID, LocalAgentRunRequest{
 		TaskID:          taskID,
@@ -149,7 +150,7 @@ func (m *TaskManager) StartLocalAgent(parent context.Context, opts StartLocalAge
 		WorkingDir:      opts.WorkingDir,
 	}, opts.Runner, outputFile)
 
-	return state, nil
+	return snapshot, nil
 }
 
 func (m *TaskManager) runLocalAgent(ctx context.Context, taskID string, request LocalAgentRunRequest, runner LocalAgentRunner, outputFile string) {

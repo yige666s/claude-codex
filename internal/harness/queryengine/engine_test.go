@@ -4,6 +4,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"claude-codex/internal/harness/state"
 	"claude-codex/internal/harness/tool"
 	toolkit "claude-codex/internal/harness/tools"
+	publictypes "claude-codex/internal/public/types"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -91,6 +93,18 @@ func (p adapterPlanner) Next(_ context.Context, session *state.Session, _ []tool
 	}, nil
 }
 
+type streamingAdapterPlanner struct{}
+
+func (streamingAdapterPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (plannerapi.Plan, error) {
+	return plannerapi.Plan{AssistantText: "hello", StopReason: "end_turn"}, nil
+}
+
+func (streamingAdapterPlanner) StreamNext(_ context.Context, _ *state.Session, _ []toolkit.Descriptor, onChunk func(string)) (plannerapi.Plan, error) {
+	onChunk("hel")
+	onChunk("lo")
+	return plannerapi.Plan{AssistantText: "hello", StopReason: "end_turn"}, nil
+}
+
 type terminalPlanner struct{}
 
 func (terminalPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (plannerapi.Plan, error) {
@@ -101,6 +115,25 @@ type emptyAdapterPlanner struct{}
 
 func (emptyAdapterPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (plannerapi.Plan, error) {
 	return plannerapi.Plan{StopReason: "end_turn"}, nil
+}
+
+type toolThenErrorPlanner struct {
+	calls int
+}
+
+func (p *toolThenErrorPlanner) Next(context.Context, *state.Session, []toolkit.Descriptor) (plannerapi.Plan, error) {
+	p.calls++
+	if p.calls == 1 {
+		return plannerapi.Plan{
+			ToolCalls: []plannerapi.ToolCall{{
+				ID:    "tool-1",
+				Name:  "external_write",
+				Input: json.RawMessage(`{"message":"hello"}`),
+			}},
+			StopReason: "tool_use",
+		}, nil
+	}
+	return plannerapi.Plan{}, errors.New("daily LLM token quota exceeded")
 }
 
 func TestNewQueryEngine_InitializesAdapter(t *testing.T) {
@@ -146,6 +179,49 @@ func TestSubmitMessage_PropagatesQueryModelErrors(t *testing.T) {
 	require.Equal(t, "error_during_execution", final.Subtype)
 	require.NotEmpty(t, final.Errors)
 	assert.Contains(t, final.Errors[0], "no assistant text or tool calls")
+}
+
+func TestSubmitMessage_PreservesToolEvidenceWhenFinalModelCallFails(t *testing.T) {
+	planner := &toolThenErrorPlanner{}
+	engine := NewQueryEngine(QueryEngineConfig{
+		Cwd:             t.TempDir(),
+		SessionID:       "partial-tool-session",
+		Planner:         planner,
+		FallbackModel:   "test-model",
+		ToolDescriptors: []toolkit.Descriptor{{Name: "external_write"}},
+		ExecuteTool: func(context.Context, string, string, []byte) (string, error) {
+			return `{"ok":true,"message":"sent"}`, nil
+		},
+		MaxTurns: 3,
+	})
+
+	stream, err := engine.SubmitMessage(context.Background(), "send message", nil)
+	require.NoError(t, err)
+	var final SDKMessage
+	for msg := range stream {
+		final = msg
+	}
+	require.True(t, final.IsError)
+
+	stored := engine.GetMessages()
+	var sawToolCall, sawToolResult bool
+	for _, message := range stored {
+		if message.Type == "assistant" {
+			blocks, _ := message.Content.([]publictypes.ContentBlock)
+			for _, block := range blocks {
+				sawToolCall = sawToolCall || block.Type == "tool_use" && block.Name == "external_write"
+			}
+		}
+		if message.Type == "user" {
+			blocks, _ := message.Content.([]publictypes.ContentBlock)
+			for _, block := range blocks {
+				sawToolResult = sawToolResult || block.Type == "tool_result" && block.ToolUseID == "tool-1" && block.Content != ""
+			}
+		}
+	}
+	if !sawToolCall || !sawToolResult {
+		t.Fatalf("partial tool evidence was lost after model failure: %#v", stored)
+	}
 }
 
 func TestNewQueryEngine_WithInitialMessages(t *testing.T) {
@@ -239,7 +315,7 @@ func TestQueryEngineSubmitMessage_RunsPlannerBackedRuntime(t *testing.T) {
 			},
 		},
 		ToolDescriptors: []toolkit.Descriptor{{Name: "fake_tool"}},
-		ExecuteTool: func(context.Context, string, []byte) (string, error) {
+		ExecuteTool: func(context.Context, string, string, []byte) (string, error) {
 			return "tool output", nil
 		},
 		MaxTurns: 3,
@@ -260,6 +336,43 @@ func TestQueryEngineSubmitMessage_RunsPlannerBackedRuntime(t *testing.T) {
 	require.NotEmpty(t, stored)
 	assert.Equal(t, "assistant", stored[len(stored)-1].Type)
 	assert.Equal(t, "handled: tool output", stored[len(stored)-1].Content)
+}
+
+func TestQueryEngineSubmitMessage_EmitsStreamingPlannerEventsWithoutPersistingThem(t *testing.T) {
+	engine := NewQueryEngine(QueryEngineConfig{
+		Cwd:           t.TempDir(),
+		SessionID:     "streaming-session",
+		FallbackModel: "claude-sonnet-4-6",
+		CanUseTool:    allowAllCanUseTool,
+		Planner:       streamingAdapterPlanner{},
+	})
+
+	ch, err := engine.SubmitMessage(context.Background(), "say hi", nil)
+	require.NoError(t, err)
+
+	var sawDelta bool
+	for msg := range ch {
+		if msg.Type != "stream_event" {
+			continue
+		}
+		event, ok := msg.Event.(map[string]any)
+		require.True(t, ok)
+		if event["type"] != "content_block_delta" {
+			continue
+		}
+		delta, ok := event["delta"].(map[string]any)
+		require.True(t, ok)
+		if delta["type"] == "text_delta" && delta["text"] == "hel" {
+			sawDelta = true
+		}
+	}
+	assert.True(t, sawDelta)
+
+	stored := engine.GetMessages()
+	require.Len(t, stored, 2)
+	assert.Equal(t, "user", stored[0].Type)
+	assert.Equal(t, "assistant", stored[1].Type)
+	assert.Equal(t, "hello", stored[1].Content)
 }
 
 func TestQueryEngineSubmitMessage_ParsesTokenBudget(t *testing.T) {

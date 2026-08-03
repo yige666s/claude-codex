@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"claude-codex/internal/harness/engine"
@@ -64,6 +65,89 @@ func TestMemoryRuntimeOutputStoreReserveChatTurnIsIdempotent(t *testing.T) {
 	}
 	if second.RunID != first.RunID {
 		t.Fatalf("duplicate run id = %q, want %q", second.RunID, first.RunID)
+	}
+}
+
+func TestMemoryRuntimeOutputStoreRejectsConcurrentSessionTurn(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryRuntimeOutputStore()
+	first, err := store.ReserveChatTurn(ctx, ChatTurnReservation{
+		UserID:         "user-1",
+		SessionID:      "sess-1",
+		IdempotencyKey: "idem-1",
+		RunID:          "run-1",
+	})
+	if err != nil || !first.Reserved {
+		t.Fatalf("first ReserveChatTurn() = %#v, %v", first, err)
+	}
+	if _, err := store.ReserveChatTurn(ctx, ChatTurnReservation{
+		UserID:         "user-1",
+		SessionID:      "sess-1",
+		IdempotencyKey: "idem-2",
+		RunID:          "run-2",
+	}); !errors.Is(err, ErrSessionTurnRunning) {
+		t.Fatalf("concurrent ReserveChatTurn() error = %v, want %v", err, ErrSessionTurnRunning)
+	}
+	if err := store.UpdateChatTurnReservationStatus(ctx, "user-1", "sess-1", "run-1", "succeeded"); err != nil {
+		t.Fatalf("finish first reservation: %v", err)
+	}
+	second, err := store.ReserveChatTurn(ctx, ChatTurnReservation{
+		UserID:         "user-1",
+		SessionID:      "sess-1",
+		IdempotencyKey: "idem-2",
+		RunID:          "run-2",
+	})
+	if err != nil || !second.Reserved {
+		t.Fatalf("second ReserveChatTurn() after release = %#v, %v", second, err)
+	}
+}
+
+func TestMemoryRuntimeOutputStoreAtomicallyHandsChatTurnToJob(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryRuntimeOutputStore()
+	first, err := store.ReserveChatTurn(ctx, ChatTurnReservation{
+		UserID:         "user-1",
+		SessionID:      "sess-1",
+		IdempotencyKey: "chat-1",
+		RunID:          "chat-run-1",
+	})
+	if err != nil || !first.Reserved {
+		t.Fatalf("reserve chat turn = %#v, %v", first, err)
+	}
+	jobReservation, err := store.HandoffChatTurn(ctx, first.RunID, ChatTurnReservation{
+		UserID:         "user-1",
+		SessionID:      "sess-1",
+		IdempotencyKey: "job:job-1",
+		RunID:          "job-1",
+	})
+	if err != nil || !jobReservation.Reserved {
+		t.Fatalf("handoff chat turn = %#v, %v", jobReservation, err)
+	}
+	repeated, err := store.HandoffChatTurn(ctx, first.RunID, ChatTurnReservation{
+		UserID:         "user-1",
+		SessionID:      "sess-1",
+		IdempotencyKey: "job:job-1",
+		RunID:          "job-1",
+	})
+	if err != nil || repeated.Reserved || repeated.RunID != jobReservation.RunID {
+		t.Fatalf("repeated handoff should adopt existing job reservation = %#v, %v", repeated, err)
+	}
+	if _, err := store.ReserveChatTurn(ctx, ChatTurnReservation{
+		UserID:         "user-1",
+		SessionID:      "sess-1",
+		IdempotencyKey: "chat-2",
+		RunID:          "chat-run-2",
+	}); !errors.Is(err, ErrSessionTurnRunning) {
+		t.Fatalf("concurrent turn after handoff error = %v, want %v", err, ErrSessionTurnRunning)
+	}
+	adopted, err := store.ReserveChatTurn(ctx, ChatTurnReservation{
+		UserID:         "user-1",
+		SessionID:      "sess-1",
+		IdempotencyKey: "job:job-1",
+		RunID:          "job-1",
+	})
+	if err != nil || adopted.Reserved || adopted.RunID != "job-1" || adopted.Status != "reserved" {
+		t.Fatalf("adopt handed-off job turn = %#v, %v", adopted, err)
 	}
 }
 

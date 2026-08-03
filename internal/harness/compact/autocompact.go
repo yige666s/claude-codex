@@ -145,27 +145,35 @@ func (ac *AutoCompactor) CompactMessages(
 		}, nil
 	}
 
-	// First try microcompact
-	microResult := MicrocompactMessages(messages, nil)
+	working := messages
+	totalSaved := 0
+	compactedCount := 0
+	threshold := ac.GetAutoCompactThreshold()
+
+	// First try microcompact. A partial reduction is not a completed compact if
+	// the resulting context is still above the auto-compact threshold.
+	microResult := MicrocompactMessages(working, nil)
 	if microResult.TokensSaved > 0 {
-		ac.RecordCompactionSuccess()
-		return &CompactionResult{
-			Messages:       microResult.Messages,
-			CompactedCount: len(microResult.DeletedToolIDs),
-			TokensSaved:    microResult.TokensSaved,
-		}, nil
+		working = microResult.Messages
+		totalSaved += microResult.TokensSaved
+		compactedCount += len(microResult.DeletedToolIDs)
+		if ac.config.CurrentTokenUsage-totalSaved < threshold {
+			ac.RecordCompactionSuccess()
+			return &CompactionResult{Messages: working, CompactedCount: compactedCount, TokensSaved: totalSaved}, nil
+		}
 	}
 
 	// If microcompact didn't help enough, try snip
 	snipConfig := DefaultSnipConfig()
-	snipResult, stats := SnipMessagesWithStats(messages, snipConfig)
+	snipResult, stats := SnipMessagesWithStats(working, snipConfig)
 	if stats.EstimatedTokensSaved > 0 {
-		ac.RecordCompactionSuccess()
-		return &CompactionResult{
-			Messages:       snipResult,
-			CompactedCount: stats.ToolResultsSnipped,
-			TokensSaved:    stats.EstimatedTokensSaved,
-		}, nil
+		working = snipResult
+		totalSaved += stats.EstimatedTokensSaved
+		compactedCount += stats.ToolResultsSnipped
+		if ac.config.CurrentTokenUsage-totalSaved < threshold {
+			ac.RecordCompactionSuccess()
+			return &CompactionResult{Messages: working, CompactedCount: compactedCount, TokensSaved: totalSaved}, nil
+		}
 	}
 
 	// If neither helped, we need full compaction (summarization)

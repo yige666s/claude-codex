@@ -27,17 +27,26 @@ type Event struct {
 }
 
 type ToolDefinition struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	InputSchema json.RawMessage  `json:"input_schema"`
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
+}
+
+// ToolAnnotations carries the MCP tool-behavior hints needed by the runtime's
+// permission boundary. A missing readOnlyHint remains conservative (execute).
+type ToolAnnotations struct {
+	Title        string `json:"title,omitempty"`
+	ReadOnlyHint bool   `json:"readOnlyHint,omitempty"`
 }
 
 func (t *ToolDefinition) UnmarshalJSON(data []byte) error {
 	type wireToolDefinition struct {
-		Name             string          `json:"name"`
-		Description      string          `json:"description"`
-		InputSchema      json.RawMessage `json:"input_schema"`
-		CamelInputSchema json.RawMessage `json:"inputSchema"`
+		Name             string           `json:"name"`
+		Description      string           `json:"description"`
+		InputSchema      json.RawMessage  `json:"input_schema"`
+		CamelInputSchema json.RawMessage  `json:"inputSchema"`
+		Annotations      *ToolAnnotations `json:"annotations,omitempty"`
 	}
 	var wire wireToolDefinition
 	if err := json.Unmarshal(data, &wire); err != nil {
@@ -46,6 +55,7 @@ func (t *ToolDefinition) UnmarshalJSON(data []byte) error {
 	t.Name = wire.Name
 	t.Description = wire.Description
 	t.InputSchema = wire.InputSchema
+	t.Annotations = wire.Annotations
 	if len(t.InputSchema) == 0 {
 		t.InputSchema = wire.CamelInputSchema
 	}

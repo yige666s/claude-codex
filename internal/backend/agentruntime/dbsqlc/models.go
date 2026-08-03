@@ -195,19 +195,22 @@ type AgentEvalRun struct {
 }
 
 type AgentJob struct {
-	JobID       string         `json:"job_id"`
-	UserID      string         `json:"user_id"`
-	SessionID   string         `json:"session_id"`
-	LoopGoalID  string         `json:"loop_goal_id"`
-	Type        string         `json:"type"`
-	Status      string         `json:"status"`
-	Content     sql.NullString `json:"content"`
-	Attachments string         `json:"attachments"`
-	Error       sql.NullString `json:"error"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	StartedAt   sql.NullTime   `json:"started_at"`
-	FinishedAt  sql.NullTime   `json:"finished_at"`
+	JobID                   string         `json:"job_id"`
+	UserID                  string         `json:"user_id"`
+	SessionID               string         `json:"session_id"`
+	LoopGoalID              string         `json:"loop_goal_id"`
+	Type                    string         `json:"type"`
+	Status                  string         `json:"status"`
+	Content                 sql.NullString `json:"content"`
+	Attachments             string         `json:"attachments"`
+	Error                   sql.NullString `json:"error"`
+	CreatedAt               time.Time      `json:"created_at"`
+	UpdatedAt               time.Time      `json:"updated_at"`
+	StartedAt               sql.NullTime   `json:"started_at"`
+	FinishedAt              sql.NullTime   `json:"finished_at"`
+	ExecutionOwner          string         `json:"execution_owner"`
+	ExecutionEpoch          int64          `json:"execution_epoch"`
+	ExecutionLeaseExpiresAt sql.NullTime   `json:"execution_lease_expires_at"`
 }
 
 type AgentJobEvent struct {

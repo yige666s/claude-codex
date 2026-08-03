@@ -11,6 +11,8 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	coreagent "claude-codex/internal/harness/agent"
+	"claude-codex/internal/harness/hooks"
+	mcpcore "claude-codex/internal/harness/mcp"
 	"claude-codex/internal/harness/messages"
 	"claude-codex/internal/harness/permissions"
 	"claude-codex/internal/harness/skills"
@@ -36,6 +38,8 @@ type Engine struct {
 	pendingProviders    []func(context.Context) []string
 	toolLedger          ToolLedger
 	defaultToolScope    ToolExecutionScope
+	mcpClients          []*mcpcore.Client
+	hookExecutor        *hooks.Executor
 }
 
 type Result struct {
@@ -137,13 +141,31 @@ func (e *Engine) SetSkillManager(sm *skills.SkillManager) {
 	e.skillManager = sm
 }
 
+// SetMCPClients stores MCP clients so query prompts can surface server instructions.
+func (e *Engine) SetMCPClients(clients []*mcpcore.Client) {
+	if e == nil {
+		return
+	}
+	if len(clients) == 0 {
+		e.mcpClients = nil
+		return
+	}
+	e.mcpClients = append([]*mcpcore.Client(nil), clients...)
+}
+
+func (e *Engine) SetHookExecutor(executor *hooks.Executor) {
+	if e != nil {
+		e.hookExecutor = executor
+	}
+}
+
 // UseLegacyRuntime keeps Engine on the existing planner-driven runtime.
 func (e *Engine) UseLegacyRuntime() {
 	e.runner = newLegacyRuntime(e)
 }
 
-// UseQueryRuntime switches Engine onto the TS-aligned queryengine -> query chain.
-// This is opt-in while the query runtime is still being brought to feature parity.
+// UseQueryRuntime restores Engine's default queryengine -> query execution path
+// after a caller explicitly selected the compatibility-only legacy runtime.
 func (e *Engine) UseQueryRuntime() {
 	e.runner = newQueryRuntime(e)
 }
@@ -169,140 +191,67 @@ func (e *Engine) RunGeneratedPrompt(ctx context.Context, session *state.Session,
 }
 
 func (e *Engine) RunStream(ctx context.Context, session *state.Session, prompt string, onToken func(string)) (Result, error) {
-	return e.runStream(ctx, session, prompt, true, onToken)
+	return e.runner.RunStream(ctx, session, prompt, true, onToken)
 }
 
 func (e *Engine) RunContentStream(ctx context.Context, session *state.Session, prompt []publictypes.ContentBlock, onToken func(string)) (Result, error) {
-	streamingPlanner, ok := e.planner.(StreamingPlanner)
+	return e.runner.RunStream(ctx, session, prompt, true, onToken)
+}
+
+func (e *Engine) RunGeneratedPromptStream(ctx context.Context, session *state.Session, prompt string, onToken func(string)) (Result, error) {
+	return e.runner.RunStream(ctx, session, prompt, false, onToken)
+}
+
+func (r *legacyRuntime) RunStream(ctx context.Context, session *state.Session, prompt interface{}, recordUserMessage bool, onToken func(string)) (Result, error) {
+	streamingPlanner, ok := r.engine.planner.(StreamingPlanner)
 	if !ok {
-		return e.RunContent(ctx, session, prompt)
+		return r.Run(ctx, session, prompt, recordUserMessage)
 	}
 	if session == nil {
 		return Result{}, fmt.Errorf("session is required")
 	}
 	promptText := promptToText(prompt)
 	interactionID := fmt.Sprintf("interaction-%d", time.Now().UnixNano())
-	e.recordTrace(session.ID, "interaction.start", "interaction", map[string]any{
+	r.engine.recordTrace(session.ID, "interaction.start", "interaction", map[string]any{
 		"span_id":       interactionID,
 		"prompt":        promptText,
 		"prompt_length": len(promptText),
-		"prompt_source": promptSource(true),
-		"working_dir":   session.WorkingDir,
-		"runtime":       "streaming_content",
-	})
-
-	e.ensureInitialModelContext(session)
-	session.AddUserContentMessage(promptText, prompt)
-
-	var output strings.Builder
-	for turn := 0; e.maxTurns <= 0 || turn < e.maxTurns; turn++ {
-		e.injectPendingMessages(ctx, session)
-		turnSpanID := fmt.Sprintf("%s:turn:%d", interactionID, turn)
-		e.recordTrace(session.ID, "planner.turn.start", "planner", map[string]any{
-			"span_id": turnSpanID,
-			"turn":    turn,
-			"tools":   len(e.registry.Descriptors()),
-		})
-		plan, err := streamingPlanner.StreamNext(ctx, session, e.registry.Descriptors(), func(token string) {
-			if token == "" {
-				return
-			}
-			output.WriteString(token)
-			if onToken != nil {
-				onToken(token)
-			}
-		})
-		if err != nil {
-			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
-				"span_id": interactionID,
-				"status":  "error",
-				"error":   err.Error(),
-				"runtime": "streaming_content",
-			})
-			return Result{}, err
-		}
-		e.recordTrace(session.ID, "planner.turn.end", "planner", map[string]any{
-			"span_id":         turnSpanID,
-			"turn":            turn,
-			"status":          "ok",
-			"tool_call_count": len(plan.ToolCalls),
-			"assistant_chars": len(plan.AssistantText),
-			"stop_reason":     plan.StopReason,
-		})
-
-		if len(plan.ToolCalls) == 0 {
-			if plan.AssistantText != "" {
-				session.AddAssistantMessage(plan.AssistantText)
-			}
-			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
-				"span_id":         interactionID,
-				"status":          "ok",
-				"tool_call_count": 0,
-				"output_chars":    len(plan.AssistantText),
-				"runtime":         "streaming_content",
-			})
-			return Result{Output: plan.AssistantText, Session: session}, nil
-		}
-
-		stateToolCalls := make([]state.ToolCall, len(plan.ToolCalls))
-		for i, tc := range plan.ToolCalls {
-			stateToolCalls[i] = state.ToolCall{ID: tc.ID, Name: tc.Name, Input: tc.Input, ThoughtSignature: tc.ThoughtSignature}
-		}
-		session.AddAssistantMessageWithTools(plan.AssistantText, stateToolCalls)
-		if err := e.executeToolCalls(ctx, session, plan.ToolCalls, interactionID); err != nil {
-			return Result{Output: output.String(), Session: session}, err
-		}
-	}
-	return Result{}, fmt.Errorf("planner exceeded max turns (%d)", e.maxTurns)
-}
-
-func (e *Engine) RunGeneratedPromptStream(ctx context.Context, session *state.Session, prompt string, onToken func(string)) (Result, error) {
-	return e.runStream(ctx, session, prompt, false, onToken)
-}
-
-func (e *Engine) runStream(ctx context.Context, session *state.Session, prompt string, recordUserMessage bool, onToken func(string)) (Result, error) {
-	streamingPlanner, ok := e.planner.(StreamingPlanner)
-	if !ok {
-		if recordUserMessage {
-			return e.Run(ctx, session, prompt)
-		}
-		return e.RunGeneratedPrompt(ctx, session, prompt)
-	}
-	if session == nil {
-		return Result{}, fmt.Errorf("session is required")
-	}
-	interactionID := fmt.Sprintf("interaction-%d", time.Now().UnixNano())
-	e.recordTrace(session.ID, "interaction.start", "interaction", map[string]any{
-		"span_id":       interactionID,
-		"prompt":        prompt,
-		"prompt_length": len(prompt),
 		"prompt_source": promptSource(recordUserMessage),
 		"working_dir":   session.WorkingDir,
 		"runtime":       "streaming",
 	})
 
 	if recordUserMessage {
-		e.ensureInitialModelContext(session)
+		r.engine.ensureInitialModelContext(session)
 	}
 
-	if recordUserMessage {
-		if last := session.LastUserMessage(); last != prompt {
-			session.AddUserMessage(prompt)
+	switch typed := prompt.(type) {
+	case []publictypes.ContentBlock:
+		if recordUserMessage {
+			session.AddUserContentMessage(promptText, typed)
+		} else if strings.TrimSpace(promptText) != "" {
+			session.AddSystemContext(promptText)
 		}
-	} else if strings.TrimSpace(prompt) != "" {
-		session.AddSystemContext(prompt)
+	default:
+		if recordUserMessage {
+			if last := session.LastUserMessage(); last != promptText {
+				session.AddUserMessage(promptText)
+			}
+		} else if strings.TrimSpace(promptText) != "" {
+			session.AddSystemContext(promptText)
+		}
 	}
 
 	var output strings.Builder
-	for turn := 0; e.maxTurns <= 0 || turn < e.maxTurns; turn++ {
-		e.injectPendingMessages(ctx, session)
+	for turn := 0; r.engine.maxTurns <= 0 || turn < r.engine.maxTurns; turn++ {
+		r.engine.injectPendingMessages(ctx, session)
 		turnSpanID := fmt.Sprintf("%s:turn:%d", interactionID, turn)
-		e.recordTrace(session.ID, "planner.turn.start", "planner", map[string]any{
+		r.engine.recordTrace(session.ID, "planner.turn.start", "planner", map[string]any{
 			"span_id": turnSpanID,
 			"turn":    turn,
-			"tools":   len(e.registry.Descriptors()),
+			"tools":   len(r.engine.registry.Descriptors()),
 		})
-		plan, err := streamingPlanner.StreamNext(ctx, session, e.registry.Descriptors(), func(token string) {
+		plan, err := streamingPlanner.StreamNext(ctx, session, r.engine.registry.Descriptors(), func(token string) {
 			if token == "" {
 				return
 			}
@@ -312,7 +261,7 @@ func (e *Engine) runStream(ctx context.Context, session *state.Session, prompt s
 			}
 		})
 		if err != nil {
-			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+			r.engine.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
 				"span_id": interactionID,
 				"status":  "error",
 				"error":   err.Error(),
@@ -320,7 +269,7 @@ func (e *Engine) runStream(ctx context.Context, session *state.Session, prompt s
 			})
 			return Result{}, err
 		}
-		e.recordTrace(session.ID, "planner.turn.end", "planner", map[string]any{
+		r.engine.recordTrace(session.ID, "planner.turn.end", "planner", map[string]any{
 			"span_id":         turnSpanID,
 			"turn":            turn,
 			"status":          "ok",
@@ -333,7 +282,7 @@ func (e *Engine) runStream(ctx context.Context, session *state.Session, prompt s
 			if plan.AssistantText != "" {
 				session.AddAssistantMessage(plan.AssistantText)
 			}
-			e.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
+			r.engine.recordTrace(session.ID, "interaction.end", "interaction", map[string]any{
 				"span_id":         interactionID,
 				"status":          "ok",
 				"tool_call_count": 0,
@@ -348,11 +297,11 @@ func (e *Engine) runStream(ctx context.Context, session *state.Session, prompt s
 			stateToolCalls[i] = state.ToolCall{ID: tc.ID, Name: tc.Name, Input: tc.Input, ThoughtSignature: tc.ThoughtSignature}
 		}
 		session.AddAssistantMessageWithTools(plan.AssistantText, stateToolCalls)
-		if err := e.executeToolCalls(ctx, session, plan.ToolCalls, interactionID); err != nil {
+		if err := r.engine.executeToolCalls(ctx, session, plan.ToolCalls, interactionID); err != nil {
 			return Result{Output: output.String(), Session: session}, err
 		}
 	}
-	return Result{}, fmt.Errorf("planner exceeded max turns (%d)", e.maxTurns)
+	return Result{}, fmt.Errorf("planner exceeded max turns (%d)", r.engine.maxTurns)
 }
 
 func toolFailureMessage(call ToolCall, output string) state.Message {
@@ -433,54 +382,56 @@ func recentSessionMessages(session *state.Session, limit int) []string {
 	return out
 }
 
-func (e *Engine) executeToolCall(
+func (e *Engine) executeToolResult(
 	ctx context.Context,
 	session *state.Session,
 	interactionID string,
 	call ToolCall,
 	progressReporter toolkit.ProgressReporter,
-) state.Message {
+) (toolkit.Result, error) {
 	if e.defaultToolScope != (ToolExecutionScope{}) {
 		ctx = WithToolExecutionScope(ctx, e.defaultToolScope)
 	}
+	sessionID := ""
+	if session != nil {
+		sessionID = session.ID
+	}
 	tool, err := e.registry.Get(call.Name)
 	if err != nil {
-		output := formatToolExecutionError(call, err)
-		e.recordToolTrace(session.ID, interactionID, call, permissions.Request{}, "error", map[string]any{"error": err.Error()})
+		e.recordToolTrace(sessionID, interactionID, call, permissions.Request{}, "error", map[string]any{"error": err.Error()})
 		progressReporter.Report(toolkit.ProgressEvent{
 			ToolName: call.Name,
 			Status:   "failed",
 			Message:  err.Error(),
 		})
-		return toolFailureMessage(call, output)
+		return toolkit.Result{}, err
 	}
 
 	request := buildPermissionRequest(tool.Name(), tool.Permission(), call.Input)
 	if e.permissions != nil {
 		if err := e.permissions.AuthorizeRequest(ctx, request); err != nil {
-			output := formatToolExecutionError(call, err)
-			e.recordToolTrace(session.ID, interactionID, call, request, "error", map[string]any{"error": err.Error()})
+			e.recordToolTrace(sessionID, interactionID, call, request, "error", map[string]any{"error": err.Error()})
 			progressReporter.Report(toolkit.ProgressEvent{
 				ToolName: call.Name,
 				Status:   "failed",
 				Message:  err.Error(),
 				Metadata: cloneStringMap(request.Metadata),
 			})
-			return toolFailureMessage(call, output)
+			return toolkit.Result{}, err
 		}
 	}
 
 	var ledgerKey string
 	if e.toolLedger != nil {
 		scope := ToolExecutionScopeFromContext(ctx)
-		if scope.SessionID == "" && session != nil {
-			scope.SessionID = session.ID
+		if scope.SessionID == "" {
+			scope.SessionID = sessionID
 		}
 		argsHash := toolArgsHash(call.Input)
-		ledgerKey = toolCallIdempotencyKey(scope, session.ID, interactionID, call, argsHash)
+		ledgerKey = toolCallIdempotencyKey(scope, sessionID, interactionID, call, argsHash)
 		entry := ToolLedgerEntry{
 			UserID:            scope.UserID,
-			SessionID:         firstNonEmptyString(scope.SessionID, session.ID),
+			SessionID:         firstNonEmptyString(scope.SessionID, sessionID),
 			JobID:             scope.JobID,
 			WorkflowRunID:     scope.WorkflowRunID,
 			WorkflowStepID:    scope.WorkflowStepID,
@@ -499,12 +450,17 @@ func (e *Engine) executeToolCall(
 		}
 		record, reused, err := e.toolLedger.BeginToolCall(ctx, entry)
 		if err != nil {
-			output := formatToolExecutionError(call, err)
-			e.recordToolTrace(session.ID, interactionID, call, request, "error", map[string]any{"error": err.Error(), "ledger": "begin"})
-			return toolFailureMessage(call, output)
+			e.recordToolTrace(sessionID, interactionID, call, request, "error", map[string]any{"error": err.Error(), "ledger": "begin"})
+			progressReporter.Report(toolkit.ProgressEvent{
+				ToolName: call.Name,
+				Status:   "failed",
+				Message:  err.Error(),
+				Metadata: cloneStringMap(request.Metadata),
+			})
+			return toolkit.Result{}, err
 		}
 		if reused && record.Status == ToolLedgerStatusSucceeded {
-			e.recordToolTrace(session.ID, interactionID, call, request, "reused", map[string]any{
+			e.recordToolTrace(sessionID, interactionID, call, request, "reused", map[string]any{
 				"ledger_id":       record.ID,
 				"idempotency_key": record.IdempotencyKey,
 				"output_chars":    len(record.Output),
@@ -516,17 +472,11 @@ func (e *Engine) executeToolCall(
 				Progress: 1.0,
 				Metadata: cloneStringMap(request.Metadata),
 			})
-			return state.Message{
-				Role:       "tool",
-				ToolCallID: call.ID,
-				ToolName:   call.Name,
-				ToolInput:  call.Input,
-				ToolOutput: record.Output,
-			}
+			return toolkit.Result{Output: record.Output}, nil
 		}
 	}
 
-	e.recordToolTrace(session.ID, interactionID, call, request, "start", nil)
+	e.recordToolTrace(sessionID, interactionID, call, request, "start", nil)
 	progressReporter.Report(toolkit.ProgressEvent{
 		ToolName: call.Name,
 		Status:   "started",
@@ -547,14 +497,14 @@ func (e *Engine) executeToolCall(
 		if e.toolLedger != nil && ledgerKey != "" {
 			_ = e.toolLedger.FailToolCall(ctx, ledgerKey, output, map[string]any{"interaction_id": interactionID})
 		}
-		e.recordToolTrace(session.ID, interactionID, call, request, "error", map[string]any{"error": err.Error()})
+		e.recordToolTrace(sessionID, interactionID, call, request, "error", map[string]any{"error": err.Error()})
 		progressReporter.Report(toolkit.ProgressEvent{
 			ToolName: call.Name,
 			Status:   "failed",
 			Message:  err.Error(),
 			Metadata: cloneStringMap(request.Metadata),
 		})
-		return toolFailureMessage(call, output)
+		return toolkit.Result{}, err
 	}
 
 	if e.toolLedger != nil && ledgerKey != "" {
@@ -563,7 +513,7 @@ func (e *Engine) executeToolCall(
 			"output_chars":   len(result.Output),
 		})
 	}
-	e.recordToolTrace(session.ID, interactionID, call, request, "end", map[string]any{
+	e.recordToolTrace(sessionID, interactionID, call, request, "end", map[string]any{
 		"status":       "ok",
 		"output_chars": len(result.Output),
 	})
@@ -574,6 +524,21 @@ func (e *Engine) executeToolCall(
 		Progress: 1.0,
 		Metadata: cloneStringMap(request.Metadata),
 	})
+
+	return result, nil
+}
+
+func (e *Engine) executeToolCall(
+	ctx context.Context,
+	session *state.Session,
+	interactionID string,
+	call ToolCall,
+	progressReporter toolkit.ProgressReporter,
+) state.Message {
+	result, err := e.executeToolResult(ctx, session, interactionID, call, progressReporter)
+	if err != nil {
+		return toolFailureMessage(call, formatToolExecutionError(call, err))
+	}
 
 	return state.Message{
 		Role:       "tool",

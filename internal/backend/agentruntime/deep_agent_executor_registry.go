@@ -343,7 +343,12 @@ func deepAgentSourceRefsFromText(text string) []DeepAgentSourceRef {
 			continue
 		}
 		seen[url] = struct{}{}
-		refs = append(refs, DeepAgentSourceRef{URL: url, Title: url, Provider: "output"})
+		refs = append(refs, DeepAgentSourceRef{
+			URL:        url,
+			Title:      url,
+			Provider:   "model_text",
+			SourceKind: "unverified_model_text",
+		})
 	}
 	for _, ref := range deepAgentSourceTitleRefsFromText(text) {
 		key := strings.ToLower(strings.TrimSpace(firstNonEmptyString(ref.URL, ref.Title+"|"+ref.Provider)))
@@ -385,11 +390,9 @@ func deepAgentSourceTitleRefsFromText(text string) []DeepAgentSourceRef {
 			continue
 		}
 		title := cleaned
-		provider := "output"
 		for _, sep := range []string{" - ", " — ", " – ", "｜", " | "} {
 			if parts := strings.Split(cleaned, sep); len(parts) >= 2 {
 				title = strings.Trim(strings.TrimSpace(strings.Join(parts[:len(parts)-1], sep)), "\"“”")
-				provider = strings.Trim(strings.TrimSpace(parts[len(parts)-1]), "\"“”")
 				break
 			}
 		}
@@ -399,10 +402,27 @@ func deepAgentSourceTitleRefsFromText(text string) []DeepAgentSourceRef {
 		if len([]rune(title)) < 6 {
 			continue
 		}
-		refs = append(refs, DeepAgentSourceRef{Title: title, Provider: firstNonEmptyString(provider, "output")})
+		refs = append(refs, DeepAgentSourceRef{
+			Title:      title,
+			Provider:   "model_text",
+			SourceKind: "unverified_model_text",
+		})
 		if len(refs) >= 12 {
 			break
 		}
+	}
+	return refs
+}
+
+func deepAgentSourceRefsFromToolOutput(text, provider string) []DeepAgentSourceRef {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		provider = "tool"
+	}
+	refs := deepAgentSourceRefsFromText(text)
+	for index := range refs {
+		refs[index].Provider = provider
+		refs[index].SourceKind = "tool_verified"
 	}
 	return refs
 }

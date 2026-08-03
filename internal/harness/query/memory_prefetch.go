@@ -1,6 +1,7 @@
 package query
 
 import (
+	"strings"
 	"sync"
 
 	"claude-codex/internal/harness/prefetch"
@@ -25,9 +26,23 @@ func getMemoryPrefetcher() *prefetch.MemoryPrefetcher {
 
 // collectSurfacedMemoryBytes calculates the total bytes of memory attachments
 // already surfaced in the conversation.
-func collectSurfacedMemoryBytes(_ []types.Message) int {
-	// TODO: scan messages for memory attachments and sum their sizes
-	return 0
+func collectSurfacedMemoryBytes(messages []types.Message) int {
+	total := 0
+	for _, message := range messages {
+		if !message.IsMeta || message.Type != types.MessageTypeUser {
+			continue
+		}
+		for _, block := range message.Content {
+			text := block.Text
+			if text == "" {
+				text = block.Content
+			}
+			if strings.HasPrefix(strings.TrimSpace(text), "Memory") {
+				total += len(text)
+			}
+		}
+	}
+	return total
 }
 
 // convertMessagesToPrefetchMessages converts query messages to prefetch messages.
@@ -93,7 +108,7 @@ func consumeMemoryPrefetch(
 			readFileState[att.Path] = true
 		}
 
-		pendingMemoryPrefetch.ConsumedOnIteration = turnCount - 1
+		pendingMemoryPrefetch.MarkConsumed(turnCount - 1)
 		return messages
 
 	default:

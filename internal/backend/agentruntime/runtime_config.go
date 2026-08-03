@@ -67,6 +67,16 @@ type LLMModelOption struct {
 	VertexLocation string `json:"vertex_location"`
 }
 
+// LLMModelAvailability reports whether the running AgentAPI instance can use a
+// catalog model with its current deployment credentials. It deliberately
+// exposes setup errors only; credential values never enter runtime config.
+type LLMModelAvailability struct {
+	ID        string `json:"id"`
+	Provider  string `json:"provider"`
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"`
+}
+
 var allowedLLMModelOptions = []LLMModelOption{
 	{ID: "simple", Label: "Simple Local Planner", Provider: "simple"},
 	{ID: "deepseek-chat", Label: "DeepSeek Chat", Provider: "deepseek"},
@@ -258,13 +268,43 @@ func (m *LLMGovernanceConfigManager) Get() LLMGovernanceConfig {
 
 func (m *LLMGovernanceConfigManager) StatusMap() map[string]any {
 	if m == nil {
-		return llmGovernanceConfigStatusMapWithModels(LLMGovernanceConfig{}.normalized(), defaultLLMModelOptions())
+		config := LLMGovernanceConfig{}.normalized()
+		allowedModels := defaultLLMModelOptions()
+		status := llmGovernanceConfigStatusMapWithModels(config, allowedModels)
+		status["model_availability"] = llmModelAvailability(context.Background(), config, allowedModels, nil)
+		return status
 	}
 	m.mu.RLock()
 	config := m.config
 	allowedModels := copyLLMModelOptions(m.allowedModels)
+	validator := m.validator
 	m.mu.RUnlock()
-	return llmGovernanceConfigStatusMapWithModels(config, allowedModels)
+	status := llmGovernanceConfigStatusMapWithModels(config, allowedModels)
+	status["model_availability"] = llmModelAvailability(context.Background(), config, allowedModels, validator)
+	return status
+}
+
+func llmModelAvailability(ctx context.Context, config LLMGovernanceConfig, allowedModels []LLMModelOption, validator LLMGovernanceConfigValidator) []LLMModelAvailability {
+	allowedModels = normalizeLLMModelOptions(allowedModels)
+	config = config.normalizedWithOptions(allowedModels)
+	out := make([]LLMModelAvailability, 0, len(allowedModels))
+	for _, option := range allowedModels {
+		model := option.ID
+		candidate, err := applyLLMGovernanceConfigPatchWithOptions(config, LLMGovernanceConfigPatch{Model: &model}, allowedModels)
+		if err == nil && validator != nil {
+			err = validator(ctx, candidate)
+		}
+		availability := LLMModelAvailability{
+			ID:        option.ID,
+			Provider:  option.Provider,
+			Available: err == nil,
+		}
+		if err != nil {
+			availability.Reason = err.Error()
+		}
+		out = append(out, availability)
+	}
+	return out
 }
 
 func (m *LLMGovernanceConfigManager) Update(ctx context.Context, patch LLMGovernanceConfigPatch) (LLMGovernanceConfig, error) {

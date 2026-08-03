@@ -89,6 +89,12 @@ func deepAgentPromptFallbackTemplate(promptID string) string {
 		return PromptDeepAgentToolUsageReminder
 	case PromptIDRuntimeDeepAgentPlanRepair:
 		return PromptDeepAgentPlanRepairContextTemplate
+	case PromptIDRuntimeDeepResearchOrchestrator:
+		return PromptDeepResearchOrchestratorTemplate
+	case PromptIDRuntimeDeepResearchReplanner:
+		return PromptDeepResearchReplannerTemplate
+	case PromptIDRuntimeDeepResearchPlanRepair:
+		return PromptDeepResearchPlanRepairContextTemplate
 	default:
 		return ""
 	}

@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +25,7 @@ const (
 	DefaultSkillSandboxCPUs        = "1"
 	DefaultSkillSandboxPidsLimit   = 128
 	DefaultSkillSandboxTmpfsSize   = "64m"
+	defaultSkillShellPATH          = "/usr/local/bin:/usr/bin:/bin"
 	containerWorkspaceDir          = "/workspace"
 	containerSkillDir              = "/skill"
 	defaultSkillSandboxOutputLimit = 1 << 20
@@ -287,16 +290,17 @@ type DockerSkillShellRuntime struct {
 }
 
 type LocalSkillShellRuntime struct {
-	config     SkillShellSandboxConfig
-	shell      skills.FrontmatterShell
-	workingDir string
-	skillRoot  string
-	env        map[string]string
-	allowed    []string
-	lastStats  SandboxExecutionStats
+	config           SkillShellSandboxConfig
+	shell            skills.FrontmatterShell
+	workingDir       string
+	skillRoot        string
+	env              map[string]string
+	networkAllowlist []string
+	allowed          []string
+	lastStats        SandboxExecutionStats
 }
 
-func NewLocalSkillShellRuntime(config SkillShellSandboxConfig, shell skills.FrontmatterShell, workingDir, skillRoot string, env map[string]string, allowedTools []string) *LocalSkillShellRuntime {
+func NewLocalSkillShellRuntime(config SkillShellSandboxConfig, shell skills.FrontmatterShell, workingDir, skillRoot string, env map[string]string, networkAllowlist, allowedTools []string) *LocalSkillShellRuntime {
 	config = config.normalized()
 	if strings.TrimSpace(workingDir) == "" {
 		workingDir = "."
@@ -305,12 +309,13 @@ func NewLocalSkillShellRuntime(config SkillShellSandboxConfig, shell skills.Fron
 		skillRoot = workingDir
 	}
 	return &LocalSkillShellRuntime{
-		config:     config,
-		shell:      shell,
-		workingDir: filepath.Clean(workingDir),
-		skillRoot:  filepath.Clean(skillRoot),
-		env:        cloneStringMap(env),
-		allowed:    append([]string(nil), allowedTools...),
+		config:           config,
+		shell:            shell,
+		workingDir:       filepath.Clean(workingDir),
+		skillRoot:        filepath.Clean(skillRoot),
+		env:              cloneStringMap(env),
+		networkAllowlist: append([]string(nil), networkAllowlist...),
+		allowed:          append([]string(nil), allowedTools...),
 	}
 }
 
@@ -325,6 +330,9 @@ func (r *LocalSkillShellRuntime) ExecuteCommand(ctx context.Context, command str
 	if r == nil {
 		return "", fmt.Errorf("local skill shell runtime is not configured")
 	}
+	if err := r.validateNetworkPolicy(); err != nil {
+		return "", err
+	}
 	if err := r.ValidateCommand(command); err != nil {
 		return "", err
 	}
@@ -334,19 +342,16 @@ func (r *LocalSkillShellRuntime) ExecuteCommand(ctx context.Context, command str
 		exe = "pwsh"
 		args = []string{"-NoProfile", "-Command", command}
 	}
+	if strings.EqualFold(strings.TrimSpace(r.config.Network), DefaultSkillSandboxNetwork) {
+		var err error
+		exe, args, err = localNoNetworkCommand(exe, args)
+		if err != nil {
+			return "", err
+		}
+	}
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = r.workingDir
-	cmd.Env = os.Environ()
-	env := cloneStringMap(r.env)
-	if strings.TrimSpace(env["AGENT_WORKSPACE_DIR"]) == "" {
-		env["AGENT_WORKSPACE_DIR"] = r.workingDir
-	}
-	if strings.TrimSpace(env["CLAUDE_SKILL_DIR"]) == "" {
-		env["CLAUDE_SKILL_DIR"] = r.skillRoot
-	}
-	for key, value := range env {
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
+	cmd.Env = localSkillShellEnvironment(r.workingDir, r.skillRoot, r.env)
 	var output sandboxLimitBuffer
 	output.limit = r.config.MaxOutputBytes
 	started := time.Now()
@@ -375,6 +380,40 @@ func (r *LocalSkillShellRuntime) ExecuteCommand(ctx context.Context, command str
 		return "", fmt.Errorf("local skill shell output exceeds max size of %d bytes", output.limit)
 	}
 	return outputText, nil
+}
+
+func (r *LocalSkillShellRuntime) validateNetworkPolicy() error {
+	if r == nil {
+		return fmt.Errorf("local skill shell runtime is not configured")
+	}
+	if len(r.networkAllowlist) > 0 {
+		return fmt.Errorf("local skill shell cannot enforce network allowlist %q; use a controlled container or proxy path", strings.Join(r.networkAllowlist, ","))
+	}
+	network := strings.ToLower(strings.TrimSpace(r.config.Network))
+	if network != DefaultSkillSandboxNetwork && network != "host" {
+		return fmt.Errorf("local skill shell supports only network=%q or explicit development network=%q; configured network %q needs a controlled container or proxy path", DefaultSkillSandboxNetwork, "host", network)
+	}
+	return nil
+}
+
+func localNoNetworkCommand(executable string, args []string) (string, []string, error) {
+	switch goruntime.GOOS {
+	case "darwin":
+		sandbox, err := exec.LookPath("sandbox-exec")
+		if err != nil {
+			return "", nil, fmt.Errorf("local network isolation requires sandbox-exec: %w", err)
+		}
+		profile := "(version 1) (allow default) (deny network*)"
+		return sandbox, append([]string{"-p", profile, executable}, args...), nil
+	case "linux":
+		unshare, err := exec.LookPath("unshare")
+		if err != nil {
+			return "", nil, fmt.Errorf("local network isolation requires unshare; use the docker runner: %w", err)
+		}
+		return unshare, append([]string{"--net", "--", executable}, args...), nil
+	default:
+		return "", nil, fmt.Errorf("local network isolation is unsupported on %s; use the docker runner", goruntime.GOOS)
+	}
 }
 
 func (r *LocalSkillShellRuntime) LastSandboxStats() SandboxExecutionStats {
@@ -594,6 +633,68 @@ func skillShellReservedEnvKey(key string) bool {
 	default:
 		return false
 	}
+}
+
+func localSkillShellReservedEnvKey(key string) bool {
+	switch key {
+	case "AGENT_WORKSPACE_DIR", "CLAUDE_SKILL_DIR", "SKILL_DIR", "TMP_DIR", "TMPDIR", "PATH", "HOME", "PWD", "TERM", "LANG", "LC_ALL", "TMP":
+		return true
+	default:
+		return false
+	}
+}
+
+func localSkillShellEnvironment(workingDir, skillRoot string, env map[string]string) []string {
+	workingDir = filepath.Clean(strings.TrimSpace(workingDir))
+	if workingDir == "" {
+		workingDir = "."
+	}
+	skillRoot = filepath.Clean(strings.TrimSpace(skillRoot))
+	if skillRoot == "" {
+		skillRoot = workingDir
+	}
+	workspaceDir := strings.TrimSpace(env["AGENT_WORKSPACE_DIR"])
+	if workspaceDir == "" {
+		workspaceDir = workingDir
+	}
+	declaredSkillRoot := strings.TrimSpace(env["CLAUDE_SKILL_DIR"])
+	if declaredSkillRoot == "" {
+		declaredSkillRoot = skillRoot
+	}
+	tmpDir := strings.TrimSpace(env["TMP_DIR"])
+	if tmpDir == "" {
+		tmpDir = filepath.Join(workspaceDir, "tmp")
+	}
+	values := map[string]string{
+		"AGENT_WORKSPACE_DIR": workspaceDir,
+		"CLAUDE_SKILL_DIR":    declaredSkillRoot,
+		"SKILL_DIR":           declaredSkillRoot,
+		"HOME":                workspaceDir,
+		"PATH":                defaultSkillShellPATH,
+		"PWD":                 workingDir,
+		"TERM":                "dumb",
+		"LANG":                "C.UTF-8",
+		"LC_ALL":              "C.UTF-8",
+		"TMP_DIR":             tmpDir,
+		"TMPDIR":              tmpDir,
+		"TMP":                 tmpDir,
+	}
+	for key, value := range env {
+		if localSkillShellReservedEnvKey(key) {
+			continue
+		}
+		values[key] = value
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, key+"="+values[key])
+	}
+	return out
 }
 
 const sandboxReadyMarker = "__AGENT_SANDBOX_READY_MS__="

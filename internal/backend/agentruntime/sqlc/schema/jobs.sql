@@ -11,7 +11,10 @@ CREATE TABLE agent_jobs (
 	created_at TIMESTAMPTZ NOT NULL,
 	updated_at TIMESTAMPTZ NOT NULL,
 	started_at TIMESTAMPTZ,
-	finished_at TIMESTAMPTZ
+	finished_at TIMESTAMPTZ,
+	execution_owner TEXT NOT NULL DEFAULT '',
+	execution_epoch BIGINT NOT NULL DEFAULT 0,
+	execution_lease_expires_at TIMESTAMPTZ
 );
 
 CREATE TABLE agent_job_events (

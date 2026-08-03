@@ -11,8 +11,13 @@ This compose stack runs the production-oriented local baseline:
 Start it with:
 
 ```bash
-docker compose -f deploy/local/docker-compose.yml up --build
+docker compose --env-file .env -f deploy/local/docker-compose.yml up --build
 ```
+
+Pass the repository-root `.env` explicitly. Compose resolves its implicit
+`.env` relative to the compose project directory (`deploy/local`), so omitting
+`--env-file .env` leaves root-level provider credentials such as
+`DEEPSEEK_API_KEY` out of the AgentAPI container.
 
 The default stack uses SQL storage, S3-compatible artifacts from the configured
 endpoint, rate limiting disabled by default, Redis message context hot cache, JWT auth, and
@@ -41,7 +46,7 @@ text objects.
 To use local MinIO instead of a remote S3/R2 endpoint:
 
 ```bash
-docker compose --profile minio -f deploy/local/docker-compose.yml up --build
+docker compose --env-file .env --profile minio -f deploy/local/docker-compose.yml up --build
 ```
 
 Run the message-module verification stack:
@@ -53,7 +58,7 @@ deploy/local/verify-message-module.sh
 To include Elasticsearch and Qdrant in the local stack:
 
 ```bash
-docker compose --profile search -f deploy/local/docker-compose.yml up --build
+docker compose --env-file .env --profile search -f deploy/local/docker-compose.yml up --build
 ```
 
 The local stack defaults semantic retrieval to NVIDIA embeddings:
@@ -90,7 +95,7 @@ Kafka message events are available through the optional `kafka` profile:
 AGENT_API_MESSAGE_EVENTS_BACKEND=kafka \
 AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_ENABLED=true \
 AGENT_API_MESSAGE_SEARCH_BACKEND=elasticsearch \
-docker compose --profile kafka --profile search -f deploy/local/docker-compose.yml up --build
+docker compose --env-file .env --profile kafka --profile search -f deploy/local/docker-compose.yml up --build
 ```
 
 The producer writes `message.created` events to `agent.messages`. The built-in
@@ -124,7 +129,7 @@ curl http://localhost:8081/metrics
 Reset local state:
 
 ```bash
-docker compose -f deploy/local/docker-compose.yml down -v
+docker compose --env-file .env -f deploy/local/docker-compose.yml down -v
 ```
 
 Notes:

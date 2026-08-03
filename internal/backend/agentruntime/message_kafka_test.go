@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,14 +32,14 @@ func TestKafkaMessageEventConsumerRetriesAndCommitsThroughRun(t *testing.T) {
 	go func() { errCh <- worker.Run(ctx) }()
 
 	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
-		if reader.commits > 0 {
+		if reader.commits.Load() > 0 {
 			cancel()
 			err := <-errCh
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("expected context cancellation after commit, got %v", err)
 			}
-			if handler.calls != 2 {
-				t.Fatalf("expected one retry, got %d calls", handler.calls)
+			if calls := handler.calls.Load(); calls != 2 {
+				t.Fatalf("expected one retry, got %d calls", calls)
 			}
 			return
 		}
@@ -152,7 +153,7 @@ func TestMessageVectorIndexEventHandlerDeletesDeletedEvents(t *testing.T) {
 
 type fakeKafkaReader struct {
 	messages []kafka.Message
-	commits  int
+	commits  atomic.Int64
 	closed   bool
 }
 
@@ -173,7 +174,7 @@ func (r *fakeKafkaReader) FetchMessage(ctx context.Context) (kafka.Message, erro
 }
 
 func (r *fakeKafkaReader) CommitMessages(context.Context, ...kafka.Message) error {
-	r.commits++
+	r.commits.Add(1)
 	return nil
 }
 
@@ -194,8 +195,8 @@ func (w *fakeKafkaWriter) WriteMessages(_ context.Context, messages ...kafka.Mes
 func (w *fakeKafkaWriter) Close() error { return nil }
 
 type flakyMessageEventHandler struct {
-	failures int
-	calls    int
+	failures int64
+	calls    atomic.Int64
 }
 
 type captureMessageEventHandler struct {
@@ -241,8 +242,7 @@ func (i *captureVectorIndexer) DeleteMessage(context.Context, state.Message) err
 }
 
 func (h *flakyMessageEventHandler) HandleMessageEvent(context.Context, MessageEvent) error {
-	h.calls++
-	if h.calls <= h.failures {
+	if h.calls.Add(1) <= h.failures {
 		return errors.New("temporary")
 	}
 	return nil

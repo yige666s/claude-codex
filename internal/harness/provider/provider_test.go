@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -29,6 +30,7 @@ func TestFactory(t *testing.T) {
 		{"google", "google", false},
 		{"shortapi", "shortapi", false},
 		{"short", "short", false},
+		{"bedrock fails at startup", "bedrock", true},
 		{"invalid", "invalid", true},
 	}
 
@@ -65,6 +67,7 @@ func TestProviderInfo(t *testing.T) {
 		{"qwen", "qwen", "qwen", 7, false},
 		{"gemini", "gemini", "gemini", 5, false},
 		{"shortapi", "shortapi", "shortapi", 9, false},
+		{"bedrock unavailable", "bedrock", "", 0, true},
 		{"invalid", "invalid", "", 0, true},
 	}
 
@@ -141,6 +144,15 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "bedrock is not advertised as usable",
+			cfg: provider.Config{
+				Provider: "bedrock",
+				APIKey:   "test-key",
+				Model:    "anthropic.claude-test",
+			},
+			wantErr: true,
+		},
+		{
 			name: "missing provider",
 			cfg: provider.Config{
 				APIKey: "test-key",
@@ -182,6 +194,23 @@ func TestValidateConfig(t *testing.T) {
 				t.Errorf("ValidateConfig() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestBedrockFailsBeforeServingRequests(t *testing.T) {
+	factory := provider.NewFactory()
+	for _, name := range factory.ListProviders() {
+		if name == "bedrock" {
+			t.Fatal("bedrock must not be advertised until it is implemented")
+		}
+	}
+	_, err := factory.CreateProvider(provider.Config{
+		Provider: "bedrock",
+		APIKey:   "test-key",
+		Model:    "anthropic.claude-test",
+	})
+	if !errors.Is(err, provider.ErrBedrockNotImplemented) {
+		t.Fatalf("CreateProvider() error = %v, want ErrBedrockNotImplemented", err)
 	}
 }
 

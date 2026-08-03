@@ -82,6 +82,76 @@ type TaskManager struct {
 	nextSubscribe int
 }
 
+// cloneTaskState returns an immutable snapshot for callers. TaskManager keeps
+// mutable task pointers internally and updates them under m.mu; returning those
+// pointers would let status/output readers race with background workers.
+func cloneTaskState(task TaskState) TaskState {
+	switch typed := task.(type) {
+	case *LocalAgentTaskState:
+		cp := *typed
+		cp.PendingMessages = append([]interface{}(nil), typed.PendingMessages...)
+		cp.Messages = append([]interface{}(nil), typed.Messages...)
+		cp.Result = cloneAgentTaskResult(typed.Result)
+		cp.Progress = cloneAgentProgress(typed.Progress)
+		return &cp
+	case *InProcessTeammateTaskState:
+		cp := *typed
+		cp.PendingMessages = append([]interface{}(nil), typed.PendingMessages...)
+		cp.Messages = append([]interface{}(nil), typed.Messages...)
+		cp.Result = cloneAgentTaskResult(typed.Result)
+		cp.Progress = cloneAgentProgress(typed.Progress)
+		return &cp
+	case *RemoteAgentTaskState:
+		cp := *typed
+		cp.Messages = append([]interface{}(nil), typed.Messages...)
+		return &cp
+	case *LocalShellTaskState:
+		cp := *typed
+		if typed.Result != nil {
+			result := *typed.Result
+			cp.Result = &result
+		}
+		return &cp
+	case *LocalWorkflowTaskState:
+		cp := *typed
+		return &cp
+	case *MonitorMCPTaskState:
+		cp := *typed
+		return &cp
+	case *DreamTaskState:
+		cp := *typed
+		return &cp
+	default:
+		return task
+	}
+}
+
+func cloneAgentTaskResult(result *AgentTaskResult) *AgentTaskResult {
+	if result == nil {
+		return nil
+	}
+	cp := *result
+	return &cp
+}
+
+func cloneAgentProgress(progress *AgentProgress) *AgentProgress {
+	if progress == nil {
+		return nil
+	}
+	cp := *progress
+	cp.RecentActivities = make([]ToolActivity, len(progress.RecentActivities))
+	for i, activity := range progress.RecentActivities {
+		cp.RecentActivities[i] = activity
+		if activity.Input != nil {
+			cp.RecentActivities[i].Input = make(map[string]interface{}, len(activity.Input))
+			for key, value := range activity.Input {
+				cp.RecentActivities[i].Input[key] = value
+			}
+		}
+	}
+	return &cp
+}
+
 // NewTaskManager creates a new task manager
 func NewTaskManager() *TaskManager {
 	manager := &TaskManager{
@@ -143,7 +213,10 @@ func (m *TaskManager) GetTask(taskID string) (TaskState, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	task, ok := m.tasks[taskID]
-	return task, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneTaskState(task), true
 }
 
 // AddTask adds a task to the manager
@@ -179,7 +252,7 @@ func (m *TaskManager) ListTasks() []TaskState {
 	defer m.mu.RUnlock()
 	tasks := make([]TaskState, 0, len(m.tasks))
 	for _, task := range m.tasks {
-		tasks = append(tasks, task)
+		tasks = append(tasks, cloneTaskState(task))
 	}
 	return tasks
 }
@@ -195,7 +268,7 @@ func (m *TaskManager) DrainTerminalNotifications() []TaskState {
 			continue
 		}
 		setTaskNotified(task, true)
-		drained = append(drained, task)
+		drained = append(drained, cloneTaskState(task))
 	}
 	return drained
 }
@@ -213,7 +286,7 @@ func (m *TaskManager) DrainTerminalNotification(taskID string) (TaskState, bool)
 		return nil, false
 	}
 	setTaskNotified(task, true)
-	return task, true
+	return cloneTaskState(task), true
 }
 
 func taskNotified(task TaskState) bool {
@@ -267,10 +340,10 @@ func (m *TaskManager) FindInProcessTeammate(nameOrID string) (*InProcessTeammate
 			continue
 		}
 		if teammate.ID == nameOrID || teammate.TeammateID == nameOrID || teammate.Name == nameOrID {
-			return teammate, true
+			return cloneTaskState(teammate).(*InProcessTeammateTaskState), true
 		}
 		if teammate.TeamName != "" && teammate.Name+"@"+teammate.TeamName == nameOrID {
-			return teammate, true
+			return cloneTaskState(teammate).(*InProcessTeammateTaskState), true
 		}
 	}
 	return nil, false
@@ -291,7 +364,7 @@ func (m *TaskManager) GetRunningTasks() []TaskState {
 	var running []TaskState
 	for _, task := range m.tasks {
 		if task.GetStatus() == TaskStatusRunning {
-			running = append(running, task)
+			running = append(running, cloneTaskState(task))
 		}
 	}
 	return running
@@ -305,7 +378,7 @@ func (m *TaskManager) GetBackgroundTasks() []TaskState {
 	var background []TaskState
 	for _, task := range m.tasks {
 		if IsBackgroundTask(task) {
-			background = append(background, task)
+			background = append(background, cloneTaskState(task))
 		}
 	}
 	return background

@@ -3,8 +3,15 @@ package prefetch
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"claude-codex/internal/harness/memdir"
 )
 
 // MemoryPrefetcher handles asynchronous memory relevance search.
@@ -28,6 +35,7 @@ func NewMemoryPrefetcher(config *PrefetchConfig) *MemoryPrefetcher {
 func (m *MemoryPrefetcher) StartRelevantMemoryPrefetch(
 	ctx context.Context,
 	messages []Message,
+	memoryDir string,
 	surfacedBytes int,
 	readFileState map[string]bool,
 ) *MemoryPrefetch {
@@ -42,8 +50,8 @@ func (m *MemoryPrefetcher) StartRelevantMemoryPrefetch(
 	}
 
 	input := getUserMessageText(lastUserMessage)
-	// Single-word prompts lack enough context for meaningful term extraction
-	if input == "" || !strings.Contains(strings.TrimSpace(input), " ") {
+	terms := extractSearchTerms(input)
+	if len(terms) == 0 || strings.TrimSpace(memoryDir) == "" {
 		return nil
 	}
 
@@ -60,15 +68,17 @@ func (m *MemoryPrefetcher) StartRelevantMemoryPrefetch(
 
 	prefetch := &MemoryPrefetch{
 		ResultChan:          resultChan,
-		SettledAt:           nil,
-		ConsumedOnIteration: -1,
-		Error:               nil,
+		consumedOnIteration: -1,
 		cancel:              cancel,
 		firedAt:             time.Now(),
 	}
+	readSnapshot := make(map[string]bool, len(readFileState))
+	for path, read := range readFileState {
+		readSnapshot[path] = read
+	}
 
 	// Start async search
-	go m.searchRelevantMemories(ctx, input, readFileState, resultChan, prefetch)
+	go m.searchRelevantMemories(ctx, terms, memoryDir, m.config.MaxSessionBytes-surfacedBytes, readSnapshot, resultChan, prefetch)
 
 	return prefetch
 }
@@ -76,28 +86,23 @@ func (m *MemoryPrefetcher) StartRelevantMemoryPrefetch(
 // searchRelevantMemories performs the actual memory search asynchronously.
 func (m *MemoryPrefetcher) searchRelevantMemories(
 	ctx context.Context,
-	input string,
+	terms []string,
+	memoryDir string,
+	remainingBytes int,
 	readFileState map[string]bool,
 	resultChan chan<- []MemoryAttachment,
 	prefetch *MemoryPrefetch,
 ) {
+	var searchErr error
 	defer func() {
-		now := time.Now()
-		prefetch.SettledAt = &now
+		prefetch.settle(searchErr)
 		close(resultChan)
 	}()
 
-	// Extract search terms from input
-	terms := extractSearchTerms(input)
-	if len(terms) == 0 {
-		resultChan <- []MemoryAttachment{}
-		return
-	}
-
 	// Search for relevant memory files
-	memories, err := m.findRelevantMemories(ctx, terms, readFileState)
+	memories, err := m.findRelevantMemories(ctx, terms, memoryDir, remainingBytes, readFileState)
 	if err != nil {
-		prefetch.Error = err
+		searchErr = err
 		resultChan <- []MemoryAttachment{}
 		return
 	}
@@ -108,23 +113,85 @@ func (m *MemoryPrefetcher) searchRelevantMemories(
 // findRelevantMemories searches for memory files matching the search terms.
 func (m *MemoryPrefetcher) findRelevantMemories(
 	ctx context.Context,
-	_ []string, // terms - TODO: use for actual search
-	_ map[string]bool, // readFileState - TODO: use for filtering
+	terms []string,
+	memoryDir string,
+	remainingBytes int,
+	readFileState map[string]bool,
 ) ([]MemoryAttachment, error) {
-	// TODO: Implement actual memory search logic
-	// This is a placeholder that would integrate with:
-	// - File system search
-	// - Memory file parsing
-	// - Relevance scoring
-	// - Filtering by readFileState
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-		// Placeholder: return empty results
-		return []MemoryAttachment{}, nil
+	if remainingBytes <= 0 || strings.TrimSpace(memoryDir) == "" {
+		return nil, nil
 	}
+	headers, err := memdir.ScanMemoryFiles(memoryDir, ctx)
+	if err != nil {
+		return nil, err
+	}
+	type scoredMemory struct {
+		header memdir.MemoryHeader
+		score  int
+	}
+	scored := make([]scoredMemory, 0, len(headers))
+	for _, header := range headers {
+		if readFileState[header.FilePath] || readFileState[header.Filename] {
+			continue
+		}
+		haystack := strings.ToLower(strings.Join([]string{header.Filename, header.Description, header.Type}, " "))
+		score := 0
+		for _, term := range terms {
+			if count := strings.Count(haystack, term); count > 0 {
+				score += count
+				if strings.Contains(strings.ToLower(header.Filename), term) {
+					score += 2
+				}
+			}
+		}
+		if score > 0 {
+			scored = append(scored, scoredMemory{header: header, score: score})
+		}
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		return scored[i].header.MtimeMs > scored[j].header.MtimeMs
+	})
+	if len(scored) > 5 {
+		scored = scored[:5]
+	}
+
+	attachments := make([]MemoryAttachment, 0, len(scored))
+	for _, candidate := range scored {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if remainingBytes <= 0 {
+			break
+		}
+		file, err := os.Open(candidate.header.FilePath)
+		if err != nil {
+			continue
+		}
+		content, readErr := io.ReadAll(io.LimitReader(file, int64(remainingBytes)))
+		closeErr := file.Close()
+		if readErr != nil {
+			continue
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		content = trimIncompleteUTF8(content)
+		if len(content) == 0 {
+			continue
+		}
+		attachments = append(attachments, MemoryAttachment{
+			Path:        candidate.header.FilePath,
+			Content:     string(content),
+			Type:        firstNonEmpty(candidate.header.Type, "memory"),
+			Description: candidate.header.Description,
+			MtimeMs:     candidate.header.MtimeMs,
+		})
+		remainingBytes -= len(content)
+	}
+	return attachments, nil
 }
 
 // Message represents a conversation message.
@@ -155,18 +222,39 @@ func getUserMessageText(msg *Message) string {
 
 // extractSearchTerms extracts meaningful search terms from input text.
 func extractSearchTerms(input string) []string {
-	// Simple implementation: split by whitespace and filter short words
-	words := strings.Fields(input)
+	words := strings.FieldsFunc(input, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsPunct(r)
+	})
 	terms := make([]string, 0, len(words))
+	seen := make(map[string]struct{}, len(words))
 
 	for _, word := range words {
-		// Filter out very short words and common stop words
-		if len(word) >= 3 && !isStopWord(word) {
-			terms = append(terms, strings.ToLower(word))
+		word = strings.ToLower(strings.TrimSpace(word))
+		if utf8.RuneCountInString(word) >= 2 && !isStopWord(word) {
+			if _, ok := seen[word]; !ok {
+				seen[word] = struct{}{}
+				terms = append(terms, word)
+			}
 		}
 	}
 
 	return terms
+}
+
+func trimIncompleteUTF8(content []byte) []byte {
+	for len(content) > 0 && !utf8.Valid(content) {
+		content = content[:len(content)-1]
+	}
+	return content
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // isStopWord checks if a word is a common stop word.
@@ -182,9 +270,13 @@ func isStopWord(word string) bool {
 
 // CollectSurfacedMemories calculates total bytes of memories already surfaced.
 func CollectSurfacedMemories(messages []Message) int {
-	// TODO: Implement actual calculation
-	// This would scan messages for memory attachments and sum their sizes
-	return 0
+	total := 0
+	for _, message := range messages {
+		if message.IsMeta && message.Type == "user" && strings.HasPrefix(strings.TrimSpace(message.Text), "Memory") {
+			total += len(message.Text)
+		}
+	}
+	return total
 }
 
 // FilterDuplicateMemoryAttachments filters out memories that have already been read.

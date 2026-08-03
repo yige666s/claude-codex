@@ -18,6 +18,7 @@ type engineRuntime interface {
 	Descriptors() []toolkit.Descriptor
 	ExecuteTool(ctx context.Context, name string, input json.RawMessage) (toolkit.Result, error)
 	Run(ctx context.Context, session *state.Session, prompt interface{}, recordUserMessage bool) (Result, error)
+	RunStream(ctx context.Context, session *state.Session, prompt interface{}, recordUserMessage bool, onToken func(string)) (Result, error)
 }
 
 type legacyRuntime struct {

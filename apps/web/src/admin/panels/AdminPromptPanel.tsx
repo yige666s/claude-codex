@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Archive, Beaker, CheckCircle2, Code2, GitCompare, PlayCircle, RefreshCw, Rocket, Search, ShieldCheck, Split, X } from "lucide-react";
+import { ArrowLeft, Archive, Beaker, CheckCircle2, ChevronRight, Code2, Eye, Filter, GitCompare, PlayCircle, RefreshCw, Rocket, Search, ShieldCheck, Split, X } from "lucide-react";
 import { ApiClient } from "../../api/client";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -44,6 +44,7 @@ import type {
 const promptEnvironments = ["dev", "staging", "production"];
 
 type PromptTab = "workflow" | "versions" | "preview" | "eval" | "experiments" | "usage";
+type PromptPanelView = "inspect" | "editor";
 
 function promptDefaultGoldenSetID(promptID: string): string {
   if (promptID === "runtime/deep_agent/planner") return "deep_agent_prompt_planner";
@@ -93,14 +94,13 @@ function envPinFor(pins: PromptEnvironmentPin[], environment: string): PromptEnv
   return pins.find((pin) => pin.environment === environment);
 }
 
-export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminToken: string }) {
+export function AdminPromptPanel({ api, adminToken, openEditorSignal = 0 }: { api: ApiClient; adminToken: string; openEditorSignal?: number }) {
   const token = adminToken.trim();
   const [prompts, setPrompts] = useState<PromptTemplate[]>([]);
   const [selectedPromptID, setSelectedPromptID] = useState("");
   const [detail, setDetail] = useState<PromptDetail | null>(null);
   const [query, setQuery] = useState("");
   const [scopeFilter, setScopeFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
   const [tab, setTab] = useState<PromptTab>("workflow");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState("");
@@ -130,6 +130,9 @@ export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminTok
   const [selectedExperimentID, setSelectedExperimentID] = useState("");
   const [usage, setUsage] = useState<LLMUsageAdminSummary | null>(null);
   const [evalResults, setEvalResults] = useState<EvaluationResult[]>([]);
+  const [view, setView] = useState<PromptPanelView>("inspect");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
 
   const selectedPrompt = prompts.find((prompt) => prompt.id === selectedPromptID) || detail?.prompt || null;
   const versions = detail?.versions || [];
@@ -176,13 +179,12 @@ export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminTok
     setGoldenSetID((current) => current || promptDefaultGoldenSetID(payload.prompt.id));
   };
 
-  const loadPromptCatalog = async (selectID = selectedPromptID) => {
+  const loadPromptCatalog = async (selectID = selectedPromptID, notify = false) => {
     if (!token) return;
     setLoading(true);
     setError("");
     try {
       const next = await api.adminOpsPrompts(token, {
-        status: statusFilter,
         q: query.trim(),
         scope: scopeFilter,
         limit: 300
@@ -191,7 +193,7 @@ export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminTok
       const nextID = selectID && next.some((prompt) => prompt.id === selectID) ? selectID : next[0]?.id || "";
       setSelectedPromptID(nextID);
       if (nextID) await loadPromptDetail(nextID, true);
-      setNotice(`Loaded ${next.length} prompts`);
+      if (notify) setNotice(`Loaded ${next.length} prompts`);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -222,7 +224,7 @@ export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminTok
     }
   };
 
-  const loadGoldenSets = async () => {
+  const loadGoldenSets = async (notify = false) => {
     if (!token) return;
     setBusy("golden");
     setError("");
@@ -235,7 +237,7 @@ export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminTok
         setGoldenSetID((current) => current || preferred.id);
         setGoldenSetVersion((current) => current || preferred.version || "");
       }
-      setNotice(`Loaded ${sets.length} golden set versions`);
+      if (notify) setNotice(`Loaded ${sets.length} golden set versions`);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -291,6 +293,13 @@ export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminTok
     if (token) void loadGoldenSets();
   }, []);
 
+  useEffect(() => {
+    if (!openEditorSignal || !selectedPromptID) return;
+    setInspectorOpen(true);
+    setTab("workflow");
+    setView("editor");
+  }, [openEditorSignal]);
+
   const selectPrompt = (promptID: string) => {
     setSelectedPromptID(promptID);
     setDetail(null);
@@ -307,6 +316,8 @@ export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminTok
     setExperimentName("");
     setExperimentControlVersion("");
     setExperimentCandidateVersion("");
+    setInspectorOpen(true);
+    setView("inspect");
   };
 
   const createCandidate = async () => {
@@ -506,43 +517,78 @@ export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminTok
   };
 
   return (
-    <AdminSplitPane>
-      <AdminListPanel>
-        <div className="admin-list-tools">
-          <AdminSearchBox icon={<Search size={16} />}>
-            <Input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search prompts" aria-label="Search prompts" />
-          </AdminSearchBox>
-          <select value={scopeFilter} onChange={(event) => setScopeFilter(event.currentTarget.value)} aria-label="Prompt scope">
-            <option value="all">All scopes</option>
-            {scopes.map((scope) => <option key={scope} value={scope}>{scope}</option>)}
-          </select>
-          <select value={statusFilter} onChange={(event) => setStatusFilter(event.currentTarget.value)} aria-label="Prompt status">
-            <option value="all">All status</option>
-            <option value="draft">Draft</option>
-            <option value="review_pending">Review</option>
-            <option value="published">Published</option>
-            <option value="archived">Archived</option>
-          </select>
-          <Button className="skill-action" onClick={() => loadPromptCatalog()} disabled={loading || !token}>
-            <RefreshCw size={16} />
-            <span>{loading ? "Loading" : "Load"}</span>
-          </Button>
-        </div>
-        <div className="admin-skill-list">
-          {filteredPrompts.map((prompt) => (
-            <Button key={prompt.id} className={`admin-skill-row ${prompt.id === selectedPromptID ? "active" : ""}`} onClick={() => selectPrompt(prompt.id)}>
-              <Code2 size={18} />
-              <span>
-                <strong>{prompt.name || prompt.id}</strong>
-                <small>{prompt.id} · {prompt.scope || "runtime"}</small>
-              </span>
-              <StatusBadge value={prompt.scope || "prompt"} />
+    <AdminSplitPane className={`prompt-admin-layout ${view === "editor" ? "editor-mode" : ""} ${!inspectorOpen && view === "inspect" ? "inspector-closed" : ""}`}>
+      {view === "inspect" && (
+        <AdminListPanel className="prompt-catalog-panel">
+          <div className="prompt-catalog-toolbar">
+            <AdminSearchBox icon={<Search size={16} />}>
+              <Input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search prompts" aria-label="Search prompts" />
+            </AdminSearchBox>
+            <Button variant="outline" className={filtersOpen ? "active" : ""} onClick={() => setFiltersOpen((current) => !current)} aria-expanded={filtersOpen}>
+              <Filter size={15} />
+              <span>Filters</span>
             </Button>
-          ))}
-          {!filteredPrompts.length && <div className="empty-small">{loading ? "Loading..." : "No prompts"}</div>}
-        </div>
-      </AdminListPanel>
-      <AdminDetailPanel>
+            <span className="prompt-catalog-count">{filteredPrompts.length} prompt{filteredPrompts.length === 1 ? "" : "s"}</span>
+            <Button variant="ghost" size="icon" onClick={() => loadPromptCatalog(selectedPromptID, true)} disabled={loading || !token} title="Refresh prompts" aria-label="Refresh prompts">
+              <RefreshCw size={16} className={loading ? "spin" : ""} />
+            </Button>
+          </div>
+          {filtersOpen && (
+            <div className="prompt-catalog-filters">
+              <label>
+                <span>Scope</span>
+                <select value={scopeFilter} onChange={(event) => setScopeFilter(event.currentTarget.value)} aria-label="Prompt scope">
+                  <option value="all">All scopes</option>
+                  {scopes.map((scope) => <option key={scope} value={scope}>{scope}</option>)}
+                </select>
+              </label>
+            </div>
+          )}
+          <div className="prompt-catalog-table" role="table" aria-label="Prompt catalog">
+            <div className="prompt-catalog-table-head" role="row">
+              <span role="columnheader">Name</span>
+              <span role="columnheader">Scope</span>
+              <span role="columnheader">Published</span>
+              <span role="columnheader">Candidate</span>
+              <span role="columnheader">Evaluation</span>
+              <span role="columnheader">Updated</span>
+            </div>
+            <div className="prompt-catalog-rows" role="rowgroup">
+              {filteredPrompts.map((prompt) => {
+                const isSelected = prompt.id === selectedPromptID;
+                const rowCandidate = isSelected ? targetVersion : "";
+                const rowEvaluation = isSelected ? (evalRunID ? "ready" : rowCandidate ? "pending" : "not_run") : "open";
+                return (
+                  <button
+                    key={prompt.id}
+                    type="button"
+                    role="row"
+                    className={`prompt-catalog-row ${isSelected ? "active" : ""}`}
+                    onClick={() => selectPrompt(prompt.id)}
+                    aria-selected={isSelected}
+                  >
+                    <span className="prompt-catalog-name" role="cell">
+                      <span className="prompt-row-selector" aria-hidden="true">{isSelected ? <CheckCircle2 size={16} /> : null}</span>
+                      <span className="prompt-row-icon"><Code2 size={17} /></span>
+                      <span>
+                        <strong>{prompt.name || prompt.id}</strong>
+                        <small>{prompt.id}</small>
+                      </span>
+                    </span>
+                    <span role="cell"><StatusBadge value={prompt.scope || "runtime"} /></span>
+                    <span role="cell"><strong>{isSelected ? publishedVersion?.version || "—" : "—"}</strong></span>
+                    <span role="cell"><strong>{rowCandidate || "—"}</strong></span>
+                    <span role="cell"><StatusBadge value={rowEvaluation} /></span>
+                    <span role="cell"><small>{prompt.updated_at ? formatTime(prompt.updated_at) : "—"}</small><ChevronRight size={15} /></span>
+                  </button>
+                );
+              })}
+              {!filteredPrompts.length && <div className="empty-small">{loading ? "Loading..." : "No prompts match the current filters"}</div>}
+            </div>
+          </div>
+        </AdminListPanel>
+      )}
+      {(view === "editor" || inspectorOpen) && <AdminDetailPanel className={view === "editor" ? "prompt-editor-panel" : "prompt-inspector-panel"}>
         {(error || notice) && (
           <AdminSectionNotice tone={error ? "destructive" : "success"} onDismiss={() => { setError(""); setNotice(""); }}>
             {error || notice}
@@ -552,8 +598,84 @@ export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminTok
           <AdminEmptyState icon={<Code2 size={24} />} title={busy === "detail" ? "Loading prompt" : "Select a prompt"}>
             Prompt registry records appear after loading the catalog.
           </AdminEmptyState>
+        ) : view === "inspect" ? (
+          <div className="prompt-inspector">
+            <header className="prompt-inspector-heading">
+              <span className="prompt-inspector-icon"><Code2 size={24} /></span>
+              <span>
+                <h2>{selectedPrompt.name || selectedPrompt.id}</h2>
+                <small>{selectedPrompt.id}</small>
+              </span>
+              <Button variant="ghost" size="icon" onClick={() => setInspectorOpen(false)} title="Close inspector" aria-label="Close prompt inspector">
+                <X size={18} />
+              </Button>
+            </header>
+            <div className="prompt-production-strip">
+              <span><i /> Production</span>
+              <small>Published {publishedVersion?.version || "—"}</small>
+            </div>
+            <section className="prompt-inspector-section">
+              <div className="prompt-inspector-section-head">
+                <h3>Release readiness</h3>
+                <Button variant="link" onClick={() => { setTab("eval"); setView("editor"); }}>View evaluation</Button>
+              </div>
+              <div className="prompt-readiness-summary">
+                <span className={evalRunID ? "ready" : "pending"}><ShieldCheck size={17} /></span>
+                <span>
+                  <strong>{evalRunID ? "Evaluation ready" : "Pending evaluation"}</strong>
+                  <small>{targetVersion || "No candidate selected"}</small>
+                </span>
+              </div>
+              <div className="prompt-readiness-list">
+                {[
+                  ["Candidate prepared", workflowDone.candidate],
+                  ["Preview generated", workflowDone.preview],
+                  ["Evaluation completed", workflowDone.eval]
+                ].map(([label, done]) => (
+                  <div key={String(label)}>
+                    <CheckCircle2 size={15} />
+                    <span>{label}</span>
+                    <small className={done ? "ready" : "pending"}>{done ? "Ready" : "Pending"}</small>
+                  </div>
+                ))}
+              </div>
+            </section>
+            <section className="prompt-inspector-section">
+              <div className="prompt-inspector-section-head">
+                <h3>Versions</h3>
+                <Button variant="link" onClick={() => { setTab("versions"); setView("editor"); }}>View all</Button>
+              </div>
+              <div className="prompt-version-summary">
+                <div><i className="published" /><span><small>Published</small><strong>{publishedVersion?.version || "—"}</strong></span><StatusBadge value="production" /></div>
+                <div><i className="candidate" /><span><small>Candidate</small><strong>{targetVersion || "—"}</strong></span><StatusBadge value={selectedVersion?.status || "unselected"} /></div>
+                {versions.filter((version) => version.version !== publishedVersion?.version && version.version !== targetVersion).slice(0, 1).map((version) => (
+                  <div key={version.version}><i /><span><small>Previous</small><strong>{version.version}</strong></span><small>{formatTime(version.created_at || "")}</small></div>
+                ))}
+              </div>
+            </section>
+            <section className="prompt-inspector-section prompt-owner-section">
+              <h3>Owner</h3>
+              <div>
+                <span className="prompt-owner-avatar">{(selectedPrompt.owner || "Runtime").slice(0, 2).toUpperCase()}</span>
+                <span><strong>{selectedPrompt.owner || "Runtime team"}</strong><small>{selectedPrompt.scope || "runtime"} scope</small></span>
+              </div>
+            </section>
+            <section className="prompt-inspector-actions">
+              <h3>Actions</h3>
+              <Button variant="primary" onClick={() => setView("editor")}><Code2 size={16} /> Open in editor</Button>
+              <div>
+                <Button variant="outline" onClick={() => { setTab("preview"); setView("editor"); }}><Eye size={16} /> Preview</Button>
+                <Button variant="outline" onClick={() => { setTab("eval"); setView("editor"); }}><PlayCircle size={16} /> Run evaluation</Button>
+              </div>
+              <Button variant="outline" onClick={() => { setTab("versions"); setView("editor"); }}><GitCompare size={16} /> Compare versions</Button>
+            </section>
+          </div>
         ) : (
           <>
+            <div className="prompt-editor-return">
+              <Button variant="ghost" onClick={() => setView("inspect")}><ArrowLeft size={16} /> Back to prompt catalog</Button>
+              <span>Editing {selectedPrompt.name || selectedPrompt.id}</span>
+            </div>
             <div className="admin-skill-head">
               <div>
                 <h2>{selectedPrompt.name || selectedPrompt.id}</h2>
@@ -561,11 +683,11 @@ export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminTok
               </div>
               <StatusBadge value={selectedVersion?.status || "unselected"} />
             </div>
-            <div className="admin-metrics compact">
-              <AdminMetric label="Published" value={publishedVersion?.version || "none"} />
-              <AdminMetric label="Candidate" value={targetVersion || "none"} />
-              <AdminMetric label="Eval" value={evalRunID ? "ready" : "missing"} />
-              <AdminMetric label="Production" value={envPinFor(envPins, "production")?.version || "none"} />
+            <div className="prompt-editor-summary">
+              <span><small>Published</small><strong>{publishedVersion?.version || "none"}</strong></span>
+              <span><small>Candidate</small><strong>{targetVersion || "none"}</strong></span>
+              <span><small>Evaluation</small><strong>{evalRunID ? "ready" : "missing"}</strong></span>
+              <span><small>Production</small><strong>{envPinFor(envPins, "production")?.version || "none"}</strong></span>
             </div>
             <AdminTabs tabs={tabs} active={tab} onChange={setTab} label="Prompt detail sections" compact />
             <div className="admin-detail-grid">
@@ -773,7 +895,7 @@ export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminTok
                 <section className="admin-card wide">
                   <div className="admin-card-head">
                     <h3>Golden eval</h3>
-                    <Button className="small ghost" onClick={loadGoldenSets} disabled={busy === "golden"}>
+                    <Button className="small ghost" onClick={() => loadGoldenSets(true)} disabled={busy === "golden"}>
                       <RefreshCw size={14} />
                       <span>Golden sets</span>
                     </Button>
@@ -949,7 +1071,7 @@ export function AdminPromptPanel({ api, adminToken }: { api: ApiClient; adminTok
             </div>
           </>
         )}
-      </AdminDetailPanel>
+      </AdminDetailPanel>}
     </AdminSplitPane>
   );
 }

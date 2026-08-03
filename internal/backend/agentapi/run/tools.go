@@ -8,21 +8,37 @@ import (
 
 	startupconfig "claude-codex/internal/backend/agentapi/config"
 	"claude-codex/internal/backend/agentruntime"
+	"claude-codex/internal/harness/coordinator"
 	"claude-codex/internal/harness/skills"
+	coretasks "claude-codex/internal/harness/tasks"
 	"claude-codex/internal/harness/tools"
+	agenttool "claude-codex/internal/harness/tools/agent"
 	bashtool "claude-codex/internal/harness/tools/bash"
 	filetool "claude-codex/internal/harness/tools/file"
 	searchtool "claude-codex/internal/harness/tools/search"
+	sendmessagetool "claude-codex/internal/harness/tools/sendmessage"
 	skilltool "claude-codex/internal/harness/tools/skill"
+	tasktool "claude-codex/internal/harness/tools/tasks"
+	teamtool "claude-codex/internal/harness/tools/team"
 	webtool "claude-codex/internal/harness/tools/web"
 )
 
-func buildRegistry(root string, skillManager *skills.SkillManager, allowDangerous bool, artifactWriter agentruntime.ArtifactWriter, artifactMaxBytes int64, networkAllowlist []string, allowedTools []string, sandboxBash *agentruntime.SandboxBashTool) *tools.Registry {
+type registryCollaborationDeps struct {
+	coordinatorManager *coordinator.Manager
+	taskManager        *coretasks.TaskManager
+	runSubagent        agenttool.Runner
+}
+
+func buildRegistry(root string, skillManager *skills.SkillManager, allowDangerous bool, artifactWriter agentruntime.ArtifactWriter, artifactMaxBytes int64, networkAllowlist []string, allowedTools []string, sandboxBash *agentruntime.SandboxBashTool, collaboration registryCollaborationDeps) *tools.Registry {
 	allowed := toolNameSet(allowedTools)
 	enabled := func(name string) bool {
 		return len(allowed) == 0 || allowed[name]
 	}
-	toolList := make([]tools.Tool, 0, 8)
+	taskManager := collaboration.taskManager
+	if taskManager == nil {
+		taskManager = coretasks.DefaultManager()
+	}
+	toolList := make([]tools.Tool, 0, 18)
 	if enabled("Read") {
 		toolList = append(toolList, filetool.NewReadTool(root))
 	}
@@ -46,6 +62,37 @@ func buildRegistry(root string, skillManager *skills.SkillManager, allowDangerou
 	if artifactWriter != nil && enabled(agentruntime.ArtifactToolName) {
 		toolList = append(toolList, agentruntime.NewArtifactToolWithLimit(artifactWriter, root, artifactMaxBytes))
 	}
+	if collaboration.runSubagent != nil && enabled("Agent") {
+		agentTool := agenttool.NewToolWithTaskManager(root, collaboration.runSubagent, taskManager)
+		toolList = append(toolList, agentTool)
+	}
+	if enabled("TaskCreate") {
+		toolList = append(toolList, tasktool.NewTaskCreateTool())
+	}
+	if enabled("TaskGet") {
+		toolList = append(toolList, tasktool.NewTaskGetToolWithManager(taskManager))
+	}
+	if enabled("TaskList") {
+		toolList = append(toolList, tasktool.NewTaskListToolWithManager(taskManager))
+	}
+	if enabled("TaskUpdate") {
+		toolList = append(toolList, tasktool.NewTaskUpdateTool())
+	}
+	if enabled("TaskStop") {
+		toolList = append(toolList, tasktool.NewTaskStopToolWithManager(taskManager))
+	}
+	if enabled("TaskOutput") {
+		toolList = append(toolList, tasktool.NewTaskOutputToolWithManager(taskManager))
+	}
+	if collaboration.coordinatorManager != nil && enabled("TeamCreate") {
+		toolList = append(toolList, teamtool.NewTeamCreateTool(collaboration.coordinatorManager))
+	}
+	if collaboration.coordinatorManager != nil && enabled("TeamDelete") {
+		toolList = append(toolList, teamtool.NewTeamDeleteTool(collaboration.coordinatorManager))
+	}
+	if enabled("SendMessage") {
+		toolList = append(toolList, &sendmessagetool.Tool{TaskManager: taskManager})
+	}
 	if sandboxBash != nil && enabled("Bash") {
 		toolList = append(toolList, sandboxBash)
 	} else if allowDangerous {
@@ -63,7 +110,11 @@ func buildRegistry(root string, skillManager *skills.SkillManager, allowDangerou
 }
 
 func allowedToolNames(allowDangerous bool) []string {
-	names := []string{"Read", "Glob", "Grep", "WebSearch", "WebFetch", "Skill", agentruntime.ArtifactToolName, "Bash"}
+	names := []string{
+		"Read", "Glob", "Grep", "WebSearch", "WebFetch", "Skill", agentruntime.ArtifactToolName,
+		"Agent", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskStop", "TaskOutput",
+		"TeamCreate", "TeamDelete", "SendMessage", "Bash",
+	}
 	if allowDangerous {
 		names = append(names, "Write", "Edit")
 	}
@@ -71,7 +122,19 @@ func allowedToolNames(allowDangerous bool) []string {
 }
 
 func consumerChatToolNames() []string {
-	return []string{"WebSearch", "WebFetch", "Skill", agentruntime.ArtifactToolName}
+	return []string{
+		"WebSearch", "WebFetch", "Skill", agentruntime.ArtifactToolName,
+		"Agent", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskStop", "TaskOutput",
+		"TeamCreate", "TeamDelete", "SendMessage",
+	}
+}
+
+func collaborationSafeWriteToolNames() []string {
+	return []string{"TaskCreate", "TaskUpdate", "TaskStop", "TeamCreate", "TeamDelete", "SendMessage"}
+}
+
+func collaborationSafeExecuteToolNames() []string {
+	return []string{"Agent"}
 }
 
 func effectiveAllowedToolNames(global []string, scope agentruntime.Scope) []string {
@@ -81,7 +144,19 @@ func effectiveAllowedToolNames(global []string, scope agentruntime.Scope) []stri
 		}
 		return scopedAllowedTools(global, scope.AllowedTools)
 	}
-	consumerAllowed := scopedAllowedTools(global, consumerChatToolNames())
+	if scope.InternalToolScope {
+		if len(cleanCSVValues(scope.AllowedTools)) == 0 {
+			return []string{"__no_tools_allowed__"}
+		}
+		return scopedAllowedTools(global, scope.AllowedTools)
+	}
+	consumerTools := consumerChatToolNames()
+	for _, name := range global {
+		if strings.HasPrefix(name, "mcp__") {
+			consumerTools = append(consumerTools, name)
+		}
+	}
+	consumerAllowed := scopedAllowedTools(global, consumerTools)
 	if len(cleanCSVValues(scope.AllowedTools)) > 0 {
 		return scopedAllowedTools(consumerAllowed, scope.AllowedTools)
 	}
@@ -132,7 +207,7 @@ func buildSandboxBashRuntime(config agentruntime.SkillShellSandboxConfig, root s
 	if scope.SkillShellSandbox.Runner != "" {
 		config = scope.SkillShellSandbox
 	}
-	if !scope.SkillScoped || !allowsTool(scope.AllowedTools, "Bash") {
+	if (!scope.SkillScoped && !scope.InternalToolScope) || !allowsTool(scope.AllowedTools, "Bash") {
 		return nil
 	}
 	shell := scope.SkillShell
@@ -157,6 +232,7 @@ func buildSandboxBashRuntime(config agentruntime.SkillShellSandboxConfig, root s
 			root,
 			startupconfig.FirstNonEmpty(scope.SkillRoot, root),
 			scope.SkillShellEnv,
+			scope.NetworkAllowlist,
 			scope.AllowedTools,
 		)
 		return agentruntime.NewSandboxBashTool(runtime)

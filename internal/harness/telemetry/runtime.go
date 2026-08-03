@@ -78,7 +78,7 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 	}
 
 	var combined SessionTracer = MultiSessionTracer{tracers: tracers}
-	combined = SequencedSessionTracer{
+	combined = &SequencedSessionTracer{
 		next: combined,
 		now:  options.Now,
 	}
@@ -184,7 +184,7 @@ func (t MultiSessionTracer) Close() error {
 	return errors.Join(errs...)
 }
 
-func (t SequencedSessionTracer) Record(event TraceEvent) error {
+func (t *SequencedSessionTracer) Record(event TraceEvent) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -199,7 +199,7 @@ func (t SequencedSessionTracer) Record(event TraceEvent) error {
 	return t.next.Record(event)
 }
 
-func (t SequencedSessionTracer) Close() error {
+func (t *SequencedSessionTracer) Close() error {
 	return t.next.Close()
 }
 

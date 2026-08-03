@@ -77,8 +77,11 @@ type ChatTurnReservation struct {
 type ChatTurnReservationStore interface {
 	Init(context.Context) error
 	ReserveChatTurn(context.Context, ChatTurnReservation) (ChatTurnReservation, error)
+	HandoffChatTurn(context.Context, string, ChatTurnReservation) (ChatTurnReservation, error)
 	UpdateChatTurnReservationStatus(context.Context, string, string, string, string) error
 }
+
+const chatTurnReservationLeaseTTL = 30 * time.Minute
 
 type RunUsageSummary struct {
 	RunID                 string  `json:"run_id"`
@@ -325,6 +328,79 @@ func (s *MemoryRuntimeOutputStore) ReserveChatTurn(ctx context.Context, reservat
 		existing.Reserved = false
 		return existing, nil
 	}
+	cutoff := now.Add(-chatTurnReservationLeaseTTL)
+	for existingKey, existing := range s.turnReservations {
+		if existing.UserID != reservation.UserID || existing.SessionID != reservation.SessionID || existing.Status != "reserved" {
+			continue
+		}
+		if existing.UpdatedAt.Before(cutoff) {
+			existing.Status = "expired"
+			existing.UpdatedAt = now
+			s.turnReservations[existingKey] = existing
+			continue
+		}
+		return ChatTurnReservation{}, ErrSessionTurnRunning
+	}
+	s.turnReservations[key] = reservation
+	return reservation, nil
+}
+
+func (s *MemoryRuntimeOutputStore) HandoffChatTurn(ctx context.Context, fromRunID string, reservation ChatTurnReservation) (ChatTurnReservation, error) {
+	if s == nil {
+		return ChatTurnReservation{}, fmt.Errorf("chat turn reservation store is not configured")
+	}
+	select {
+	case <-ctx.Done():
+		return ChatTurnReservation{}, ctx.Err()
+	default:
+	}
+	reservation.UserID = strings.TrimSpace(reservation.UserID)
+	reservation.SessionID = strings.TrimSpace(reservation.SessionID)
+	reservation.IdempotencyKey = strings.TrimSpace(reservation.IdempotencyKey)
+	fromRunID = strings.TrimSpace(fromRunID)
+	key := chatTurnReservationKey(reservation.UserID, reservation.SessionID, reservation.IdempotencyKey)
+	if fromRunID == "" || key == "" {
+		return ChatTurnReservation{}, fmt.Errorf("handoff source run and target reservation are required")
+	}
+	now := time.Now().UTC()
+	if reservation.RunID == "" {
+		reservation.RunID = NewChatRunID()
+	}
+	if reservation.UserMessageID == "" {
+		reservation.UserMessageID = "msg-" + newSortableID()
+	}
+	if reservation.AssistantMessageID == "" {
+		reservation.AssistantMessageID = "msg-" + newSortableID()
+	}
+	reservation.Status = "reserved"
+	reservation.CreatedAt = now
+	reservation.UpdatedAt = now
+	reservation.Reserved = true
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fromKey := ""
+	var from ChatTurnReservation
+	for existingKey, existing := range s.turnReservations {
+		if existing.UserID == reservation.UserID && existing.SessionID == reservation.SessionID && existing.RunID == fromRunID {
+			fromKey = existingKey
+			from = existing
+			break
+		}
+	}
+	if existing, ok := s.turnReservations[key]; ok {
+		if fromKey != "" && from.Status == "handed_off" && existing.Status == "reserved" && existing.RunID == reservation.RunID {
+			existing.Reserved = false
+			return existing, nil
+		}
+		return ChatTurnReservation{}, ErrSessionTurnRunning
+	}
+	if fromKey == "" || from.Status != "reserved" {
+		return ChatTurnReservation{}, ErrSessionTurnRunning
+	}
+	from.Status = "handed_off"
+	from.UpdatedAt = now
+	s.turnReservations[fromKey] = from
 	s.turnReservations[key] = reservation
 	return reservation, nil
 }
@@ -636,11 +712,27 @@ func (s *SQLRuntimeOutputStore) ReserveChatTurn(ctx context.Context, reservation
 		reservation.CreatedAt = now
 	}
 	reservation.UpdatedAt = now
+	if _, err := s.db.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_chat_turn_reservations
+SET status = 'expired', updated_at = ?
+WHERE user_id = ? AND session_id = ? AND status = 'reserved' AND updated_at < ?
+	AND NOT EXISTS (
+		SELECT 1 FROM agent_jobs
+		WHERE agent_jobs.job_id = agent_chat_turn_reservations.run_id
+			AND agent_jobs.user_id = agent_chat_turn_reservations.user_id
+			AND agent_jobs.session_id = agent_chat_turn_reservations.session_id
+			AND agent_jobs.status IN ('queued', 'running')
+	)`),
+		sqlTimeValue(now, s.dialect), reservation.UserID, reservation.SessionID,
+		sqlTimeValue(now.Add(-chatTurnReservationLeaseTTL), s.dialect),
+	); err != nil {
+		return ChatTurnReservation{}, err
+	}
 	query := `
 INSERT INTO agent_chat_turn_reservations (
 	user_id, session_id, idempotency_key, run_id, user_message_id, assistant_message_id, status, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (user_id, session_id, idempotency_key) DO NOTHING
+ON CONFLICT DO NOTHING
 RETURNING user_id, session_id, idempotency_key, run_id, user_message_id, assistant_message_id, status, created_at, updated_at`
 	row := s.db.QueryRowContext(ctx, s.dialect.Bind(query),
 		reservation.UserID, reservation.SessionID, reservation.IdempotencyKey, reservation.RunID,
@@ -656,11 +748,99 @@ RETURNING user_id, session_id, idempotency_key, run_id, user_message_id, assista
 		return ChatTurnReservation{}, err
 	}
 	existing, err := s.getChatTurnReservation(ctx, reservation.UserID, reservation.SessionID, reservation.IdempotencyKey)
+	if err == nil {
+		existing.Reserved = false
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return ChatTurnReservation{}, err
+	}
+	if _, err := s.getActiveChatTurnReservation(ctx, reservation.UserID, reservation.SessionID); err == nil {
+		return ChatTurnReservation{}, ErrSessionTurnRunning
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return ChatTurnReservation{}, err
+	}
+	return ChatTurnReservation{}, fmt.Errorf("reserve chat turn: conflicting reservation disappeared")
+}
+
+func (s *SQLRuntimeOutputStore) HandoffChatTurn(ctx context.Context, fromRunID string, reservation ChatTurnReservation) (ChatTurnReservation, error) {
+	reservation.UserID = strings.TrimSpace(reservation.UserID)
+	reservation.SessionID = strings.TrimSpace(reservation.SessionID)
+	reservation.IdempotencyKey = strings.TrimSpace(reservation.IdempotencyKey)
+	fromRunID = strings.TrimSpace(fromRunID)
+	if reservation.UserID == "" || reservation.SessionID == "" || reservation.IdempotencyKey == "" || fromRunID == "" {
+		return ChatTurnReservation{}, fmt.Errorf("handoff source run, user_id, session_id and idempotency_key are required")
+	}
+	if reservation.RunID == "" {
+		reservation.RunID = NewChatRunID()
+	}
+	if reservation.UserMessageID == "" {
+		reservation.UserMessageID = "msg-" + newSortableID()
+	}
+	if reservation.AssistantMessageID == "" {
+		reservation.AssistantMessageID = "msg-" + newSortableID()
+	}
+	now := time.Now().UTC()
+	reservation.Status = "reserved"
+	reservation.CreatedAt = now
+	reservation.UpdatedAt = now
+
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ChatTurnReservation{}, err
 	}
-	existing.Reserved = false
-	return existing, nil
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, s.dialect.Bind(`
+UPDATE agent_chat_turn_reservations
+SET status = 'handed_off', updated_at = ?
+WHERE user_id = ? AND session_id = ? AND run_id = ? AND status = 'reserved'`),
+		sqlTimeValue(now, s.dialect), reservation.UserID, reservation.SessionID, fromRunID,
+	)
+	if err != nil {
+		return ChatTurnReservation{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return ChatTurnReservation{}, err
+	}
+	if affected != 1 {
+		var sourceStatus string
+		sourceErr := tx.QueryRowContext(ctx, s.dialect.Bind(`
+SELECT status
+FROM agent_chat_turn_reservations
+WHERE user_id = ? AND session_id = ? AND run_id = ?`), reservation.UserID, reservation.SessionID, fromRunID).Scan(&sourceStatus)
+		if sourceErr == nil && sourceStatus == "handed_off" {
+			existing, existingErr := scanChatTurnReservation(tx.QueryRowContext(ctx, s.dialect.Bind(`
+SELECT user_id, session_id, idempotency_key, run_id, user_message_id, assistant_message_id, status, created_at, updated_at
+FROM agent_chat_turn_reservations
+WHERE user_id = ? AND session_id = ? AND idempotency_key = ? AND run_id = ?`),
+				reservation.UserID, reservation.SessionID, reservation.IdempotencyKey, reservation.RunID,
+			))
+			if existingErr == nil && existing.Status == "reserved" {
+				existing.Reserved = false
+				return existing, nil
+			}
+		}
+		return ChatTurnReservation{}, ErrSessionTurnRunning
+	}
+	row := tx.QueryRowContext(ctx, s.dialect.Bind(`
+INSERT INTO agent_chat_turn_reservations (
+	user_id, session_id, idempotency_key, run_id, user_message_id, assistant_message_id, status, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?)
+RETURNING user_id, session_id, idempotency_key, run_id, user_message_id, assistant_message_id, status, created_at, updated_at`),
+		reservation.UserID, reservation.SessionID, reservation.IdempotencyKey, reservation.RunID,
+		reservation.UserMessageID, reservation.AssistantMessageID,
+		sqlTimeValue(now, s.dialect), sqlTimeValue(now, s.dialect),
+	)
+	created, err := scanChatTurnReservation(row)
+	if err != nil {
+		return ChatTurnReservation{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ChatTurnReservation{}, err
+	}
+	created.Reserved = true
+	return created, nil
 }
 
 func (s *SQLRuntimeOutputStore) getChatTurnReservation(ctx context.Context, userID, sessionID, idempotencyKey string) (ChatTurnReservation, error) {
@@ -668,6 +848,16 @@ func (s *SQLRuntimeOutputStore) getChatTurnReservation(ctx context.Context, user
 SELECT user_id, session_id, idempotency_key, run_id, user_message_id, assistant_message_id, status, created_at, updated_at
 FROM agent_chat_turn_reservations
 WHERE user_id = ? AND session_id = ? AND idempotency_key = ?`), userID, sessionID, idempotencyKey)
+	return scanChatTurnReservation(row)
+}
+
+func (s *SQLRuntimeOutputStore) getActiveChatTurnReservation(ctx context.Context, userID, sessionID string) (ChatTurnReservation, error) {
+	row := s.db.QueryRowContext(ctx, s.dialect.Bind(`
+SELECT user_id, session_id, idempotency_key, run_id, user_message_id, assistant_message_id, status, created_at, updated_at
+FROM agent_chat_turn_reservations
+WHERE user_id = ? AND session_id = ? AND status = 'reserved'
+ORDER BY updated_at DESC
+LIMIT 1`), userID, sessionID)
 	return scanChatTurnReservation(row)
 }
 

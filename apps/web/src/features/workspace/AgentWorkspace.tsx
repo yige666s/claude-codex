@@ -108,6 +108,7 @@ function applyMemorySettingsPatch(
 const terminalJobs = new Set(["succeeded", "failed", "cancelled"]);
 const serviceStatusPollMs = 10_000;
 const activeChatRunStorageKey = "agentapi.activeChatRun";
+const activeJobStorageKey = "agentapi.activeJob";
 type ChatRunReplayCursor =
   | { mode: "full" }
   | { mode: "after"; eventId: string };
@@ -116,7 +117,7 @@ const adminTokenStorageKey = "agentapi.adminToken";
 const jobReconnectBaseMs = 1_000;
 const jobReconnectMaxMs = 10_000;
 const chatRunEventTypes = [
-  "start", "message", "delta", "job", "error", "done", "cancelled", "progress",
+  "start", "message", "delta", "job", "job_handoff", "error", "done", "cancelled", "progress",
   "thinking_start", "thinking_delta", "thinking_end",
   "tool_call_start", "tool_call_result", "tool_call_error",
   "answer_delta", "citation", "checkpoint",
@@ -131,9 +132,10 @@ const chatRunEventTypes = [
   "deep_research_started", "deep_research_plan_created", "deep_research_worker_queued", "deep_research_worker_started",
   "deep_research_worker_progress", "deep_research_worker_succeeded", "deep_research_worker_failed", "deep_research_worker_retrying",
   "deep_research_worker_blocked", "deep_research_aggregate_started", "deep_research_conflict_detected", "deep_research_completed",
-  "deep_research_fallback_legacy",
+  "deep_research_replan_started", "deep_research_replan_applied", "deep_research_replan_skipped", "deep_research_replan_failed", "deep_research_replan_limit_reached",
+  "deep_research_deliverable_decision_fallback", "deep_research_fallback_legacy",
   "structured_output", "structured_output_validation", "structured_output_repair", "structured_output_fallback",
-  "workflow_run_started", "workflow_run_resumed", "workflow_run_succeeded", "workflow_run_failed",
+  "workflow_run_started", "workflow_run_resumed", "workflow_run_succeeded", "workflow_run_failed", "workflow_run_cancelled",
   "workflow_step_started", "workflow_step_reused", "workflow_step_succeeded", "workflow_step_failed",
   "connector_tool_call_started", "connector_tool_call_succeeded", "connector_tool_call_failed",
   "mcp_connector_tool_call_started", "mcp_connector_tool_call_succeeded", "mcp_connector_tool_call_failed",
@@ -710,24 +712,46 @@ export function AgentWorkspace() {
     let cancelled = false;
     const restoreActiveRun = async () => {
       const active = loadActiveChatRun();
-      try {
-        const run = await api.activeChatRun(sessionId);
-        if (cancelled) return;
-        if (!run || run.terminal) {
-          if (active?.sessionId === sessionId) clearActiveChatRun(active.runId);
-          return;
-        }
-        if (active?.sessionId === sessionId && active.runId !== run.run_id) {
-          clearActiveChatRun(active.runId);
-        }
-        // A page/session restore has lost the in-memory reducer state that existed
-        // before the saved cursor, so replay the run from the beginning. Incremental
-        // cursors are only safe for reconnects within the same page instance.
-        openChatRunStream(run.run_id, { mode: "full" }, true);
-      } catch {
-        if (active?.sessionId === sessionId) clearActiveChatRun(active.runId);
-        // Missing active-run metadata should not block normal chat history loading.
+      const activeJob = loadActiveJob();
+      const [runResult, jobsResult] = await Promise.allSettled([
+        api.activeChatRun(sessionId),
+        api.jobs(sessionId)
+      ]);
+      if (cancelled) return;
+      if (jobsResult.status === "rejected" && activeJob?.sessionId === sessionId) {
+        setSelectedJobId(activeJob.jobId);
+        setStatus({ tone: "busy", text: "Restoring background job" });
+        return;
       }
+      const jobList = jobsResult.status === "fulfilled" ? jobsResult.value : [];
+      const restoredJob = restorableSessionJob(jobList, sessionId, activeJob?.sessionId === sessionId ? activeJob.jobId : "");
+      if (restoredJob) {
+        const resumeAfterId = activeJob?.sessionId === sessionId && activeJob.jobId === restoredJob.id ? activeJob.lastEventId : "";
+        saveActiveJob(restoredJob.id, sessionId, resumeAfterId || "");
+        if (active?.sessionId === sessionId) clearActiveChatRun(active.runId);
+        setSelectedJobId(restoredJob.id);
+        setStatus({ tone: "busy", text: "Restoring background job" });
+        return;
+      }
+      if (jobsResult.status === "fulfilled" && activeJob?.sessionId === sessionId) {
+        clearActiveJob(activeJob.jobId);
+      }
+      if (runResult.status !== "fulfilled") {
+        // Missing active-run metadata should not block normal chat history loading.
+        return;
+      }
+      const run = runResult.value;
+      if (!run || run.terminal) {
+        if (active?.sessionId === sessionId) clearActiveChatRun(active.runId);
+        return;
+      }
+      if (active?.sessionId === sessionId && active.runId !== run.run_id) {
+        clearActiveChatRun(active.runId);
+      }
+      // A page/session restore has lost the in-memory reducer state that existed
+      // before the saved cursor, so replay the run from the beginning. Incremental
+      // cursors are only safe for reconnects within the same page instance.
+      openChatRunStream(run.run_id, { mode: "full" }, true);
     };
     void restoreActiveRun();
     return () => {
@@ -848,7 +872,7 @@ export function AgentWorkspace() {
     if (!resourceBaselineReadyRef.current.jobs) baselineResourceIds("jobs", jobList.map((job) => job.id));
     if (!resourceBaselineReadyRef.current.attachments) baselineResourceIds("attachments", attachmentList.map((asset) => asset.id));
     if (!resourceBaselineReadyRef.current.artifacts) baselineResourceIds("artifacts", artifactList.map((asset) => asset.id));
-    setJobs(jobList);
+    setJobs((current) => mergeFetchedJobsWithLocalTerminalState(jobList, current, jobEvents));
     setAttachments(attachmentList);
     artifactsRef.current = artifactList;
     setArtifacts(artifactList);
@@ -1723,14 +1747,17 @@ export function AgentWorkspace() {
           lastChatRunEventRef.current = id;
           saveActiveChatRun(data.run_id, requestSessionId, id);
         }
+        if (data.job_id && requestSessionId) {
+          saveActiveJob(data.job_id, requestSessionId);
+        }
         if (data.type === "error") sawRuntimeError = true;
         if (data.type === "job" && data.job_id) backgroundJobStarted = true;
-        if (data.type === "done" || data.type === "error" || data.type === "cancelled") sawTerminalEvent = true;
-        if (data.type === "done" || data.type === "error" || data.type === "cancelled") {
+        if (chatRunStreamTerminalEvent(data)) sawTerminalEvent = true;
+        if (chatRunStreamTerminalEvent(data)) {
           if (data.run_id) clearActiveChatRun(data.run_id);
           else clearActiveChatRunForSession(requestSessionId);
         }
-        if (data.type === "done") startPostChatRefresh();
+        if (data.type === "done" || data.type === "job_handoff") startPostChatRefresh();
         if (!firstTokenSeen && data.type === "delta" && data.content) {
           firstTokenSeen = true;
           const now = performance.now();
@@ -2008,7 +2035,8 @@ export function AgentWorkspace() {
     if (!selectedJobId) return;
     try {
       await api.cancelJob(selectedJobId);
-      setJobs(await api.jobs(sessionId || undefined));
+      const jobList = await api.jobs(sessionId || undefined);
+      setJobs((current) => mergeFetchedJobsWithLocalTerminalState(jobList, current, jobEvents));
     } catch (error) {
       showError(error);
     }
@@ -2047,6 +2075,7 @@ export function AgentWorkspace() {
       }
     }
     if (event.type === "job" && event.job_id) {
+      if (sessionId) saveActiveJob(event.job_id, event.session_id || sessionId);
       if (event.job) setJobs((current) => upsertJob(current, event.job as Job));
       setStatus({ tone: "busy", text: "Running in background" });
       if (!jobWorkspaceOpen || selectedJobId === event.job_id) {
@@ -2060,7 +2089,9 @@ export function AgentWorkspace() {
           { role: "assistant", content: jobStartedMessage(event), created_at: now }
         ));
       }
-      api.jobs(sessionId || undefined).then(setJobs).catch(() => {});
+      api.jobs(sessionId || undefined).then((jobList) => {
+        setJobs((current) => mergeFetchedJobsWithLocalTerminalState(jobList, current, jobEvents));
+      }).catch(() => {});
     }
     if (event.type === "error") {
       const message = event.error || "Request failed";
@@ -2237,17 +2268,27 @@ export function AgentWorkspace() {
       lastChatRunEventRef.current = eventId;
       saveActiveChatRun(runId, event.session_id || sessionId, eventId);
     }
+    if (event.job_id && (event.session_id || sessionId)) {
+      saveActiveJob(event.job_id, event.session_id || sessionId, loadActiveJob(event.job_id)?.lastEventId || "");
+    }
     recordAgentActivity(event, event.session_id || sessionId, eventId);
     handleRuntimeEvent(event);
-    if (chatRunTerminalEvent(event)) finishChatRunStream(runId, event);
+    if (chatRunStreamTerminalEvent(event)) finishChatRunStream(runId, event);
   }
 
   function finishChatRunStream(runId: string, event: RuntimeEvent) {
     closeChatRunStream();
     clearActiveChatRun(runId);
-    finishAgentActivity(event.session_id || sessionId, event);
-    if (event.type === "done") setStatus({ tone: "ok", text: "Done" });
     const targetSession = event.session_id || sessionId;
+    if (event.type === "job_handoff") {
+      if (targetSession && event.job_id) saveActiveJob(event.job_id, targetSession);
+      if (event.job_id) setSelectedJobId(event.job_id);
+      setStatus({ tone: "busy", text: "Running in background" });
+      if (targetSession) refreshSessionData(targetSession, { quiet: true }).catch(() => {});
+      return;
+    }
+    finishAgentActivity(targetSession, event);
+    if (event.type === "done") setStatus({ tone: "ok", text: "Done" });
     if (targetSession) refreshSessionData(targetSession, { revealNewArtifacts: true, quiet: true }).catch(() => {});
   }
 
@@ -2272,7 +2313,8 @@ export function AgentWorkspace() {
     activeJobStreamIdRef.current = jobId;
     jobStreamClosedRef.current = false;
     if (!reconnect) {
-      lastJobEventRef.current = "";
+      const activeJob = loadActiveJob(jobId);
+      lastJobEventRef.current = activeJob?.sessionId === sessionId ? activeJob.lastEventId : "";
       setJobEvents([]);
     }
     setJobStreamStatus(reconnect ? "reconnecting" : "connecting");
@@ -2305,6 +2347,7 @@ export function AgentWorkspace() {
       if (!event) return;
       const eventId = message.lastEventId || lastJobEventRef.current || `${Date.now()}`;
       if (message.lastEventId) lastJobEventRef.current = message.lastEventId;
+      if (event.session_id || sessionId) saveActiveJob(jobId, event.session_id || sessionId, lastJobEventRef.current);
       setJobEvents((current) => appendJobEvent(current, { id: eventId, job_id: jobId, type: event.type, event, created_at: new Date().toISOString() }));
       recordAgentActivity(event, event.session_id || sessionId, message.lastEventId);
       const terminalStatus = terminalJobStatusFromRuntimeEvent(event);
@@ -2344,6 +2387,7 @@ export function AgentWorkspace() {
       await readSSEStream(response, ({ id, data: event }) => {
         if (activeJobStreamIdRef.current !== jobId || jobStreamClosedRef.current) return;
         if (id) lastJobEventRef.current = id;
+        if (event.session_id || sessionId) saveActiveJob(jobId, event.session_id || sessionId, lastJobEventRef.current);
         setJobEvents((current) => appendJobEvent(current, { id: id || `${Date.now()}`, job_id: jobId, type: event.type, event, created_at: new Date().toISOString() }));
         recordAgentActivity(event, event.session_id || sessionId, id);
         const terminalStatus = terminalJobStatusFromRuntimeEvent(event);
@@ -2375,7 +2419,10 @@ export function AgentWorkspace() {
     setJobStreamStatus("idle");
     setJobStreamNotice("");
     markJobTerminal(jobId, status, event, createdAt);
-    api.jobs(sessionId || undefined).then(setJobs).catch(() => {});
+    clearActiveJob(jobId);
+    api.jobs(sessionId || undefined).then((jobList) => {
+      setJobs((current) => mergeFetchedJobsWithLocalTerminalState(jobList, current, jobEvents));
+    }).catch(() => {});
     const targetSession = event?.session_id || sessionId;
     if (targetSession) {
       finishAgentActivity(targetSession, event);
@@ -2391,6 +2438,7 @@ export function AgentWorkspace() {
       const terminal = latestTerminalJobEvent(events, jobId);
       if (terminal) {
         markJobTerminal(jobId, terminal.status, terminal.event, terminal.created_at);
+        clearActiveJob(jobId);
         const targetSession = terminal.event.session_id || sessionId;
         if (targetSession) finishAgentActivity(targetSession, terminal.event);
       }
@@ -2410,8 +2458,9 @@ export function AgentWorkspace() {
     }
     api.jobs(sessionId || undefined).then((jobList) => {
       if (jobStreamClosedRef.current || activeJobStreamIdRef.current !== jobId) return;
-      setJobs(jobList);
-      const freshStatus = jobList.find((job) => job.id === jobId)?.status || "";
+      const mergedJobs = mergeFetchedJobsWithLocalTerminalState(jobList, jobs, jobEvents);
+      setJobs((current) => mergeFetchedJobsWithLocalTerminalState(jobList, current, jobEvents));
+      const freshStatus = mergedJobs.find((job) => job.id === jobId)?.status || "";
       if (terminalJobs.has(freshStatus)) {
         void loadJobEventReplay(jobId);
         clearJobReconnectState();
@@ -3222,6 +3271,7 @@ function agentActivityTitle(event: RuntimeEvent, data: Record<string, unknown> |
   if (event.type === "done") return "Response completed";
   if (event.type === "cancelled") return "Request cancelled";
   if (event.type === "error") return "Stopped with an error";
+  if (event.type === "job_handoff") return "Handed off to background job";
   if (event.type === "job" && event.job?.status === "succeeded") return "Background job completed";
   if (event.type === "job" && event.job?.status === "failed") return "Background job failed";
   if (event.type === "job") return "Started background job";
@@ -3315,6 +3365,7 @@ function agentActivityChannel(event: RuntimeEvent, data: Record<string, unknown>
   if (event.type.startsWith("connector_tool_call_") || event.type.startsWith("mcp_connector_tool_call_")) return "tool";
   if (event.type.startsWith("live_tool_") || event.type.startsWith("live_skill_")) return "tool";
   if (event.type === "sandbox_metric" || event.type === "artifact_metric") return "tool";
+  if (event.type === "job_handoff") return "thinking";
   if (event.type.startsWith("deep_agent_action_")) {
     if (stringFromUnknown(data?.skill_name || data?.tool)) return "tool";
     return "thinking";
@@ -3339,6 +3390,7 @@ function agentActivityStatus(event: RuntimeEvent, data: Record<string, unknown> 
   const status = firstText(stringFromUnknown(data?.result_status), stringFromUnknown(data?.status), event.job?.status || "").toLowerCase();
   if (event.type === "error" || event.type.endsWith("_failed") || event.type.endsWith("_error") || status === "failed" || status === "error") return "failed";
   if (event.type === "cancelled" || event.type.endsWith("_cancelled") || status === "cancelled") return "cancelled";
+  if (event.type === "job_handoff") return "running";
   if (event.type === "done" || event.type === "thinking_end" || event.type === "tool_call_result" || event.type.endsWith("_succeeded") || event.type.endsWith("_completed") || status === "succeeded" || status === "completed") return "succeeded";
   if (event.type === "start" || event.type === "thinking_start" || event.type === "thinking_delta" || event.type === "tool_call_start" || event.type.endsWith("_started") || status === "running" || status === "queued") return "running";
   return "default";
@@ -3428,7 +3480,24 @@ function jobWithTerminalEvents(job: Job, events: JobEvent[]): Job {
   };
 }
 
-function terminalJobStatusFromEvents(events: JobEvent[], jobId?: string): JobStatus | "" {
+export function mergeFetchedJobsWithLocalTerminalState(fetchedJobs: Job[], currentJobs: Job[], events: JobEvent[]): Job[] {
+  const currentById = new Map(currentJobs.map((job) => [job.id, job]));
+  return fetchedJobs.map((job) => {
+    const current = currentById.get(job.id);
+    const preserved = current && terminalJobs.has(current.status) && !terminalJobs.has(job.status)
+      ? {
+        ...job,
+        status: current.status,
+        error: job.error || current.error,
+        updated_at: current.updated_at || job.updated_at,
+        finished_at: current.finished_at || job.finished_at
+      }
+      : job;
+    return jobWithTerminalEvents(preserved, events);
+  });
+}
+
+export function terminalJobStatusFromEvents(events: JobEvent[], jobId?: string): JobStatus | "" {
   return latestTerminalJobEvent(events, jobId)?.status || "";
 }
 
@@ -3443,33 +3512,31 @@ function latestTerminalJobEvent(events: JobEvent[], jobId?: string): { status: J
   return null;
 }
 
-function terminalJobStatusFromRuntimeEvent(event?: RuntimeEvent): JobStatus | "" {
+export function terminalJobStatusFromRuntimeEvent(event?: RuntimeEvent): JobStatus | "" {
   const jobStatus = event?.job?.status || "";
   if (terminalJobs.has(jobStatus)) return jobStatus as JobStatus;
   switch (event?.type) {
     case "done":
-    case "workflow_run_succeeded":
       return "succeeded";
     case "error":
-    case "workflow_run_failed":
       return "failed";
     case "cancelled":
-    case "workflow_run_cancelled":
       return "cancelled";
     default:
       return "";
-	}
+  }
 }
 
 function chatRunTerminalEvent(event?: RuntimeEvent): boolean {
   return Boolean(chatActivityTerminalStatus(event));
 }
 
-function chatActivityTerminalStatus(event?: RuntimeEvent): AgentActivityItem["status"] | "" {
-  if (event?.type === "deep_agent_completed") return "succeeded";
-  if (event?.type === "deep_research_completed") return "succeeded";
-  if (event?.type === "deep_agent_failed") return "failed";
-  if (event?.type === "deep_research_worker_failed") return "failed";
+export function chatRunStreamTerminalEvent(event?: RuntimeEvent): boolean {
+  if (event?.type === "job_handoff") return true;
+  return chatRunTerminalEvent(event);
+}
+
+export function chatActivityTerminalStatus(event?: RuntimeEvent): AgentActivityItem["status"] | "" {
   const status = terminalJobStatusFromRuntimeEvent(event);
   if (status === "succeeded") return "succeeded";
   if (status === "failed") return "failed";
@@ -3497,10 +3564,32 @@ function loadActiveChatRun(): { runId: string; sessionId: string; lastEventId: s
   }
 }
 
+function loadActiveJob(expectedJobId = ""): { jobId: string; sessionId: string; lastEventId: string } | null {
+  try {
+    const raw = localStorage.getItem(activeJobStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { jobId?: string; sessionId?: string; lastEventId?: string };
+    if (!parsed.jobId || !parsed.sessionId) return null;
+    if (expectedJobId && parsed.jobId !== expectedJobId) return null;
+    return { jobId: parsed.jobId, sessionId: parsed.sessionId, lastEventId: parsed.lastEventId || "" };
+  } catch {
+    return null;
+  }
+}
+
 function saveActiveChatRun(runId: string, sessionId: string, lastEventId = "") {
   if (!runId || !sessionId) return;
   try {
     localStorage.setItem(activeChatRunStorageKey, JSON.stringify({ runId, sessionId, lastEventId }));
+  } catch {
+    // Best-effort recovery hint only.
+  }
+}
+
+function saveActiveJob(jobId: string, sessionId: string, lastEventId = "") {
+  if (!jobId || !sessionId) return;
+  try {
+    localStorage.setItem(activeJobStorageKey, JSON.stringify({ jobId, sessionId, lastEventId }));
   } catch {
     // Best-effort recovery hint only.
   }
@@ -3516,6 +3605,16 @@ function clearActiveChatRun(runId?: string) {
   }
 }
 
+function clearActiveJob(jobId?: string) {
+  try {
+    const stored = loadActiveJob();
+    if (jobId && stored?.jobId && stored.jobId !== jobId) return;
+    localStorage.removeItem(activeJobStorageKey);
+  } catch {
+    // Best-effort recovery hint only.
+  }
+}
+
 function clearActiveChatRunForSession(sessionId: string) {
   try {
     const stored = loadActiveChatRun();
@@ -3524,6 +3623,19 @@ function clearActiveChatRunForSession(sessionId: string) {
   } catch {
     // Best-effort recovery hint only.
   }
+}
+
+export function restorableSessionJob(jobs: Job[], sessionId?: string, preferredJobId = ""): Job | null {
+  const activeJobs = jobs.filter((job) => {
+    if (sessionId && job.session_id !== sessionId) return false;
+    return !terminalJobs.has(job.status);
+  });
+  if (!activeJobs.length) return null;
+  if (preferredJobId) {
+    const preferred = activeJobs.find((job) => job.id === preferredJobId);
+    if (preferred) return preferred;
+  }
+  return activeJobs[0];
 }
 
 function resourceTotalCount(tab: RightPanelTab, counts: Record<RightPanelTab, number>): number {

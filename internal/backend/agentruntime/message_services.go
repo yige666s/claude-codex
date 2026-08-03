@@ -35,6 +35,10 @@ type MessageContextMarker interface {
 	MarkMessagesContextUnused(ctx context.Context, userID, sessionID string, messageIDs []string) (int, error)
 }
 
+type MessageContextCompactionWriter interface {
+	WriteSummaryAndMarkMessagesContextUnused(ctx context.Context, userID, sessionID string, summary state.Message, messageIDs []string) (state.Message, int, error)
+}
+
 type MessageAttachmentProcessorStore interface {
 	ListPendingMessageAttachments(ctx context.Context, userID string, limit int) ([]state.MessageAttachment, error)
 	UpdateMessageAttachmentProcessing(ctx context.Context, userID, messageID, attachmentID string, status int, thumbnailKey, extractedTextKey string) error
@@ -65,6 +69,10 @@ type MessageEvent struct {
 
 type MessageEventPublisher interface {
 	PublishMessageEvent(ctx context.Context, event MessageEvent) error
+}
+
+type DurableMessageEventRepository interface {
+	MessageEventOutboxEnabled() bool
 }
 
 type CompositeMessageEventPublisher []MessageEventPublisher
@@ -112,6 +120,17 @@ func NewMessageWriteService(repo MessageRepository, cache SessionContextCache, p
 }
 
 func (s *MessageWriteService) Write(ctx context.Context, req MessageWriteRequest) (state.Message, error) {
+	created, err := s.persist(ctx, req)
+	if err != nil {
+		return state.Message{}, err
+	}
+	if err := s.applyCreatedMessageSideEffects(ctx, created, false); err != nil {
+		return state.Message{}, err
+	}
+	return created, nil
+}
+
+func (s *MessageWriteService) persist(ctx context.Context, req MessageWriteRequest) (state.Message, error) {
 	if s == nil || s.repo == nil {
 		return state.Message{}, fmt.Errorf("message repository is required")
 	}
@@ -124,22 +143,33 @@ func (s *MessageWriteService) Write(ctx context.Context, req MessageWriteRequest
 		return state.Message{}, fmt.Errorf("session ID is required")
 	}
 	message := normalizeWriteMessage(req.Message, userID, sessionID, s.now())
-	created, err := s.repo.AppendMessage(ctx, userID, sessionID, message)
-	if err != nil {
-		return state.Message{}, err
+	return s.repo.AppendMessage(ctx, userID, sessionID, message)
+}
+
+func (s *MessageWriteService) applyCreatedMessageSideEffects(ctx context.Context, created state.Message, invalidate bool) error {
+	if s == nil {
+		return fmt.Errorf("message writer is required")
 	}
+	userID := strings.TrimSpace(created.UserID)
+	sessionID := strings.TrimSpace(created.SessionID)
 	if s.cache != nil {
-		if appender, ok := s.cache.(SessionContextMessageAppender); ok {
-			if err := appender.AppendContextMessage(ctx, userID, sessionID, created); err != nil {
-				return state.Message{}, err
-			}
-		} else {
+		if invalidate {
 			if err := s.cache.InvalidateContext(ctx, userID, sessionID); err != nil {
-				return state.Message{}, err
+				return err
 			}
+		} else if appender, ok := s.cache.(SessionContextMessageAppender); ok {
+			if err := appender.AppendContextMessage(ctx, userID, sessionID, created); err != nil {
+				return err
+			}
+		} else if err := s.cache.InvalidateContext(ctx, userID, sessionID); err != nil {
+			return err
 		}
 	}
-	if s.publisher != nil {
+	durablePublisher := false
+	if repo, ok := s.repo.(DurableMessageEventRepository); ok {
+		durablePublisher = repo.MessageEventOutboxEnabled()
+	}
+	if s.publisher != nil && !durablePublisher {
 		if err := s.publisher.PublishMessageEvent(ctx, MessageEvent{
 			Type:      MessageEventCreated,
 			UserID:    userID,
@@ -147,10 +177,10 @@ func (s *MessageWriteService) Write(ctx context.Context, req MessageWriteRequest
 			Message:   created,
 			CreatedAt: s.now(),
 		}); err != nil {
-			return state.Message{}, err
+			return err
 		}
 	}
-	return created, nil
+	return nil
 }
 
 func (s *MessageWriteService) WriteMany(ctx context.Context, userID, sessionID string, messages []state.Message) ([]state.Message, error) {

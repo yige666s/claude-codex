@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"claude-codex/internal/app/config"
 	mcpcore "claude-codex/internal/harness/mcp"
@@ -30,8 +32,13 @@ func NewRemoteTools(ctx context.Context, server config.MCPServerConfig) ([]toolk
 	if err != nil {
 		return nil, err
 	}
+	if _, err := client.Initialize(ctx); err != nil {
+		_ = client.Close()
+		return nil, err
+	}
 	definitions, err := client.ListTools(ctx)
 	if err != nil {
+		_ = client.Close()
 		return nil, err
 	}
 	mcpcore.RegisterActiveClient(server.Name, client)
@@ -44,7 +51,18 @@ func NewRemoteTools(ctx context.Context, server config.MCPServerConfig) ([]toolk
 }
 
 func (t *RemoteTool) Name() string {
-	return fmt.Sprintf("mcp.%s.%s", t.serverName, t.definition.Name)
+	return fmt.Sprintf("mcp__%s__%s", mcpNamePart(t.serverName), mcpNamePart(t.definition.Name))
+}
+
+var invalidMCPToolNamePart = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
+
+func mcpNamePart(value string) string {
+	value = invalidMCPToolNamePart.ReplaceAllString(strings.TrimSpace(value), "_")
+	value = strings.Trim(value, "_")
+	if value == "" {
+		return "unnamed"
+	}
+	return value
 }
 
 func (t *RemoteTool) Description() string {
@@ -56,6 +74,9 @@ func (t *RemoteTool) InputSchema() json.RawMessage {
 }
 
 func (t *RemoteTool) Permission() permissions.Level {
+	if t.definition.Annotations != nil && t.definition.Annotations.ReadOnlyHint {
+		return permissions.LevelRead
+	}
 	return permissions.LevelExecute
 }
 

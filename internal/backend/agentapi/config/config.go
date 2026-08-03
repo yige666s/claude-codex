@@ -1,11 +1,13 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	appconfig "claude-codex/internal/app/config"
 	"claude-codex/internal/backend/agentruntime"
 	"github.com/spf13/cobra"
 )
@@ -218,7 +220,10 @@ type Config struct {
 	TrustedSecret                            string
 	AllowDangerousTools                      bool
 	NetworkAllowlist                         string
+	PluginDir                                string
 	SkillDirs                                string
+	MCPServersJSON                           string
+	MCPServers                               []appconfig.MCPServerConfig
 	RateLimitBackend                         string
 	RateLimit                                int
 	OperationRateLimits                      string
@@ -300,6 +305,9 @@ type Config struct {
 	DeepResearchWorkerTimeout                time.Duration
 	DeepResearchTotalTimeout                 time.Duration
 	DeepResearchMaxRetries                   int
+	DeepResearchReplanEnabled                bool
+	DeepResearchMaxReplans                   int
+	DeepResearchReplanEveryBatches           int
 	DeepResearchFallbackLegacy               bool
 	DeepResearchRequireSources               bool
 	DeepResearchMinSuccessfulWorkers         int
@@ -531,7 +539,9 @@ func Default() Config {
 		TrustedSecret:                            os.Getenv("AGENT_API_TRUSTED_SECRET"),
 		AllowDangerousTools:                      false,
 		NetworkAllowlist:                         os.Getenv("AGENT_API_NETWORK_ALLOWLIST"),
+		PluginDir:                                os.Getenv("AGENT_API_PLUGIN_DIR"),
 		SkillDirs:                                os.Getenv("AGENT_API_SKILL_DIRS"),
+		MCPServersJSON:                           os.Getenv("AGENT_API_MCP_SERVERS"),
 		RateLimitBackend:                         FirstNonEmpty(os.Getenv("AGENT_API_RATE_LIMIT_BACKEND"), "none"),
 		RateLimit:                                EnvInt("AGENT_API_RATE_LIMIT", 60),
 		OperationRateLimits:                      os.Getenv("AGENT_API_OPERATION_RATE_LIMITS"),
@@ -613,6 +623,9 @@ func Default() Config {
 		DeepResearchWorkerTimeout:                EnvDuration("AGENT_API_DEEP_RESEARCH_WORKER_TIMEOUT", 5*time.Minute),
 		DeepResearchTotalTimeout:                 EnvDuration("AGENT_API_DEEP_RESEARCH_TOTAL_TIMEOUT", 20*time.Minute),
 		DeepResearchMaxRetries:                   EnvInt("AGENT_API_DEEP_RESEARCH_MAX_RETRIES", 2),
+		DeepResearchReplanEnabled:                EnvBool("AGENT_API_DEEP_RESEARCH_REPLAN_ENABLED", true),
+		DeepResearchMaxReplans:                   EnvInt("AGENT_API_DEEP_RESEARCH_MAX_REPLANS", 3),
+		DeepResearchReplanEveryBatches:           EnvInt("AGENT_API_DEEP_RESEARCH_REPLAN_EVERY_BATCHES", 1),
 		DeepResearchFallbackLegacy:               EnvBool("AGENT_API_DEEP_RESEARCH_FALLBACK_LEGACY", true),
 		DeepResearchRequireSources:               EnvBool("AGENT_API_DEEP_RESEARCH_REQUIRE_SOURCES", true),
 		DeepResearchMinSuccessfulWorkers:         EnvInt("AGENT_API_DEEP_RESEARCH_MIN_SUCCESSFUL_WORKERS", 1),
@@ -624,7 +637,7 @@ func Default() Config {
 		LoopConnectorTriggersEnabled:             EnvBool("AGENT_API_LOOP_CONNECTOR_TRIGGERS_ENABLED", false),
 		LoopTriggerTTL:                           EnvDuration("AGENT_API_LOOP_TRIGGER_TTL", 7*24*time.Hour),
 		SkillShellTimeout:                        EnvDuration("AGENT_API_SKILL_SHELL_TIMEOUT", 90*time.Second),
-		SkillShellRunner:                         FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SHELL_RUNNER"), agentruntime.DefaultSkillShellRunner),
+		SkillShellRunner:                         FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SHELL_RUNNER"), "docker"),
 		SkillSandboxImage:                        FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_IMAGE"), agentruntime.DefaultSkillSandboxImage),
 		SkillSandboxNetwork:                      FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_NETWORK"), agentruntime.DefaultSkillSandboxNetwork),
 		SkillSandboxMemory:                       FirstNonEmpty(os.Getenv("AGENT_API_SKILL_SANDBOX_MEMORY"), agentruntime.DefaultSkillSandboxMemory),
@@ -852,7 +865,9 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.StringVar(&cfg.TrustedSecret, "trusted-secret", cfg.TrustedSecret, "secret value required for trusted-header auth")
 	flags.BoolVar(&cfg.AllowDangerousTools, "allow-dangerous-tools", cfg.AllowDangerousTools, "enable write/edit/bash tools and write/execute permissions")
 	flags.StringVar(&cfg.NetworkAllowlist, "network-allowlist", cfg.NetworkAllowlist, "comma-separated domains allowed for WebFetch/WebSearch; empty disables app-level web allowlist")
+	flags.StringVar(&cfg.PluginDir, "plugin-dir", cfg.PluginDir, "directory containing plugin manifests")
 	flags.StringVar(&cfg.SkillDirs, "skill-dirs", cfg.SkillDirs, "comma-separated directories containing skill-name/SKILL.md folders")
+	flags.StringVar(&cfg.MCPServersJSON, "mcp-servers", cfg.MCPServersJSON, "JSON array or object describing MCP servers")
 	flags.StringVar(&cfg.RateLimitBackend, "rate-limit-backend", cfg.RateLimitBackend, "rate limit backend: memory, redis, gateway, none")
 	flags.IntVar(&cfg.RateLimit, "rate-limit", cfg.RateLimit, "max requests per user per minute")
 	flags.StringVar(&cfg.OperationRateLimits, "operation-rate-limits", cfg.OperationRateLimits, "comma-separated operation rate limits such as chat_message=60/m,job_create=20/m,data_export=5/h")
@@ -934,6 +949,9 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.DurationVar(&cfg.DeepResearchWorkerTimeout, "deep-research-worker-timeout", cfg.DeepResearchWorkerTimeout, "timeout per deep research worker")
 	flags.DurationVar(&cfg.DeepResearchTotalTimeout, "deep-research-total-timeout", cfg.DeepResearchTotalTimeout, "total timeout for a deep research run")
 	flags.IntVar(&cfg.DeepResearchMaxRetries, "deep-research-max-retries", cfg.DeepResearchMaxRetries, "maximum retries per failed deep research worker")
+	flags.BoolVar(&cfg.DeepResearchReplanEnabled, "deep-research-replan-enabled", cfg.DeepResearchReplanEnabled, "allow the Deep Research orchestrator to revise the remaining task graph from execution evidence")
+	flags.IntVar(&cfg.DeepResearchMaxReplans, "deep-research-max-replans", cfg.DeepResearchMaxReplans, "maximum execution-time Deep Research replan attempts")
+	flags.IntVar(&cfg.DeepResearchReplanEveryBatches, "deep-research-replan-every-batches", cfg.DeepResearchReplanEveryBatches, "successful worker batches between adaptive Deep Research replan checkpoints")
 	flags.BoolVar(&cfg.DeepResearchFallbackLegacy, "deep-research-fallback-legacy", cfg.DeepResearchFallbackLegacy, "fallback to legacy DeepAgent when orchestrator-worker planning fails before workers start")
 	flags.BoolVar(&cfg.DeepResearchRequireSources, "deep-research-require-sources", cfg.DeepResearchRequireSources, "require sourced evidence for deep research aggregation")
 	flags.IntVar(&cfg.DeepResearchMinSuccessfulWorkers, "deep-research-min-successful-workers", cfg.DeepResearchMinSuccessfulWorkers, "minimum successful workers required before aggregation")
@@ -958,12 +976,52 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 
 // Validate checks only cross-cutting startup configuration invariants.
 // Deeper dependency-specific validation stays near the constructors that own those dependencies.
-func (c Config) Validate() error {
+func (c *Config) Validate() error {
+	if c == nil {
+		return fmt.Errorf("config is required")
+	}
 	if strings.TrimSpace(c.Addr) == "" {
 		return fmt.Errorf("addr is required")
 	}
 	if strings.TrimSpace(c.DataDir) == "" {
 		return fmt.Errorf("data-dir is required")
 	}
+	if strings.TrimSpace(c.MCPServersJSON) != "" {
+		servers, err := parseMCPServersJSON(c.MCPServersJSON)
+		if err != nil {
+			return err
+		}
+		c.MCPServers = servers
+	} else if c.MCPServers == nil {
+		c.MCPServers = []appconfig.MCPServerConfig{}
+	}
+	for i, server := range c.MCPServers {
+		if strings.TrimSpace(server.Name) == "" {
+			return fmt.Errorf("mcp-servers[%d].name is required", i)
+		}
+	}
 	return nil
+}
+
+func parseMCPServersJSON(raw string) ([]appconfig.MCPServerConfig, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []appconfig.MCPServerConfig{}, nil
+	}
+	var list []appconfig.MCPServerConfig
+	if err := json.Unmarshal([]byte(raw), &list); err == nil {
+		return normalizeMCPServers(list), nil
+	}
+	var single appconfig.MCPServerConfig
+	if err := json.Unmarshal([]byte(raw), &single); err == nil {
+		return normalizeMCPServers([]appconfig.MCPServerConfig{single}), nil
+	}
+	return nil, fmt.Errorf("mcp-servers must be a JSON array or object")
+}
+
+func normalizeMCPServers(servers []appconfig.MCPServerConfig) []appconfig.MCPServerConfig {
+	if len(servers) == 0 {
+		return []appconfig.MCPServerConfig{}
+	}
+	return append([]appconfig.MCPServerConfig(nil), servers...)
 }

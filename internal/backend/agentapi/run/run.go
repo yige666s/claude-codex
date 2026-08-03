@@ -20,8 +20,7 @@ func NewCommand() *cobra.Command {
 			if err := cfg.Validate(); err != nil {
 				return err
 			}
-			Run(cmd.Context(), cfg)
-			return nil
+			return Run(cmd.Context(), cfg)
 		},
 	}
 	startupconfig.BindFlags(command, &cfg)

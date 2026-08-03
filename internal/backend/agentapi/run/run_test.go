@@ -9,11 +9,17 @@ import (
 	"testing"
 	"time"
 
+	appconfig "claude-codex/internal/app/config"
 	"claude-codex/internal/backend/agentapi/bootstrap"
 	startupconfig "claude-codex/internal/backend/agentapi/config"
 	"claude-codex/internal/backend/agentruntime"
+	"claude-codex/internal/harness/coordinator"
+	mcpcore "claude-codex/internal/harness/mcp"
+	"claude-codex/internal/harness/permissions"
 	"claude-codex/internal/harness/skills"
+	coretasks "claude-codex/internal/harness/tasks"
 	"claude-codex/internal/harness/tools"
+	agenttool "claude-codex/internal/harness/tools/agent"
 )
 
 func TestBuildLLMConfigOpenAIAndCustom(t *testing.T) {
@@ -294,7 +300,7 @@ func TestLoadSkillsUsesExplicitSkillDirs(t *testing.T) {
 }
 
 func TestConsumerChatRegistryHidesFilesystemTools(t *testing.T) {
-	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, fakeArtifactWriter{}, 0, nil, consumerChatToolNames(), nil)
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, fakeArtifactWriter{}, 0, nil, consumerChatToolNames(), nil, testCollaborationDeps(t))
 	names := descriptorNameSet(registry)
 
 	for _, hidden := range []string{"Read", "Glob", "Grep", "Write", "Edit", "Bash"} {
@@ -302,7 +308,11 @@ func TestConsumerChatRegistryHidesFilesystemTools(t *testing.T) {
 			t.Fatalf("consumer chat registry exposed internal tool %s: %#v", hidden, names)
 		}
 	}
-	for _, visible := range []string{"WebSearch", "WebFetch", "Skill", agentruntime.ArtifactToolName} {
+	for _, visible := range []string{
+		"WebSearch", "WebFetch", "Skill", agentruntime.ArtifactToolName,
+		"Agent", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskStop", "TaskOutput",
+		"TeamCreate", "TeamDelete", "SendMessage",
+	} {
 		if !names[visible] {
 			t.Fatalf("consumer chat registry should expose %s: %#v", visible, names)
 		}
@@ -313,7 +323,7 @@ func TestConsumerScopeHonorsScopedAllowedTools(t *testing.T) {
 	global := allowedToolNames(true)
 	scope := agentruntime.Scope{AllowedTools: []string{"WebSearch", "WebFetch", agentruntime.ArtifactToolName}}
 	allowed := effectiveAllowedToolNames(global, scope)
-	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, fakeArtifactWriter{}, 0, nil, allowed, nil)
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, fakeArtifactWriter{}, 0, nil, allowed, nil, testCollaborationDeps(t))
 	names := descriptorNameSet(registry)
 
 	for _, visible := range []string{"WebSearch", "WebFetch", agentruntime.ArtifactToolName} {
@@ -338,7 +348,7 @@ func TestSkillScopedRegistryUsesSkillPolicy(t *testing.T) {
 	global := allowedToolNames(true)
 	scope := agentruntime.Scope{SkillScoped: true, AllowedTools: []string{"Read", "Grep", "Bash"}}
 	allowed := effectiveAllowedToolNames(global, scope)
-	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, allowed, nil)
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, allowed, nil, registryCollaborationDeps{})
 	names := descriptorNameSet(registry)
 
 	for _, visible := range []string{"Read", "Grep", "Bash"} {
@@ -367,7 +377,7 @@ func TestSkillScopedRegistryCanExposeSandboxBashWithoutDangerousTools(t *testing
 	if sandboxBash == nil {
 		t.Fatal("expected sandbox Bash runtime")
 	}
-	registry := buildRegistry(root, skills.NewSkillManager(), false, nil, 0, nil, allowed, sandboxBash)
+	registry := buildRegistry(root, skills.NewSkillManager(), false, nil, 0, nil, allowed, sandboxBash, registryCollaborationDeps{})
 	names := descriptorNameSet(registry)
 
 	if !names["Bash"] {
@@ -376,6 +386,32 @@ func TestSkillScopedRegistryCanExposeSandboxBashWithoutDangerousTools(t *testing
 	for _, hidden := range []string{"Write", "Edit"} {
 		if names[hidden] {
 			t.Fatalf("skill-scoped sandbox registry exposed dangerous tool %s: %#v", hidden, names)
+		}
+	}
+}
+
+func TestInternalToolScopeCanExposeReadersAndSandboxedBash(t *testing.T) {
+	root := t.TempDir()
+	scope := agentruntime.Scope{
+		InternalToolScope: true,
+		AllowedTools:      []string{"Read", "Glob", "Grep", "Bash"},
+		SkillShellSandbox: agentruntime.SkillShellSandboxConfig{Runner: "local", Network: "none"},
+	}
+	allowed := effectiveAllowedToolNames(allowedToolNames(false), scope)
+	sandboxBash := buildSandboxBashRuntime(agentruntime.SkillShellSandboxConfig{}, root, scope)
+	if sandboxBash == nil {
+		t.Fatal("expected internal tool scope to receive sandboxed Bash")
+	}
+	registry := buildRegistry(root, skills.NewSkillManager(), false, nil, 0, nil, allowed, sandboxBash, registryCollaborationDeps{})
+	names := descriptorNameSet(registry)
+	for _, visible := range []string{"Read", "Glob", "Grep", "Bash"} {
+		if !names[visible] {
+			t.Fatalf("internal tool scope should expose %s: %#v", visible, names)
+		}
+	}
+	for _, hidden := range []string{"Write", "Edit", "WebSearch", "Agent"} {
+		if names[hidden] {
+			t.Fatalf("internal tool scope exposed unrequested tool %s: %#v", hidden, names)
 		}
 	}
 }
@@ -394,7 +430,7 @@ func TestSkillScopedRegistryCanExposeLocalSandboxBashWithoutDangerousTools(t *te
 	if sandboxBash == nil {
 		t.Fatal("expected local sandbox Bash runtime")
 	}
-	registry := buildRegistry(root, skills.NewSkillManager(), false, nil, 0, nil, allowed, sandboxBash)
+	registry := buildRegistry(root, skills.NewSkillManager(), false, nil, 0, nil, allowed, sandboxBash, registryCollaborationDeps{})
 	names := descriptorNameSet(registry)
 
 	if !names["Bash"] {
@@ -419,9 +455,203 @@ func TestSkillScopedRegistryCanExposeLocalSandboxBashWithoutDangerousTools(t *te
 
 func TestSkillScopedRegistryDefaultsToNoToolsWithoutPolicy(t *testing.T) {
 	allowed := effectiveAllowedToolNames(allowedToolNames(true), agentruntime.Scope{SkillScoped: true})
-	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, allowed, nil)
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), true, nil, 0, nil, allowed, nil, registryCollaborationDeps{})
 	if names := descriptorNameSet(registry); len(names) != 0 {
 		t.Fatalf("skill-scoped registry without an explicit policy should expose no tools: %#v", names)
+	}
+}
+
+func TestSkillScopedRegistryCanExplicitlyExposeCollaborationTools(t *testing.T) {
+	scope := agentruntime.Scope{SkillScoped: true, AllowedTools: []string{"TaskGet", "SendMessage"}}
+	allowed := effectiveAllowedToolNames(allowedToolNames(false), scope)
+	registry := buildRegistry(t.TempDir(), skills.NewSkillManager(), false, nil, 0, nil, allowed, nil, testCollaborationDeps(t))
+	names := descriptorNameSet(registry)
+
+	for _, visible := range []string{"TaskGet", "SendMessage"} {
+		if !names[visible] {
+			t.Fatalf("skill-scoped registry should expose %s when explicitly allowed: %#v", visible, names)
+		}
+	}
+	for _, hidden := range []string{"Agent", "TaskCreate", "TeamCreate", "Read", "WebSearch"} {
+		if names[hidden] {
+			t.Fatalf("skill-scoped registry exposed unrequested tool %s: %#v", hidden, names)
+		}
+	}
+}
+
+func TestCollaborationToolsShareTaskStateAcrossRegistries(t *testing.T) {
+	deps := testCollaborationDeps(t)
+	registryA := buildRegistry(t.TempDir(), skills.NewSkillManager(), false, nil, 0, nil, consumerChatToolNames(), nil, deps)
+	registryB := buildRegistry(t.TempDir(), skills.NewSkillManager(), false, nil, 0, nil, consumerChatToolNames(), nil, deps)
+
+	agentTool, err := registryA.Get("Agent")
+	if err != nil {
+		t.Fatalf("Agent tool missing: %v", err)
+	}
+	result, err := agentTool.Execute(context.Background(), json.RawMessage(`{"prompt":"study","description":"background agent","subagent_type":"researcher","run_in_background":true}`))
+	if err != nil {
+		t.Fatalf("Agent execute: %v", err)
+	}
+	var payload struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &payload); err != nil {
+		t.Fatalf("decode agent output: %v", err)
+	}
+	if strings.TrimSpace(payload.TaskID) == "" {
+		t.Fatalf("expected task_id in agent output: %s", result.Output)
+	}
+	defer func() {
+		_ = deps.taskManager.KillTask(payload.TaskID, func(updater func(prev interface{}) interface{}) {})
+	}()
+
+	taskGet, err := registryB.Get("TaskGet")
+	if err != nil {
+		t.Fatalf("TaskGet tool missing: %v", err)
+	}
+	got, err := taskGet.Execute(context.Background(), json.RawMessage(`{"taskId":"`+payload.TaskID+`"}`))
+	if err != nil {
+		t.Fatalf("TaskGet execute: %v", err)
+	}
+	if !strings.Contains(got.Output, payload.TaskID) {
+		t.Fatalf("TaskGet output did not include shared runtime task: %s", got.Output)
+	}
+
+	sendTool, err := registryB.Get("SendMessage")
+	if err != nil {
+		t.Fatalf("SendMessage tool missing: %v", err)
+	}
+	if _, err := sendTool.Execute(context.Background(), json.RawMessage(`{"to":"`+payload.TaskID+`","message":"follow up"}`)); err != nil {
+		t.Fatalf("SendMessage execute: %v", err)
+	}
+	messages, drainErr := deps.taskManager.DrainLocalAgentMessages(payload.TaskID)
+	if drainErr != nil {
+		t.Fatalf("drain local agent messages: %v", drainErr)
+	}
+	if len(messages) != 1 || messages[0] != "follow up" {
+		t.Fatalf("unexpected queued messages: %#v", messages)
+	}
+}
+
+func testCollaborationDeps(t *testing.T) registryCollaborationDeps {
+	t.Helper()
+	return registryCollaborationDeps{
+		coordinatorManager: coordinator.NewManager(coordinator.Config{ScratchpadDir: t.TempDir()}),
+		taskManager:        coretasks.NewTaskManager(),
+		runSubagent: func(ctx context.Context, _ agenttool.Request) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+	}
+}
+
+func TestRuntimeComponentsDiscoverAndExposeGenericMCPTools(t *testing.T) {
+	mcpcore.RegisterSDKControlHandler("runtime-test", func(_ string, message mcpcore.JSONRPCMessage) (mcpcore.JSONRPCMessage, error) {
+		var result any
+		switch message.Method {
+		case "initialize":
+			result = mcpcore.InitializeResult{Instructions: "Use the runtime tool only when requested."}
+		case "list_tools":
+			result = mcpcore.ListToolsResult{Tools: []mcpcore.ToolDefinition{{
+				Name:        "lookup",
+				Description: "lookup data",
+				InputSchema: json.RawMessage(`{"type":"object"}`),
+				Annotations: &mcpcore.ToolAnnotations{ReadOnlyHint: true},
+			}}}
+		case "call_tool":
+			result = mcpcore.CallToolResult{Output: "runtime-mcp-ok"}
+		default:
+			result = map[string]any{}
+		}
+		raw, err := json.Marshal(result)
+		if err != nil {
+			return mcpcore.JSONRPCMessage{}, err
+		}
+		return mcpcore.JSONRPCMessage{ID: message.ID, JSONRPC: "2.0", Result: raw}, nil
+	})
+	defer mcpcore.UnregisterSDKControlHandler("runtime-test")
+
+	cfg := startupconfig.Config{
+		Workspace:  t.TempDir(),
+		MCPServers: []appconfig.MCPServerConfig{{Name: "runtime-test", Transport: "sdk"}},
+		// Configured read-only MCP tools must remain available while filesystem and
+		// shell write/execute capabilities stay disabled.
+		AllowDangerousTools: false,
+	}
+	components := newRuntimeComponents(&cfg)
+	defer components.Close()
+	factory, _ := buildEngineFactory(engineFactoryConfig{
+		startupCfg:         cfg,
+		llmCfg:             bootstrap.LLMConfig{Provider: "simple", Model: "simple", Timeout: 30},
+		llmConfigManager:   agentruntime.NewLLMGovernanceConfigManager(agentruntime.LLMGovernanceConfig{Provider: "simple", Model: "simple"}, nil),
+		llmUsageStore:      agentruntime.NewMemoryLLMUsageStore(),
+		riskStore:          agentruntime.NewMemoryRiskStore(),
+		toolCallLedger:     agentruntime.NewMemoryToolCallLedgerStore(),
+		coordinatorManager: coordinator.NewManager(coordinator.Config{ScratchpadDir: cfg.Workspace}),
+		taskManager:        coretasks.NewTaskManager(),
+		runtimeComponents:  components,
+	})
+	runner, err := factory(context.Background(), agentruntime.Scope{})
+	if err != nil {
+		t.Fatalf("build engine with safe MCP and dangerous tools disabled: %v", err)
+	}
+	if runner == nil {
+		t.Fatal("engine factory returned nil runner")
+	}
+	names, err := components.ensureMCP(context.Background())
+	if err != nil {
+		t.Fatalf("discover MCP: %v", err)
+	}
+	if len(names) != 1 || names[0] != "mcp__runtime-test__lookup" {
+		t.Fatalf("unexpected MCP names: %#v", names)
+	}
+	remoteTools := components.mcpToolsSlice()
+	if len(remoteTools) != 1 {
+		t.Fatalf("unexpected MCP tools: %#v", remoteTools)
+	}
+	if got := remoteTools[0].Permission(); got != permissions.LevelRead {
+		t.Fatalf("read-only MCP permission = %q, want read", got)
+	}
+	result, err := remoteTools[0].Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil || result.Output != "runtime-mcp-ok" {
+		t.Fatalf("execute generic MCP tool: output=%q err=%v", result.Output, err)
+	}
+
+	allowed := effectiveAllowedToolNames(appendAllowedTools(allowedToolNames(true), names), agentruntime.Scope{})
+	allowedSet := toolNameSet(allowed)
+	if !allowedSet["WebSearch"] || !allowedSet[names[0]] {
+		t.Fatalf("consumer registry lost built-in or MCP tools: %#v", allowed)
+	}
+}
+
+func TestLLMStatusReflectsRuntimeProviderChangeBeforeNextEngineCreation(t *testing.T) {
+	workspace := t.TempDir()
+	manager := agentruntime.NewLLMGovernanceConfigManager(agentruntime.LLMGovernanceConfig{
+		Provider:    "simple",
+		Model:       "simple",
+		ModelRoutes: "default=simple,chat=simple",
+	}, nil)
+	factory, status := buildEngineFactory(engineFactoryConfig{
+		startupCfg:         startupconfig.Config{Workspace: workspace},
+		llmCfg:             bootstrap.LLMConfig{Provider: "simple", Model: "simple", Timeout: 30},
+		llmConfigManager:   manager,
+		llmUsageStore:      agentruntime.NewMemoryLLMUsageStore(),
+		riskStore:          agentruntime.NewMemoryRiskStore(),
+		toolCallLedger:     agentruntime.NewMemoryToolCallLedgerStore(),
+		coordinatorManager: coordinator.NewManager(coordinator.Config{ScratchpadDir: workspace}),
+		taskManager:        coretasks.NewTaskManager(),
+	})
+	if _, err := factory(context.Background(), agentruntime.Scope{WorkingDir: workspace}); err != nil {
+		t.Fatalf("build initial engine: %v", err)
+	}
+
+	model := "deepseek-chat"
+	if _, err := manager.Update(context.Background(), agentruntime.LLMGovernanceConfigPatch{Model: &model}); err != nil {
+		t.Fatalf("update runtime model: %v", err)
+	}
+	got := status()
+	if len(got.Backends) != 1 || got.Backends[0].Provider != "deepseek" || got.Backends[0].Model != model {
+		t.Fatalf("status remained on stale engine backend: %#v", got.Backends)
 	}
 }
 

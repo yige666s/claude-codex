@@ -15,10 +15,10 @@ type configuredTool struct {
 	name    string
 	desc    string
 	schema  json.RawMessage
-	execute func(ctx context.Context, name string, input json.RawMessage) (string, error)
+	execute func(ctx context.Context, toolUseID, name string, input json.RawMessage) (string, error)
 }
 
-func newConfiguredToolFromDescriptor(desc toolkit.Descriptor, execute func(ctx context.Context, name string, input json.RawMessage) (string, error)) htool.Tool {
+func newConfiguredToolFromDescriptor(desc toolkit.Descriptor, execute func(ctx context.Context, toolUseID, name string, input json.RawMessage) (string, error)) htool.Tool {
 	builder := htool.NewToolBuilder(desc.Name)
 	if len(desc.InputSchema) > 0 {
 		var schema htool.ToolInputJSONSchema
@@ -55,7 +55,11 @@ func (t *configuredTool) Call(ctx context.Context, args map[string]interface{}, 
 	if err != nil {
 		return nil, err
 	}
-	output, err := t.execute(ctx, t.name, input)
+	toolUseID := ""
+	if toolCtx != nil {
+		toolUseID = toolCtx.ToolUseID
+	}
+	output, err := t.execute(ctx, toolUseID, t.name, input)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", t.name, err)
 	}
@@ -76,7 +80,7 @@ func (t *configuredTool) ValidateInput(input map[string]interface{}, toolCtx *ht
 	return htool.NewValidationSuccess(), nil
 }
 
-func configuredToolsFromDescriptors(descs []toolkit.Descriptor, execute func(ctx context.Context, name string, input json.RawMessage) (string, error)) []htool.Tool {
+func configuredToolsFromDescriptors(descs []toolkit.Descriptor, execute func(ctx context.Context, toolUseID, name string, input json.RawMessage) (string, error)) []htool.Tool {
 	out := make([]htool.Tool, 0, len(descs))
 	for _, desc := range descs {
 		out = append(out, newConfiguredToolFromDescriptor(desc, execute))

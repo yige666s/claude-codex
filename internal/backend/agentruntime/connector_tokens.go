@@ -32,6 +32,9 @@ func (v *SQLConnectorTokenVault) Init(ctx context.Context) error {
 	if v == nil || v.db == nil {
 		return fmt.Errorf("connector token vault is not configured")
 	}
+	if len(connectorTokenVaultKey()) == 0 {
+		return fmt.Errorf("AGENT_API_CONNECTOR_TOKEN_SECRET is required for the SQL connector token vault")
+	}
 	return requireSQLColumns(ctx, v.db, "agent_connector_tokens",
 		"token_ref", "provider", "access_token_ciphertext", "refresh_token_ciphertext", "token_type",
 		"scopes_json", "expires_at", "refresh_expires_at", "created_at", "updated_at",
@@ -154,7 +157,7 @@ func protectConnectorSecret(plain string) (string, error) {
 	}
 	key := connectorTokenVaultKey()
 	if len(key) == 0 {
-		return "plain:" + base64.StdEncoding.EncodeToString([]byte(plain)), nil
+		return "", fmt.Errorf("AGENT_API_CONNECTOR_TOKEN_SECRET is required to persist connector tokens")
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {

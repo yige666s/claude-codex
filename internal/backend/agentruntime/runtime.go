@@ -37,6 +37,9 @@ const (
 	liveSkillSelectionTimeout   = 8 * time.Second
 	liveWebResearchTimeout      = 75 * time.Second
 	afterTurnMemoryTimeout      = 30 * time.Second
+	durableJobCancelPoll        = 500 * time.Millisecond
+	durableJobExecutionLeaseTTL = 2 * time.Minute
+	durableJobLeaseRefresh      = 30 * time.Second
 )
 
 var userAttachmentSummaryPattern = regexp.MustCompile(`(?is)\n{2}(?:attachments|attached files):[^\n]+$`)
@@ -59,6 +62,7 @@ const liveWebResearchFunctionName = "web_research"
 const consumerSecuritySystemContext = PromptConsumerSecuritySystemContext
 
 var ErrSessionNotRunning = errors.New("session is not running")
+var ErrSessionTurnRunning = errors.New("session turn is already running")
 var ErrRuntimeShuttingDown = errors.New("runtime is shutting down")
 
 type Runtime struct {
@@ -97,6 +101,7 @@ type Runtime struct {
 	deepAgentEvidence        DeepAgentEvidenceRepository
 	deepResearchAgent        DeepResearchHarnessAgentRunner
 	toolCallLedger           ToolCallLedgerStore
+	turnReservations         ChatTurnReservationStore
 	promptStore              PromptStore
 	promptResolver           PromptResolver
 	connectors               ConnectorStore
@@ -105,7 +110,7 @@ type Runtime struct {
 	mcpHost                  mcpcore.Host
 	browserPush              BrowserPushStore
 	browserPushSender        *BrowserPushSender
-	engineFactory            EngineFactory
+	engineFactory            ContextEngineFactory
 	riskScanner              RiskScanner
 	riskRecorder             func(context.Context, RiskEvent)
 	logger                   *slog.Logger
@@ -209,6 +214,20 @@ func (r *Runtime) MaxAssetBytes() int64 {
 }
 
 func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryService, skills SkillCatalog, engineFactory EngineFactory) *Runtime {
+	var contextualFactory ContextEngineFactory
+	if engineFactory != nil {
+		contextualFactory = func(_ context.Context, scope Scope) (Runner, error) {
+			return engineFactory(scope), nil
+		}
+	}
+	return newRuntime(config, sessions, memory, skills, contextualFactory, engineFactory)
+}
+
+func NewRuntimeWithContextEngineFactory(config RuntimeConfig, sessions SessionStore, memory MemoryService, skills SkillCatalog, engineFactory ContextEngineFactory) *Runtime {
+	return newRuntime(config, sessions, memory, skills, engineFactory, AdaptContextEngineFactory(engineFactory))
+}
+
+func newRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryService, skills SkillCatalog, engineFactory ContextEngineFactory, legacyEngineFactory EngineFactory) *Runtime {
 	if config.TurnTimeout <= 0 {
 		config.TurnTimeout = 2 * time.Minute
 	}
@@ -245,7 +264,7 @@ func NewRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		memoryExtract:         NewRuleMemoryExtractorWithProvider(config.MemoryPolicyProvider),
 		memoryAbstract:        NewRuleMemoryAbstractor(),
 		memoryOrganizer:       NewRuleMemoryOrganizer(),
-		memoryRecall:          NewMemoryRecallDeciderWithPolicyProvider(config.MemoryRecall, memoryRecallEmbedderFromConfig(config), componentLogger(logger, "memory_recall"), config.MemoryPolicyProvider, engineFactory),
+		memoryRecall:          NewMemoryRecallDeciderWithPolicyProvider(config.MemoryRecall, memoryRecallEmbedderFromConfig(config), componentLogger(logger, "memory_recall"), config.MemoryPolicyProvider, legacyEngineFactory),
 		memoryQueryRewriter:   NewDeterministicMemoryQueryRewriterWithProvider(config.MemoryPolicyProvider),
 		memoryRecallTrace:     memoryRecallTrace,
 		episodeSummarizer:     RuleMemoryEpisodeSummarizer{},
@@ -333,6 +352,23 @@ func (r *Runtime) SetMessageEventPublisher(publisher MessageEventPublisher) {
 	r.configureMessageServices()
 }
 
+func (r *Runtime) PublishMessageEvent(ctx context.Context, event MessageEvent) error {
+	if r == nil {
+		return fmt.Errorf("runtime is not configured")
+	}
+	if r.messagePublisher != nil {
+		if err := r.messagePublisher.PublishMessageEvent(ctx, event); err != nil {
+			return err
+		}
+	}
+	if r.localVectorIndex && r.vectorIndexer != nil {
+		if err := r.vectorIndexer.PublishMessageEventSynchronously(ctx, event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *Runtime) SetLocalMessageVectorIndexing(enabled bool) {
 	if r == nil {
 		return
@@ -375,7 +411,7 @@ func (r *Runtime) configureMessageServices() {
 			r.sessionLoader,
 			r.messageWriter,
 			marker,
-			LLMSummaryGenerator{RunnerFactory: r.engineFactory},
+			LLMSummaryGenerator{ContextRunnerFactory: r.engineFactory},
 		)
 		return
 	}
@@ -431,6 +467,27 @@ func (r *Runtime) CompactSessionContext(ctx context.Context, userID, sessionID s
 		return ContextCompactionResult{}, fmt.Errorf("context compaction service is not configured")
 	}
 	return r.contextCompactor.Compact(ctx, userID, sessionID, opts)
+}
+
+// loadSessionForModelTurn applies durable history compaction before a turn and
+// reloads the session when compaction changed the persisted message set. The
+// caller must already hold the session turn lease.
+func (r *Runtime) loadSessionForModelTurn(ctx context.Context, userID, sessionID string) (*state.Session, error) {
+	session, err := r.GetSession(ctx, userID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if r == nil || r.contextCompactor == nil {
+		return session, nil
+	}
+	result, err := r.contextCompactor.Compact(ctx, userID, sessionID, DefaultContextCompactionOptions())
+	if err != nil {
+		return nil, fmt.Errorf("compact session context: %w", err)
+	}
+	if !result.Compacted {
+		return session, nil
+	}
+	return r.GetSession(ctx, userID, sessionID)
 }
 
 func (r *Runtime) Live(ctx context.Context, req LiveRequest, input LiveClientStream, sink EventSink) error {
@@ -1925,15 +1982,34 @@ func (r *Runtime) deleteAsset(ctx context.Context, kind, userID, assetID string)
 	return r.artifacts.Delete(ctx, userID, assetID, kind)
 }
 
-func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) error {
+func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) (retErr error) {
 	if strings.TrimSpace(req.UserID) == "" {
 		return fmt.Errorf("user ID is required")
+	}
+	if strings.TrimSpace(req.SessionID) == "" {
+		return fmt.Errorf("session ID is required")
 	}
 	if strings.TrimSpace(req.Content) == "" && len(req.AttachmentIDs) == 0 && len(req.AttachmentURLs) == 0 {
 		return fmt.Errorf("content or attachment is required")
 	}
 	if sink == nil {
 		return fmt.Errorf("event sink is required")
+	}
+	reservation, err := r.reserveSessionTurn(ctx, &req)
+	if err != nil {
+		return err
+	}
+	var stopReservationHeartbeat func()
+	reservationHandedOff := false
+	if reservation != nil {
+		stopReservationHeartbeat = r.startSessionTurnReservationHeartbeat(ctx, *reservation)
+		defer func() {
+			if reservationHandedOff {
+				return
+			}
+			stopReservationHeartbeat()
+			r.finishSessionTurnReservation(ctx, *reservation, retErr)
+		}()
 	}
 	req.ConnectorContext = r.resolveConnectorContext(ctx, req)
 	if jobIDFromContext(ctx) == "" {
@@ -1943,14 +2019,47 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 				_ = sink.Send(ctx, Event{Type: "error", SessionID: req.SessionID, Error: err.Error()})
 				return err
 			}
+			if reservation != nil {
+				stopReservationHeartbeat()
+				if err := r.handoffSessionTurnReservation(ctx, *reservation, job); err != nil {
+					_ = r.jobs.UpdateJobStatus(context.WithoutCancel(ctx), job.UserID, job.ID, JobStatusFailed, err.Error(), time.Now().UTC())
+					_ = sink.Send(ctx, Event{Type: "error", SessionID: req.SessionID, JobID: job.ID, Error: err.Error()})
+					return err
+				}
+				reservationHandedOff = true
+			}
 			if err := r.StartJob(ctx, job); err != nil {
+				_ = r.jobs.UpdateJobStatus(context.WithoutCancel(ctx), job.UserID, job.ID, JobStatusFailed, err.Error(), time.Now().UTC())
+				if reservationHandedOff {
+					r.finishSessionTurnReservationStatus(ctx, job.UserID, job.SessionID, job.ID, "failed")
+				}
 				_ = sink.Send(ctx, Event{Type: "error", SessionID: req.SessionID, JobID: job.ID, Error: err.Error()})
 				return err
 			}
-			return sink.Send(ctx, Event{Type: "job", SessionID: req.SessionID, JobID: job.ID, Job: job, JobReason: decision.Reason})
+			if err := sink.Send(ctx, Event{Type: "job", SessionID: req.SessionID, JobID: job.ID, Job: job, JobReason: decision.Reason}); err != nil {
+				return err
+			}
+			return sink.Send(ctx, Event{Type: "job_handoff", SessionID: req.SessionID, JobID: job.ID, JobReason: decision.Reason})
 		}
 	}
-	session, err := r.GetSession(ctx, req.UserID, req.SessionID)
+	turnCtx, cancel := context.WithTimeout(ctx, r.agenticTaskTurnTimeout(req))
+	turnKey := sessionKey(req.UserID, req.SessionID)
+	if err := r.start(turnKey, cancel, jobIDFromContext(ctx) != ""); err != nil {
+		cancel()
+		return err
+	}
+	turnFinished := false
+	finishTurn := func() {
+		if turnFinished {
+			return
+		}
+		cancel()
+		r.finish(turnKey)
+		turnFinished = true
+	}
+	defer finishTurn()
+
+	session, err := r.loadSessionForModelTurn(turnCtx, req.UserID, req.SessionID)
 	if err != nil {
 		return err
 	}
@@ -1966,22 +2075,6 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) err
 	if err := r.injectSessionRuntimeContexts(ctx, req.UserID, session); err != nil {
 		return err
 	}
-
-	turnCtx, cancel := context.WithTimeout(ctx, r.agenticTaskTurnTimeout(req))
-	turnKey := sessionKey(req.UserID, session.ID)
-	if err := r.start(turnKey, cancel, jobIDFromContext(ctx) != ""); err != nil {
-		cancel()
-		return err
-	}
-	turnFinished := false
-	finishTurn := func() {
-		if turnFinished {
-			return
-		}
-		r.finish(turnKey)
-		turnFinished = true
-	}
-	defer finishTurn()
 
 	if err := sink.Send(ctx, Event{Type: "start", SessionID: session.ID}); err != nil {
 		return err
@@ -2324,7 +2417,7 @@ func (r *Runtime) liveHarnessToolRunner(ctx context.Context, userID, sessionID s
 	if session == nil {
 		return nil, nil, nil
 	}
-	runner := r.runnerForScope(Scope{UserID: userID, SessionID: session.ID, WorkingDir: session.WorkingDir})
+	runner := r.runnerForScope(ctx, Scope{UserID: userID, SessionID: session.ID, WorkingDir: session.WorkingDir})
 	toolRunner, ok := runner.(liveHarnessToolRunner)
 	if !ok {
 		return nil, session, nil
@@ -2673,11 +2766,40 @@ func (r *Runtime) ExecuteLiveSkillFunctionCall(ctx context.Context, userID, sess
 	return r.executeLiveSkillCommand(ctx, userID, sessionID, displayText, command, sink)
 }
 
-func (r *Runtime) executeLiveSkillCommand(ctx context.Context, userID, sessionID, displayText, command string, sink EventSink) (bool, string, error) {
+func (r *Runtime) executeLiveSkillCommand(ctx context.Context, userID, sessionID, displayText, command string, sink EventSink) (handled bool, output string, retErr error) {
 	if sink == nil {
 		return true, "", fmt.Errorf("event sink is required")
 	}
-	session, err := r.GetSession(ctx, userID, sessionID)
+	turnID := "live-skill-" + newSortableID()
+	reservation, err := r.reserveNamedSessionTurn(ctx, userID, sessionID, turnID, turnID)
+	if err != nil {
+		return true, "", err
+	}
+	if reservation != nil {
+		stopHeartbeat := r.startSessionTurnReservationHeartbeat(ctx, *reservation)
+		defer func() {
+			stopHeartbeat()
+			r.finishSessionTurnReservation(ctx, *reservation, retErr)
+		}()
+	}
+	turnCtx, cancel := context.WithTimeout(ctx, r.config.TurnTimeout)
+	turnKey := sessionKey(userID, sessionID)
+	if err := r.start(turnKey, cancel, jobIDFromContext(ctx) != ""); err != nil {
+		cancel()
+		return true, "", err
+	}
+	turnFinished := false
+	finishTurn := func() {
+		if turnFinished {
+			return
+		}
+		cancel()
+		r.finish(turnKey)
+		turnFinished = true
+	}
+	defer finishTurn()
+
+	session, err := r.loadSessionForModelTurn(turnCtx, userID, sessionID)
 	if err != nil {
 		return true, "", err
 	}
@@ -2707,21 +2829,6 @@ func (r *Runtime) executeLiveSkillCommand(ctx context.Context, userID, sessionID
 		return true, "", err
 	}
 
-	turnCtx, cancel := context.WithTimeout(ctx, r.config.TurnTimeout)
-	turnKey := sessionKey(userID, session.ID)
-	if err := r.start(turnKey, cancel, jobIDFromContext(ctx) != ""); err != nil {
-		cancel()
-		return true, "", err
-	}
-	turnFinished := false
-	finishTurn := func() {
-		if turnFinished {
-			return
-		}
-		r.finish(turnKey)
-		turnFinished = true
-	}
-	defer finishTurn()
 	runSkill := r.runSkillCommand
 	if traceReason != "" || r.shouldTraceSkillCommand(command) {
 		runSkill = func(ctx context.Context, req ChatRequest, userID string, session *state.Session, content string, onToken func(string)) (runnerResult, error) {
@@ -2843,7 +2950,7 @@ func (r *Runtime) selectLiveSkillCommand(ctx context.Context, userID, sessionID,
 		SessionID: sessionID,
 		RequestID: requestIDFromContext(ctx),
 	})
-	runner := r.runnerForScope(Scope{UserID: userID, SessionID: sessionID, WorkingDir: session.WorkingDir})
+	runner := r.runnerForScope(ctx, Scope{UserID: userID, SessionID: sessionID, WorkingDir: session.WorkingDir})
 	result, err := runner.RunGeneratedPrompt(callCtx, state.NewSession(""), liveSkillSelectionPrompt(text, liveSkillSelectionRecentContext(session, 8), items))
 	if err != nil {
 		return "", false
@@ -3603,7 +3710,7 @@ func (r *Runtime) generateFailureRecoveryMessage(ctx context.Context, userID str
 	}
 	prompt := fmt.Sprintf(PromptFailureRecoveryTemplate, strings.TrimSpace(userContent), failureCategory(runErr))
 
-	runner := r.runnerForScope(Scope{UserID: userID, SessionID: session.ID, WorkingDir: session.WorkingDir})
+	runner := r.runnerForScope(ctx, Scope{UserID: userID, SessionID: session.ID, WorkingDir: session.WorkingDir})
 	result, err := runWithTokenStream(recoveryCtx, runner, recoverySession, prompt, true, nil)
 	if err != nil {
 		return ""
@@ -3623,7 +3730,8 @@ func shouldAttemptFailureRecovery(err error) bool {
 	}
 	return !errors.Is(err, context.Canceled) &&
 		!errors.Is(err, context.DeadlineExceeded) &&
-		!errors.Is(err, ErrRuntimeShuttingDown)
+		!errors.Is(err, ErrRuntimeShuttingDown) &&
+		!isLLMQuotaError(err)
 }
 
 func lastVisibleAssistantAfterLastVisibleUser(session *state.Session) string {
@@ -3663,6 +3771,8 @@ func failureCategory(err error) string {
 	switch {
 	case text == "":
 		return "internal execution failed"
+	case isLLMQuotaError(err):
+		return "model quota exceeded"
 	case strings.Contains(text, "timed out") || strings.Contains(text, "timeout") || errors.Is(err, context.DeadlineExceeded):
 		return "tool execution timed out"
 	case strings.Contains(text, "permission denied") || strings.Contains(text, "forbidden") || strings.Contains(text, "unauthorized") || strings.Contains(text, "authorization failed"):
@@ -3680,6 +3790,8 @@ func userFacingRuntimeFailure(err error, userContent string) string {
 	category := failureCategory(err)
 	if containsCJK(userContent) {
 		switch category {
+		case "model quota exceeded":
+			return "抱歉，今日模型使用额度已用尽，请在额度重置或管理员调整额度后重试。"
 		case "tool execution timed out":
 			return "抱歉，这次操作没有完成：内部工具执行超时了。请稍后重试，或把请求拆得更小一些。"
 		case "authorization or permission error":
@@ -3693,6 +3805,8 @@ func userFacingRuntimeFailure(err error, userContent string) string {
 		}
 	}
 	switch category {
+	case "model quota exceeded":
+		return "Sorry, today's model usage quota has been reached. Please retry after the quota resets or an administrator adjusts it."
 	case "tool execution timed out":
 		return "Sorry, I could not complete that operation because an internal tool timed out. Please try again later or simplify the request."
 	case "authorization or permission error":
@@ -3704,6 +3818,14 @@ func userFacingRuntimeFailure(err error, userContent string) string {
 	default:
 		return "Sorry, I could not complete that operation. Please try again later or simplify the request."
 	}
+}
+
+func isLLMQuotaError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "daily llm") && strings.Contains(text, "quota exceeded")
 }
 
 func errorString(err error) string {
@@ -3940,11 +4062,26 @@ func (r *Runtime) StartJob(ctx context.Context, job *Job) error {
 	}
 	hideUserMessage := r.consumeJobUserMessageHidden(job.ID)
 	if r.jobQueue != nil {
-		return r.jobQueue.EnqueueJob(ctx, JobQueueItem{
+		item := JobQueueItem{
 			JobID:           job.ID,
 			UserID:          job.UserID,
 			RequestID:       requestIDFromContext(ctx),
 			HideUserMessage: hideUserMessage,
+		}
+		if scheduler, ok := r.jobs.(JobQueueScheduleStore); ok {
+			if err := scheduler.ScheduleJob(ctx, job.UserID, job.ID, item, time.Now().UTC()); err != nil {
+				return err
+			}
+			job.Status = JobStatusQueued
+			job.UpdatedAt = time.Now().UTC()
+			return nil
+		}
+		job.Status = JobStatusQueued
+		return r.jobQueue.EnqueueJob(ctx, JobQueueItem{
+			JobID:           item.JobID,
+			UserID:          item.UserID,
+			RequestID:       item.RequestID,
+			HideUserMessage: item.HideUserMessage,
 		})
 	}
 	workerCtx, cancel := context.WithCancel(context.Background())
@@ -4029,49 +4166,138 @@ func (r *Runtime) consumeJobUserMessageHidden(jobID string) bool {
 func (r *Runtime) runJob(ctx context.Context, job *Job) error {
 	defer r.finishJob(job.ID)
 	now := time.Now().UTC()
-	if err := r.jobs.UpdateJobStatus(ctx, job.UserID, job.ID, JobStatusRunning, "", now); err != nil {
-		return err
+	executionOwner := ""
+	stopExecutionLease := func() {}
+	if leases, ok := r.jobs.(JobExecutionLeaseStore); ok {
+		executionOwner = "worker-" + newSortableID()
+		acquired, acquireErr := leases.AcquireJobExecutionLease(ctx, job.UserID, job.ID, executionOwner, now, now.Add(durableJobExecutionLeaseTTL))
+		if acquireErr != nil {
+			return acquireErr
+		}
+		if !acquired {
+			return nil
+		}
+		leaseCtx, cancelLease := context.WithCancelCause(ctx)
+		ctx = leaseCtx
+		stopHeartbeat := startDurableJobExecutionLeaseRefresh(leaseCtx, leases, job.UserID, job.ID, executionOwner, cancelLease)
+		stopExecutionLease = func() {
+			stopHeartbeat()
+			cancelLease(context.Canceled)
+		}
+		defer func() {
+			stopExecutionLease()
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = leases.ReleaseJobExecutionLease(releaseCtx, job.UserID, job.ID, executionOwner, time.Now().UTC())
+		}()
+	} else {
+		started, transitionErr := r.transitionJobStatus(ctx, job.UserID, job.ID, JobStatusQueued, JobStatusRunning, "", now)
+		if transitionErr != nil {
+			return transitionErr
+		}
+		if !started {
+			current, loadErr := r.jobs.GetJob(ctx, job.UserID, job.ID)
+			if loadErr != nil {
+				return loadErr
+			}
+			if isTerminalJobStatus(current.Status) {
+				return nil
+			}
+			if current.Status == JobStatusRunning && !hasJobExecutionLease(ctx) {
+				return nil
+			}
+			if current.Status != JobStatusRunning {
+				return fmt.Errorf("job %s cannot start from status %s", job.ID, current.Status)
+			}
+		}
 	}
-	sink := &jobEventSink{store: r.jobs, stream: r.jobEventStream, bus: r.jobEvents, fanout: r.jobEventFanout, job: job, logger: componentLogger(r.logger, "job_event_fanout")}
-	ctx = withJobEventEmitter(ctx, sink.Send)
+	executionCtx, stopCancellationMonitor := r.monitorDurableJobCancellation(ctx, job)
+	defer stopCancellationMonitor()
+	baseSink := &jobEventSink{store: r.jobs, stream: r.jobEventStream, bus: r.jobEvents, fanout: r.jobEventFanout, job: job, logger: componentLogger(r.logger, "job_event_fanout")}
+	sink := &deferredJobTerminalSink{sink: baseSink}
+	executionCtx = withJobEventEmitter(executionCtx, sink.Send)
 	var err error
 	switch job.Type {
 	case JobTypeDeepAgent:
-		err = r.runDeepAgentJob(ctx, job, sink)
+		err = r.runDeepAgentJob(executionCtx, job, sink)
 	default:
-		err = r.Chat(ctx, ChatRequest{UserID: job.UserID, SessionID: job.SessionID, Content: job.Content, AttachmentIDs: job.AttachmentIDs, AttachmentURLs: job.AttachmentURLs, ConnectorContext: job.ConnectorContext}, sink)
+		err = r.Chat(executionCtx, ChatRequest{UserID: job.UserID, SessionID: job.SessionID, Content: job.Content, AttachmentIDs: job.AttachmentIDs, AttachmentURLs: job.AttachmentURLs, ConnectorContext: job.ConnectorContext}, sink)
 	}
+	stopExecutionLease()
 	finishedAt := time.Now().UTC()
 	if current, loadErr := r.jobs.GetJob(context.Background(), job.UserID, job.ID); loadErr == nil && current.Status == JobStatusCancelled {
 		return nil
 	}
+	if cause := context.Cause(executionCtx); errors.Is(cause, ErrJobExecutionLeaseLost) {
+		// Lease ownership, not the shape of the runner's returned error, decides
+		// whether this attempt is still allowed to publish a durable terminal.
+		return cause
+	}
 	switch {
 	case err == nil:
-		updateErr := r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusSucceeded, "", finishedAt)
-		if updateErr == nil {
-			go r.notifyTaskInboxJob(context.Background(), job, JobStatusSucceeded, "")
+		updated, updateErr := r.transitionJobTerminalStatusWithEvent(
+			context.Background(),
+			job,
+			executionOwner,
+			JobStatusSucceeded,
+			"",
+			finishedAt,
+			baseSink,
+			Event{Type: "done", SessionID: job.SessionID, JobID: job.ID},
+		)
+		if updateErr != nil {
+			return updateErr
 		}
-		return updateErr
+		if !updated {
+			return nil
+		}
+		go r.notifyTaskInboxJob(context.Background(), job, JobStatusSucceeded, "")
+		return nil
 	case errors.Is(err, context.Canceled) || errors.Is(err, ErrRuntimeShuttingDown):
-		updateErr := r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusCancelled, err.Error(), finishedAt)
-		sendErr := sink.Send(context.Background(), Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
-		if updateErr == nil {
-			go r.notifyTaskInboxJob(context.Background(), job, JobStatusCancelled, err.Error())
+		updated, updateErr := r.transitionJobTerminalStatusWithEvent(
+			context.Background(),
+			job,
+			executionOwner,
+			JobStatusCancelled,
+			err.Error(),
+			finishedAt,
+			baseSink,
+			Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID},
+		)
+		if updateErr != nil {
+			return updateErr
 		}
-		return errors.Join(updateErr, sendErr)
+		if !updated {
+			return nil
+		}
+		go r.notifyTaskInboxJob(context.Background(), job, JobStatusCancelled, err.Error())
+		return nil
 	default:
-		updateErr := r.jobs.UpdateJobStatus(context.Background(), job.UserID, job.ID, JobStatusFailed, err.Error(), finishedAt)
-		if updateErr == nil {
-			go r.notifyTaskInboxJob(context.Background(), job, JobStatusFailed, err.Error())
+		updated, updateErr := r.transitionJobTerminalStatusWithEvent(
+			context.Background(),
+			job,
+			executionOwner,
+			JobStatusFailed,
+			err.Error(),
+			finishedAt,
+			baseSink,
+			Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()},
+		)
+		if updateErr != nil {
+			return updateErr
 		}
+		if !updated {
+			return nil
+		}
+		go r.notifyTaskInboxJob(context.Background(), job, JobStatusFailed, err.Error())
 		if !strings.HasPrefix(strings.TrimSpace(job.Content), "/") {
-			r.recordExecutionDenialRisk(ctx, job.UserID, job.SessionID, "", err, map[string]any{"phase": "job", "job_type": job.Type})
+			r.recordExecutionDenialRisk(executionCtx, job.UserID, job.SessionID, "", err, map[string]any{"phase": "job", "job_type": job.Type})
 		}
-		return updateErr
+		return nil
 	}
 }
 
-func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink) error {
+func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink) (retErr error) {
 	if r == nil {
 		return fmt.Errorf("runtime is not configured")
 	}
@@ -4081,17 +4307,23 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 	if sink == nil {
 		return fmt.Errorf("event sink is required")
 	}
+	reservation, err := r.reserveNamedSessionTurnWithAdoption(ctx, job.UserID, job.SessionID, "job:"+job.ID, job.ID, true)
+	if err != nil {
+		return err
+	}
+	if reservation != nil {
+		stopHeartbeat := r.startSessionTurnReservationHeartbeat(ctx, *reservation)
+		defer func() {
+			stopHeartbeat()
+			r.finishSessionTurnReservation(ctx, *reservation, retErr)
+		}()
+	}
 	goal := strings.TrimSpace(job.Content)
 	if goal == "" {
 		goal = "Please analyze the attached file(s)."
 	}
-	session, err := r.GetSession(ctx, job.UserID, job.SessionID)
-	if err != nil {
-		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
-		return err
-	}
 	turnCtx, cancel := context.WithCancel(ctx)
-	turnKey := sessionKey(job.UserID, session.ID)
+	turnKey := sessionKey(job.UserID, job.SessionID)
 	if err := r.start(turnKey, cancel, true); err != nil {
 		cancel()
 		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
@@ -4099,6 +4331,11 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 	}
 	defer cancel()
 	defer r.finish(turnKey)
+	session, err := r.loadSessionForModelTurn(turnCtx, job.UserID, job.SessionID)
+	if err != nil {
+		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
+		return err
+	}
 	startMessageCount := len(session.Messages)
 	ensureVisibleUserMessage(session, goal)
 	if err := r.persistChatSession(ctx, job.UserID, session, startMessageCount); err != nil {
@@ -4155,6 +4392,9 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 		result, err = r.ExecuteDeepAgentTask(turnCtx, req, nil, nil, nil)
 	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) || r.jobIsCancelled(ctx, job.UserID, job.ID) {
+			return context.Canceled
+		}
 		_ = r.emitDeepAgentTraceSummaryEvent(ctx, sink, job, result)
 		messageErr := r.appendDeepAgentResultMessage(ctx, job.UserID, job.SessionID, result, err)
 		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
@@ -4162,6 +4402,9 @@ func (r *Runtime) runDeepAgentJob(ctx context.Context, job *Job, sink EventSink)
 			return errors.Join(err, messageErr)
 		}
 		return err
+	}
+	if err := ctx.Err(); err != nil || r.jobIsCancelled(ctx, job.UserID, job.ID) {
+		return context.Canceled
 	}
 	if err := r.appendDeepAgentResultMessage(ctx, job.UserID, job.SessionID, result, nil); err != nil {
 		_ = sink.Send(ctx, Event{Type: "error", SessionID: job.SessionID, JobID: job.ID, Error: err.Error()})
@@ -4235,6 +4478,10 @@ func formatDeepAgentResultMessage(result *DeepAgentTaskResult, runErr error) str
 		b.WriteString("计划执行完成。")
 	}
 	if state != nil {
+		if finalAnswer := strings.TrimSpace(deepAgentWorkflowString(state.WorkingMemory, "deep_research_final_answer")); finalAnswer != "" {
+			b.WriteString("\n\n")
+			b.WriteString(finalAnswer)
+		}
 		if len(state.Plan.Steps) > 0 {
 			b.WriteString("\n\n计划：")
 			for i, step := range state.Plan.Steps {
@@ -4489,7 +4736,7 @@ func (r *Runtime) ResumeWorkflowRunWithRequest(ctx context.Context, req DeepAgen
 	}
 	switch run.Name {
 	case deepAgentTaskWorkflowName:
-		if run.Version == deepResearchWorkflowVersion {
+		if isDeepResearchWorkflowVersion(run.Version) {
 			return r.ResumeDeepResearchWorkflowRun(ctx, run.ID)
 		}
 		req.RunID = run.ID
@@ -4515,7 +4762,7 @@ func (r *Runtime) CancelWorkflowRun(ctx context.Context, runID string) (*Workflo
 		return run, nil
 	}
 	now := time.Now().UTC()
-	if run.Version == deepResearchWorkflowVersion {
+	if isDeepResearchWorkflowVersion(run.Version) {
 		if state, err := deepAgentStateFromWorkflowRun(run); err == nil && state != nil {
 			if drRun, ok := deepResearchRunStateFromAny(run.State["deep_research"]); ok {
 				for id, node := range drRun.WorkerRuns {
@@ -4560,7 +4807,7 @@ func (r *Runtime) ResumeDeepResearchWorkflowRun(ctx context.Context, runID strin
 	if err != nil {
 		return nil, err
 	}
-	if run == nil || run.Version != deepResearchWorkflowVersion {
+	if run == nil || !isDeepResearchWorkflowVersion(run.Version) {
 		return run, fmt.Errorf("workflow run %s is not a deep research run", runID)
 	}
 	state, err := deepAgentStateFromWorkflowRun(run)
@@ -4600,7 +4847,8 @@ func (r *Runtime) ResumeDeepResearchWorkflowRun(ctx context.Context, runID strin
 	if run.StartedAt == nil {
 		run.StartedAt = &now
 	}
-	controller := NewDeepResearchController(r.workflowStore, ContextWorkflowEventSink{}, nil, newRuntimeDeepResearchWorkerExecutor(r, NewRuntimeDeepAgentExecutor(r)), nil, normalizeDeepResearchRuntimeConfig(r.config.DeepResearch))
+	controller := NewDeepResearchController(r.workflowStore, ContextWorkflowEventSink{}, NewRuntimeDeepResearchOrchestrator(r), newRuntimeDeepResearchWorkerExecutor(r, NewRuntimeDeepAgentExecutor(r)), nil, normalizeDeepResearchRuntimeConfig(r.config.DeepResearch))
+	controller.SetContextLoader(r)
 	controller.SetDeliverableDecider(NewRuntimeDeepResearchDeliverableDecider(r))
 	controller.SetArtifactPublisher(NewRuntimeDeepResearchArtifactPublisher(r))
 	req := DeepAgentTaskRequest{
@@ -4749,8 +4997,12 @@ func (r *Runtime) ExecuteDeepResearchTask(ctx context.Context, req DeepAgentTask
 	if worker == nil {
 		worker = newRuntimeDeepResearchWorkerExecutor(r, NewRuntimeDeepAgentExecutor(r))
 	}
+	if orchestrator == nil {
+		orchestrator = NewRuntimeDeepResearchOrchestrator(r)
+	}
 	cfg := normalizeDeepResearchRuntimeConfig(r.config.DeepResearch)
 	controller := NewDeepResearchController(store, ContextWorkflowEventSink{}, orchestrator, worker, aggregator, cfg)
+	controller.SetContextLoader(r)
 	controller.SetDeliverableDecider(NewRuntimeDeepResearchDeliverableDecider(r))
 	controller.SetArtifactPublisher(NewRuntimeDeepResearchArtifactPublisher(r))
 	return controller.Execute(ctx, req)
@@ -4810,25 +5062,67 @@ func (r *Runtime) CancelJob(ctx context.Context, userID, jobID string) error {
 	if r.jobs == nil {
 		return fmt.Errorf("job store is not configured")
 	}
-	job, err := r.jobs.GetJob(ctx, userID, jobID)
-	if err != nil {
-		return err
+	var job *Job
+	var terminalRecord *JobEvent
+	sink := &jobEventSink{store: r.jobs, stream: r.jobEventStream, bus: r.jobEvents, fanout: r.jobEventFanout, logger: componentLogger(r.logger, "job_event_fanout")}
+	for attempts := 0; attempts < 3; attempts++ {
+		current, err := r.jobs.GetJob(ctx, userID, jobID)
+		if err != nil {
+			return err
+		}
+		if isTerminalJobStatus(current.Status) {
+			return nil
+		}
+		sink.job = current
+		cancelledAt := time.Now().UTC()
+		var updated bool
+		if store, ok := r.jobs.(JobTerminalEventStore); ok {
+			terminalRecord = sink.newRecord(Event{Type: "cancelled", SessionID: current.SessionID, JobID: current.ID}, cancelledAt)
+			updated, err = store.TransitionJobStatusWithEvent(
+				ctx,
+				userID,
+				jobID,
+				current.Status,
+				JobStatusCancelled,
+				"cancelled by user",
+				cancelledAt,
+				terminalRecord,
+			)
+		} else {
+			updated, err = r.transitionJobStatus(ctx, userID, jobID, current.Status, JobStatusCancelled, "cancelled by user", cancelledAt)
+		}
+		if err != nil {
+			return err
+		}
+		if updated {
+			job = current
+			break
+		}
+	}
+	if job == nil {
+		current, err := r.jobs.GetJob(ctx, userID, jobID)
+		if err != nil {
+			return err
+		}
+		if isTerminalJobStatus(current.Status) {
+			return nil
+		}
+		return fmt.Errorf("job %s status kept changing while cancelling", jobID)
+	}
+	sink.job = job
+	var sendErr error
+	if terminalRecord != nil {
+		sendErr = sink.publishPersisted(ctx, terminalRecord)
+	} else {
+		sendErr = sink.Send(ctx, Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
 	}
 	r.mu.Lock()
-	cancel, ok := r.runningJobs[jobID]
+	cancel := r.runningJobs[jobID]
 	r.mu.Unlock()
-	if ok {
+	if cancel != nil {
 		cancel()
-		return nil
 	}
-	if isTerminalJobStatus(job.Status) {
-		return nil
-	}
-	now := time.Now().UTC()
-	if err := r.jobs.UpdateJobStatus(ctx, userID, jobID, JobStatusCancelled, "cancelled before execution", now); err != nil {
-		return err
-	}
-	return (&jobEventSink{store: r.jobs, stream: r.jobEventStream, bus: r.jobEvents, fanout: r.jobEventFanout, job: job, logger: componentLogger(r.logger, "job_event_fanout")}).Send(ctx, Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
+	return sendErr
 }
 
 func (r *Runtime) Cancel(userID, sessionID string) bool {
@@ -4840,6 +5134,176 @@ func (r *Runtime) Cancel(userID, sessionID string) bool {
 		cancel()
 	}
 	return ok
+}
+
+func (r *Runtime) transitionJobStatus(ctx context.Context, userID, jobID, expectedStatus, status, errorText string, at time.Time) (bool, error) {
+	if r == nil || r.jobs == nil {
+		return false, fmt.Errorf("job store is not configured")
+	}
+	if transitions, ok := r.jobs.(JobStatusTransitionStore); ok {
+		return transitions.TransitionJobStatus(ctx, userID, jobID, expectedStatus, status, errorText, at)
+	}
+	job, err := r.jobs.GetJob(ctx, userID, jobID)
+	if err != nil {
+		return false, err
+	}
+	if job.Status != expectedStatus {
+		return false, nil
+	}
+	if err := r.jobs.UpdateJobStatus(ctx, userID, jobID, status, errorText, at); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *Runtime) transitionJobTerminalStatus(ctx context.Context, userID, jobID, executionOwner, status, errorText string, at time.Time) (bool, error) {
+	if strings.TrimSpace(executionOwner) != "" {
+		if leases, ok := r.jobs.(JobExecutionLeaseStore); ok {
+			return leases.TransitionOwnedJobStatus(ctx, userID, jobID, executionOwner, status, errorText, at)
+		}
+	}
+	return r.transitionJobStatus(ctx, userID, jobID, JobStatusRunning, status, errorText, at)
+}
+
+func (r *Runtime) transitionJobTerminalStatusWithEvent(
+	ctx context.Context,
+	job *Job,
+	executionOwner string,
+	status string,
+	errorText string,
+	at time.Time,
+	sink *jobEventSink,
+	event Event,
+) (bool, error) {
+	if r == nil || r.jobs == nil || job == nil || sink == nil {
+		return false, fmt.Errorf("job terminal transition is not configured")
+	}
+	if strings.TrimSpace(executionOwner) != "" {
+		if store, ok := r.jobs.(JobTerminalEventStore); ok {
+			record := sink.newRecord(event, at)
+			updated, err := store.TransitionOwnedJobStatusWithEvent(
+				ctx,
+				job.UserID,
+				job.ID,
+				executionOwner,
+				status,
+				errorText,
+				at,
+				record,
+			)
+			if err != nil || !updated {
+				return updated, err
+			}
+			if err := sink.publishPersisted(ctx, record); err != nil {
+				return true, err
+			}
+			return true, nil
+		}
+	}
+	updated, err := r.transitionJobTerminalStatus(ctx, job.UserID, job.ID, executionOwner, status, errorText, at)
+	if err != nil || !updated {
+		return updated, err
+	}
+	if err := sink.Send(ctx, event); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func startDurableJobExecutionLeaseRefresh(ctx context.Context, store JobExecutionLeaseStore, userID, jobID, owner string, cancel context.CancelCauseFunc) func() {
+	if store == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	var once sync.Once
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(durableJobLeaseRefresh)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				refreshCtx, refreshCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+				refreshed, err := store.RefreshJobExecutionLease(refreshCtx, userID, jobID, owner, now.UTC(), now.UTC().Add(durableJobExecutionLeaseTTL))
+				refreshCancel()
+				if err != nil {
+					cancel(fmt.Errorf("%w: refresh durable job lease: %v", ErrJobExecutionLeaseLost, err))
+					return
+				}
+				if !refreshed {
+					cancel(fmt.Errorf("%w: durable job lease owner changed or expired", ErrJobExecutionLeaseLost))
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		once.Do(func() { close(done) })
+		<-finished
+	}
+}
+
+func (r *Runtime) jobIsCancelled(parent context.Context, userID, jobID string) bool {
+	if r == nil || r.jobs == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 2*time.Second)
+	defer cancel()
+	job, err := r.jobs.GetJob(ctx, userID, jobID)
+	return err == nil && job.Status == JobStatusCancelled
+}
+
+func (r *Runtime) monitorDurableJobCancellation(parent context.Context, job *Job) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	if r == nil || job == nil {
+		return ctx, cancel
+	}
+	updates, unsubscribe := r.subscribeJobEvents(job.ID)
+	done := make(chan struct{})
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			close(done)
+			unsubscribe()
+			cancel()
+		})
+	}
+	if r.jobIsCancelled(ctx, job.UserID, job.ID) {
+		cancel()
+		return ctx, stop
+	}
+	go func() {
+		ticker := time.NewTicker(durableJobCancelPoll)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case event, ok := <-updates:
+				if !ok {
+					updates = nil
+					continue
+				}
+				if event != nil && (event.Type == "cancelled" || event.Event.Type == "cancelled") {
+					cancel()
+					return
+				}
+			case <-ticker.C:
+				if r.jobIsCancelled(ctx, job.UserID, job.ID) {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return ctx, stop
 }
 
 func (r *Runtime) Shutdown(ctx context.Context) error {
@@ -5156,7 +5620,7 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	if err != nil {
 		return runnerResult{}, err
 	}
-	runner := r.runnerForScope(Scope{
+	runner := r.runnerForScope(ctx, Scope{
 		UserID:           userID,
 		SessionID:        session.ID,
 		WorkingDir:       session.WorkingDir,
@@ -5971,7 +6435,7 @@ func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *st
 	}
 	generated := skills.WrapGeneratedSkillPrompt(skill.Name, args, promptText)
 	sandbox := applySkillSandboxPolicy(r.config.SkillShellSandbox, policy.Sandbox)
-	runner := r.runnerForScope(Scope{
+	runner := r.runnerForScope(ctx, Scope{
 		UserID:            userID,
 		SessionID:         session.ID,
 		WorkingDir:        workspace,
@@ -6682,6 +7146,9 @@ func (r *Runtime) skillShellEnvironment(workspace string, skillRoot string, allo
 			continue
 		}
 		allowed[key] = struct{}{}
+		if skillShellReservedEnvKey(key) {
+			continue
+		}
 		if value, ok := os.LookupEnv(key); ok {
 			env[key] = value
 		}
@@ -6742,7 +7209,7 @@ func (r *Runtime) skillShellRuntime(workspace, skillRoot string, skill *skills.S
 		return NewDockerSkillShellRuntime(sandbox, skill.Shell, workspace, skillRoot, env, policy.AllowedTools)
 	}
 	if strings.EqualFold(strings.TrimSpace(sandbox.Runner), "local") {
-		return NewLocalSkillShellRuntime(sandbox, skill.Shell, skillRoot, skillRoot, env, policy.AllowedTools)
+		return NewLocalSkillShellRuntime(sandbox, skill.Shell, skillRoot, skillRoot, env, policy.NetworkAllowlist, policy.AllowedTools)
 	}
 	return nil
 }
@@ -6786,14 +7253,10 @@ func promptContentText(prompt []publictypes.ContentBlock) string {
 	return strings.Join(parts, "\n")
 }
 
-func (r *Runtime) runnerForScope(scope Scope) Runner {
+func (r *Runtime) runnerForScope(ctx context.Context, scope Scope) Runner {
 	if r.engineFactory == nil {
-		fmt.Printf("ERROR: engineFactory is nil - cannot create runner\n")
-		return nilRunner{}
+		return factoryErrorRunner{err: errors.New("engine factory is not configured")}
 	}
-
-	fmt.Printf("DEBUG: runnerForScope - creating runner for UserID=%s, SessionID=%s\n",
-		scope.UserID, scope.SessionID)
 
 	scope.WorkingDir = r.sandboxedWorkingDir(scope.UserID, scope.WorkingDir)
 	if scope.WorkingDir == "" {
@@ -6812,14 +7275,23 @@ func (r *Runtime) runnerForScope(scope Scope) Runner {
 	}
 	scope.Artifacts = NewArtifactContentTypeWriter(scope.Artifacts, scope.ArtifactTypes)
 
-	runner := r.engineFactory(scope)
-	if runner == nil {
-		fmt.Printf("ERROR: engineFactory returned nil runner\n")
-	} else {
-		fmt.Printf("DEBUG: runnerForScope - runner created successfully\n")
+	runner, err := r.engineFactory(ctx, scope)
+	if err != nil {
+		r.logger.ErrorContext(ctx, "create scoped engine", "user_id", scope.UserID, "session_id", scope.SessionID, "error", err)
+		return factoryErrorRunner{err: fmt.Errorf("create scoped engine: %w", err)}
 	}
-
+	if runner == nil {
+		err := errors.New("engine factory returned nil runner")
+		r.logger.ErrorContext(ctx, "create scoped engine", "user_id", scope.UserID, "session_id", scope.SessionID, "error", err)
+		return factoryErrorRunner{err: err}
+	}
 	return runner
+}
+
+// RunnerForScope exposes the scoped runner construction path for in-process
+// runtime tools that need child agent parity with the main web runtime.
+func (r *Runtime) RunnerForScope(ctx context.Context, scope Scope) Runner {
+	return r.runnerForScope(ctx, scope)
 }
 
 type sessionArtifactWriter struct {
@@ -6865,12 +7337,170 @@ func (r *Runtime) start(key string, cancel context.CancelFunc, jobScoped bool) e
 	if r.shuttingDown {
 		return ErrRuntimeShuttingDown
 	}
+	if _, running := r.running[key]; running {
+		return ErrSessionTurnRunning
+	}
 	r.running[key] = cancel
 	if jobScoped {
 		r.runningJobTurns[key] = true
 	}
 	r.wg.Add(1)
 	return nil
+}
+
+// SetChatTurnReservationStore enables the durable cross-process session-turn
+// lease used by every Runtime execution entry point.
+func (r *Runtime) SetChatTurnReservationStore(store ChatTurnReservationStore) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.turnReservations = store
+	r.mu.Unlock()
+}
+
+func (r *Runtime) reserveSessionTurn(ctx context.Context, req *ChatRequest) (*ChatTurnReservation, error) {
+	if r == nil || req == nil {
+		return nil, nil
+	}
+	r.mu.Lock()
+	store := r.turnReservations
+	r.mu.Unlock()
+	if store == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.SessionID) == "" {
+		return nil, nil
+	}
+	if strings.TrimSpace(req.IdempotencyKey) == "" {
+		req.IdempotencyKey = "runtime-chat-" + newSortableID()
+	}
+	if strings.TrimSpace(req.RunID) == "" {
+		req.RunID = NewChatRunID()
+	}
+	reservation, err := store.ReserveChatTurn(ctx, ChatTurnReservation{
+		UserID:             req.UserID,
+		SessionID:          req.SessionID,
+		IdempotencyKey:     req.IdempotencyKey,
+		RunID:              req.RunID,
+		UserMessageID:      req.ClientUserMessageID,
+		AssistantMessageID: req.ClientAssistantMessageID,
+		Status:             "reserved",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !reservation.Reserved && (!req.TurnReserved || reservation.RunID != req.RunID) {
+		return nil, ErrSessionTurnRunning
+	}
+	req.RunID = reservation.RunID
+	req.ClientUserMessageID = reservation.UserMessageID
+	req.ClientAssistantMessageID = reservation.AssistantMessageID
+	return &reservation, nil
+}
+
+func (r *Runtime) reserveNamedSessionTurn(ctx context.Context, userID, sessionID, idempotencyKey, runID string) (*ChatTurnReservation, error) {
+	return r.reserveNamedSessionTurnWithAdoption(ctx, userID, sessionID, idempotencyKey, runID, false)
+}
+
+func (r *Runtime) reserveNamedSessionTurnWithAdoption(ctx context.Context, userID, sessionID, idempotencyKey, runID string, adoptExisting bool) (*ChatTurnReservation, error) {
+	req := ChatRequest{
+		UserID:         userID,
+		SessionID:      sessionID,
+		IdempotencyKey: idempotencyKey,
+		RunID:          runID,
+		TurnReserved:   adoptExisting,
+	}
+	return r.reserveSessionTurn(ctx, &req)
+}
+
+func (r *Runtime) handoffSessionTurnReservation(ctx context.Context, reservation ChatTurnReservation, job *Job) error {
+	if r == nil || job == nil {
+		return fmt.Errorf("job handoff is not configured")
+	}
+	r.mu.Lock()
+	store := r.turnReservations
+	r.mu.Unlock()
+	if store == nil {
+		return nil
+	}
+	handoffCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_, err := store.HandoffChatTurn(handoffCtx, reservation.RunID, ChatTurnReservation{
+		UserID:         job.UserID,
+		SessionID:      job.SessionID,
+		IdempotencyKey: "job:" + job.ID,
+		RunID:          job.ID,
+	})
+	return err
+}
+
+func (r *Runtime) finishSessionTurnReservation(parent context.Context, reservation ChatTurnReservation, runErr error) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	store := r.turnReservations
+	r.mu.Unlock()
+	if store == nil {
+		return
+	}
+	status := "succeeded"
+	if runErr != nil {
+		status = "failed"
+		if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+			status = "cancelled"
+		}
+	}
+	r.finishSessionTurnReservationStatus(parent, reservation.UserID, reservation.SessionID, reservation.RunID, status)
+}
+
+func (r *Runtime) finishSessionTurnReservationStatus(parent context.Context, userID, sessionID, runID, status string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	store := r.turnReservations
+	r.mu.Unlock()
+	if store == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
+	defer cancel()
+	_ = store.UpdateChatTurnReservationStatus(ctx, userID, sessionID, runID, status)
+}
+
+func (r *Runtime) startSessionTurnReservationHeartbeat(parent context.Context, reservation ChatTurnReservation) func() {
+	if r == nil {
+		return func() {}
+	}
+	r.mu.Lock()
+	store := r.turnReservations
+	r.mu.Unlock()
+	if store == nil {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(chatTurnReservationLeaseTTL / 6)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				renewCtx, renewCancel := context.WithTimeout(ctx, 5*time.Second)
+				_ = store.UpdateChatTurnReservationStatus(renewCtx, reservation.UserID, reservation.SessionID, reservation.RunID, "reserved")
+				renewCancel()
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func (r *Runtime) finish(key string) {
@@ -6944,25 +7574,55 @@ type jobEventSink struct {
 	logger *slog.Logger
 }
 
+// deferredJobTerminalSink keeps nested runtime/controller terminal events from
+// racing ahead of the durable job status update. runJob emits the single
+// authoritative terminal event after its compare-and-set transition succeeds.
+type deferredJobTerminalSink struct {
+	sink EventSink
+}
+
+func (s *deferredJobTerminalSink) Send(ctx context.Context, event Event) error {
+	if s == nil || s.sink == nil {
+		return fmt.Errorf("deferred job terminal sink is not configured")
+	}
+	switch strings.TrimSpace(event.Type) {
+	case "done", "error", "cancelled":
+		return nil
+	default:
+		return s.sink.Send(ctx, event)
+	}
+}
+
 func (s *jobEventSink) Send(ctx context.Context, event Event) error {
 	if s == nil || s.store == nil || s.job == nil {
 		return fmt.Errorf("job event sink is not configured")
 	}
+	record := s.newRecord(event, time.Now().UTC())
+	if err := s.store.AddJobEvent(ctx, record); err != nil {
+		return err
+	}
+	return s.publishPersisted(ctx, record)
+}
+
+func (s *jobEventSink) newRecord(event Event, createdAt time.Time) *JobEvent {
 	if event.SessionID == "" {
 		event.SessionID = s.job.SessionID
 	}
 	event.JobID = s.job.ID
-	record := &JobEvent{
+	return &JobEvent{
 		ID:        NewJobEventID(),
 		JobID:     s.job.ID,
 		UserID:    s.job.UserID,
 		SessionID: s.job.SessionID,
 		Type:      event.Type,
 		Event:     event,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: createdAt.UTC(),
 	}
-	if err := s.store.AddJobEvent(ctx, record); err != nil {
-		return err
+}
+
+func (s *jobEventSink) publishPersisted(ctx context.Context, record *JobEvent) error {
+	if s == nil || record == nil {
+		return fmt.Errorf("persisted job event is required")
 	}
 	if s.stream != nil {
 		if err := s.stream.AppendJobEvent(ctx, record); err != nil {

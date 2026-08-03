@@ -395,7 +395,7 @@ func (r *RuntimeDeepAgentStepRouter) llmRouteStep(ctx context.Context, agentStat
 	sessionID := deepAgentWorkflowString(stateWorkingMemory(agentState), "session_id")
 	renderedPrompt := r.deepAgentRoutePrompt(ctx, agentState, step, userID, sessionID)
 	prompt := renderedPrompt.Content
-	runner := r.runtime.runnerForScope(Scope{
+	runner := r.runtime.runnerForScope(ctx, Scope{
 		UserID:    userID,
 		SessionID: sessionID,
 		Prompt:    prompt,

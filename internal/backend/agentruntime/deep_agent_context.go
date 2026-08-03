@@ -139,7 +139,7 @@ func (r *Runtime) deepAgentToolRefs(ctx context.Context, userID, sessionID strin
 	if r == nil || r.engineFactory == nil {
 		return nil
 	}
-	runner := r.runnerForScope(Scope{UserID: userID, SessionID: sessionID})
+	runner := r.runnerForScope(ctx, Scope{UserID: userID, SessionID: sessionID})
 	describer, ok := runner.(interface {
 		Descriptors() []toolkit.Descriptor
 	})

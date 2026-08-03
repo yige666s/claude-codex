@@ -12,6 +12,7 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	t.Setenv("AGENT_API_STORE_BACKEND", "sql")
 	t.Setenv("AGENT_API_LLM_PROVIDER", "openai")
 	t.Setenv("AGENT_API_MODEL", "gemini-2.5-pro")
+	t.Setenv("AGENT_API_PLUGIN_DIR", "/tmp/plugins")
 	t.Setenv("AGENT_API_OBJECT_TIMEOUT", "3s")
 	t.Setenv("AGENT_API_TIMEZONE", "Asia/Shanghai")
 	t.Setenv("AGENT_API_LOCALE", "zh-CN")
@@ -26,6 +27,9 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	t.Setenv("AGENT_API_DEEP_RESEARCH_WORKER_TIMEOUT", "7m")
 	t.Setenv("AGENT_API_DEEP_RESEARCH_TOTAL_TIMEOUT", "21m")
 	t.Setenv("AGENT_API_DEEP_RESEARCH_MAX_RETRIES", "3")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_REPLAN_ENABLED", "true")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_MAX_REPLANS", "4")
+	t.Setenv("AGENT_API_DEEP_RESEARCH_REPLAN_EVERY_BATCHES", "2")
 	t.Setenv("AGENT_API_DEEP_RESEARCH_FALLBACK_LEGACY", "false")
 	t.Setenv("AGENT_API_DEEP_RESEARCH_REQUIRE_SOURCES", "false")
 	t.Setenv("AGENT_API_DEEP_RESEARCH_MIN_SUCCESSFUL_WORKERS", "2")
@@ -41,6 +45,9 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 	}
 	if cfg.StoreBackend != "sql" {
 		t.Fatalf("StoreBackend = %q, want sql", cfg.StoreBackend)
+	}
+	if cfg.PluginDir != "/tmp/plugins" {
+		t.Fatalf("PluginDir = %q, want /tmp/plugins", cfg.PluginDir)
 	}
 	if cfg.LLMProvider != "openai" {
 		t.Fatalf("LLMProvider = %q, want openai", cfg.LLMProvider)
@@ -73,6 +80,9 @@ func TestDefaultReadsEnvironmentFallbacks(t *testing.T) {
 		cfg.DeepResearchWorkerTimeout != 7*time.Minute ||
 		cfg.DeepResearchTotalTimeout != 21*time.Minute ||
 		cfg.DeepResearchMaxRetries != 3 ||
+		!cfg.DeepResearchReplanEnabled ||
+		cfg.DeepResearchMaxReplans != 4 ||
+		cfg.DeepResearchReplanEveryBatches != 2 ||
 		cfg.DeepResearchFallbackLegacy ||
 		cfg.DeepResearchRequireSources ||
 		cfg.DeepResearchMinSuccessfulWorkers != 2 {
@@ -133,6 +143,8 @@ func TestBindFlagsOverridesConfig(t *testing.T) {
 		"--live-voice-name", "Puck",
 		"--live-language-code", "en-US",
 		"--object-timeout", "4s",
+		"--plugin-dir", "/opt/plugins",
+		"--mcp-servers", `{"name":"notes","transport":"sdk"}`,
 		"--timezone", "UTC",
 		"--locale", "en-US",
 		"--memory-policy-path", "/tmp/policy.json",
@@ -152,6 +164,12 @@ func TestBindFlagsOverridesConfig(t *testing.T) {
 	}
 	if !cfg.LiveEnabled {
 		t.Fatal("LiveEnabled = false, want true")
+	}
+	if cfg.PluginDir != "/opt/plugins" {
+		t.Fatalf("PluginDir = %q, want /opt/plugins", cfg.PluginDir)
+	}
+	if len(cfg.MCPServers) != 1 || cfg.MCPServers[0].Name != "notes" || cfg.MCPServers[0].Transport != "sdk" {
+		t.Fatalf("MCPServers = %#v, want notes/sdk", cfg.MCPServers)
 	}
 	if cfg.LiveVoiceName != "Puck" {
 		t.Fatalf("LiveVoiceName = %q, want Puck", cfg.LiveVoiceName)
@@ -182,5 +200,29 @@ func TestValidateRequiresAddress(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want addr error")
+	}
+}
+
+func TestValidateParsesMCPServersJSON(t *testing.T) {
+	cfg := Default()
+	cfg.MCPServersJSON = `[{"name":"notes","transport":"stdio","command":["echo","hello"]}]`
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("MCPServers len = %d, want 1", len(cfg.MCPServers))
+	}
+	if cfg.MCPServers[0].Name != "notes" {
+		t.Fatalf("MCPServers[0].Name = %q, want notes", cfg.MCPServers[0].Name)
+	}
+}
+
+func TestValidateRejectsInvalidMCPServersJSON(t *testing.T) {
+	cfg := Default()
+	cfg.MCPServersJSON = `not-json`
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want JSON parse failure")
 	}
 }

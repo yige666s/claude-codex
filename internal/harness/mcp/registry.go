@@ -11,19 +11,29 @@ import (
 func DiscoverTools(ctx context.Context, cfgs []config.MCPServerConfig, httpClient *http.Client) (map[string]*Client, map[string][]ToolDefinition, error) {
 	clients := make(map[string]*Client, len(cfgs))
 	definitions := make(map[string][]ToolDefinition, len(cfgs))
+	closeDiscovered := func() {
+		for _, client := range clients {
+			if client != nil {
+				_ = client.Close()
+			}
+		}
+	}
 
 	for _, cfg := range cfgs {
 		client, err := NewClientFromConfig(cfg, httpClient)
 		if err != nil {
+			closeDiscovered()
 			return nil, nil, err
 		}
 		if _, err := client.Initialize(ctx); err != nil {
 			_ = client.Close()
+			closeDiscovered()
 			return nil, nil, err
 		}
 		tools, err := client.ListTools(ctx)
 		if err != nil {
 			_ = client.Close()
+			closeDiscovered()
 			return nil, nil, err
 		}
 		RegisterActiveClient(cfg.Name, client)

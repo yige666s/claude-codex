@@ -1467,6 +1467,43 @@ func TestDeepAgentSourceRefsFromTextAcceptsSourceTitles(t *testing.T) {
 	if refs[0].Title == "" || refs[0].Provider == "" {
 		t.Fatalf("source title/provider not parsed: %#v", refs[0])
 	}
+	for _, ref := range refs {
+		if ref.Provider != "model_text" || ref.SourceKind != "unverified_model_text" {
+			t.Fatalf("model-authored source was treated as verified: %#v", ref)
+		}
+	}
+}
+
+func TestDeepAgentModelActionSourcesRequireMatchingToolOutput(t *testing.T) {
+	session := state.NewSession("")
+	session.Messages = []state.Message{{
+		Role:       state.MessageRoleTool,
+		ToolName:   "WebSearch",
+		ToolOutput: "verified result https://example.com/real",
+	}}
+	refs, _ := deepAgentModelActionSourceRefs(
+		"Use https://example.com/real and https://attacker.example/fabricated",
+		session,
+		0,
+		LoopContractSourcePolicy{},
+	)
+	byURL := map[string]DeepAgentSourceRef{}
+	for _, ref := range refs {
+		byURL[ref.URL] = ref
+	}
+	if got := byURL["https://example.com/real"]; got.SourceKind != "tool_verified" || got.Provider != "WebSearch" {
+		t.Fatalf("tool source provenance = %#v, want verified WebSearch source", got)
+	}
+	if got := byURL["https://attacker.example/fabricated"]; got.SourceKind != "unverified_model_text" || got.Provider != "model_text" {
+		t.Fatalf("model-only source provenance = %#v, want unverified model text", got)
+	}
+	trusted := deepResearchTrustedSources(DeepResearchWorkerResult{
+		Sources:   refs,
+		ToolCalls: []DeepAgentToolCallRef{{Name: "WebSearch", Status: "result"}},
+	})
+	if len(trusted) != 1 || trusted[0].URL != "https://example.com/real" {
+		t.Fatalf("trusted sources = %#v, want only tool-returned URL", trusted)
+	}
 }
 
 func TestDeepAgentModelActionEvidenceMetadataIncludesResearchTools(t *testing.T) {
@@ -4714,6 +4751,16 @@ func TestFormatDeepAgentResultMessageIncludesArtifactRefs(t *testing.T) {
 		if !strings.Contains(message, want) {
 			t.Fatalf("final message missing %q, got:\n%s", want, message)
 		}
+	}
+}
+
+func TestFormatDeepAgentResultMessageIncludesDeepResearchFinalAnswer(t *testing.T) {
+	state := &DeepAgentState{WorkingMemory: map[string]any{
+		"deep_research_final_answer": "## Final research answer\n\nVerified conclusion.",
+	}}
+	message := formatDeepAgentResultMessage(&DeepAgentTaskResult{State: state, Run: &WorkflowRun{ID: "run-1"}}, nil)
+	if !strings.Contains(message, "## Final research answer") || !strings.Contains(message, "Verified conclusion.") {
+		t.Fatalf("deep research final answer missing from assistant message: %q", message)
 	}
 }
 

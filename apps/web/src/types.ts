@@ -433,6 +433,7 @@ export type LLMGovernanceConfig = {
   vertex_location?: string;
   model_routes?: string;
   allowed_models?: LLMModelOption[];
+  model_availability?: LLMModelAvailability[];
   max_attempts?: number;
   retry_backoff_ms?: number;
   chat_timeout_ms?: number;
@@ -467,6 +468,13 @@ export type LLMModelOption = {
   label: string;
   provider: string;
   vertex_location: string;
+};
+
+export type LLMModelAvailability = {
+  id: string;
+  provider: string;
+  available: boolean;
+  reason?: string;
 };
 
 export type LLMUsageRecord = {
@@ -1313,6 +1321,11 @@ export type DeepResearchRunState = {
   version?: string;
   status?: string;
   goal?: string;
+  plan_revision?: number;
+  replan_attempts?: number;
+  replan_count?: number;
+  last_replan_reason?: string;
+  replan_history?: DeepResearchReplanRecord[];
   plan?: {
     goal?: string;
     max_concurrency?: number;
@@ -1335,10 +1348,33 @@ export type DeepResearchRunState = {
     worker_timeout_ms?: number;
     total_timeout_ms?: number;
     max_retries?: number;
+    replan_enabled?: boolean;
+    max_replans?: number;
+    replan_every_batches?: number;
     require_sources?: boolean;
     min_successful_workers?: number;
   };
   recovery_hint?: string;
+};
+
+export type DeepResearchReplanRecord = {
+  attempt?: number;
+  from_revision?: number;
+  to_revision?: number;
+  reason?: string;
+  changed?: boolean;
+  error?: string;
+  created_at?: string;
+  previous_plan?: DeepResearchRunState["plan"];
+  plan?: DeepResearchRunState["plan"];
+  trigger?: {
+    kind?: string;
+    reason?: string;
+    batch?: number;
+    node_ids?: string[];
+    hard?: boolean;
+    occurred_at?: string;
+  };
 };
 
 export type DeepResearchTaskNode = {

@@ -342,6 +342,24 @@ func (p *AsyncMessageVectorIndexPublisher) PublishMessageEvent(ctx context.Conte
 	return nil
 }
 
+func (p *AsyncMessageVectorIndexPublisher) PublishMessageEventSynchronously(ctx context.Context, event MessageEvent) error {
+	if p == nil || p.indexer == nil {
+		return nil
+	}
+	switch event.Type {
+	case MessageEventCreated:
+		if !messageVectorIndexable(event.Message) {
+			return nil
+		}
+		return p.indexer.IndexMessage(ctx, event.Message)
+	case MessageEventDeleted:
+		if deleter, ok := p.indexer.(MessageVectorDeleter); ok {
+			return deleter.DeleteMessage(ctx, event.Message)
+		}
+	}
+	return nil
+}
+
 func (p *AsyncMessageVectorIndexPublisher) Close(ctx context.Context) error {
 	if p == nil {
 		return nil
