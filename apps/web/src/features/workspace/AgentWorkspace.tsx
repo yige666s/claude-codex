@@ -108,6 +108,9 @@ function applyMemorySettingsPatch(
 const terminalJobs = new Set(["succeeded", "failed", "cancelled"]);
 const serviceStatusPollMs = 10_000;
 const activeChatRunStorageKey = "agentapi.activeChatRun";
+type ChatRunReplayCursor =
+  | { mode: "full" }
+  | { mode: "after"; eventId: string };
 const recentSkillsStorageKey = "agentapi.recentSkills";
 const adminTokenStorageKey = "agentapi.adminToken";
 const jobReconnectBaseMs = 1_000;
@@ -717,8 +720,10 @@ export function AgentWorkspace() {
         if (active?.sessionId === sessionId && active.runId !== run.run_id) {
           clearActiveChatRun(active.runId);
         }
-        const resumeAfterId = active?.sessionId === sessionId && active.runId === run.run_id ? active.lastEventId : "";
-        openChatRunStream(run.run_id, resumeAfterId || "", true);
+        // A page/session restore has lost the in-memory reducer state that existed
+        // before the saved cursor, so replay the run from the beginning. Incremental
+        // cursors are only safe for reconnects within the same page instance.
+        openChatRunStream(run.run_id, { mode: "full" }, true);
       } catch {
         if (active?.sessionId === sessionId) clearActiveChatRun(active.runId);
         // Missing active-run metadata should not block normal chat history loading.
@@ -2158,8 +2163,9 @@ export function AgentWorkspace() {
     activeChatRunIdRef.current = "";
   }
 
-  function openChatRunStream(runId: string, afterId = "", restoring = false) {
+  function openChatRunStream(runId: string, replay: ChatRunReplayCursor = { mode: "full" }, restoring = false) {
     if (!runId || activeChatRunIdRef.current === runId) return;
+    const afterId = replay.mode === "after" ? replay.eventId : "";
     closeChatRunStream();
     activeChatRunIdRef.current = runId;
     lastChatRunEventRef.current = afterId;
@@ -2257,7 +2263,7 @@ export function AgentWorkspace() {
       chatRunReconnectTimerRef.current = null;
       if (chatRunClosedRef.current || activeChatRunIdRef.current !== runId) return;
       activeChatRunIdRef.current = "";
-      openChatRunStream(runId, lastChatRunEventRef.current, true);
+      openChatRunStream(runId, { mode: "after", eventId: lastChatRunEventRef.current }, true);
     }, delay);
   }
 
@@ -3000,6 +3006,13 @@ export function appendRuntimeMessage(messages: Message[], message: Message): Mes
   }
   if (isConvertedSkillCommandMessage(messages, message)) {
     return messages;
+  }
+  const messageId = message.id?.trim();
+  if (messageId) {
+    const existingIndex = messages.findIndex((item) => item.id?.trim() === messageId);
+    if (existingIndex >= 0) {
+      return messages.map((item, index) => index === existingIndex ? mergeRuntimeMessages(item, message) : item);
+    }
   }
   const content = message.content || message.tool_output || "";
   const previous = messages[messages.length - 1];

@@ -3,6 +3,32 @@ import { appendRuntimeMessage } from "../features/workspace/AgentWorkspace";
 import type { Message } from "../types";
 
 describe("appendRuntimeMessage", () => {
+  it("deduplicates a replayed message by stable id even when it is not adjacent", () => {
+    const savedUser: Message = {
+      id: "msg-user-1",
+      role: "user",
+      content: "hello",
+      attachments: [{ id: "asset-1", file_type: "image", file_name: "shot.png" }]
+    };
+    const laterAssistant: Message = {
+      id: "msg-assistant-1",
+      role: "assistant",
+      content: "partial response"
+    };
+    const replayedUser: Message = {
+      id: "msg-user-1",
+      role: "user",
+      content: "hello",
+      created_at: "2026-08-04T00:00:00Z"
+    };
+
+    const messages = appendRuntimeMessage([savedUser, laterAssistant], replayedUser);
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0].created_at).toBe(replayedUser.created_at);
+    expect(messages[0].attachments).toEqual(savedUser.attachments);
+  });
+
   it("merges optimistic attachment messages with the saved user message", () => {
     const optimistic: Message = {
       role: "user",
