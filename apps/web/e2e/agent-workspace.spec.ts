@@ -390,6 +390,85 @@ test("reconnects active chat run EventSource with the last seen event id", async
   await expect(page.getByText("Response completed").first()).toBeVisible();
 });
 
+test("replays an active chat run from the beginning after a page restore", async ({ page }) => {
+  await page.addInitScript(() => {
+    const urls: string[] = [];
+    class MockEventSource {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
+      url: string;
+      readyState = MockEventSource.CONNECTING;
+      withCredentials = false;
+      onopen: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      private listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>();
+
+      constructor(url: string, init?: EventSourceInit) {
+        this.url = url;
+        this.withCredentials = Boolean(init?.withCredentials);
+        urls.push(url);
+        window.setTimeout(() => {
+          this.readyState = MockEventSource.OPEN;
+          this.onopen?.(new Event("open"));
+          this.dispatch("start", { type: "start", run_id: "run-active", session_id: "20260509T120000Z-e2e" }, "evt-1");
+          this.dispatch("delta", { type: "delta", run_id: "run-active", session_id: "20260509T120000Z-e2e", content: "before refresh " }, "evt-2");
+          this.dispatch("delta", { type: "delta", run_id: "run-active", session_id: "20260509T120000Z-e2e", content: "and after" }, "evt-3");
+        }, 20);
+      }
+
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        const callback = typeof listener === "function" ? listener : listener.handleEvent.bind(listener);
+        const existing = this.listeners.get(type) || [];
+        existing.push(callback as (event: MessageEvent<string>) => void);
+        this.listeners.set(type, existing);
+      }
+
+      removeEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        const callback = typeof listener === "function" ? listener : listener.handleEvent.bind(listener);
+        this.listeners.set(type, (this.listeners.get(type) || []).filter((item) => item !== callback));
+      }
+
+      close() {
+        this.readyState = MockEventSource.CLOSED;
+      }
+
+      private dispatch(type: string, data: Record<string, unknown>, lastEventId: string) {
+        const event = new MessageEvent(type, { data: JSON.stringify(data), lastEventId });
+        for (const listener of this.listeners.get(type) || []) listener(event);
+        if (type === "message") this.onmessage?.(event);
+      }
+    }
+    Object.defineProperty(window, "EventSource", { configurable: true, value: MockEventSource });
+    Object.defineProperty(window, "__chatRunEventSourceUrls", { configurable: true, value: urls });
+    window.localStorage.setItem("agentapi.activeChatRun", JSON.stringify({
+      runId: "run-active",
+      sessionId: "20260509T120000Z-e2e",
+      lastEventId: "evt-before-refresh"
+    }));
+  });
+  await mockAgentAPI(page, {
+    activeRun: {
+      run_id: "run-active",
+      session_id: "20260509T120000Z-e2e",
+      status: "running",
+      terminal: false,
+      updated_at: now
+    }
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Email").fill("e2e@example.com");
+  await page.getByLabel("Password").fill("password123");
+  await page.getByRole("button", { name: "Login" }).last().click();
+
+  await expect(page.getByText("before refresh and after")).toBeVisible();
+  const urls = await page.evaluate(() => (window as unknown as { __chatRunEventSourceUrls: string[] }).__chatRunEventSourceUrls);
+  expect(urls[0]).toContain("/v1/chat/runs/run-active/events?stream=1");
+  expect(urls[0]).not.toContain("after_id=");
+});
+
 test("reconnects job EventSource with the last seen event id", async ({ page }) => {
   await page.addInitScript(() => {
     const urls: string[] = [];
