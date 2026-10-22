@@ -111,6 +111,9 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (toolkit.Result
 	defer cancel()
 
 	cmd := exec.CommandContext(execCtx, shell, args...)
+	// A shell may spawn children that inherit stdout/stderr. After cancellation,
+	// do not wait indefinitely for those inherited pipes to close.
+	cmd.WaitDelay = 200 * time.Millisecond
 	cmd.Dir = workdir
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

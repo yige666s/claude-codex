@@ -107,7 +107,7 @@ func TestPowerShellToolTimeoutInterruptsCommand(t *testing.T) {
 	if !out.Interrupted {
 		t.Fatalf("expected interrupted output, got %#v", out)
 	}
-	if time.Since(start) > time.Second {
-		t.Fatalf("timeout took too long")
+	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+		t.Fatalf("timeout took too long: %s", elapsed)
 	}
 }

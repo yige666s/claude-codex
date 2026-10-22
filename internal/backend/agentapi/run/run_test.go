@@ -418,12 +418,14 @@ func TestInternalToolScopeCanExposeReadersAndSandboxedBash(t *testing.T) {
 
 func TestSkillScopedRegistryCanExposeLocalSandboxBashWithoutDangerousTools(t *testing.T) {
 	root := t.TempDir()
+	// This checks tool scoping, not network isolation. CI runners may prohibit
+	// unshare --net; network=none is exercised separately by the runtime tests.
 	scope := agentruntime.Scope{
 		SkillScoped:       true,
 		SkillRoot:         root,
 		SkillShell:        skills.ShellBash,
 		AllowedTools:      []string{"Artifact", "Bash(printf *)"},
-		SkillShellSandbox: agentruntime.SkillShellSandboxConfig{Runner: "local"},
+		SkillShellSandbox: agentruntime.SkillShellSandboxConfig{Runner: "local", Network: "host"},
 	}
 	allowed := effectiveAllowedToolNames(allowedToolNames(false), scope)
 	sandboxBash := buildSandboxBashRuntime(agentruntime.SkillShellSandboxConfig{}, root, scope)
