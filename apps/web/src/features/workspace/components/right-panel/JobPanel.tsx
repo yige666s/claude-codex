@@ -627,7 +627,7 @@ function groupJobEvents(events: JobEvent[]): JobEventGroup[] {
 function eventGroupForType(type: string): string {
   if (type === "gate" || type === "deep_agent_gate_decision") return "run";
   if (type === "artifact_output" || type === "deep_agent_artifact_output" || type.startsWith("artifact")) return "outputs";
-  if (type.startsWith("deep_agent_parallel_") || type.startsWith("deep_research_") || type === "parallel_workflow") return "parallel";
+  if (type.startsWith("multi_agent_worker_") || type.startsWith("deep_agent_parallel_") || type.startsWith("deep_research_") || type === "parallel_workflow") return "parallel";
   if (type === "workflow_step" || type === "deep_agent_action" || type === "child_skill_job") return "steps";
   if (type.startsWith("workflow_step") || type.startsWith("deep_agent_action") || type === "deep_agent_child_job") return "steps";
   return "run";
@@ -793,6 +793,10 @@ function eventTitle(event: JobEvent, data: Record<string, unknown> | null): stri
     const child = recordValue(data?.child_job);
     return ["child job", stringValue(child?.id), stringValue(child?.status)].filter(Boolean).join(" · ");
   }
+  if (event.type.startsWith("multi_agent_worker_")) {
+    return `Worker · ${humanizeToken(event.type.replace(/^multi_agent_worker_/, ""))}`;
+  }
+  if (event.type.startsWith("multi_agent_")) return `Multi-agent · ${humanizeToken(event.type.replace(/^multi_agent_/, ""))}`;
   if (event.type.startsWith("deep_research_worker_")) {
     const worker = stringValue(data?.worker_title || data?.worker_id || data?.branch_title);
     const label = event.type.replace(/^deep_research_worker_/, "").replace(/_/g, " ");

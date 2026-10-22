@@ -56,8 +56,8 @@ func shouldActivateSkill(skill *SkillDefinition, paths []string) bool {
 // matchesPattern checks if a path matches a glob pattern
 func matchesPattern(path, pattern string) bool {
 	// Normalize paths
-	path = filepath.Clean(path)
-	pattern = filepath.Clean(pattern)
+	path = filepath.ToSlash(filepath.Clean(path))
+	pattern = filepath.ToSlash(filepath.Clean(pattern))
 
 	// Try exact match first
 	if path == pattern {
@@ -76,7 +76,7 @@ func matchesPattern(path, pattern string) bool {
 
 	// Check if path is under pattern directory
 	// e.g., pattern "src" should match "src/file.go"
-	if strings.HasPrefix(path, pattern+string(filepath.Separator)) {
+	if strings.HasPrefix(path, pattern+"/") {
 		return true
 	}
 

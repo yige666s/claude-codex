@@ -8253,3 +8253,14 @@ body.workspace-pane-resizing .workspace-stage {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Durable multi-agent job progress. */
+.multi-agent-tree { border: 1px solid var(--border-color, #d9dee6); border-radius: 10px; padding: 14px; margin: 12px 0; }
+.multi-agent-tree header { display: flex; justify-content: space-between; gap: 12px; }
+.multi-agent-tree header small, .multi-agent-tree p { opacity: .7; }
+.multi-agent-tree ul { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 8px; }
+.multi-agent-tree li { display: flex; align-items: baseline; gap: 10px; }
+.multi-agent-worker-status { text-transform: capitalize; font-size: .8em; min-width: 72px; }
+.multi-agent-worker-status.running { color: #967000; }
+.multi-agent-worker-status.succeeded { color: #22804a; }
+.multi-agent-worker-status.failed { color: #b33131; }

@@ -112,7 +112,7 @@ func (m *TaskManager) StartLocalAgent(parent context.Context, opts StartLocalAge
 		return nil, err
 	}
 
-	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	ctx, cancel := context.WithCancel(agentTaskParentContext(parent))
 	base := CreateTaskStateBase(taskID, TaskTypeLocalAgent, description, opts.ToolUseID, outputFile)
 	base.Status = TaskStatusRunning
 	state := &LocalAgentTaskState{

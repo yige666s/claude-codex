@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	executionruntime "claude-codex/internal/backend/agentruntime/execution"
+	sessionruntime "claude-codex/internal/backend/agentruntime/session"
 	"claude-codex/internal/harness/engine"
 	mcpcore "claude-codex/internal/harness/mcp"
 	providerbackend "claude-codex/internal/harness/provider"
@@ -62,12 +64,13 @@ const liveWebResearchFunctionName = "web_research"
 const consumerSecuritySystemContext = PromptConsumerSecuritySystemContext
 
 var ErrSessionNotRunning = errors.New("session is not running")
-var ErrSessionTurnRunning = errors.New("session turn is already running")
-var ErrRuntimeShuttingDown = errors.New("runtime is shutting down")
+var ErrSessionTurnRunning = executionruntime.ErrSessionTurnRunning
+var ErrRuntimeShuttingDown = executionruntime.ErrRuntimeShuttingDown
 
 type Runtime struct {
 	config                   RuntimeConfig
 	sessions                 SessionStore
+	sessionService           *sessionruntime.Service
 	messageWriter            *MessageWriteService
 	sessionLoader            *SessionLoadService
 	contextCompactor         *ContextCompactionService
@@ -117,13 +120,9 @@ type Runtime struct {
 	clock                    Clock
 
 	mu                    sync.Mutex
-	wg                    sync.WaitGroup
-	running               map[string]context.CancelFunc
-	runningJobTurns       map[string]bool
-	runningJobs           map[string]context.CancelFunc
+	lifecycle             *executionruntime.Registry
 	connectorRefreshLocks map[string]*sync.Mutex
 	hiddenJobUserMessages map[string]bool
-	shuttingDown          bool
 }
 
 func (r *Runtime) SetArtifactService(artifacts *ArtifactService) {
@@ -281,14 +280,32 @@ func newRuntime(config RuntimeConfig, sessions SessionStore, memory MemoryServic
 		engineFactory:         engineFactory,
 		logger:                logger,
 		clock:                 systemClock{},
-		running:               make(map[string]context.CancelFunc),
-		runningJobTurns:       make(map[string]bool),
-		runningJobs:           make(map[string]context.CancelFunc),
+		lifecycle:             executionruntime.NewRegistry(),
 		connectorRefreshLocks: make(map[string]*sync.Mutex),
 		hiddenJobUserMessages: make(map[string]bool),
 		jobEvents:             NewLocalJobEventBus(128),
 		localVectorIndex:      true,
 	}
+	runtime.sessionService = sessionruntime.New(runtime.sessions, sessionruntime.Config{
+		UserWorkspaceRoot:     config.UserWorkspaceRoot,
+		DefaultWorkingDir:     config.DefaultWorkingDir,
+		AllowCustomWorkingDir: config.AllowCustomWorkingDir,
+		WorkspaceForUser:      runtime.userWorkspace,
+	}, runtime.hideInternalTranscriptMessages, sessionruntime.DeleteHooks{
+		DeleteSearchIndex: runtime.deleteSessionFromMessageSearchIndex,
+		InvalidateContext: func(ctx context.Context, userID, sessionID string) error {
+			if runtime.messageCache == nil {
+				return nil
+			}
+			return runtime.messageCache.InvalidateContext(ctx, userID, sessionID)
+		},
+		DeleteLoopTriggers: func(ctx context.Context, userID, sessionID string) error {
+			if runtime.loopTriggers == nil {
+				return nil
+			}
+			return runtime.loopTriggers.DeleteSession(ctx, userID, sessionID)
+		},
+	})
 	if memory != nil {
 		memory = NewMemoryVectorService(memory, config.MemoryVector, componentLogger(logger, "memory_vector"))
 		runtime.memory = NewMemoryWorkflowService(memory, runtime.workflowStore, ContextWorkflowEventSink{})
@@ -2013,7 +2030,11 @@ func (r *Runtime) Chat(ctx context.Context, req ChatRequest, sink EventSink) (re
 	}
 	req.ConnectorContext = r.resolveConnectorContext(ctx, req)
 	if jobIDFromContext(ctx) == "" {
-		if decision := r.RouteChat(req); decision.RunAsJob && decision.JobType == JobTypeDeepAgent {
+		decision := r.RouteChat(req)
+		if !decision.RunAsJob {
+			decision = r.decideMultiAgentRoute(ctx, req)
+		}
+		if decision.RunAsJob && (decision.JobType == JobTypeDeepAgent || decision.JobType == JobTypeMultiAgent) {
 			job, err := r.CreateJob(ctx, req, firstNonEmptyString(decision.JobType, JobTypeChat))
 			if err != nil {
 				_ = sink.Send(ctx, Event{Type: "error", SessionID: req.SessionID, Error: err.Error()})
@@ -4220,6 +4241,8 @@ func (r *Runtime) runJob(ctx context.Context, job *Job) error {
 	switch job.Type {
 	case JobTypeDeepAgent:
 		err = r.runDeepAgentJob(executionCtx, job, sink)
+	case JobTypeMultiAgent:
+		err = r.runMultiAgentJob(executionCtx, job, sink)
 	default:
 		err = r.Chat(executionCtx, ChatRequest{UserID: job.UserID, SessionID: job.SessionID, Content: job.Content, AttachmentIDs: job.AttachmentIDs, AttachmentURLs: job.AttachmentURLs, ConnectorContext: job.ConnectorContext}, sink)
 	}
@@ -5116,24 +5139,12 @@ func (r *Runtime) CancelJob(ctx context.Context, userID, jobID string) error {
 	} else {
 		sendErr = sink.Send(ctx, Event{Type: "cancelled", SessionID: job.SessionID, JobID: job.ID})
 	}
-	r.mu.Lock()
-	cancel := r.runningJobs[jobID]
-	r.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
+	r.lifecycle.CancelJob(jobID)
 	return sendErr
 }
 
 func (r *Runtime) Cancel(userID, sessionID string) bool {
-	key := sessionKey(userID, sessionID)
-	r.mu.Lock()
-	cancel, ok := r.running[key]
-	r.mu.Unlock()
-	if ok {
-		cancel()
-	}
-	return ok
+	return r.lifecycle.CancelSession(sessionKey(userID, sessionID))
 }
 
 func (r *Runtime) transitionJobStatus(ctx context.Context, userID, jobID, expectedStatus, status, errorText string, at time.Time) (bool, error) {
@@ -5310,38 +5321,13 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	if r == nil {
 		return nil
 	}
-	r.mu.Lock()
-	r.shuttingDown = true
-	cancels := make([]context.CancelFunc, 0, len(r.running)+len(r.runningJobs))
-	for key, cancel := range r.running {
-		if r.jobQueue != nil && r.runningJobTurns[key] {
-			continue
-		}
-		cancels = append(cancels, cancel)
-	}
-	if r.jobQueue == nil {
-		for _, cancel := range r.runningJobs {
-			cancels = append(cancels, cancel)
-		}
-	}
-	r.mu.Unlock()
-	for _, cancel := range cancels {
+	for _, cancel := range r.lifecycle.BeginShutdown(r.jobQueue != nil) {
 		cancel()
 	}
 	if r.vectorIndexer != nil {
 		_ = r.vectorIndexer.Close(ctx)
 	}
-	done := make(chan struct{})
-	go func() {
-		r.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return r.lifecycle.Wait(ctx)
 }
 
 func (r *Runtime) ListSkills() []*skills.SkillDefinition {
@@ -5358,6 +5344,9 @@ func (r *Runtime) RouteChat(req ChatRequest) JobRoutingDecision {
 	}
 	if strings.EqualFold(strings.TrimSpace(req.AgentMode), AgentModePlanExecute) {
 		return JobRoutingDecision{RunAsJob: true, JobType: JobTypeDeepAgent, Reason: "user selected plan-and-execute mode"}
+	}
+	if !explicitlyRejectsMultiAgent(content) && (strings.EqualFold(strings.TrimSpace(req.AgentMode), AgentModeMultiAgent) || explicitlyRequestsMultiAgent(content)) {
+		return JobRoutingDecision{RunAsJob: true, JobType: JobTypeMultiAgent, Reason: "user requested multi-agent collaboration"}
 	}
 	if strings.HasPrefix(content, "/") {
 		skill, ok := r.skillForPrompt(content)
@@ -5605,7 +5594,7 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	if err := r.injectTurnMemoryContextsWithPersonalization(ctx, userID, llmSession, content, personalization); err != nil {
 		return runnerResult{}, err
 	}
-	snapshot, err := r.injectAssembledChatSystemPrompt(ctx, userID, session.ID, llmSession, connectorLines)
+	snapshot, err := r.injectAssembledChatSystemPrompt(ctx, userID, session.ID, llmSession, connectorLines, req.AgentMode)
 	if err != nil {
 		return runnerResult{}, err
 	}
@@ -7332,20 +7321,7 @@ func (r *Runtime) userWorkspace(userID string) string {
 }
 
 func (r *Runtime) start(key string, cancel context.CancelFunc, jobScoped bool) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.shuttingDown {
-		return ErrRuntimeShuttingDown
-	}
-	if _, running := r.running[key]; running {
-		return ErrSessionTurnRunning
-	}
-	r.running[key] = cancel
-	if jobScoped {
-		r.runningJobTurns[key] = true
-	}
-	r.wg.Add(1)
-	return nil
+	return r.lifecycle.Start(key, cancel, jobScoped)
 }
 
 // SetChatTurnReservationStore enables the durable cross-process session-turn
@@ -7503,31 +7479,13 @@ func (r *Runtime) startSessionTurnReservationHeartbeat(parent context.Context, r
 	}
 }
 
-func (r *Runtime) finish(key string) {
-	r.mu.Lock()
-	delete(r.running, key)
-	delete(r.runningJobTurns, key)
-	r.mu.Unlock()
-	r.wg.Done()
-}
+func (r *Runtime) finish(key string) { r.lifecycle.Finish(key) }
 
 func (r *Runtime) startJob(jobID string, cancel context.CancelFunc) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.shuttingDown {
-		return ErrRuntimeShuttingDown
-	}
-	r.runningJobs[jobID] = cancel
-	r.wg.Add(1)
-	return nil
+	return r.lifecycle.StartJob(jobID, cancel)
 }
 
-func (r *Runtime) finishJob(jobID string) {
-	r.mu.Lock()
-	delete(r.runningJobs, jobID)
-	r.mu.Unlock()
-	r.wg.Done()
-}
+func (r *Runtime) finishJob(jobID string) { r.lifecycle.FinishJob(jobID) }
 
 func (r *Runtime) subscribeJobEvents(jobID string) (<-chan *JobEvent, func()) {
 	if r == nil || r.jobEvents == nil {
@@ -7546,16 +7504,7 @@ func (r *Runtime) PublishRemoteJobEvent(event *JobEvent) {
 }
 
 func (r *Runtime) runningSessionIDs(userID string) []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]string, 0)
-	for key := range r.running {
-		var parts []string
-		if err := json.Unmarshal([]byte(key), &parts); err == nil && len(parts) == 2 && parts[0] == userID {
-			out = append(out, parts[1])
-		}
-	}
-	return out
+	return r.lifecycle.RunningSessionIDs(userID)
 }
 
 type runnerResult struct {

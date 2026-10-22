@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  go-quality:
+    name: Go / modules and vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify module files are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Run go vet
+        run: go vet ./...
+
+  go-test:
+    name: Go / tests and binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Go tests
+        run: go test -count=1 ./...
+
+      - name: Build AgentAPI and TUI
+        run: go build -trimpath ./cmd/agentapi ./cmd/tui
+
+  web:
+    name: Web / test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test -- --reporter=dot
+
+      - name: Build web application
+        run: npm run build
+
+  ci:
+    name: PR CI
+    if: always()
+    needs:
+      - go-quality
+      - go-test
+      - web
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify required jobs passed
+        env:
+          GO_QUALITY_RESULT: ${{ needs.go-quality.result }}
+          GO_TEST_RESULT: ${{ needs.go-test.result }}
+          WEB_RESULT: ${{ needs.web.result }}
+        run: |
+          set -euo pipefail
+          for result in "$GO_QUALITY_RESULT" "$GO_TEST_RESULT" "$WEB_RESULT"; do
+            if [ "$result" != "success" ]; then
+              echo "A required CI job did not pass: $result"
+              exit 1
+            fi
+          done
+          echo "All required PR CI jobs passed."

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // Security utilities for safe file operations
@@ -17,7 +16,7 @@ func ValidateSkillPath(baseDir, relPath string) (string, error) {
 	normalized := filepath.Clean(relPath)
 
 	// Check for absolute paths
-	if filepath.IsAbs(normalized) {
+	if filepath.IsAbs(normalized) || strings.HasPrefix(relPath, "/") {
 		return "", fmt.Errorf("skill file path must be relative: %s", relPath)
 	}
 
@@ -65,8 +64,8 @@ func SafeWriteFile(path string, content []byte) error {
 	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
 
 	// Add O_NOFOLLOW on Unix systems (not available on Windows)
-	if syscall.O_NOFOLLOW != 0 {
-		flags |= syscall.O_NOFOLLOW
+	if flag := noFollowFlag(); flag != 0 {
+		flags |= flag
 	}
 
 	file, err := os.OpenFile(path, flags, 0600)
@@ -109,7 +108,7 @@ func GetFileIdentity(path string) (string, error) {
 // IsPathSafe checks if a path is safe to use (no traversal, no absolute paths)
 func IsPathSafe(path string) bool {
 	// Reject absolute paths
-	if filepath.IsAbs(path) {
+	if filepath.IsAbs(path) || strings.HasPrefix(path, "/") {
 		return false
 	}
 

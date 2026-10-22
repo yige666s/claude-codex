@@ -3,6 +3,7 @@ module claude-codex
 go 1.24.4
 
 require (
+	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/charmbracelet/bubbles v0.20.0
 	github.com/charmbracelet/bubbletea v1.3.4
@@ -19,7 +20,6 @@ require (
 	github.com/pressly/goose/v3 v3.25.0
 	github.com/prometheus/client_golang v1.16.0
 	github.com/redis/go-redis/v9 v9.19.0
-	github.com/robfig/cron/v3 v3.0.1
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.5
@@ -30,7 +30,6 @@ require (
 )
 
 require (
-	github.com/SherClockHolmes/webpush-go v1.4.0 // indirect
 	github.com/alecthomas/chroma/v2 v2.14.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

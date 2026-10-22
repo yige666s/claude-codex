@@ -332,15 +332,11 @@ func (r *Runtime) enqueueAssetInsight(asset *Artifact, data []byte) {
 	}
 	assetCopy := *asset
 	dataCopy := append([]byte(nil), data...)
-	r.mu.Lock()
-	if r.shuttingDown {
-		r.mu.Unlock()
+	if !r.lifecycle.AcquireBackground() {
 		return
 	}
-	r.wg.Add(1)
-	r.mu.Unlock()
 	go func() {
-		defer r.wg.Done()
+		defer r.lifecycle.DoneBackground()
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		if _, err := r.processAssetInsight(ctx, &assetCopy, dataCopy); err != nil {

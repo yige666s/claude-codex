@@ -122,7 +122,10 @@ func (r *Runtime) executeAgenticTaskWorkflow(ctx context.Context, req ChatReques
 
 func (r *Runtime) agenticTaskTurnTimeout(req ChatRequest) time.Duration {
 	timeout := r.config.TurnTimeout
-	if r == nil || r.skills == nil {
+	if req.AgentMode == AgentModeMultiAgent && timeout < longRunningSkillTurnTimeout {
+		return longRunningSkillTurnTimeout
+	}
+	if r.skills == nil {
 		return timeout
 	}
 	content := strings.TrimSpace(req.Content)

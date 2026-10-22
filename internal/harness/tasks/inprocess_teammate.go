@@ -122,7 +122,7 @@ func (m *TaskManager) StartInProcessTeammate(parent context.Context, opts StartI
 	if err := os.MkdirAll(filepath.Dir(outputFile), 0o755); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	ctx, cancel := context.WithCancel(agentTaskParentContext(parent))
 	base := CreateTaskStateBase(taskID, TaskTypeInProcessTeammate, description, opts.ToolUseID, outputFile)
 	base.Status = TaskStatusRunning
 	state := &InProcessTeammateTaskState{

@@ -532,13 +532,15 @@ type JobRoutingDecision struct {
 const (
 	AgentModeChat        = "chat"
 	AgentModePlanExecute = "plan_execute"
+	AgentModeMultiAgent  = "multi_agent"
 	AgentModeWebSearch   = "web_search"
 )
 
 const (
-	JobTypeChat      = "chat"
-	JobTypeSkill     = "skill"
-	JobTypeDeepAgent = "deep_agent"
+	JobTypeChat       = "chat"
+	JobTypeSkill      = "skill"
+	JobTypeDeepAgent  = "deep_agent"
+	JobTypeMultiAgent = "multi_agent"
 )
 
 const (
@@ -705,30 +707,31 @@ type MemoryExport struct {
 }
 
 type RuntimeConfig struct {
-	DefaultWorkingDir     string
-	UserWorkspaceRoot     string
-	AllowCustomWorkingDir bool
-	Timezone              string
-	Locale                string
-	TurnTimeout           time.Duration
-	SkillShellTimeout     time.Duration
-	DeepAgent             DeepAgentRuntimeConfig
-	DeepResearch          DeepResearchRuntimeConfig
-	LoopDiscovery         LoopDiscoveryConfig
-	SkillShellSandbox     SkillShellSandboxConfig
-	MessageSearch         MessageSearchConfig
-	MemoryPolicy          MemoryPolicy
-	MemoryPolicyProvider  MemoryPolicyProvider `json:"-"`
-	MemoryVector          MemoryVectorConfig
-	MemoryRecall          MemoryRecallConfig
-	EpisodicMemory        EpisodicMemoryConfig
-	Live                  LiveConfig
-	CacheStore            CacheStore    `json:"-"`
-	CacheMetrics          *CacheMetrics `json:"-"`
-	CacheDefaultTTL       time.Duration
-	CacheFailOpen         bool
-	LLMGovernanceProvider func() LLMGovernanceConfig `json:"-"`
-	Logger                *slog.Logger               `json:"-"`
+	DefaultWorkingDir          string
+	UserWorkspaceRoot          string
+	AllowCustomWorkingDir      bool
+	Timezone                   string
+	Locale                     string
+	TurnTimeout                time.Duration
+	MultiAgentAutoRouteEnabled bool
+	SkillShellTimeout          time.Duration
+	DeepAgent                  DeepAgentRuntimeConfig
+	DeepResearch               DeepResearchRuntimeConfig
+	LoopDiscovery              LoopDiscoveryConfig
+	SkillShellSandbox          SkillShellSandboxConfig
+	MessageSearch              MessageSearchConfig
+	MemoryPolicy               MemoryPolicy
+	MemoryPolicyProvider       MemoryPolicyProvider `json:"-"`
+	MemoryVector               MemoryVectorConfig
+	MemoryRecall               MemoryRecallConfig
+	EpisodicMemory             EpisodicMemoryConfig
+	Live                       LiveConfig
+	CacheStore                 CacheStore    `json:"-"`
+	CacheMetrics               *CacheMetrics `json:"-"`
+	CacheDefaultTTL            time.Duration
+	CacheFailOpen              bool
+	LLMGovernanceProvider      func() LLMGovernanceConfig `json:"-"`
+	Logger                     *slog.Logger               `json:"-"`
 }
 
 type EpisodicMemoryConfig struct {

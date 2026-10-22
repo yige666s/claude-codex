@@ -296,6 +296,7 @@ type Config struct {
 	ShutdownTimeout                          time.Duration
 	RequestTimeout                           time.Duration
 	TurnTimeout                              time.Duration
+	MultiAgentAutoRouteEnabled               bool
 	DeepAgentV2Enabled                       bool
 	DeepAgentV2ShadowRoute                   bool
 	DeepResearchOrchestratorWorkerEnabled    bool
@@ -614,6 +615,7 @@ func Default() Config {
 		ShutdownTimeout:                          EnvDuration("AGENT_API_SHUTDOWN_TIMEOUT", 30*time.Second),
 		RequestTimeout:                           EnvDuration("AGENT_API_REQUEST_TIMEOUT", 0),
 		TurnTimeout:                              2 * time.Minute,
+		MultiAgentAutoRouteEnabled:               EnvBool("AGENT_API_MULTI_AGENT_AUTO_ROUTE_ENABLED", false),
 		DeepAgentV2Enabled:                       EnvBool("AGENT_API_DEEP_AGENT_V2_ENABLED", false),
 		DeepAgentV2ShadowRoute:                   EnvBool("AGENT_API_DEEP_AGENT_V2_SHADOW_ROUTE", false),
 		DeepResearchOrchestratorWorkerEnabled:    EnvBool("AGENT_API_DEEP_RESEARCH_ORCHESTRATOR_WORKER_ENABLED", false),
@@ -940,6 +942,7 @@ func BindFlags(command *cobra.Command, cfg *Config) {
 	flags.DurationVar(&cfg.ShutdownTimeout, "shutdown-timeout", cfg.ShutdownTimeout, "max time to drain HTTP requests and active agent work after SIGINT/SIGTERM")
 	flags.DurationVar(&cfg.RequestTimeout, "request-timeout", cfg.RequestTimeout, "max duration for non-upgrade HTTP requests; 0 disables")
 	flags.DurationVar(&cfg.TurnTimeout, "turn-timeout", cfg.TurnTimeout, "max duration for one agent turn")
+	flags.BoolVar(&cfg.MultiAgentAutoRouteEnabled, "multi-agent-auto-route-enabled", cfg.MultiAgentAutoRouteEnabled, "allow model-based routing into a multi-agent job")
 	flags.BoolVar(&cfg.DeepAgentV2Enabled, "deep-agent-v2-enabled", cfg.DeepAgentV2Enabled, "enable DeepAgent v2 route metadata and executor adapter behavior")
 	flags.BoolVar(&cfg.DeepAgentV2ShadowRoute, "deep-agent-v2-shadow-route", cfg.DeepAgentV2ShadowRoute, "record DeepAgent legacy/new route diffs without changing execution")
 	flags.BoolVar(&cfg.DeepResearchOrchestratorWorkerEnabled, "deep-research-orchestrator-worker-enabled", cfg.DeepResearchOrchestratorWorkerEnabled, "enable orchestrator-worker execution for plan_execute deep research jobs")

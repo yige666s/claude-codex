@@ -47,7 +47,7 @@ type SystemPromptAssembler struct {
 	RuntimeMode string
 }
 
-func (r *Runtime) injectAssembledChatSystemPrompt(ctx context.Context, userID, sessionID string, session *state.Session, connectorLines string) (SystemPromptSnapshot, error) {
+func (r *Runtime) injectAssembledChatSystemPrompt(ctx context.Context, userID, sessionID string, session *state.Session, connectorLines, agentMode string) (SystemPromptSnapshot, error) {
 	if session == nil {
 		return SystemPromptSnapshot{}, nil
 	}
@@ -61,6 +61,7 @@ func (r *Runtime) injectAssembledChatSystemPrompt(ctx context.Context, userID, s
 		SessionID:      sessionID,
 		Session:        session,
 		ConnectorLines: connectorLines,
+		MultiAgent:     agentMode == AgentModeMultiAgent,
 		Temporal:       strings.TrimSpace(r.temporalContext()),
 		Locale:         strings.TrimSpace(r.localeContext()),
 	})
@@ -79,6 +80,7 @@ type ChatSystemPromptInput struct {
 	SessionID      string
 	Session        *state.Session
 	ConnectorLines string
+	MultiAgent     bool
 	Temporal       string
 	Locale         string
 }
@@ -89,6 +91,9 @@ func (a SystemPromptAssembler) BuildChatSnapshot(ctx context.Context, input Chat
 		return SystemPromptSnapshot{}, err
 	} else if ok {
 		segments = append(segments, segment)
+	}
+	if input.MultiAgent {
+		segments = append(segments, dynamicSystemPromptSegment(SystemPromptLayerTool, SystemPromptCacheSession, PromptMultiAgentCoordinator))
 	}
 	if strings.TrimSpace(input.ConnectorLines) != "" {
 		variables := map[string]any{"connector_context": strings.TrimSpace(input.ConnectorLines)}

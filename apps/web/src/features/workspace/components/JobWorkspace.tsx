@@ -4,6 +4,7 @@ import { Button } from "../../../components/ui/button";
 import type { Job, JobEvent } from "../../../types";
 import type { JobStreamStatus } from "../workspaceTypes";
 import { JobEventTimeline, terminalJobs } from "./right-panel/JobPanel";
+import { MultiAgentTaskTree } from "./MultiAgentTaskTree";
 
 type JobWorkspaceProps = {
   className?: string;
@@ -53,6 +54,7 @@ export function JobWorkspace({
                 </div>
               </div>
               <JobMetadata job={job} formatTime={formatTime} />
+              {job.type === "multi_agent" && <MultiAgentTaskTree events={events} />}
               <div className="job-workspace-events">
                 {jobStreamNotice && !terminalJobs.has(job.status) && (
                   <div className={`job-stream-state ${jobStreamStatus}`}>{jobStreamNotice}</div>

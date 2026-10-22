@@ -224,14 +224,20 @@ func buildRuntimeSubagentRunner(parentScope agentruntime.Scope, runtimeProvider 
 		childSession.Metadata["parent_agent_id"] = request.ParentAgentID
 		childSession.Metadata["parent_session_id"] = request.ParentSessionID
 
-		runner := runtime.RunnerForScope(ctx, agentruntime.Scope{
+		scope := agentruntime.Scope{
 			UserID:           parentScope.UserID,
 			SessionID:        childSession.ID,
 			WorkingDir:       childSession.WorkingDir,
 			Prompt:           request.Prompt,
 			ConnectorContext: append([]string(nil), parentScope.ConnectorContext...),
 			ArtifactTypes:    append([]string(nil), parentScope.ArtifactTypes...),
-		})
+		}
+		if agentruntime.IsMultiAgentRun(ctx) {
+			// Workers do not receive the delegation/team tools; only the coordinator may fan out.
+			scope.InternalToolScope = true
+			scope.AllowedTools = []string{"WebSearch", "WebFetch", "Skill", agentruntime.ArtifactToolName}
+		}
+		runner := runtime.RunnerForScope(ctx, scope)
 		if childEngine, ok := runner.(*engine.Engine); ok && request.DrainPendingMessages != nil {
 			childEngine.SetPendingMessageProvider(request.DrainPendingMessages)
 		}
@@ -245,10 +251,15 @@ func buildRuntimeSubagentRunner(parentScope agentruntime.Scope, runtimeProvider 
 			InvocationKind:  coreagent.AgentInvocationKind(request.InvocationKind),
 			InvocationID:    request.InvocationKind + ":" + request.AgentID,
 		})
-		result, err := runner.Run(runCtx, childSession, buildRuntimeSubagentPrompt(request))
-		if err != nil {
+		if err := agentruntime.BeginMultiAgentWorker(ctx, parentScope.SessionID, childSession.ID, request.Description); err != nil {
 			return "", err
 		}
+		result, err := runner.Run(runCtx, childSession, buildRuntimeSubagentPrompt(request))
+		if err != nil {
+			agentruntime.EmitMultiAgentWorkerEvent(ctx, parentScope.SessionID, childSession.ID, request.Description, "failed")
+			return "", err
+		}
+		agentruntime.EmitMultiAgentWorkerEvent(ctx, parentScope.SessionID, childSession.ID, request.Description, "succeeded")
 		return result.Output, nil
 	}
 }
