@@ -412,7 +412,7 @@ func Default() Config {
 		MemoryVectorEmbeddingIndexTaskType:       FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_INDEX_TASK_TYPE"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_INDEX_TASK_TYPE"), "RETRIEVAL_DOCUMENT"),
 		MemoryVectorEmbeddingAutoTruncate:        EnvBool("AGENT_API_MEMORY_VECTOR_EMBEDDING_AUTO_TRUNCATE", EnvBool("AGENT_API_MESSAGE_SEARCH_EMBEDDING_AUTO_TRUNCATE", true)),
 		MemoryVectorRRFK:                         EnvInt("AGENT_API_MEMORY_VECTOR_RRF_K", EnvInt("AGENT_API_MESSAGE_SEARCH_RRF_K", 60)),
-		MemoryVectorRerankEnabled:                EnvBool("AGENT_API_MEMORY_VECTOR_RERANK_ENABLED", true),
+		MemoryVectorRerankEnabled:                EnvBool("AGENT_API_MEMORY_VECTOR_RERANK_ENABLED", false),
 		MemoryVectorRerankEndpoint:               FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_RERANK_ENDPOINT"), os.Getenv("AGENT_API_RERANK_ENDPOINT"), "https://ai.api.nvidia.com/v1/retrieval/nvidia/llama-nemotron-rerank-1b-v2/reranking"),
 		MemoryVectorRerankAPIKey:                 FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_RERANK_API_KEY"), os.Getenv("AGENT_API_RERANK_API_KEY"), os.Getenv("AGENT_API_MEMORY_VECTOR_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY"), os.Getenv("AGENT_API_EMBEDDING_API_KEY"), os.Getenv("NVIDIA_API_KEY"), os.Getenv("NGC_API_KEY")),
 		MemoryVectorRerankModel:                  FirstNonEmpty(os.Getenv("AGENT_API_MEMORY_VECTOR_RERANK_MODEL"), os.Getenv("AGENT_API_RERANK_MODEL"), "nvidia/llama-nemotron-rerank-1b-v2"),

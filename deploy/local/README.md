@@ -72,15 +72,15 @@ docker compose --env-file .env --profile search -f deploy/local/docker-compose.y
 The local stack defaults semantic retrieval to NVIDIA embeddings:
 `AGENT_API_MESSAGE_SEARCH_EMBEDDING_PROVIDER=nvidia`,
 `AGENT_API_MESSAGE_SEARCH_EMBEDDING_ENDPOINT=https://integrate.api.nvidia.com/v1`,
-`AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL=nvidia/llama-nemotron-embed-1b-v2`,
+`AGENT_API_MESSAGE_SEARCH_EMBEDDING_MODEL=nvidia/nemotron-3.5-embed-8b`,
 and `AGENT_API_MESSAGE_SEARCH_EMBEDDING_DIMENSIONS=768`. Set
 `AGENT_API_MESSAGE_SEARCH_BACKEND=semantic` or `hybrid` plus
 `AGENT_API_MESSAGE_SEARCH_EMBEDDING_API_KEY` to query Qdrant. L2 episodic
-memory retrieval uses the same embedding model and can rerank the top 50
-vector candidates with
-`AGENT_API_MEMORY_VECTOR_RERANK_ENDPOINT=https://ai.api.nvidia.com/v1/retrieval/nvidia/llama-nemotron-rerank-1b-v2/reranking` and
-`AGENT_API_MEMORY_VECTOR_RERANK_MODEL=nvidia/llama-nemotron-rerank-1b-v2`,
-returning the top 5 memories by default.
+memory retrieval uses the same embedding model with its own Qdrant collections.
+The legacy NVIDIA rerank endpoint is unavailable, so memory reranking defaults
+to disabled; keyword and vector memory retrieval remain enabled. When changing
+embedding models on an existing deployment, re-embed into new collections
+instead of mixing incompatible vectors in existing ones.
 With `AGENT_API_MESSAGE_SEARCH_BACKEND=elasticsearch` or `hybrid`, local compose
 defaults `AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED=true` to bootstrap ES
 ILM, rollover templates, and IK analyzer mappings. AgentAPI also runs a
