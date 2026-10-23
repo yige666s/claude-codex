@@ -1,9 +1,12 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
-const envFile = process.argv[2] || process.env.AGENTAPI_ENV_FILE || "/opt/agentapi/.env";
+const defaultFiles = existsSync("/opt/agentapi/config.env") && existsSync("/opt/agentapi/secrets.env")
+  ? ["/opt/agentapi/config.env", "/opt/agentapi/secrets.env"]
+  : [process.env.AGENTAPI_ENV_FILE || "/opt/agentapi/.env"];
+const envFiles = process.argv.length > 2 ? process.argv.slice(2) : defaultFiles;
 const findings = [];
-const env = { ...process.env, ...readEnvFile(envFile) };
+const env = Object.assign({}, ...envFiles.map(readEnvFile), process.env);
 
 checkRequired("core", [
   "AGENT_API_SQL_DRIVER",

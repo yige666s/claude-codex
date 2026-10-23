@@ -18,37 +18,38 @@ const (
 )
 
 type LLMGovernanceConfigPatch struct {
-	Provider                *string  `json:"provider,omitempty"`
-	Model                   *string  `json:"model,omitempty"`
-	VertexLocation          *string  `json:"vertex_location,omitempty"`
-	ModelRoutes             *string  `json:"model_routes,omitempty"`
-	MaxAttempts             *int     `json:"max_attempts,omitempty"`
-	RetryBackoffMS          *int64   `json:"retry_backoff_ms,omitempty"`
-	ChatTimeoutMS           *int64   `json:"chat_timeout_ms,omitempty"`
-	SkillTimeoutMS          *int64   `json:"skill_timeout_ms,omitempty"`
-	MaxLoopDurationMS       *int64   `json:"max_loop_duration_ms,omitempty"`
-	MaxLoopActions          *int     `json:"max_loop_actions,omitempty"`
-	MaxBranchCount          *int     `json:"max_branch_count,omitempty"`
-	MaxBranchConcurrency    *int     `json:"max_branch_concurrency,omitempty"`
-	MaxParallelBranches     *int     `json:"max_parallel_branches,omitempty"`
-	ParallelBranchTimeoutMS *int64   `json:"parallel_branch_timeout_ms,omitempty"`
-	ParallelMaxToolCalls    *int     `json:"parallel_max_tool_calls,omitempty"`
-	ParallelMaxSources      *int     `json:"parallel_max_sources,omitempty"`
-	ParallelMaxTokens       *int     `json:"parallel_max_tokens,omitempty"`
-	EvaluatorTimeoutMS      *int64   `json:"evaluator_timeout_ms,omitempty"`
-	ConflictTimeoutMS       *int64   `json:"conflict_reconciliation_timeout_ms,omitempty"`
-	MaxSourcesPerBranch     *int     `json:"max_sources_per_branch,omitempty"`
-	SearchQualityThreshold  *float64 `json:"search_quality_threshold,omitempty"`
-	AutomaticTriggerEnabled *bool    `json:"automatic_trigger_enabled,omitempty"`
-	RiskyWriteApprovalMode  *string  `json:"risky_write_approval_mode,omitempty"`
-	DailyTokenQuota         *int     `json:"daily_token_quota,omitempty"`
-	DailyRequestQuota       *int     `json:"daily_request_quota,omitempty"`
-	APIRateLimitPerMinute   *int     `json:"api_rate_limit_per_minute,omitempty"`
-	DailyCostQuotaUSD       *float64 `json:"daily_cost_quota_usd,omitempty"`
-	InputCostPerMillion     *float64 `json:"input_cost_per_million,omitempty"`
-	OutputCostPerMillion    *float64 `json:"output_cost_per_million,omitempty"`
-	FailureThreshold        *int     `json:"failure_threshold,omitempty"`
-	CircuitCooldownSeconds  *int     `json:"circuit_cooldown_seconds,omitempty"`
+	Provider                   *string  `json:"provider,omitempty"`
+	Model                      *string  `json:"model,omitempty"`
+	VertexLocation             *string  `json:"vertex_location,omitempty"`
+	ModelRoutes                *string  `json:"model_routes,omitempty"`
+	MaxAttempts                *int     `json:"max_attempts,omitempty"`
+	RetryBackoffMS             *int64   `json:"retry_backoff_ms,omitempty"`
+	ChatTimeoutMS              *int64   `json:"chat_timeout_ms,omitempty"`
+	SkillTimeoutMS             *int64   `json:"skill_timeout_ms,omitempty"`
+	MaxLoopDurationMS          *int64   `json:"max_loop_duration_ms,omitempty"`
+	MaxLoopActions             *int     `json:"max_loop_actions,omitempty"`
+	MaxBranchCount             *int     `json:"max_branch_count,omitempty"`
+	MaxBranchConcurrency       *int     `json:"max_branch_concurrency,omitempty"`
+	MaxParallelBranches        *int     `json:"max_parallel_branches,omitempty"`
+	ParallelBranchTimeoutMS    *int64   `json:"parallel_branch_timeout_ms,omitempty"`
+	ParallelMaxToolCalls       *int     `json:"parallel_max_tool_calls,omitempty"`
+	ParallelMaxSources         *int     `json:"parallel_max_sources,omitempty"`
+	ParallelMaxTokens          *int     `json:"parallel_max_tokens,omitempty"`
+	EvaluatorTimeoutMS         *int64   `json:"evaluator_timeout_ms,omitempty"`
+	ConflictTimeoutMS          *int64   `json:"conflict_reconciliation_timeout_ms,omitempty"`
+	MaxSourcesPerBranch        *int     `json:"max_sources_per_branch,omitempty"`
+	SearchQualityThreshold     *float64 `json:"search_quality_threshold,omitempty"`
+	AutomaticTriggerEnabled    *bool    `json:"automatic_trigger_enabled,omitempty"`
+	MultiAgentAutoRouteEnabled *bool    `json:"multi_agent_auto_route_enabled,omitempty"`
+	RiskyWriteApprovalMode     *string  `json:"risky_write_approval_mode,omitempty"`
+	DailyTokenQuota            *int     `json:"daily_token_quota,omitempty"`
+	DailyRequestQuota          *int     `json:"daily_request_quota,omitempty"`
+	APIRateLimitPerMinute      *int     `json:"api_rate_limit_per_minute,omitempty"`
+	DailyCostQuotaUSD          *float64 `json:"daily_cost_quota_usd,omitempty"`
+	InputCostPerMillion        *float64 `json:"input_cost_per_million,omitempty"`
+	OutputCostPerMillion       *float64 `json:"output_cost_per_million,omitempty"`
+	FailureThreshold           *int     `json:"failure_threshold,omitempty"`
+	CircuitCooldownSeconds     *int     `json:"circuit_cooldown_seconds,omitempty"`
 }
 
 type LLMGovernanceConfigStore interface {
@@ -230,31 +231,37 @@ func (m *LLMGovernanceConfigManager) Load(ctx context.Context) error {
 	return nil
 }
 
-// LoadAndSyncStartupConfig is the service-start path: startup/env config is
-// authoritative at process boot, then persisted so runtime reads and admin
-// writes operate on the SQL-backed config row.
-func (m *LLMGovernanceConfigManager) LoadAndSyncStartupConfig(ctx context.Context) error {
+// LoadOrSeed uses stored non-secret settings after the first start. Environment
+// and CLI values are bootstrap defaults only; restarting must not undo admin
+// changes. The optional SQL seeder prevents concurrent replicas from clobbering
+// one another on first start.
+func (m *LLMGovernanceConfigManager) LoadOrSeed(ctx context.Context) error {
 	if m == nil {
 		return nil
 	}
-	allowedModels, err := m.loadAllowedModels(ctx)
+	if err := m.Load(ctx); err != nil {
+		return err
+	}
+	if m.store == nil {
+		return nil
+	}
+	_, exists, err := m.store.LoadLLMGovernanceConfig(ctx)
+	if err != nil || exists {
+		return err
+	}
+	seed := m.Get()
+	if seeder, ok := m.store.(interface {
+		SeedLLMGovernanceConfig(context.Context, LLMGovernanceConfig) error
+	}); ok {
+		err = seeder.SeedLLMGovernanceConfig(ctx, seed)
+	} else {
+		err = m.store.SaveLLMGovernanceConfig(ctx, seed)
+	}
 	if err != nil {
 		return err
 	}
-	m.mu.RLock()
-	config := m.config
-	m.mu.RUnlock()
-	config = config.normalizedWithOptions(allowedModels)
-	if m.store != nil {
-		if err := m.store.SaveLLMGovernanceConfig(ctx, config); err != nil {
-			return err
-		}
-	}
-	m.mu.Lock()
-	m.allowedModels = allowedModels
-	m.config = config
-	m.mu.Unlock()
-	return nil
+	// The stored row is authoritative even if a second replica won the seed race.
+	return m.Load(ctx)
 }
 
 func (m *LLMGovernanceConfigManager) Get() LLMGovernanceConfig {
@@ -367,6 +374,7 @@ func llmGovernanceConfigStatusMapWithModels(config LLMGovernanceConfig, allowedM
 		"max_sources_per_branch":             config.MaxSourcesPerBranch,
 		"search_quality_threshold":           config.SearchQualityThreshold,
 		"automatic_trigger_enabled":          config.AutomaticTriggerEnabled,
+		"multi_agent_auto_route_enabled":     config.MultiAgentAutoRouteEnabled,
 		"risky_write_approval_mode":          config.RiskyWriteApprovalMode,
 		"daily_token_quota":                  config.DailyTokenQuota,
 		"daily_request_quota":                config.DailyRequestQuota,
@@ -549,6 +557,9 @@ func applyLLMGovernanceConfigPatchWithOptions(config LLMGovernanceConfig, patch 
 	}
 	if patch.AutomaticTriggerEnabled != nil {
 		next.AutomaticTriggerEnabled = *patch.AutomaticTriggerEnabled
+	}
+	if patch.MultiAgentAutoRouteEnabled != nil {
+		next.MultiAgentAutoRouteEnabled = *patch.MultiAgentAutoRouteEnabled
 	}
 	if patch.RiskyWriteApprovalMode != nil {
 		mode := normalizeRiskyWriteApprovalMode(*patch.RiskyWriteApprovalMode)
@@ -807,37 +818,38 @@ func copyLLMModelOptions(options []LLMModelOption) []LLMModelOption {
 }
 
 type llmGovernanceConfigPayload struct {
-	Provider                string  `json:"provider,omitempty"`
-	Model                   string  `json:"model,omitempty"`
-	VertexLocation          string  `json:"vertex_location,omitempty"`
-	ModelRoutes             string  `json:"model_routes,omitempty"`
-	MaxAttempts             int     `json:"max_attempts"`
-	RetryBackoffMS          int64   `json:"retry_backoff_ms"`
-	ChatTimeoutMS           int64   `json:"chat_timeout_ms"`
-	SkillTimeoutMS          int64   `json:"skill_timeout_ms"`
-	MaxLoopDurationMS       int64   `json:"max_loop_duration_ms"`
-	MaxLoopActions          int     `json:"max_loop_actions"`
-	MaxBranchCount          int     `json:"max_branch_count"`
-	MaxBranchConcurrency    int     `json:"max_branch_concurrency"`
-	MaxParallelBranches     int     `json:"max_parallel_branches"`
-	ParallelBranchTimeoutMS int64   `json:"parallel_branch_timeout_ms"`
-	ParallelMaxToolCalls    int     `json:"parallel_max_tool_calls"`
-	ParallelMaxSources      int     `json:"parallel_max_sources"`
-	ParallelMaxTokens       int     `json:"parallel_max_tokens"`
-	EvaluatorTimeoutMS      int64   `json:"evaluator_timeout_ms"`
-	ConflictTimeoutMS       int64   `json:"conflict_reconciliation_timeout_ms"`
-	MaxSourcesPerBranch     int     `json:"max_sources_per_branch"`
-	SearchQualityThreshold  float64 `json:"search_quality_threshold"`
-	AutomaticTriggerEnabled bool    `json:"automatic_trigger_enabled"`
-	RiskyWriteApprovalMode  string  `json:"risky_write_approval_mode"`
-	DailyTokenQuota         int     `json:"daily_token_quota"`
-	DailyRequestQuota       int     `json:"daily_request_quota"`
-	APIRateLimitPerMinute   *int    `json:"api_rate_limit_per_minute,omitempty"`
-	DailyCostQuotaUSD       float64 `json:"daily_cost_quota_usd"`
-	InputCostPerMillion     float64 `json:"input_cost_per_million"`
-	OutputCostPerMillion    float64 `json:"output_cost_per_million"`
-	FailureThreshold        int     `json:"failure_threshold"`
-	CircuitCooldownSeconds  int     `json:"circuit_cooldown_seconds"`
+	Provider                   string  `json:"provider,omitempty"`
+	Model                      string  `json:"model,omitempty"`
+	VertexLocation             string  `json:"vertex_location,omitempty"`
+	ModelRoutes                string  `json:"model_routes,omitempty"`
+	MaxAttempts                int     `json:"max_attempts"`
+	RetryBackoffMS             int64   `json:"retry_backoff_ms"`
+	ChatTimeoutMS              int64   `json:"chat_timeout_ms"`
+	SkillTimeoutMS             int64   `json:"skill_timeout_ms"`
+	MaxLoopDurationMS          int64   `json:"max_loop_duration_ms"`
+	MaxLoopActions             int     `json:"max_loop_actions"`
+	MaxBranchCount             int     `json:"max_branch_count"`
+	MaxBranchConcurrency       int     `json:"max_branch_concurrency"`
+	MaxParallelBranches        int     `json:"max_parallel_branches"`
+	ParallelBranchTimeoutMS    int64   `json:"parallel_branch_timeout_ms"`
+	ParallelMaxToolCalls       int     `json:"parallel_max_tool_calls"`
+	ParallelMaxSources         int     `json:"parallel_max_sources"`
+	ParallelMaxTokens          int     `json:"parallel_max_tokens"`
+	EvaluatorTimeoutMS         int64   `json:"evaluator_timeout_ms"`
+	ConflictTimeoutMS          int64   `json:"conflict_reconciliation_timeout_ms"`
+	MaxSourcesPerBranch        int     `json:"max_sources_per_branch"`
+	SearchQualityThreshold     float64 `json:"search_quality_threshold"`
+	AutomaticTriggerEnabled    bool    `json:"automatic_trigger_enabled"`
+	MultiAgentAutoRouteEnabled bool    `json:"multi_agent_auto_route_enabled"`
+	RiskyWriteApprovalMode     string  `json:"risky_write_approval_mode"`
+	DailyTokenQuota            int     `json:"daily_token_quota"`
+	DailyRequestQuota          int     `json:"daily_request_quota"`
+	APIRateLimitPerMinute      *int    `json:"api_rate_limit_per_minute,omitempty"`
+	DailyCostQuotaUSD          float64 `json:"daily_cost_quota_usd"`
+	InputCostPerMillion        float64 `json:"input_cost_per_million"`
+	OutputCostPerMillion       float64 `json:"output_cost_per_million"`
+	FailureThreshold           int     `json:"failure_threshold"`
+	CircuitCooldownSeconds     int     `json:"circuit_cooldown_seconds"`
 }
 
 type llmModelCatalogPayload struct {
@@ -846,73 +858,75 @@ type llmModelCatalogPayload struct {
 
 func llmGovernanceConfigToPayload(config LLMGovernanceConfig) llmGovernanceConfigPayload {
 	return llmGovernanceConfigPayload{
-		Provider:                config.Provider,
-		Model:                   config.Model,
-		VertexLocation:          config.VertexLocation,
-		ModelRoutes:             config.ModelRoutes,
-		MaxAttempts:             config.MaxAttempts,
-		RetryBackoffMS:          config.RetryBackoff.Milliseconds(),
-		ChatTimeoutMS:           config.ChatTimeout.Milliseconds(),
-		SkillTimeoutMS:          config.SkillTimeout.Milliseconds(),
-		MaxLoopDurationMS:       config.MaxLoopDuration.Milliseconds(),
-		MaxLoopActions:          config.MaxLoopActions,
-		MaxBranchCount:          config.MaxBranchCount,
-		MaxBranchConcurrency:    config.MaxBranchConcurrency,
-		MaxParallelBranches:     config.MaxParallelBranches,
-		ParallelBranchTimeoutMS: config.ParallelBranchTimeout.Milliseconds(),
-		ParallelMaxToolCalls:    config.ParallelMaxToolCalls,
-		ParallelMaxSources:      config.ParallelMaxSources,
-		ParallelMaxTokens:       config.ParallelMaxTokens,
-		EvaluatorTimeoutMS:      config.EvaluatorTimeout.Milliseconds(),
-		ConflictTimeoutMS:       config.ConflictTimeout.Milliseconds(),
-		MaxSourcesPerBranch:     config.MaxSourcesPerBranch,
-		SearchQualityThreshold:  config.SearchQualityThreshold,
-		AutomaticTriggerEnabled: config.AutomaticTriggerEnabled,
-		RiskyWriteApprovalMode:  config.RiskyWriteApprovalMode,
-		DailyTokenQuota:         config.DailyTokenQuota,
-		DailyRequestQuota:       config.DailyRequestQuota,
-		APIRateLimitPerMinute:   &config.APIRateLimitPerMinute,
-		DailyCostQuotaUSD:       config.DailyCostQuotaUSD,
-		InputCostPerMillion:     config.InputCostPerMillion,
-		OutputCostPerMillion:    config.OutputCostPerMillion,
-		FailureThreshold:        config.FailureThreshold,
-		CircuitCooldownSeconds:  int(config.CircuitBreakerCooldown.Seconds()),
+		Provider:                   config.Provider,
+		Model:                      config.Model,
+		VertexLocation:             config.VertexLocation,
+		ModelRoutes:                config.ModelRoutes,
+		MaxAttempts:                config.MaxAttempts,
+		RetryBackoffMS:             config.RetryBackoff.Milliseconds(),
+		ChatTimeoutMS:              config.ChatTimeout.Milliseconds(),
+		SkillTimeoutMS:             config.SkillTimeout.Milliseconds(),
+		MaxLoopDurationMS:          config.MaxLoopDuration.Milliseconds(),
+		MaxLoopActions:             config.MaxLoopActions,
+		MaxBranchCount:             config.MaxBranchCount,
+		MaxBranchConcurrency:       config.MaxBranchConcurrency,
+		MaxParallelBranches:        config.MaxParallelBranches,
+		ParallelBranchTimeoutMS:    config.ParallelBranchTimeout.Milliseconds(),
+		ParallelMaxToolCalls:       config.ParallelMaxToolCalls,
+		ParallelMaxSources:         config.ParallelMaxSources,
+		ParallelMaxTokens:          config.ParallelMaxTokens,
+		EvaluatorTimeoutMS:         config.EvaluatorTimeout.Milliseconds(),
+		ConflictTimeoutMS:          config.ConflictTimeout.Milliseconds(),
+		MaxSourcesPerBranch:        config.MaxSourcesPerBranch,
+		SearchQualityThreshold:     config.SearchQualityThreshold,
+		AutomaticTriggerEnabled:    config.AutomaticTriggerEnabled,
+		MultiAgentAutoRouteEnabled: config.MultiAgentAutoRouteEnabled,
+		RiskyWriteApprovalMode:     config.RiskyWriteApprovalMode,
+		DailyTokenQuota:            config.DailyTokenQuota,
+		DailyRequestQuota:          config.DailyRequestQuota,
+		APIRateLimitPerMinute:      &config.APIRateLimitPerMinute,
+		DailyCostQuotaUSD:          config.DailyCostQuotaUSD,
+		InputCostPerMillion:        config.InputCostPerMillion,
+		OutputCostPerMillion:       config.OutputCostPerMillion,
+		FailureThreshold:           config.FailureThreshold,
+		CircuitCooldownSeconds:     int(config.CircuitBreakerCooldown.Seconds()),
 	}
 }
 
 func llmGovernanceConfigFromPayload(payload llmGovernanceConfigPayload) LLMGovernanceConfig {
 	return LLMGovernanceConfig{
-		Provider:                payload.Provider,
-		Model:                   payload.Model,
-		VertexLocation:          payload.VertexLocation,
-		ModelRoutes:             payload.ModelRoutes,
-		MaxAttempts:             payload.MaxAttempts,
-		RetryBackoff:            time.Duration(payload.RetryBackoffMS) * time.Millisecond,
-		ChatTimeout:             time.Duration(payload.ChatTimeoutMS) * time.Millisecond,
-		SkillTimeout:            time.Duration(payload.SkillTimeoutMS) * time.Millisecond,
-		MaxLoopDuration:         time.Duration(payload.MaxLoopDurationMS) * time.Millisecond,
-		MaxLoopActions:          payload.MaxLoopActions,
-		MaxBranchCount:          payload.MaxBranchCount,
-		MaxBranchConcurrency:    payload.MaxBranchConcurrency,
-		MaxParallelBranches:     payload.MaxParallelBranches,
-		ParallelBranchTimeout:   time.Duration(payload.ParallelBranchTimeoutMS) * time.Millisecond,
-		ParallelMaxToolCalls:    payload.ParallelMaxToolCalls,
-		ParallelMaxSources:      payload.ParallelMaxSources,
-		ParallelMaxTokens:       payload.ParallelMaxTokens,
-		EvaluatorTimeout:        time.Duration(payload.EvaluatorTimeoutMS) * time.Millisecond,
-		ConflictTimeout:         time.Duration(payload.ConflictTimeoutMS) * time.Millisecond,
-		MaxSourcesPerBranch:     payload.MaxSourcesPerBranch,
-		SearchQualityThreshold:  payload.SearchQualityThreshold,
-		AutomaticTriggerEnabled: payload.AutomaticTriggerEnabled,
-		RiskyWriteApprovalMode:  payload.RiskyWriteApprovalMode,
-		DailyTokenQuota:         payload.DailyTokenQuota,
-		DailyRequestQuota:       payload.DailyRequestQuota,
-		APIRateLimitPerMinute:   apiRateLimitPerMinuteFromPayload(payload.APIRateLimitPerMinute),
-		DailyCostQuotaUSD:       payload.DailyCostQuotaUSD,
-		InputCostPerMillion:     payload.InputCostPerMillion,
-		OutputCostPerMillion:    payload.OutputCostPerMillion,
-		FailureThreshold:        payload.FailureThreshold,
-		CircuitBreakerCooldown:  time.Duration(payload.CircuitCooldownSeconds) * time.Second,
+		Provider:                   payload.Provider,
+		Model:                      payload.Model,
+		VertexLocation:             payload.VertexLocation,
+		ModelRoutes:                payload.ModelRoutes,
+		MaxAttempts:                payload.MaxAttempts,
+		RetryBackoff:               time.Duration(payload.RetryBackoffMS) * time.Millisecond,
+		ChatTimeout:                time.Duration(payload.ChatTimeoutMS) * time.Millisecond,
+		SkillTimeout:               time.Duration(payload.SkillTimeoutMS) * time.Millisecond,
+		MaxLoopDuration:            time.Duration(payload.MaxLoopDurationMS) * time.Millisecond,
+		MaxLoopActions:             payload.MaxLoopActions,
+		MaxBranchCount:             payload.MaxBranchCount,
+		MaxBranchConcurrency:       payload.MaxBranchConcurrency,
+		MaxParallelBranches:        payload.MaxParallelBranches,
+		ParallelBranchTimeout:      time.Duration(payload.ParallelBranchTimeoutMS) * time.Millisecond,
+		ParallelMaxToolCalls:       payload.ParallelMaxToolCalls,
+		ParallelMaxSources:         payload.ParallelMaxSources,
+		ParallelMaxTokens:          payload.ParallelMaxTokens,
+		EvaluatorTimeout:           time.Duration(payload.EvaluatorTimeoutMS) * time.Millisecond,
+		ConflictTimeout:            time.Duration(payload.ConflictTimeoutMS) * time.Millisecond,
+		MaxSourcesPerBranch:        payload.MaxSourcesPerBranch,
+		SearchQualityThreshold:     payload.SearchQualityThreshold,
+		AutomaticTriggerEnabled:    payload.AutomaticTriggerEnabled,
+		MultiAgentAutoRouteEnabled: payload.MultiAgentAutoRouteEnabled,
+		RiskyWriteApprovalMode:     payload.RiskyWriteApprovalMode,
+		DailyTokenQuota:            payload.DailyTokenQuota,
+		DailyRequestQuota:          payload.DailyRequestQuota,
+		APIRateLimitPerMinute:      apiRateLimitPerMinuteFromPayload(payload.APIRateLimitPerMinute),
+		DailyCostQuotaUSD:          payload.DailyCostQuotaUSD,
+		InputCostPerMillion:        payload.InputCostPerMillion,
+		OutputCostPerMillion:       payload.OutputCostPerMillion,
+		FailureThreshold:           payload.FailureThreshold,
+		CircuitBreakerCooldown:     time.Duration(payload.CircuitCooldownSeconds) * time.Second,
 	}
 }
 
@@ -1008,6 +1022,22 @@ func (s *SQLRuntimeConfigStore) LoadLLMGovernanceConfig(ctx context.Context) (LL
 		return LLMGovernanceConfig{}, false, err
 	}
 	return llmGovernanceConfigFromPayload(payload), true, nil
+}
+
+// SeedLLMGovernanceConfig inserts bootstrap settings only if no DB row exists.
+func (s *SQLRuntimeConfigStore) SeedLLMGovernanceConfig(ctx context.Context, config LLMGovernanceConfig) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("sql runtime config store is not configured")
+	}
+	raw, err := json.Marshal(llmGovernanceConfigToPayload(config))
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, s.dialect.Bind(`
+INSERT INTO agent_runtime_config (config_key, payload, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT (config_key) DO NOTHING`), llmGovernanceConfigKey, string(raw), sqlTimeValue(time.Now().UTC(), s.dialect))
+	return err
 }
 
 func (s *SQLRuntimeConfigStore) SaveLLMGovernanceConfig(ctx context.Context, config LLMGovernanceConfig) error {

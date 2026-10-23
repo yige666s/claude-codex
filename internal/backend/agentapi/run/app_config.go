@@ -95,14 +95,13 @@ func skillShellSandboxConfigFromStartup(cfg startupconfig.Config) agentruntime.S
 
 func runtimeConfigFromStartup(cfg startupconfig.Config, skillShellSandboxConfig agentruntime.SkillShellSandboxConfig) agentruntime.RuntimeConfig {
 	return agentruntime.RuntimeConfig{
-		DefaultWorkingDir:          cfg.Workspace,
-		UserWorkspaceRoot:          cfg.UserWorkspaceRoot,
-		AllowCustomWorkingDir:      cfg.AllowCustomWorkingDir,
-		Timezone:                   cfg.Timezone,
-		Locale:                     cfg.Locale,
-		TurnTimeout:                cfg.TurnTimeout,
-		MultiAgentAutoRouteEnabled: cfg.MultiAgentAutoRouteEnabled,
-		SkillShellTimeout:          cfg.SkillShellTimeout,
+		DefaultWorkingDir:     cfg.Workspace,
+		UserWorkspaceRoot:     cfg.UserWorkspaceRoot,
+		AllowCustomWorkingDir: cfg.AllowCustomWorkingDir,
+		Timezone:              cfg.Timezone,
+		Locale:                cfg.Locale,
+		TurnTimeout:           cfg.TurnTimeout,
+		SkillShellTimeout:     cfg.SkillShellTimeout,
 		DeepAgent: agentruntime.DeepAgentRuntimeConfig{
 			V2Enabled:     cfg.DeepAgentV2Enabled,
 			V2ShadowRoute: cfg.DeepAgentV2ShadowRoute,

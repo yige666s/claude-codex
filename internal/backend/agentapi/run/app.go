@@ -61,8 +61,8 @@ func Run(ctx context.Context, cfg startupconfig.Config) error {
 	llmGovernanceCfg := llmGovernanceConfigFromStartup(cfg, llmCfg)
 	llmConfigManager := agentruntime.NewLLMGovernanceConfigManager(llmGovernanceCfg, buildRuntimeConfigStore(storeCfg))
 	llmConfigManager.SetValidator(runtimeLLMGovernanceConfigValidator(llmCfg))
-	if err := llmConfigManager.LoadAndSyncStartupConfig(ctx); err != nil {
-		return fmt.Errorf("sync startup llm governance config: %w", err)
+	if err := llmConfigManager.LoadOrSeed(ctx); err != nil {
+		return fmt.Errorf("load or seed llm governance config: %w", err)
 	}
 
 	skillManager := loadSkills(startupconfig.SplitCSV(cfg.SkillDirs))

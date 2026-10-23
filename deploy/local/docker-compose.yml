@@ -135,6 +135,11 @@ services:
         condition: service_healthy
     environment:
       AGENT_API_SQL_DSN: postgres://${AGENT_API_POSTGRES_USER:-agentapi}:${AGENT_API_POSTGRES_PASSWORD:-agentapi}@postgres:5432/${AGENT_API_POSTGRES_DB:-agentapi}?sslmode=disable
+      AGENT_API_SQL_DRIVER: ${AGENT_API_SQL_DRIVER:-pgx}
+      AGENT_API_SQL_DIALECT: ${AGENT_API_SQL_DIALECT:-postgres}
+      AGENT_API_AUTH_MODE: ${AGENT_API_AUTH_MODE:-jwt}
+      AGENT_API_ENABLE_USER_SYSTEM: ${AGENT_API_ENABLE_USER_SYSTEM:-true}
+      AGENT_API_MODEL: ${AGENT_API_MODEL:-simple}
       AGENT_API_JWT_SECRET: ${AGENT_API_JWT_SECRET:-local-dev-jwt-secret-change-me}
       AGENT_API_ADMIN_TOKEN: ${AGENT_API_ADMIN_TOKEN:-11b270acdc30d0785d791f42aa8a44be87cbbdf6186f3fc4b02e7836d86f38f9}
       AGENT_API_EVAL_DAILY_ENABLED: ${AGENT_API_EVAL_DAILY_ENABLED:-true}
@@ -154,7 +159,6 @@ services:
       AGENT_API_LOOP_RELEASE_GATE_TEMPLATE_REPLAY_PASS_COUNT: ${AGENT_API_LOOP_RELEASE_GATE_TEMPLATE_REPLAY_PASS_COUNT:-0}
       AGENT_API_LOOP_RELEASE_GATE_KILL_SWITCH_PASSED: ${AGENT_API_LOOP_RELEASE_GATE_KILL_SWITCH_PASSED:-false}
       AGENT_API_LOOP_RELEASE_GATE_QUOTA_GUARD_PASSED: ${AGENT_API_LOOP_RELEASE_GATE_QUOTA_GUARD_PASSED:-false}
-      AGENT_API_MULTI_AGENT_AUTO_ROUTE_ENABLED: ${AGENT_API_MULTI_AGENT_AUTO_ROUTE_ENABLED:-false}
       AGENT_API_DEEP_RESEARCH_ORCHESTRATOR_WORKER_ENABLED: ${AGENT_API_DEEP_RESEARCH_ORCHESTRATOR_WORKER_ENABLED:-false}
       AGENT_API_DEEP_RESEARCH_WORKER_BACKEND: ${AGENT_API_DEEP_RESEARCH_WORKER_BACKEND:-inline}
       AGENT_API_DEEP_RESEARCH_MAX_WORKERS: ${AGENT_API_DEEP_RESEARCH_MAX_WORKERS:-8}
@@ -419,12 +423,6 @@ services:
     command:
       - -addr
       - :8081
-      - -store-backend
-      - "${AGENT_API_STORE_BACKEND:-sql}"
-      - -sql-driver
-      - pgx
-      - -sql-dialect
-      - postgres
       - -sql-max-open-conns
       - "${AGENT_API_SQL_MAX_OPEN_CONNS:-20}"
       - -sql-max-idle-conns
@@ -435,48 +433,6 @@ services:
       - /workspace
       - -user-workspace-root
       - /var/lib/agentapi/workspaces
-      - -enable-user-system
-      - -auth-mode
-      - jwt
-      - -jwt-secret
-      - "${AGENT_API_JWT_SECRET:-local-dev-jwt-secret-change-me}"
-      - -artifact-store
-      - "${AGENT_API_ARTIFACT_STORE:-s3}"
-      - -rate-limit-backend
-      - "${AGENT_API_RATE_LIMIT_BACKEND:-none}"
-      - -redis-url
-      - redis://redis:6379/0?prefix=agentapi
-      - -message-context-cache-backend
-      - "${AGENT_API_MESSAGE_CONTEXT_CACHE_BACKEND:-redis}"
-      - -message-context-cache-redis-url
-      - "${AGENT_API_MESSAGE_CONTEXT_CACHE_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:ctx}"
-      - -message-context-cache-ttl
-      - "${AGENT_API_MESSAGE_CONTEXT_CACHE_TTL:-24h}"
-      - -session-list-cache-backend
-      - "${AGENT_API_SESSION_LIST_CACHE_BACKEND:-redis}"
-      - -session-list-cache-redis-url
-      - "${AGENT_API_SESSION_LIST_CACHE_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:session:list}"
-      - -session-list-cache-ttl
-      - "${AGENT_API_SESSION_LIST_CACHE_TTL:-10m}"
-      - -message-sequence-backend
-      - "${AGENT_API_MESSAGE_SEQUENCE_BACKEND:-redis}"
-      - -message-sequence-redis-url
-      - "${AGENT_API_MESSAGE_SEQUENCE_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:seq}"
-      - -job-queue-redis-url
-      - "${AGENT_API_JOB_QUEUE_REDIS_URL:-redis://redis:6379/2}"
-      - -job-queue-stream
-      - "${AGENT_API_JOB_QUEUE_STREAM:-agentapi:jobs}"
-      - -job-queue-consumer-group
-      - "${AGENT_API_JOB_QUEUE_CONSUMER_GROUP:-agentapi-job-workers}"
-      - -job-queue-consumer
-      - "${AGENT_API_JOB_QUEUE_CONSUMER:-}"
-      - -job-queue-block-timeout
-      - "${AGENT_API_JOB_QUEUE_BLOCK_TIMEOUT:-2s}"
-      - -job-queue-claim-idle
-      - "${AGENT_API_JOB_QUEUE_CLAIM_IDLE:-1m}"
-      - -job-queue-lock-ttl
-      - "${AGENT_API_JOB_QUEUE_LOCK_TTL:-2m}"
-      - "-job-worker-enabled=${AGENT_API_JOB_WORKER_ENABLED:-true}"
       - "-chat-event-stream-enabled=${AGENT_API_CHAT_EVENT_STREAM_ENABLED:-true}"
       - -chat-event-stream-prefix
       - "${AGENT_API_CHAT_EVENT_STREAM_PREFIX:-agentapi:chat-events}"
@@ -486,78 +442,6 @@ services:
       - "${AGENT_API_CHAT_EVENT_STREAM_MAX_LEN:-10000}"
       - -chat-event-stream-block
       - "${AGENT_API_CHAT_EVENT_STREAM_BLOCK:-10s}"
-      - "-job-event-fanout-enabled=${AGENT_API_JOB_EVENT_FANOUT_ENABLED:-true}"
-      - -job-event-fanout-channel
-      - "${AGENT_API_JOB_EVENT_FANOUT_CHANNEL:-agentapi:job-events}"
-      - -job-event-fanout-origin
-      - "${AGENT_API_JOB_EVENT_FANOUT_ORIGIN:-}"
-      - "-message-attachment-worker-enabled=${AGENT_API_MESSAGE_ATTACHMENT_WORKER_ENABLED:-true}"
-      - -message-attachment-worker-batch-size
-      - "${AGENT_API_MESSAGE_ATTACHMENT_WORKER_BATCH_SIZE:-25}"
-      - -message-attachment-worker-poll-interval
-      - "${AGENT_API_MESSAGE_ATTACHMENT_WORKER_POLL_INTERVAL:-5s}"
-      - -message-attachment-worker-process-timeout
-      - "${AGENT_API_MESSAGE_ATTACHMENT_WORKER_PROCESS_TIMEOUT:-30s}"
-      - -message-attachment-thumbnail-max-dimension
-      - "${AGENT_API_MESSAGE_ATTACHMENT_THUMBNAIL_MAX_DIMENSION:-512}"
-      - "-message-archive-worker-enabled=${AGENT_API_MESSAGE_ARCHIVE_WORKER_ENABLED:-false}"
-      - -message-archive-after
-      - "${AGENT_API_MESSAGE_ARCHIVE_AFTER:-720h}"
-      - -message-archive-worker-batch-size
-      - "${AGENT_API_MESSAGE_ARCHIVE_WORKER_BATCH_SIZE:-100}"
-      - -message-archive-worker-poll-interval
-      - "${AGENT_API_MESSAGE_ARCHIVE_WORKER_POLL_INTERVAL:-1h}"
-      - -message-archive-worker-process-timeout
-      - "${AGENT_API_MESSAGE_ARCHIVE_WORKER_PROCESS_TIMEOUT:-2m}"
-      - -message-archive-prefix
-      - "${AGENT_API_MESSAGE_ARCHIVE_PREFIX:-message-archive}"
-      - "-message-archive-clear-pg-payload=${AGENT_API_MESSAGE_ARCHIVE_CLEAR_PG_PAYLOAD:-true}"
-      - "-message-search-index-management-enabled=${AGENT_API_MESSAGE_SEARCH_INDEX_MANAGEMENT_ENABLED:-true}"
-      - -message-search-index-lifecycle-policy
-      - "${AGENT_API_MESSAGE_SEARCH_INDEX_LIFECYCLE_POLICY:-}"
-      - -message-search-index-template
-      - "${AGENT_API_MESSAGE_SEARCH_INDEX_TEMPLATE:-}"
-      - -message-search-index-write-alias
-      - "${AGENT_API_MESSAGE_SEARCH_INDEX_WRITE_ALIAS:-}"
-      - -message-search-index-analyzer
-      - "${AGENT_API_MESSAGE_SEARCH_INDEX_ANALYZER:-ik_max_word}"
-      - -message-search-index-search-analyzer
-      - "${AGENT_API_MESSAGE_SEARCH_INDEX_SEARCH_ANALYZER:-ik_smart}"
-      - -message-search-index-downgrade-after
-      - "${AGENT_API_MESSAGE_SEARCH_INDEX_DOWNGRADE_AFTER:-2160h}"
-      - -message-search-index-close-after
-      - "${AGENT_API_MESSAGE_SEARCH_INDEX_CLOSE_AFTER:-4320h}"
-      - -message-search-index-maintenance-interval
-      - "${AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_INTERVAL:-24h}"
-      - -message-search-index-maintenance-batch-limit
-      - "${AGENT_API_MESSAGE_SEARCH_INDEX_MAINTENANCE_BATCH_LIMIT:-50}"
-      - -message-events-backend
-      - "${AGENT_API_MESSAGE_EVENTS_BACKEND:-local}"
-      - -message-events-kafka-brokers
-      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_BROKERS:-redpanda:9092}"
-      - -message-events-kafka-topic
-      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_TOPIC:-agent.messages}"
-      - -message-events-kafka-client-id
-      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_CLIENT_ID:-agentapi}"
-      - "-message-events-kafka-consumer-enabled=${AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_ENABLED:-false}"
-      - -message-events-kafka-consumer-group
-      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_CONSUMER_GROUP:-agentapi-message-workers}"
-      - -message-events-kafka-dlq-topic
-      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_DLQ_TOPIC:-}"
-      - -message-events-kafka-retry-attempts
-      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_ATTEMPTS:-3}"
-      - -message-events-kafka-retry-backoff
-      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_RETRY_BACKOFF:-1s}"
-      - -message-events-kafka-process-timeout
-      - "${AGENT_API_MESSAGE_EVENTS_KAFKA_PROCESS_TIMEOUT:-30s}"
-      - -message-events-processed-lock-backend
-      - "${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_BACKEND:-redis}"
-      - -message-events-processed-lock-redis-url
-      - "${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_REDIS_URL:-redis://redis:6379/1?prefix=agentapi:message:processed}"
-      - -message-events-processed-lock-ttl
-      - "${AGENT_API_MESSAGE_EVENTS_PROCESSED_LOCK_TTL:-24h}"
-      - -operation-rate-limits
-      - "${AGENT_API_OPERATION_RATE_LIMITS:-}"
       - -skill-dirs
       - "${AGENT_API_SKILL_DIRS:-/workspace/.claude/skills}"
       - -skill-shell-runner
@@ -578,23 +462,6 @@ services:
       - "${AGENT_API_SKILL_SANDBOX_PREPULL_IMAGES:-python:3.12-slim,node:22-alpine}"
       - -skill-sandbox-warm-pool-size
       - "${AGENT_API_SKILL_SANDBOX_WARM_POOL_SIZE:-1}"
-      - -llm-provider
-      - "${AGENT_API_LLM_PROVIDER:-simple}"
-      - -model
-      - "${AGENT_API_MODEL:-simple}"
-      - -llm-model-routes
-      - "${AGENT_API_LLM_MODEL_ROUTES:-default=simple,chat=simple,chat:normal=simple,chat:search=simple,chat:complex=simple,skill=simple,skill:memory-recall-trigger=simple,judge=simple}"
-      - -llm-max-attempts
-      - "${AGENT_API_LLM_MAX_ATTEMPTS:-2}"
-      - -llm-chat-timeout
-      - "${AGENT_API_LLM_CHAT_TIMEOUT:-60s}"
-      - -llm-skill-timeout
-      - "${AGENT_API_LLM_SKILL_TIMEOUT:-90s}"
-      - -llm-daily-token-quota
-      - "${AGENT_API_LLM_DAILY_TOKEN_QUOTA:-500000}"
-      - -llm-daily-request-quota
-      - "${AGENT_API_LLM_DAILY_REQUEST_QUOTA:-1000}"
-      - "--live-enabled=${AGENT_API_LIVE_ENABLED:-true}"
       - --live-provider
       - "${AGENT_API_LIVE_PROVIDER:-xai}"
       - --live-model
@@ -613,8 +480,6 @@ services:
       - "${AGENT_API_LIVE_VOICE_NAME:-ara}"
       - --live-language-code
       - "${AGENT_API_LIVE_LANGUAGE_CODE:-zh}"
-      - "--live-input-transcription-enabled=${AGENT_API_LIVE_INPUT_TRANSCRIPTION_ENABLED:-true}"
-      - "--live-output-transcription-enabled=${AGENT_API_LIVE_OUTPUT_TRANSCRIPTION_ENABLED:-true}"
       - --live-vad-start-sensitivity
       - "${AGENT_API_LIVE_VAD_START_SENSITIVITY:-START_SENSITIVITY_HIGH}"
       - --live-vad-end-sensitivity

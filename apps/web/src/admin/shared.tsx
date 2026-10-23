@@ -39,6 +39,7 @@ export function llmConfigDraftFromConfig(config: LLMGovernanceConfig): Record<st
     "max_sources_per_branch",
     "search_quality_threshold",
     "automatic_trigger_enabled",
+    "multi_agent_auto_route_enabled",
     "risky_write_approval_mode",
     "daily_token_quota",
     "daily_request_quota",
@@ -91,6 +92,8 @@ export function llmConfigFromDraft(draft: Record<string, string>): LLMGovernance
   if (riskyWriteApprovalMode) next.risky_write_approval_mode = riskyWriteApprovalMode;
   const automaticTriggerRaw = String(draft.automatic_trigger_enabled || "").trim();
   if (automaticTriggerRaw) next.automatic_trigger_enabled = automaticTriggerRaw === "true";
+  const multiAgentAutoRouteRaw = String(draft.multi_agent_auto_route_enabled || "").trim();
+  if (multiAgentAutoRouteRaw) next.multi_agent_auto_route_enabled = multiAgentAutoRouteRaw === "true";
   for (const key of integerKeys) {
     const raw = String(draft[key] || "").trim();
     if (!raw) continue;

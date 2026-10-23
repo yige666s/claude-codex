@@ -11,7 +11,8 @@ stateful services.
 
 | Path | Purpose |
 | --- | --- |
-| `.env.example` | Canonical production environment template. Copy into a secret manager or platform env store. |
+| `config.env.example` / `secrets.env.example` | Minimal split bootstrap and secret templates; see root `CONFIGURATION.md`. |
+| `.env.example` | Advanced/legacy environment reference; do not copy every setting into new deployments. |
 | `check-env.mjs` | Preflight checker for production environment files. |
 | `ARCHITECTURE.md` | Recommended HA production architecture and component boundaries. |
 | `RELEASE_FLOW.md` | CI/CD, staging, promotion, rollback, and smoke-test flow. |
@@ -49,7 +50,7 @@ processing, archive jobs, and async message indexing.
 Run the checker before any production rollout:
 
 ```bash
-node deploy/production/check-env.mjs /path/to/prod.env
+node deploy/production/check-env.mjs /path/to/config.env /path/to/secrets.env
 ```
 
 The checker only prints variable names and categories. It does not print secret
@@ -69,7 +70,7 @@ values.
 ## First Production Rollout
 
 1. Provision managed Postgres, Redis, R2/S3, and optional search/vector stores.
-2. Create runtime secrets from `.env.example`.
+2. Create bootstrap config from `config.env.example` and runtime secrets from `secrets.env.example`; use `.env.example` only for advanced options.
 3. Run `check-env.mjs`.
 4. Deploy `kubernetes/` manifests to staging.
 5. Run smoke tests from `RELEASE_FLOW.md`.

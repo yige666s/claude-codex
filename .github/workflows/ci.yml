@@ -29,6 +29,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Check configuration boundaries
+        run: python3 scripts/check-config-boundaries.py
+
       - name: Verify module files are tidy
         run: |
           go mod tidy

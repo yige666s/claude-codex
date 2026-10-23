@@ -423,6 +423,14 @@ export function AdminHealthCostPanel({ api, adminToken }: { api: ApiClient; admi
                 <Input inputMode="decimal" value={configDraft.search_quality_threshold || ""} onChange={(event) => updateConfigDraft("search_quality_threshold", event.currentTarget.value)} placeholder="0.30" />
               </label>
               <label className="admin-field">
+                <span>Multi-agent auto routing</span>
+                <select value={configDraft.multi_agent_auto_route_enabled || "false"} onChange={(event) => updateConfigDraft("multi_agent_auto_route_enabled", event.currentTarget.value)}>
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
+                </select>
+                <small className="muted-text">When enabled, the model may route parallelizable requests to a Multi-Agent job. Stored in the database; no API key is stored here.</small>
+              </label>
+              <label className="admin-field">
                 <span>Automatic triggers</span>
                 <select value={configDraft.automatic_trigger_enabled || "false"} onChange={(event) => updateConfigDraft("automatic_trigger_enabled", event.currentTarget.value)}>
                   <option value="false">Disabled</option>

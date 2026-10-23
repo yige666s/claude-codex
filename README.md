@@ -119,7 +119,7 @@ go run ./cmd/agentapi \
 
 ### Production Configuration
 
-The production environment template is [deploy/production/.env.example](deploy/production/.env.example). Important variable groups:
+Configuration layers and split bootstrap/secret templates are described in [CONFIGURATION.md](CONFIGURATION.md). Start with `deploy/production/config.env.example` and `deploy/production/secrets.env.example`; [deploy/production/.env.example](deploy/production/.env.example) remains an advanced option reference. Important variable groups:
 
 | Group | Key Variables |
 | --- | --- |

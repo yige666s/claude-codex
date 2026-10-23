@@ -109,24 +109,30 @@ jobs:
              read -r shortapi_key
              printf '%s' \"\$ghcr_token\" | docker login ghcr.io -u '$GHCR_USER' --password-stdin >/dev/null
              unset ghcr_token
-             env_file='/opt/agentapi/.env'
-             touch \"\$env_file\"
-             chmod 600 \"\$env_file\"
+             umask 077
+             config_file='/opt/agentapi/config.env'
+             secrets_file='/opt/agentapi/secrets.env'
+             if [ ! -f \"\$config_file\" ] || [ ! -f \"\$secrets_file\" ]; then
+               echo 'split config.env and secrets.env must be prepared before deploy' >&2
+               exit 2
+             fi
+             chmod 600 \"\$config_file\" \"\$secrets_file\"
              upsert_env() {
-               key=\"\$1\"
-               value=\"\$2\"
-               if grep -q \"^\${key}=\" \"\$env_file\"; then
+               file=\"\$1\"
+               key=\"\$2\"
+               value=\"\$3\"
+               if grep -q \"^\${key}=\" \"\$file\"; then
                  tmp=\"\$(mktemp)\"
-                 awk -v key=\"\$key\" -v value=\"\$value\" 'BEGIN{prefix=key\"=\"} index(\$0,prefix)==1{\$0=prefix value} {print}' \"\$env_file\" > \"\$tmp\"
-                 cat \"\$tmp\" > \"\$env_file\"
+                 awk -v key=\"\$key\" -v value=\"\$value\" 'BEGIN{prefix=key\"=\"} index(\$0,prefix)==1{\$0=prefix value} {print}' \"\$file\" > \"\$tmp\"
+                 cat \"\$tmp\" > \"\$file\"
                  rm -f \"\$tmp\"
                else
-                 printf '%s=%s\n' \"\$key\" \"\$value\" >> \"\$env_file\"
+                 printf '%s=%s\n' \"\$key\" \"\$value\" >> \"\$file\"
                fi
              }
-             upsert_env AGENT_API_STORE_BACKEND sql
+             upsert_env \"\$config_file\" AGENT_API_STORE_BACKEND sql
              if [ -n \"\$shortapi_key\" ]; then
-               upsert_env SHORTAPI_KEY \"\$shortapi_key\"
+               upsert_env \"\$secrets_file\" SHORTAPI_KEY \"\$shortapi_key\"
              fi
              unset shortapi_key
              if [ ! -d /opt/agentapi/repo/.git ]; then

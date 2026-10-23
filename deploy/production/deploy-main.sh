@@ -5,6 +5,8 @@ repo_url="${AGENTAPI_REPO_URL:-https://github.com/yige666s/claude-codex.git}"
 branch="${AGENTAPI_BRANCH:-main}"
 app_dir="${AGENTAPI_APP_DIR:-/opt/agentapi/repo}"
 env_file="${AGENTAPI_ENV_FILE:-/opt/agentapi/.env}"
+config_file="${AGENTAPI_CONFIG_FILE:-/opt/agentapi/config.env}"
+secrets_file="${AGENTAPI_SECRETS_FILE:-/opt/agentapi/secrets.env}"
 compose_file="${AGENTAPI_COMPOSE_FILE:-deploy/local/docker-compose.yml}"
 health_url="${AGENTAPI_HEALTH_URL:-http://127.0.0.1:${AGENT_API_PORT:-8081}/readyz}"
 skip_healthcheck="${AGENTAPI_SKIP_HEALTHCHECK:-0}"
@@ -53,12 +55,29 @@ git fetch --prune origin "$branch"
 git reset --hard "origin/$branch"
 git clean -ffd
 
-compose_args=(-f "$compose_file")
-if [ -f "$env_file" ]; then
-  compose_args+=(--env-file "$env_file")
+# Split files are authoritative when present. The explicit legacy override and
+# single .env fallback keep older installations deployable during migration.
+env_files=()
+if [ -n "${AGENTAPI_ENV_FILE:-}" ]; then
+  env_files+=("$env_file")
+elif [ -f "$config_file" ] || [ -f "$secrets_file" ]; then
+  if [ ! -f "$config_file" ] || [ ! -f "$secrets_file" ]; then
+    echo "both config.env and secrets.env are required for split deployment" >&2
+    exit 2
+  fi
+  env_files+=("$config_file" "$secrets_file")
 else
-  echo "warning: env file not found: $env_file; using process environment only" >&2
+  env_files+=("$env_file")
 fi
+
+compose_args=(-f "$compose_file")
+for file in "${env_files[@]}"; do
+  if [ -f "$file" ]; then
+    compose_args+=(--env-file "$file")
+  else
+    echo "warning: env file not found: $file; using process environment only" >&2
+  fi
+done
 
 env_value() {
   local key="$1"
@@ -67,17 +86,25 @@ env_value() {
     printf '%s' "$value"
     return 0
   fi
-  if [ -f "$env_file" ]; then
-    awk -v key="$key" '
-      BEGIN { prefix = key "=" }
-      index($0, prefix) == 1 {
-        value = substr($0, length(prefix) + 1)
-        gsub(/^["'\'']|["'\'']$/, "", value)
-        print value
-        exit
-      }
-    ' "$env_file"
-  fi
+  local i file
+  for ((i=${#env_files[@]}-1; i>=0; i--)); do
+    file="${env_files[$i]}"
+    if [ -f "$file" ]; then
+      value="$(awk -v key="$key" '
+        BEGIN { prefix = key "=" }
+        index($0, prefix) == 1 {
+          value = substr($0, length(prefix) + 1)
+          gsub(/^"|"$/, "", value)
+          print value
+          exit
+        }
+      ' "$file")"
+      if [ -n "$value" ]; then
+        printf '%s' "$value"
+        return 0
+      fi
+    fi
+  done
 }
 
 append_profile() {

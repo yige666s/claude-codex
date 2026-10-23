@@ -36,12 +36,14 @@ Deploys use the immutable commit SHA tags.
 ```text
 /opt/agentapi/deploy.sh      # server-side deploy entrypoint
 /opt/agentapi/repo           # checked-out repository
-/opt/agentapi/.env           # server-only runtime secrets and config
-/opt/agentapi/.env.example   # copied template
+/opt/agentapi/config.env    # server-only non-secret bootstrap config
+/opt/agentapi/secrets.env   # server-only secrets (mode 0600)
+/opt/agentapi/.env          # legacy backup/fallback; not used when split files exist
 ```
 
-`/opt/agentapi/.env` must not be committed. It should contain the R2, auth,
-LLM, Redis, and Postgres settings for the server.
+`config.env` and `secrets.env` must not be committed. The deploy script reads both
+with secrets last; it supports the old `.env` when split files do not exist.
+The GitHub Action updates `SHORTAPI_KEY` in `secrets.env`, not `.env`.
 
 ## Required GitHub Actions secrets
 
@@ -63,7 +65,7 @@ package writes.
 
 ## Manual server test
 
-Run this on the server after `/opt/agentapi/.env` is configured:
+Run this on the server after the split files are configured:
 
 ```bash
 /opt/agentapi/deploy.sh
@@ -72,7 +74,7 @@ Run this on the server after `/opt/agentapi/.env` is configured:
 Validate the production/test-server environment file before a rollout:
 
 ```bash
-node /opt/agentapi/repo/deploy/production/check-env.mjs /opt/agentapi/.env
+node /opt/agentapi/repo/deploy/production/check-env.mjs /opt/agentapi/config.env /opt/agentapi/secrets.env
 ```
 
 The check prints only variable names and categories; it does not echo secret

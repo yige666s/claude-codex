@@ -374,6 +374,41 @@ func TestSQLRuntimeOutputStoreRejectsConcurrentSessionTurnPostgres(t *testing.T)
 	}
 }
 
+func TestSQLRuntimeConfigSeedsOnceAndPreservesAdminPatch(t *testing.T) {
+	db := openPostgresMigrationTestDB(t)
+	ctx := context.Background()
+	if err := RunPostgresGooseMigrations(ctx, db, SQLDialectPostgres); err != nil {
+		t.Fatal(err)
+	}
+	store := NewSQLRuntimeConfigStoreWithDialect(db, SQLDialectPostgres)
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	bootstrap := LLMGovernanceConfig{Provider: "simple", Model: "simple"}
+	first := NewLLMGovernanceConfigManager(bootstrap, store)
+	if err := first.LoadOrSeed(ctx); err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	if _, err := first.Update(ctx, LLMGovernanceConfigPatch{MultiAgentAutoRouteEnabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewLLMGovernanceConfigManager(LLMGovernanceConfig{Provider: "deepseek", Model: "deepseek-chat"}, store)
+	if err := restarted.LoadOrSeed(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := restarted.Get(); got.Provider != "simple" || got.Model != "simple" || !got.MultiAgentAutoRouteEnabled {
+		t.Fatalf("SQL config was overwritten at restart: %#v", got)
+	}
+	if err := store.SeedLLMGovernanceConfig(ctx, LLMGovernanceConfig{Provider: "deepseek", Model: "deepseek-chat"}); err != nil {
+		t.Fatal(err)
+	}
+	stored, ok, err := store.LoadLLMGovernanceConfig(ctx)
+	if err != nil || !ok || stored.Model != "simple" || !stored.MultiAgentAutoRouteEnabled {
+		t.Fatalf("second SQL seed overwrote admin value: %#v, ok=%v err=%v", stored, ok, err)
+	}
+}
+
 func openPostgresMigrationTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("AGENT_RUNTIME_TEST_PG_DSN"))

@@ -111,6 +111,11 @@ trace.out
 .env
 .env.*
 !.env.example
+# Split deployment examples are tracked; private copies remain ignored.
+deploy/local/config.env
+deploy/local/secrets.env
+deploy/production/config.env
+deploy/production/secrets.env
 secrets/
 *.pem
 *.key

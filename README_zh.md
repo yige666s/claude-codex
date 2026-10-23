@@ -119,7 +119,7 @@ go run ./cmd/agentapi \
 
 ### 生产配置
 
-生产配置模板在 [deploy/production/.env.example](deploy/production/.env.example)。重要配置分组：
+配置已按 Secret、启动配置和 DB 运行时配置分层，参见 [CONFIGURATION.md](CONFIGURATION.md)。生产环境先使用 `deploy/production/config.env.example` 与 `deploy/production/secrets.env.example` 两份短模板；[deploy/production/.env.example](deploy/production/.env.example) 仅作高级参数参考。重要配置分组：
 
 | 分组 | 关键变量 |
 | --- | --- |

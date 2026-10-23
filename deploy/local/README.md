@@ -8,8 +8,16 @@ This compose stack runs the production-oriented local baseline:
 - Optional MinIO/S3 on `localhost:9000` via the `minio` profile
 - Optional Elasticsearch and Qdrant search infrastructure via the `search` profile
 
-Start it with:
+Start it with the short split config/secret templates (see `CONFIGURATION.md` in the repository root):
 
+```bash
+cp deploy/local/config.env.example deploy/local/config.env
+cp deploy/local/secrets.env.example deploy/local/secrets.env
+# Set actual local-only secret values in secrets.env.
+docker compose --env-file deploy/local/config.env --env-file deploy/local/secrets.env -f deploy/local/docker-compose.yml up --build
+```
+
+The old single `.env` file still works.
 ```bash
 docker compose --env-file .env -f deploy/local/docker-compose.yml up --build
 ```
@@ -25,7 +33,7 @@ the built-in user system.
 Override provider settings with
 environment variables such as `AGENT_API_LLM_PROVIDER`, `NVIDIA_API_KEY`,
 `OPENAI_API_KEY`, `DASHSCOPE_API_KEY`, `GEMINI_API_KEY`, or `VERTEX_*`.
-Runtime model selection is managed from the Admin UI and stored in SQL.
+Runtime model selection and Multi-Agent auto routing are managed from the Admin UI and stored in SQL. Deployment values seed the DB once and no longer overwrite edits on restart.
 For deterministic local infrastructure tests that should not call an external
 model provider, set `AGENT_API_LLM_PROVIDER=simple`, `AGENT_API_MODEL=simple`,
 and route models to `simple`; this uses the local simple planner while still

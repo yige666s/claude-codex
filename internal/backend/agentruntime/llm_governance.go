@@ -73,37 +73,38 @@ func (a *llmQuotaAdmission) admitIfAllowed(check func() error) error {
 }
 
 type LLMGovernanceConfig struct {
-	Provider                string
-	Model                   string
-	VertexLocation          string
-	ModelRoutes             string
-	MaxAttempts             int
-	RetryBackoff            time.Duration
-	ChatTimeout             time.Duration
-	SkillTimeout            time.Duration
-	MaxLoopDuration         time.Duration
-	MaxLoopActions          int
-	MaxBranchCount          int
-	MaxBranchConcurrency    int
-	MaxParallelBranches     int
-	ParallelBranchTimeout   time.Duration
-	ParallelMaxToolCalls    int
-	ParallelMaxSources      int
-	ParallelMaxTokens       int
-	EvaluatorTimeout        time.Duration
-	ConflictTimeout         time.Duration
-	MaxSourcesPerBranch     int
-	SearchQualityThreshold  float64
-	AutomaticTriggerEnabled bool
-	RiskyWriteApprovalMode  string
-	DailyTokenQuota         int
-	DailyRequestQuota       int
-	APIRateLimitPerMinute   int
-	DailyCostQuotaUSD       float64
-	InputCostPerMillion     float64
-	OutputCostPerMillion    float64
-	FailureThreshold        int
-	CircuitBreakerCooldown  time.Duration
+	Provider                   string
+	Model                      string
+	VertexLocation             string
+	ModelRoutes                string
+	MaxAttempts                int
+	RetryBackoff               time.Duration
+	ChatTimeout                time.Duration
+	SkillTimeout               time.Duration
+	MaxLoopDuration            time.Duration
+	MaxLoopActions             int
+	MaxBranchCount             int
+	MaxBranchConcurrency       int
+	MaxParallelBranches        int
+	ParallelBranchTimeout      time.Duration
+	ParallelMaxToolCalls       int
+	ParallelMaxSources         int
+	ParallelMaxTokens          int
+	EvaluatorTimeout           time.Duration
+	ConflictTimeout            time.Duration
+	MaxSourcesPerBranch        int
+	SearchQualityThreshold     float64
+	AutomaticTriggerEnabled    bool
+	MultiAgentAutoRouteEnabled bool
+	RiskyWriteApprovalMode     string
+	DailyTokenQuota            int
+	DailyRequestQuota          int
+	APIRateLimitPerMinute      int
+	DailyCostQuotaUSD          float64
+	InputCostPerMillion        float64
+	OutputCostPerMillion       float64
+	FailureThreshold           int
+	CircuitBreakerCooldown     time.Duration
 }
 
 func (c LLMGovernanceConfig) normalized() LLMGovernanceConfig {

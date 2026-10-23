@@ -16,7 +16,7 @@ const multiAgentRouteTimeout = 12 * time.Second
 // cannot grant permissions; invalid, slow, or unavailable responses fail closed
 // to a normal single-agent chat turn.
 func (r *Runtime) decideMultiAgentRoute(ctx context.Context, req ChatRequest) JobRoutingDecision {
-	if r == nil || !r.config.MultiAgentAutoRouteEnabled || r.jobs == nil || r.engineFactory == nil ||
+	if r == nil || !r.multiAgentAutoRouteEnabled() || r.jobs == nil || r.engineFactory == nil ||
 		strings.TrimSpace(req.Content) == "" || strings.HasPrefix(strings.TrimSpace(req.Content), "/") ||
 		explicitlyRejectsMultiAgent(req.Content) ||
 		(req.AgentMode != "" && !strings.EqualFold(req.AgentMode, AgentModeChat)) {
@@ -83,4 +83,10 @@ Latest user request:
 		reason += ": " + truncateString(strings.TrimSpace(classification.Reason), 180)
 	}
 	return JobRoutingDecision{RunAsJob: true, JobType: JobTypeMultiAgent, Reason: reason}
+}
+
+// The production provider is backed by the SQL runtime config manager.
+func (r *Runtime) multiAgentAutoRouteEnabled() bool {
+	return r != nil && r.config.LLMGovernanceProvider != nil &&
+		r.config.LLMGovernanceProvider().MultiAgentAutoRouteEnabled
 }

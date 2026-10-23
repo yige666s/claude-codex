@@ -2993,9 +2993,39 @@ func publicSessionView(session *state.Session) *state.Session {
 	clone.WorkingDir = ""
 	clone.Metadata = nil
 	clone.Messages = make([]state.Message, 0, len(session.Messages))
-	for _, message := range session.Messages {
+	// The harness retains assistant text before tool calls for subsequent model
+	// turns. That text is progress, not a separate user-facing reply. Collapse
+	// assistant messages sharing a run ID into its last non-tool-call answer.
+	// Keep the internal transcript unchanged so tool context remains available.
+	lastAnswerByRun := make(map[string]int)
+	structuredOutputsByRun := make(map[string][]json.RawMessage)
+	for i, message := range session.Messages {
+		if message.Role != state.MessageRoleAssistant || message.Hidden || message.RunID == "" {
+			continue
+		}
+		structuredOutputsByRun[message.RunID] = append(structuredOutputsByRun[message.RunID], message.StructuredOutputs...)
+		if len(message.ToolCalls) == 0 && (strings.TrimSpace(message.Content) != "" || len(message.StructuredOutputs) > 0) {
+			lastAnswerByRun[message.RunID] = i
+		}
+	}
+	for i, message := range session.Messages {
 		if message.Hidden || message.Role == "tool" || (strings.TrimSpace(firstNonEmptyString(message.Content, message.ToolOutput)) == "" && len(message.StructuredOutputs) == 0) {
 			continue
+		}
+		if message.Role == state.MessageRoleAssistant {
+			if len(message.ToolCalls) > 0 {
+				continue
+			}
+			if message.RunID != "" {
+				lastIndex, found := lastAnswerByRun[message.RunID]
+				if !found || lastIndex != i {
+					continue
+				}
+			}
+		}
+		structuredOutputs := message.StructuredOutputs
+		if message.Role == state.MessageRoleAssistant && message.RunID != "" {
+			structuredOutputs = structuredOutputsByRun[message.RunID]
 		}
 		publicMessage := state.Message{
 			ID:                message.ID,
@@ -3004,7 +3034,7 @@ func publicSessionView(session *state.Session) *state.Session {
 			Role:              message.Role,
 			Content:           message.Content,
 			ToolOutput:        message.ToolOutput,
-			StructuredOutputs: append([]json.RawMessage(nil), message.StructuredOutputs...),
+			StructuredOutputs: append([]json.RawMessage(nil), structuredOutputs...),
 			Attachments:       publicMessageAttachments(message.Attachments),
 			CreatedAt:         message.CreatedAt,
 		}

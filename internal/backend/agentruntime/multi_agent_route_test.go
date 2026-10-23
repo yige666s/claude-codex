@@ -29,7 +29,7 @@ func TestModelDecidesMultiAgentRouteWithNoTools(t *testing.T) {
 	root := t.TempDir()
 	model := &routeDecisionRunner{output: `{"mode":"multi_agent","reason":"independent investigations","independent_tasks":["Inspect API A","Inspect API B"]}`}
 	var scope Scope
-	runtime := NewRuntimeWithContextEngineFactory(RuntimeConfig{DefaultWorkingDir: root, MultiAgentAutoRouteEnabled: true}, NewFileSessionStore(root), nil, nil, func(_ context.Context, selected Scope) (Runner, error) {
+	runtime := NewRuntimeWithContextEngineFactory(RuntimeConfig{DefaultWorkingDir: root, LLMGovernanceProvider: func() LLMGovernanceConfig { return LLMGovernanceConfig{MultiAgentAutoRouteEnabled: true} }}, NewFileSessionStore(root), nil, nil, func(_ context.Context, selected Scope) (Runner, error) {
 		scope = selected
 		return model, nil
 	})
@@ -68,7 +68,7 @@ func TestModelRouteFailsClosed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			model := &routeDecisionRunner{output: tc.output, err: tc.err}
-			runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, MultiAgentAutoRouteEnabled: true, TurnTimeout: time.Minute}, NewFileSessionStore(root), nil, nil, func(Scope) Runner { return model })
+			runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute, LLMGovernanceProvider: func() LLMGovernanceConfig { return LLMGovernanceConfig{MultiAgentAutoRouteEnabled: true} }}, NewFileSessionStore(root), nil, nil, func(Scope) Runner { return model })
 			runtime.SetJobStore(NewMemoryJobStore())
 			session, err := runtime.CreateSession(context.Background(), "alice", "")
 			if err != nil {
@@ -90,7 +90,7 @@ func TestModelRouteFailsClosed(t *testing.T) {
 func TestChatHandsModelSelectedMultiAgentToDurableJob(t *testing.T) {
 	root := t.TempDir()
 	model := &routeDecisionRunner{output: `{"mode":"multi_agent","reason":"parallel sources","independent_tasks":["Source A","Source B"]}`}
-	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, MultiAgentAutoRouteEnabled: true}, NewFileSessionStore(root), nil, nil, func(Scope) Runner { return model })
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, LLMGovernanceProvider: func() LLMGovernanceConfig { return LLMGovernanceConfig{MultiAgentAutoRouteEnabled: true} }}, NewFileSessionStore(root), nil, nil, func(Scope) Runner { return model })
 	runtime.SetJobStore(NewMemoryJobStore())
 	queue := &captureJobQueue{}
 	runtime.SetJobQueue(queue)
@@ -108,5 +108,20 @@ func TestChatHandsModelSelectedMultiAgentToDurableJob(t *testing.T) {
 	job, err := runtime.GetJob(context.Background(), "alice", queue.items[0].JobID)
 	if err != nil || job.Type != JobTypeMultiAgent {
 		t.Fatalf("job = %#v, err = %v", job, err)
+	}
+}
+
+func TestMultiAgentRoutePrefersDBGovernanceSetting(t *testing.T) {
+	runtime := NewRuntime(RuntimeConfig{LLMGovernanceProvider: func() LLMGovernanceConfig {
+		return LLMGovernanceConfig{MultiAgentAutoRouteEnabled: false}
+	}}, nil, nil, nil, nil)
+	if runtime.multiAgentAutoRouteEnabled() {
+		t.Fatal("DB false should disable automatic routing")
+	}
+	runtime.config.LLMGovernanceProvider = func() LLMGovernanceConfig {
+		return LLMGovernanceConfig{MultiAgentAutoRouteEnabled: true}
+	}
+	if !runtime.multiAgentAutoRouteEnabled() {
+		t.Fatal("DB setting was not applied")
 	}
 }

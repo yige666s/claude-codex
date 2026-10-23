@@ -452,6 +452,7 @@ export type LLMGovernanceConfig = {
   max_sources_per_branch?: number;
   search_quality_threshold?: number;
   automatic_trigger_enabled?: boolean;
+  multi_agent_auto_route_enabled?: boolean;
   risky_write_approval_mode?: string;
   daily_token_quota?: number;
   daily_request_quota?: number;

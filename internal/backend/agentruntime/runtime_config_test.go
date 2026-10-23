@@ -380,32 +380,66 @@ func TestLLMGovernanceConfigManagerPreservesRuntimeDefaultsWhenLoadingOldPayload
 	}
 }
 
-func TestLLMGovernanceConfigManagerSyncsStartupConfigOverStoredConfig(t *testing.T) {
-	store := &memoryRuntimeConfigStore{
-		config: LLMGovernanceConfig{
-			Provider:    "deepseek",
-			Model:       "deepseek-chat",
-			ModelRoutes: "default=deepseek-chat,chat=deepseek-chat",
-		},
-		configOK: true,
-	}
+func TestLLMGovernanceConfigManagerStoredConfigSurvivesRestart(t *testing.T) {
+	store := &memoryRuntimeConfigStore{config: LLMGovernanceConfig{
+		Provider: "deepseek", Model: "deepseek-chat", ModelRoutes: "default=deepseek-chat,chat=deepseek-chat",
+		MultiAgentAutoRouteEnabled: true,
+	}, configOK: true}
 	manager := NewLLMGovernanceConfigManager(LLMGovernanceConfig{
-		Provider:    "simple",
-		Model:       "simple",
-		ModelRoutes: "default=simple,chat=simple",
+		Provider: "simple", Model: "simple", ModelRoutes: "default=simple,chat=simple",
 	}, store)
-	if err := manager.LoadAndSyncStartupConfig(context.Background()); err != nil {
-		t.Fatalf("sync startup config: %v", err)
+	if err := manager.LoadOrSeed(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	loaded := manager.Get()
-	if loaded.Provider != "simple" || loaded.Model != "simple" {
-		t.Fatalf("manager config = %#v, want startup simple config", loaded)
+	got := manager.Get()
+	if got.Provider != "deepseek" || got.Model != "deepseek-chat" || !got.MultiAgentAutoRouteEnabled {
+		t.Fatalf("DB settings overwritten by bootstrap: %#v", got)
 	}
-	if store.config.Provider != "simple" || store.config.Model != "simple" {
-		t.Fatalf("stored config = %#v, want startup simple config persisted", store.config)
+	if store.config.ModelRoutes != "default=deepseek-chat,chat=deepseek-chat" {
+		t.Fatalf("stored routes changed: %#v", store.config)
 	}
-	if store.config.ModelRoutes != "default=simple,chat=simple" {
-		t.Fatalf("stored model routes = %q, want startup routes", store.config.ModelRoutes)
+}
+
+func TestMultiAgentAutoRouteConfigRoundTripAndPatch(t *testing.T) {
+	enabled := true
+	changed, err := applyLLMGovernanceConfigPatch(LLMGovernanceConfig{Model: "simple"}, LLMGovernanceConfigPatch{
+		MultiAgentAutoRouteEnabled: &enabled,
+	})
+	if err != nil || !changed.MultiAgentAutoRouteEnabled {
+		t.Fatalf("patch = %#v, err = %v", changed, err)
+	}
+	restored := llmGovernanceConfigFromPayload(llmGovernanceConfigToPayload(changed))
+	if !restored.MultiAgentAutoRouteEnabled {
+		t.Fatalf("stored config lost auto route: %#v", restored)
+	}
+	status := llmGovernanceConfigStatusMap(restored)
+	if status["multi_agent_auto_route_enabled"] != true {
+		t.Fatalf("status = %#v", status)
+	}
+	enabled = false
+	disabled, err := applyLLMGovernanceConfigPatch(restored, LLMGovernanceConfigPatch{MultiAgentAutoRouteEnabled: &enabled})
+	if err != nil || disabled.MultiAgentAutoRouteEnabled {
+		t.Fatalf("disable patch = %#v, err = %v", disabled, err)
+	}
+}
+
+func TestLLMGovernanceConfigManagerSeedsOnlyOnFirstStart(t *testing.T) {
+	store := &memoryRuntimeConfigStore{}
+	bootstrap := LLMGovernanceConfig{Provider: "simple", Model: "simple"}
+	manager := NewLLMGovernanceConfigManager(bootstrap, store)
+	if err := manager.LoadOrSeed(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !store.configOK || store.config.Model != "simple" {
+		t.Fatalf("not seeded: %#v", store.config)
+	}
+	store.config.MultiAgentAutoRouteEnabled = true
+	restarted := NewLLMGovernanceConfigManager(bootstrap, store)
+	if err := restarted.LoadOrSeed(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !restarted.Get().MultiAgentAutoRouteEnabled {
+		t.Fatal("DB toggle lost on restart")
 	}
 }
 
