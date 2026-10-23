@@ -126,3 +126,70 @@ func TestMultiAgentWorkerLimits(t *testing.T) {
 		t.Fatal("seventh worker should be denied")
 	}
 }
+
+// The HTTP transport reserves the chat turn before Runtime.Chat hands it to a
+// durable job. The worker must adopt that reservation rather than reserve a
+// second turn for the same session.
+func TestMultiAgentJobAdoptsHandedOffChatTurn(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	runner := &promptMetadataCaptureRunner{}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, TurnTimeout: time.Minute}, NewFileSessionStore(root), nil, nil, func(Scope) Runner { return runner })
+	jobs := NewMemoryJobStore()
+	reservations := NewMemoryRuntimeOutputStore()
+	queue := &captureJobQueue{}
+	runtime.SetJobStore(jobs)
+	runtime.SetChatTurnReservationStore(reservations)
+	runtime.SetJobQueue(queue)
+	session, err := runtime.CreateSession(ctx, "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := reservations.ReserveChatTurn(ctx, ChatTurnReservation{
+		UserID: "alice", SessionID: session.ID,
+		IdempotencyKey: "chat-request", RunID: "chat-run-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &collectSink{}
+	if err := runtime.Chat(ctx, ChatRequest{
+		UserID: "alice", SessionID: session.ID,
+		IdempotencyKey: original.IdempotencyKey, RunID: original.RunID,
+		TurnReserved: true, Content: "请使用多智能体分头调查 A 和 B",
+	}, sink); err != nil {
+		t.Fatalf("chat handoff: %v", err)
+	}
+	if len(queue.items) != 1 || !sink.hasEvent("job_handoff") {
+		t.Fatalf("expected one handed-off job, queue=%#v events=%#v", queue.items, sink.events)
+	}
+	item := queue.items[0]
+	if err := runtime.RunQueuedJob(ctx, item); err != nil {
+		t.Fatalf("run queued job: %v", err)
+	}
+	job, err := runtime.GetJob(ctx, "alice", item.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != JobStatusSucceeded {
+		t.Fatalf("handed-off multi-agent job status=%s error=%q", job.Status, job.Error)
+	}
+	adopted, err := reservations.ReserveChatTurn(ctx, ChatTurnReservation{
+		UserID: "alice", SessionID: session.ID,
+		IdempotencyKey: "job:" + job.ID, RunID: job.ID,
+	})
+	if err != nil || adopted.Reserved || adopted.RunID != job.ID || adopted.Status != "succeeded" {
+		t.Fatalf("completed job reservation = %#v, err = %v", adopted, err)
+	}
+	events, err := runtime.ListJobEvents(ctx, "alice", item.JobID, "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var completed bool
+	for _, event := range events {
+		completed = completed || event.Type == "multi_agent_completed"
+	}
+	if !completed {
+		t.Fatalf("missing multi-agent completion event: %#v", events)
+	}
+}

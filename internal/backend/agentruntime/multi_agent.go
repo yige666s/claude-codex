@@ -97,6 +97,9 @@ func (r *Runtime) runMultiAgentJob(ctx context.Context, job *Job, sink EventSink
 	_ = sink.Send(ctx, Event{Type: "multi_agent_started", SessionID: job.SessionID, JobID: job.ID, Role: "workflow", Content: "Multi-agent coordinator started"})
 	err := r.Chat(ctx, ChatRequest{
 		UserID: job.UserID, SessionID: job.SessionID, Content: job.Content,
+		// Chat handed its original turn reservation to job:<id>. Reuse it here;
+		// otherwise ReserveChatTurn sees another active turn for this session.
+		IdempotencyKey: "job:" + job.ID, RunID: job.ID, TurnReserved: true,
 		AttachmentIDs: job.AttachmentIDs, AttachmentURLs: job.AttachmentURLs,
 		ConnectorContext: job.ConnectorContext, AgentMode: AgentModeMultiAgent,
 	}, sink)
