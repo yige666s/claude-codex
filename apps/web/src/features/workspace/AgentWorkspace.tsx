@@ -869,6 +869,10 @@ export function AgentWorkspace() {
       return;
     }
     setMessages(visibleMessages(session.messages || []));
+    // The saved final answer can arrive through a session refresh even when
+    // the job's terminal SSE event was missed or delayed. Reconcile its status
+    // so the transient progress indicator never lingers after completion.
+    setAgentActivity((current) => reconcileAgentActivityWithJobs(current, id, jobList));
     if (!resourceBaselineReadyRef.current.jobs) baselineResourceIds("jobs", jobList.map((job) => job.id));
     if (!resourceBaselineReadyRef.current.attachments) baselineResourceIds("attachments", attachmentList.map((asset) => asset.id));
     if (!resourceBaselineReadyRef.current.artifacts) baselineResourceIds("artifacts", artifactList.map((asset) => asset.id));
@@ -2643,7 +2647,7 @@ export function AgentWorkspace() {
     "--artifact-workspace-width": `${artifactWorkspaceWidth}px`,
     "--artifact-workspace-min-width": `${layoutArtifactMinWidth}px`
   } as CSSProperties;
-  const visibleAgentActivity = agentActivity?.session_id === sessionId ? agentActivity : null;
+  const visibleAgentActivity = agentActivity?.session_id === sessionId && agentActivity.running ? agentActivity : null;
   const sideWorkspaceMounted = artifactWorkspaceMounted || jobWorkspaceMounted;
 
   return (
@@ -3495,6 +3499,12 @@ export function mergeFetchedJobsWithLocalTerminalState(fetchedJobs: Job[], curre
       : job;
     return jobWithTerminalEvents(preserved, events);
   });
+}
+
+export function reconcileAgentActivityWithJobs(activity: AgentActivity | null, sessionId: string, jobList: Job[]): AgentActivity | null {
+  if (!activity?.running || activity.session_id !== sessionId || !activity.job_id) return activity;
+  const job = jobList.find((item) => item.id === activity.job_id && item.session_id === sessionId);
+  return job && terminalJobs.has(job.status) ? { ...activity, running: false } : activity;
 }
 
 export function terminalJobStatusFromEvents(events: JobEvent[], jobId?: string): JobStatus | "" {

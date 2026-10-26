@@ -93,7 +93,11 @@ func (a SystemPromptAssembler) BuildChatSnapshot(ctx context.Context, input Chat
 		segments = append(segments, segment)
 	}
 	if input.MultiAgent {
-		segments = append(segments, dynamicSystemPromptSegment(SystemPromptLayerTool, SystemPromptCacheSession, PromptMultiAgentCoordinator))
+		if segment, ok, err := a.registrySegment(ctx, input, PromptIDRuntimeMultiAgentCoordinator, SystemPromptLayerTool, SystemPromptCacheSession, nil); err != nil {
+			return SystemPromptSnapshot{}, err
+		} else if ok {
+			segments = append(segments, segment)
+		}
 	}
 	if strings.TrimSpace(input.ConnectorLines) != "" {
 		variables := map[string]any{"connector_context": strings.TrimSpace(input.ConnectorLines)}

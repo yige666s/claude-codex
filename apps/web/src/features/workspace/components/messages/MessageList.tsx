@@ -44,7 +44,7 @@ export function MessageList({
         </Fragment>
       ))}
       {liveUserDraft && renderMessage({ message: { role: "user", content: liveUserDraft }, streaming: true })}
-      {agentActivity && <AgentActivity activity={agentActivity} />}
+      {agentActivity?.running && <AgentActivity activity={agentActivity} />}
       {assistantDraft && renderMessage({ message: { role: "assistant", content: assistantDraft }, streaming: true })}
     </div>
   );

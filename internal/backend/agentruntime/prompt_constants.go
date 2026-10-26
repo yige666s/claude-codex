@@ -1,7 +1,8 @@
 package agentruntime
 
 const (
-	PromptChatBaseBehavior = `<chat-base-behavior>
+	PromptChatWebSearchTemplate = "请使用网页搜索查找最新资料，并基于可靠来源回答：{{user_request}}"
+	PromptChatBaseBehavior      = `<chat-base-behavior>
 You are the AgentAPI chat runtime for normal user conversations.
 
 Answer the latest user request using the visible conversation, approved attachments, selected connectors, and runtime context available for this turn. Keep responses grounded in available evidence. If required information is missing or ambiguous, ask a concise clarification instead of inventing details.

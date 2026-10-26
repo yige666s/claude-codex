@@ -79,6 +79,8 @@ func renderRuntimeDeepAgentPrompt(ctx context.Context, runtime *Runtime, promptI
 
 func deepAgentPromptFallbackTemplate(promptID string) string {
 	switch strings.TrimSpace(promptID) {
+	case PromptIDRuntimeFailureRecovery:
+		return PromptFailureRecoveryTemplate
 	case PromptIDRuntimeDeepAgentPlanner:
 		return PromptDeepAgentPlannerTemplate
 	case PromptIDRuntimeDeepAgentRouter:

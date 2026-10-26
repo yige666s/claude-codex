@@ -405,10 +405,15 @@ func (r *Runtime) runVisionAssetInsight(ctx context.Context, asset *Artifact, co
 	if int64(len(data)) > vertexInlineAttachmentLimitBytes {
 		return "", fmt.Errorf("image exceeds inline vision limit of %d bytes", vertexInlineAttachmentLimitBytes)
 	}
+	instruction := PromptVisionAssetInsight
+	if rendered, err := r.renderManagedPrompt(ctx, PromptIDAssetVisionInsight, asset.UserID, asset.SessionID, "asset", nil); err == nil {
+		instruction = rendered.Content
+		ctx = WithPromptMetadata(ctx, PromptMetadataFromRender(rendered))
+	}
 	blocks := []publictypes.ContentBlock{
 		{
 			Type: "text",
-			Text: PromptVisionAssetInsight,
+			Text: instruction,
 		},
 		{
 			Type: attachmentBlockType(contentType),

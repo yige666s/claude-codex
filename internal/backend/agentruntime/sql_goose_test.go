@@ -409,6 +409,40 @@ func TestSQLRuntimeConfigSeedsOnceAndPreservesAdminPatch(t *testing.T) {
 	}
 }
 
+func TestSQLBuiltinPromptsSeedWithoutOverwritingAdminVersion(t *testing.T) {
+	db := openPostgresMigrationTestDB(t)
+	ctx := context.Background()
+	if err := RunPostgresGooseMigrations(ctx, db, SQLDialectPostgres); err != nil {
+		t.Fatal(err)
+	}
+	store := NewSQLPromptStoreWithDialect(db, SQLDialectPostgres)
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	created, err := SeedBuiltinPrompts(ctx, store)
+	if err != nil || created != len(BuiltinSystemPromptBaselines()) {
+		t.Fatalf("seeded=%d err=%v", created, err)
+	}
+	prompt, err := store.GetPrompt(ctx, PromptIDRuntimeMultiAgentRoute)
+	if err != nil || prompt.Scope != "runtime/multi_agent" {
+		t.Fatalf("multi-agent route not visible: %#v %v", prompt, err)
+	}
+	if _, err := store.CreatePromptVersion(ctx, PromptVersion{
+		PromptID: prompt.ID, Version: "admin-v2", Status: PromptStatusPublished,
+		Content: "Admin route {{user_request}}",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	created, err = SeedBuiltinPrompts(ctx, store)
+	if err != nil || created != 0 {
+		t.Fatalf("second seed created=%d err=%v", created, err)
+	}
+	published, err := store.GetPublishedPromptVersion(ctx, prompt.ID)
+	if err != nil || published.Version != "admin-v2" {
+		t.Fatalf("admin version replaced: %#v %v", published, err)
+	}
+}
+
 func openPostgresMigrationTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("AGENT_RUNTIME_TEST_PG_DSN"))

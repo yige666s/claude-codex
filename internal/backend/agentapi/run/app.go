@@ -48,6 +48,13 @@ func Run(ctx context.Context, cfg startupconfig.Config) error {
 	runtimeOutputMemoryStore := buildRuntimeOutputStore(storeCfg)
 	evaluationStore := buildEvaluationStore(storeCfg)
 	promptStore := buildPromptStore(storeCfg)
+	seedCtx, seedCancel := context.WithTimeout(ctx, 45*time.Second)
+	seededPrompts, err := agentruntime.SeedBuiltinPrompts(seedCtx, promptStore)
+	seedCancel()
+	if err != nil {
+		return fmt.Errorf("seed built-in prompts: %w", err)
+	}
+	logInfof("built-in prompt registry: seeded=%d", seededPrompts)
 	cacheStore, cacheRedisClient := bootstrap.BuildCacheStore(cfg.CacheBackend, cfg.CacheRedisURL, cfg.CachePrefix, cfg.CacheDefaultTTL)
 	if cacheRedisClient != nil {
 		defer func() {

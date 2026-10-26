@@ -3729,7 +3729,9 @@ func (r *Runtime) generateFailureRecoveryMessage(ctx context.Context, userID str
 		recoverySession = state.NewSession(session.WorkingDir)
 		recoverySession.ID = session.ID
 	}
-	prompt := fmt.Sprintf(PromptFailureRecoveryTemplate, strings.TrimSpace(userContent), failureCategory(runErr))
+	rendered := renderRuntimeDeepAgentPrompt(recoveryCtx, r, PromptIDRuntimeFailureRecovery, userID, session.ID, strings.TrimSpace(userContent), failureCategory(runErr))
+	prompt := rendered.Content
+	recoveryCtx = WithPromptMetadata(recoveryCtx, rendered.Metadata)
 
 	runner := r.runnerForScope(ctx, Scope{UserID: userID, SessionID: session.ID, WorkingDir: session.WorkingDir})
 	result, err := runWithTokenStream(recoveryCtx, runner, recoverySession, prompt, true, nil)
@@ -5572,6 +5574,9 @@ func (r *Runtime) run(ctx context.Context, req ChatRequest, session *state.Sessi
 	webSearchMode := strings.EqualFold(strings.TrimSpace(req.AgentMode), AgentModeWebSearch)
 	if webSearchMode {
 		llmContent = webSearchPrompt(content)
+		if rendered, err := r.renderManagedPrompt(ctx, PromptIDRuntimeChatWebSearch, userID, session.ID, "chat", map[string]any{"user_request": strings.TrimSpace(content)}); err == nil {
+			llmContent = rendered.Content
+		}
 	}
 	connectorLines := r.connectorContextLines(ctx, req)
 	prompt, err := r.chatPrompt(ctx, req, llmContent)

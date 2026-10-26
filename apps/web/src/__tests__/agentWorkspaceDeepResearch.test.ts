@@ -3,6 +3,7 @@ import {
   chatActivityTerminalStatus,
   chatRunStreamTerminalEvent,
   mergeFetchedJobsWithLocalTerminalState,
+  reconcileAgentActivityWithJobs,
   restorableSessionJob,
   terminalJobStatusFromRuntimeEvent
 } from "../features/workspace/AgentWorkspace";
@@ -34,6 +35,15 @@ function buildJobEvent(overrides: Partial<JobEvent> = {}): JobEvent {
 }
 
 describe("AgentWorkspace deep research job handling", () => {
+  it("reconciles a terminal job when its SSE completion is missed", () => {
+    const activity = { session_id: "session-1", job_id: "job-1", running: true, items: [] };
+    expect(reconcileAgentActivityWithJobs(activity, "session-1", [buildJob({ status: "succeeded" })])).toEqual({ ...activity, running: false });
+    expect(reconcileAgentActivityWithJobs(activity, "session-1", [buildJob({ status: "failed" })])?.running).toBe(false);
+    expect(reconcileAgentActivityWithJobs(activity, "session-1", [buildJob({ status: "running" })])).toBe(activity);
+    expect(reconcileAgentActivityWithJobs(activity, "session-1", [buildJob({ id: "other", status: "succeeded" })])).toBe(activity);
+    expect(reconcileAgentActivityWithJobs(activity, "session-2", [buildJob({ status: "succeeded" })])).toBe(activity);
+  });
+
   it("does not treat workflow sub-run terminal events as job terminal", () => {
     expect(terminalJobStatusFromRuntimeEvent({ type: "workflow_run_succeeded" })).toBe("");
     expect(terminalJobStatusFromRuntimeEvent({ type: "workflow_run_failed" })).toBe("");

@@ -1,8 +1,46 @@
+import { createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AgentActivity } from "../features/workspace/components/messages/AgentActivity";
+import { MessageList } from "../features/workspace/components/messages/MessageList";
 
 describe("AgentActivity", () => {
+  it("removes completed progress as soon as the final answer is shown", () => {
+    const activity = {
+      session_id: "session-1",
+      running: false,
+      items: [{
+        id: "done", type: "done", channel: "thinking" as const,
+        title: "Response completed", status: "succeeded" as const,
+        created_at: "2026-10-26T00:00:00Z"
+      }]
+    };
+    const html = renderToStaticMarkup(<MessageList
+      messages={[{ role: "assistant", content: "Final answer" }]}
+      userLabel="User" liveUserDraft="" assistantDraft=""
+      agentActivity={activity} highlightedMessageIndex={null}
+      messagesRef={createRef<HTMLDivElement>()}
+      renderMessage={({ message }) => <div>{message.content}</div>}
+    />);
+    expect(html).toContain("Final answer");
+    expect(html).not.toContain("agent-activity-compact");
+    expect(html).not.toContain("Response completed");
+  });
+
+  it("keeps in-flight progress visible while the answer is still generating", () => {
+    const html = renderToStaticMarkup(<MessageList
+      messages={[]} userLabel="User" liveUserDraft="" assistantDraft=""
+      agentActivity={{ session_id: "session-1", running: true, items: [{
+        id: "start", type: "start", channel: "thinking", title: "Preparing response",
+        status: "running", created_at: "2026-10-26T00:00:00Z"
+      }] }}
+      highlightedMessageIndex={null} messagesRef={createRef<HTMLDivElement>()}
+      renderMessage={({ message }) => <div>{message.content}</div>}
+    />);
+    expect(html).toContain("agent-activity-compact");
+    expect(html).toContain("Preparing response");
+  });
+
   it("renders cancelled traces as stopped instead of running", () => {
     const html = renderToStaticMarkup(
       <AgentActivity

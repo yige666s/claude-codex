@@ -7,6 +7,9 @@ const (
 	PromptIDRuntimeChatTemporalContext        = "runtime/chat/temporal_context"
 	PromptIDRuntimeChatLocaleContext          = "runtime/chat/locale_context"
 	PromptIDRuntimeChatConnectorContext       = "runtime/chat/connector_context"
+	PromptIDRuntimeChatWebSearch              = "runtime/chat/web_search"
+	PromptIDRuntimeMultiAgentRoute            = "runtime/multi_agent/route"
+	PromptIDRuntimeMultiAgentCoordinator      = "runtime/multi_agent/coordinator"
 	PromptIDRuntimeDeepAgentRouter            = "runtime/deep_agent/router"
 	PromptIDRuntimeDeepAgentModeClassifier    = "runtime/deep_agent/mode_classifier"
 	PromptIDRuntimeDeepAgentToolUsageReminder = "runtime/deep_agent/tool_usage_reminder"
@@ -52,6 +55,9 @@ func BuiltinSystemPromptBaselines() []SystemPromptBaseline {
 		baseline(PromptIDRuntimeChatTemporalContext, "Temporal Context", "runtime/chat", "L4", "P1", "fmt", PromptTemporalContextTemplate, "internal/backend/agentruntime/prompt_constants.go:PromptTemporalContextTemplate", "Dynamic date/time context template."),
 		baseline(PromptIDRuntimeChatLocaleContext, "Locale Context", "runtime/chat", "L3", "P1", "fmt", PromptLocaleContextTemplate, "internal/backend/agentruntime/prompt_constants.go:PromptLocaleContextTemplate", "Locale and timezone policy template."),
 		baseline(PromptIDRuntimeChatConnectorContext, "Connector Context", "runtime/chat", "L1", "P0", "go-const", PromptConnectorContextHeader+"\n\n{{connector_context}}\n\n"+PromptConnectorContextSuffix, "internal/backend/agentruntime/prompt_constants.go:PromptConnectorContextHeader/Suffix", "Selected connector capability and policy prompt."),
+		baselineWithAliases(PromptIDRuntimeChatWebSearch, "Chat Web Search", "runtime/chat", "L1", "P1", "handlebars", PromptChatWebSearchTemplate, "internal/backend/agentruntime/prompt_constants.go:PromptChatWebSearchTemplate", "Web-search mode user request preamble.", nil, map[string]any{"required": []any{"user_request"}}),
+		baselineWithAliases(PromptIDRuntimeMultiAgentRoute, "Multi-Agent Route", "runtime/multi_agent", "L0", "P0", "handlebars", PromptMultiAgentRouteTemplate, "internal/backend/agentruntime/multi_agent_route.go:PromptMultiAgentRouteTemplate", "Classifies independent parallel work without executing tools.", nil, map[string]any{"required": []any{"recent_conversation", "user_request"}}),
+		baseline(PromptIDRuntimeMultiAgentCoordinator, "Multi-Agent Coordinator", "runtime/multi_agent", "L1", "P0", "go-const", PromptMultiAgentCoordinator, "internal/backend/agentruntime/multi_agent.go:PromptMultiAgentCoordinator", "Delegation, worker limits, progress and final synthesis policy."),
 		baseline(PromptIDRuntimeDeepAgentRouter, "DeepAgent Router", "runtime/deep_agent", "L1", "P0", "fmt", PromptDeepAgentRouteTemplate, "internal/backend/agentruntime/prompt_constants.go:PromptDeepAgentRouteTemplate", "Classifies DeepAgent plan steps into execution routes."),
 		baseline(PromptIDRuntimeDeepAgentModeClassifier, "DeepAgent Mode Classifier", "runtime/deep_agent", "L1", "P0", "fmt", PromptDeepAgentExecutionModeClassifierTemplate, "internal/backend/agentruntime/prompt_constants.go:PromptDeepAgentExecutionModeClassifierTemplate", "Classifies DeepAgent execution mode."),
 		baseline(PromptIDRuntimeDeepAgentToolUsageReminder, "DeepAgent Tool Usage Reminder", "runtime/deep_agent", "L1", "P1", "go-const", PromptDeepAgentToolUsageReminder, "internal/backend/agentruntime/prompt_constants.go:PromptDeepAgentToolUsageReminder", "Tool policy reminder appended to DeepAgent execution context."),

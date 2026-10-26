@@ -125,3 +125,52 @@ func TestMultiAgentRoutePrefersDBGovernanceSetting(t *testing.T) {
 		t.Fatal("DB setting was not applied")
 	}
 }
+
+func TestModelRouteUsesPublishedAdminPrompt(t *testing.T) {
+	root := t.TempDir()
+	model := &routeDecisionRunner{output: `{"mode":"multi_agent","independent_tasks":["Inspect API","Inspect tests"]}`}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, LLMGovernanceProvider: func() LLMGovernanceConfig {
+		return LLMGovernanceConfig{MultiAgentAutoRouteEnabled: true}
+	}}, NewFileSessionStore(root), nil, nil, func(Scope) Runner { return model })
+	runtime.SetJobStore(NewMemoryJobStore())
+	store := NewMemoryPromptStore()
+	if _, err := store.UpsertPrompt(context.Background(), PromptTemplate{ID: PromptIDRuntimeMultiAgentRoute, Name: "Router"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreatePromptVersion(context.Background(), PromptVersion{PromptID: PromptIDRuntimeMultiAgentRoute, Version: "admin-v2", Status: PromptStatusPublished, Content: "Admin classification of {{user_request}} using {{recent_conversation}}"}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.SetPromptStore(store)
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.AddUserMessage("previous context")
+	if err := runtime.sessions.Save(context.Background(), "alice", session); err != nil {
+		t.Fatal(err)
+	}
+	decision := runtime.decideMultiAgentRoute(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "Compare APIs"})
+	if !decision.RunAsJob || decision.JobType != JobTypeMultiAgent {
+		t.Fatalf("decision=%#v", decision)
+	}
+	if !strings.Contains(model.prompt, "Admin classification of Compare APIs") || !strings.Contains(model.prompt, "previous context") || strings.Contains(model.prompt, "You are a routing classifier") {
+		t.Fatalf("published route prompt not used: %s", model.prompt)
+	}
+}
+
+func TestModelRouteFirstTurnUsesManagedPromptWithoutHistory(t *testing.T) {
+	root := t.TempDir()
+	model := &routeDecisionRunner{output: `{"mode":"multi_agent","independent_tasks":["Review SQLite","Review PostgreSQL"]}`}
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: root, LLMGovernanceProvider: func() LLMGovernanceConfig {
+		return LLMGovernanceConfig{MultiAgentAutoRouteEnabled: true}
+	}}, NewFileSessionStore(root), nil, nil, func(Scope) Runner { return model })
+	runtime.SetJobStore(NewMemoryJobStore())
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runtime.decideMultiAgentRoute(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "Compare SQLite and PostgreSQL deployments"})
+	if !result.RunAsJob || !strings.Contains(model.prompt, "Recent conversation:\n(none)") {
+		t.Fatalf("first-turn route=%#v prompt=%q", result, model.prompt)
+	}
+}

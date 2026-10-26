@@ -160,10 +160,15 @@ func (r *Runtime) extractImageMemoryCandidates(ctx context.Context, userID strin
 	timeoutCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	runner := r.runnerForScope(ctx, Scope{UserID: userID, SessionID: asset.SessionID})
+	instruction := PromptImageMemoryExtraction
+	if rendered, err := r.renderManagedPrompt(timeoutCtx, PromptIDMemoryImageExtract, userID, asset.SessionID, "memory", nil); err == nil {
+		instruction = rendered.Content
+		timeoutCtx = WithPromptMetadata(timeoutCtx, PromptMetadataFromRender(rendered))
+	}
 	blocks := []publictypes.ContentBlock{
 		{
 			Type: "text",
-			Text: PromptImageMemoryExtraction,
+			Text: instruction,
 		},
 		{
 			Type: attachmentBlockType(contentType),

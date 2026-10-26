@@ -6,7 +6,7 @@ Code source of truth: `prompt_baselines.go`.
 
 ## Scope
 
-This inventory covers hardcoded prompts that shape runtime, memory, evaluation, live, and DeepAgent behavior. Phase 0 does not switch runtime assembly to registry-driven prompts yet; it creates a stable prompt ID map and a seedable registry baseline.
+This inventory covers hardcoded prompts that shape runtime, memory, evaluation, live, and DeepAgent behavior. The registered built-in baselines are seeded automatically when AgentAPI starts. Published Admin versions and production pins take precedence over code fallbacks. Existing Admin edits are never overwritten by the startup seed. This inventory covers reusable baseline templates, not every one-off dynamically assembled task-context string.
 
 ## Naming Rules
 
@@ -23,6 +23,9 @@ This inventory covers hardcoded prompts that shape runtime, memory, evaluation, 
 | `runtime/chat/base_behavior` |  | L0 | P0 | go-const | `PromptChatBaseBehavior` |
 | `runtime/chat/consumer_security` |  | L2 | P0 | go-const | `PromptConsumerSecuritySystemContext` |
 | `runtime/chat/connector_context` |  | L1 | P0 | go-const | `PromptConnectorContextHeader/Suffix` |
+| `runtime/chat/web_search` |  | L1 | P1 | handlebars | `PromptChatWebSearchTemplate` |
+| `runtime/multi_agent/route` |  | L0 | P0 | handlebars | `PromptMultiAgentRouteTemplate` |
+| `runtime/multi_agent/coordinator` |  | L1 | P0 | go-const | `PromptMultiAgentCoordinator` |
 | `runtime/chat/locale_context` |  | L3 | P1 | fmt | `PromptLocaleContextTemplate` |
 | `runtime/chat/temporal_context` |  | L4 | P1 | fmt | `PromptTemporalContextTemplate` |
 | `runtime/deep_agent/planner` |  | L0 | P0 | fmt | `PromptDeepAgentPlannerTemplate` |
@@ -48,6 +51,10 @@ This inventory covers hardcoded prompts that shape runtime, memory, evaluation, 
 | `live/skill_router` |  | L1 | P1 | fmt | `PromptLiveSkillRouterTemplate` |
 | `runtime/failure_recovery` |  | L0 | P1 | fmt | `PromptFailureRecoveryTemplate` |
 
+## Remaining dynamic prompt builders
+
+The Admin catalog is now automatically populated for the built-in reusable baseline list above. Some prompts are assembled from per-run evidence instead of a stable reusable template and have **not** been migrated in this change. In particular: `buildContextSummaryPrompt` (context compaction), `deepResearchWorkerPrompt` and `deepResearchHarnessAgentPrompt` (worker task/evidence), `deepResearchDeliverableDecisionPrompt` (artifact decision), and the Live startup greeting. Do not assume that editing an unrelated catalog entry changes these builders. Migrate each one with a stable ID, variable contract, and execution test before exposing it as an editable template. The synthetic `runtime/chat/system_prompt_snapshot` is a composed snapshot ID, not an editable source template.
+
 ## Legacy Alias Mapping
 
 | Legacy ID | Canonical ID |
@@ -56,6 +63,12 @@ This inventory covers hardcoded prompts that shape runtime, memory, evaluation, 
 | `eval_judge` | `eval/judge/default` |
 | `memory_extract` | `memory/extract/default` |
 | `memory_episode_summarize` | `memory/episode_summarize/default` |
+
+## Admin Management
+
+Open `/admin` → Build → Prompts. The built-in templates are created on AgentAPI startup when absent, so manual seeding is not required. Filter by `runtime/multi_agent` to edit the route classifier and coordinator. Publish a candidate version (or pin it to production) to change execution; drafts alone do not affect the runtime. The route template variables are `{{recent_conversation}}` and `{{user_request}}` (the former is `(none)` on a new conversation). The coordinator is a static instruction segment; the separate consumer security segment and server tool permissions remain in force. Code baselines are retained as fallback if the prompt registry is unavailable.
+
+The manual seed command below is still available for auditing and migration, but startup seeding only inserts missing canonical prompts and does not update existing Admin versions.
 
 ## Seed Command
 

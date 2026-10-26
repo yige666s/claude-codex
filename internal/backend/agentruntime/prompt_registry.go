@@ -551,6 +551,30 @@ func (s *SQLPromptStore) Init(ctx context.Context) error {
 	)
 }
 
+// SeedPromptTemplateIfMissing avoids rewriting an administrator's template
+// when several API replicas start concurrently.
+func (s *SQLPromptStore) SeedPromptTemplateIfMissing(ctx context.Context, prompt PromptTemplate) (bool, error) {
+	prompt = normalizePromptTemplate(prompt)
+	if prompt.ID == "" {
+		return false, fmt.Errorf("prompt id is required")
+	}
+	metadata, err := json.Marshal(prompt.Metadata)
+	if err != nil {
+		return false, err
+	}
+	result, err := s.db.ExecContext(ctx, s.dialect.Bind(`
+INSERT INTO agent_prompt_templates (id, name, description, scope, owner, metadata, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING`),
+		prompt.ID, prompt.Name, prompt.Description, prompt.Scope, prompt.Owner, string(metadata),
+		sqlTimeValue(prompt.CreatedAt, s.dialect), sqlTimeValue(prompt.UpdatedAt, s.dialect))
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected > 0, err
+}
+
 func (s *SQLPromptStore) UpsertPrompt(ctx context.Context, prompt PromptTemplate) (PromptTemplate, error) {
 	prompt = normalizePromptTemplate(prompt)
 	metadata, err := json.Marshal(prompt.Metadata)
