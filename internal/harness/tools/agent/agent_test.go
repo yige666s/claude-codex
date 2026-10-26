@@ -311,6 +311,8 @@ func TestAgentToolRejectsRecursiveFork(t *testing.T) {
 func TestAgentToolRoutesNamedTeamAgentAsBackground(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	manager := coretasks.NewTaskManager()
+	terminal, unsubscribe := manager.SubscribeTerminalEvents(1)
+	defer unsubscribe()
 	requests := make(chan Request, 1)
 	tool := NewToolWithTaskManager("/tmp/project", func(_ context.Context, request Request) (string, error) {
 		requests <- request
@@ -335,6 +337,21 @@ func TestAgentToolRoutesNamedTeamAgentAsBackground(t *testing.T) {
 	req := <-requests
 	if !req.RunInBackground || req.SubagentType != "reviewer" || req.InvocationKind != string(coreagent.InvocationTeammate) {
 		t.Fatalf("unexpected team request: %+v", req)
+	}
+	// Receiving the request only proves that the background runner started.
+	// The terminal event fires after the teammate updates its team file; wait
+	// for it before t.TempDir removes the directory.
+	select {
+	case taskID := <-terminal:
+		if taskID != payload.TaskID {
+			t.Fatalf("terminal task = %s, want %s", taskID, payload.TaskID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("background teammate did not finish")
+	}
+	task, ok := manager.GetTask(payload.TaskID)
+	if !ok || task.GetStatus() != coretasks.TaskStatusCompleted {
+		t.Fatalf("background teammate status = %#v, want completed", task)
 	}
 }
 
