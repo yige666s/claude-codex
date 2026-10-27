@@ -3,6 +3,8 @@ package run
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -81,15 +83,21 @@ func evaluationJudgeFromStartup(cfg startupconfig.Config, llmCfg bootstrap.LLMCo
 }
 
 func skillShellSandboxConfigFromStartup(cfg startupconfig.Config) agentruntime.SkillShellSandboxConfig {
+	skillRoots := startupconfig.SplitCSV(cfg.SkillDirs)
+	for i, root := range skillRoots {
+		skillRoots[i] = filepath.Clean(os.ExpandEnv(root))
+	}
 	return agentruntime.SkillShellSandboxConfig{
-		Runner:       cfg.SkillShellRunner,
-		Image:        cfg.SkillSandboxImage,
-		Network:      cfg.SkillSandboxNetwork,
-		Memory:       cfg.SkillSandboxMemory,
-		CPUs:         cfg.SkillSandboxCPUs,
-		PidsLimit:    cfg.SkillSandboxPidsLimit,
-		TmpfsSize:    cfg.SkillSandboxTmpfsSize,
-		WarmPoolSize: cfg.SkillSandboxWarmPoolSize,
+		Runner:        cfg.SkillShellRunner,
+		Image:         cfg.SkillSandboxImage,
+		Network:       cfg.SkillSandboxNetwork,
+		Memory:        cfg.SkillSandboxMemory,
+		CPUs:          cfg.SkillSandboxCPUs,
+		PidsLimit:     cfg.SkillSandboxPidsLimit,
+		TmpfsSize:     cfg.SkillSandboxTmpfsSize,
+		WarmPoolSize:  cfg.SkillSandboxWarmPoolSize,
+		WorkspaceRoot: cfg.UserWorkspaceRoot,
+		SkillRoots:    skillRoots,
 	}
 }
 

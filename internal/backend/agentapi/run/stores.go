@@ -10,6 +10,7 @@ import (
 
 	startupconfig "claude-codex/internal/backend/agentapi/config"
 	"claude-codex/internal/backend/agentruntime"
+	"claude-codex/internal/backend/sandboxpolicy"
 	"claude-codex/internal/harness/skills"
 )
 
@@ -460,4 +461,17 @@ func openSQLDB(cfg storeConfig) *sql.DB {
 		}
 	}
 	return db
+}
+
+func buildSandboxPolicyStore(cfg storeConfig) sandboxpolicy.Repository {
+	if !strings.EqualFold(strings.TrimSpace(cfg.backend), "sql") {
+		return nil
+	}
+	store := &sandboxpolicy.Store{DB: openSQLDB(cfg)}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := store.Active(ctx); err != nil {
+		logFatalf("load active sandbox policy: %v", err)
+	}
+	return store
 }

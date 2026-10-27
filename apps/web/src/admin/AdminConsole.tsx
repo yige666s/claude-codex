@@ -49,6 +49,7 @@ import type {
 } from "../types";
 import { AdminUsersPanel } from "./panels/AdminUsersPanel";
 import { AdminOpsPanel } from "./panels/AdminOpsPanel";
+import { AdminSandboxPanel } from "./panels/AdminSandboxPanel";
 import { AdminAuditPanel } from "./panels/AdminAuditPanel";
 import { AdminEvaluationPanel } from "./panels/AdminEvaluationPanel";
 import { AdminHealthCostPanel } from "./panels/AdminHealthCostPanel";
@@ -344,7 +345,7 @@ function AdminConsole({
           )}
           breadcrumb={<><span>{activeDomain.label}</span><span aria-hidden="true">/</span><strong>{selectedAdminSection.label}</strong></>}
           title={selectedAdminSection.label}
-          badge={<StatusBadge value="production" />}
+          badge={<StatusBadge value={adminSection === "sandbox" ? "simulation only" : "production"} />}
           description={selectedAdminSection.description}
           search={commandSearch}
           action={adminSection === "skills" ? (
@@ -389,6 +390,8 @@ function AdminConsole({
           <AdminUsersPanel api={api} adminToken={adminToken} />
         ) : adminSection === "jobs-assets" ? (
           <AdminOpsPanel api={api} adminToken={adminToken} />
+        ) : adminSection === "sandbox" ? (
+          <AdminSandboxPanel api={api} adminToken={adminToken} />
         ) : adminSection === "health-cost" ? (
           <AdminHealthCostPanel api={api} adminToken={adminToken} />
         ) : adminSection === "audit" ? (

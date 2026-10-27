@@ -20,6 +20,7 @@ stateful services.
 | `FRONTEND.md` | Frontend hosting, same-origin/split-origin, CORS, and cache policy. |
 | `BACKUP_RESTORE.md` | Postgres, object storage, and workspace backup/restore runbook. |
 | `GITHUB_ACTIONS_DEPLOY.md` | Current single-node test-server deploy flow. |
+| `SANDBOX_P2_TEST.md` | Safe post-deploy sandbox policy and simulation-only Node/ngrok smoke. |
 | `checklists/GO_LIVE.md` | Production launch checklist. |
 | `runbooks/OPERATIONS.md` | Day-2 operations, incident, scaling, and rollback notes. |
 | `kubernetes/` | Reference Kubernetes manifests for API, worker, web, ingress, config, and secrets. |

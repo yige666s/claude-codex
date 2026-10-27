@@ -459,6 +459,7 @@ func Run(ctx context.Context, cfg startupconfig.Config) error {
 	server.SetPromptStore(promptStore)
 	server.SetEvaluationJudge(evaluationJudgeFromStartup(cfg, llmCfg, llmConfigManager, llmUsageStore))
 	server.SetLLMGovernanceConfigManager(llmConfigManager)
+	server.SetSandboxPolicyStore(buildSandboxPolicyStore(storeCfg))
 	stopDailyEvaluation := server.StartDailyEvaluationScheduler(dailyEvaluationConfigFromStartup(cfg))
 	defer stopDailyEvaluation()
 	server.SetLLMStatusProvider(llmStatusFn)

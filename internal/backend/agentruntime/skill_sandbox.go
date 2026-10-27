@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -43,6 +44,8 @@ type SkillShellSandboxConfig struct {
 	TmpfsSize      string
 	MaxOutputBytes int
 	WarmPoolSize   int
+	WorkspaceRoot  string   // Container path of the per-user workspace root.
+	SkillRoots     []string // Container paths of configured skill directories.
 }
 
 type SkillSandboxWarmResult struct {
@@ -83,33 +86,20 @@ func SetDefaultDockerSkillWarmPool(pool *DockerSkillWarmPool) {
 
 func StartDockerSkillWarmPool(ctx context.Context, config SkillShellSandboxConfig, images []string, size int) (*DockerSkillWarmPool, error) {
 	config = config.normalized()
-	if !config.DockerEnabled() || size <= 0 || !runningInContainer() || containerHostname() == "" {
+	// The old warm pool inherited *all* API mounts, including the daemon socket and
+	// secrets. It cannot attach a per-task workspace after creation. Keep it off
+	// until task-scoped prewarming moves to the dedicated Node Agent.
+	if !config.DockerEnabled() || !runningInContainer() || containerHostname() == "" {
 		return nil, nil
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		return nil, err
 	}
-	pool := &DockerSkillWarmPool{
-		commandBin: "docker",
-		config:     config,
-		containers: make(map[string][]string),
-		leased:     make(map[string]bool),
-	}
+	pool := &DockerSkillWarmPool{commandBin: "docker"}
 	if err := pool.removeStaleContainers(ctx); err != nil {
 		return nil, err
 	}
-	for _, image := range uniqueNonEmptyStrings(append([]string{config.Image}, images...)) {
-		for i := 0; i < size; i++ {
-			name, err := pool.createContainer(ctx, image)
-			if err != nil {
-				pool.Close(context.Background())
-				return nil, err
-			}
-			key := poolKeyForConfig(config, image)
-			pool.containers[key] = append(pool.containers[key], name)
-		}
-	}
-	return pool, nil
+	return nil, nil
 }
 
 func (p *DockerSkillWarmPool) Close(ctx context.Context) {
@@ -145,7 +135,6 @@ func (p *DockerSkillWarmPool) createContainer(ctx context.Context, image string)
 		"--security-opt", "no-new-privileges",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,size=" + p.config.TmpfsSize,
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		"--volumes-from", containerHostname(),
 		"-e", "PYTHONDONTWRITEBYTECODE=1",
 		image,
 		"sh", "-c", "while :; do sleep 3600; done",
@@ -450,6 +439,9 @@ func (r *DockerSkillShellRuntime) ExecuteCommand(ctx context.Context, command st
 	if r.shell == skills.ShellPowerShell {
 		return "", fmt.Errorf("docker skill shell runtime does not support powershell skills")
 	}
+	if strings.EqualFold(strings.TrimSpace(r.config.Network), "host") {
+		return "", fmt.Errorf("host network is not allowed for skill sandbox")
+	}
 	if _, err := exec.LookPath(r.commandBin); err != nil {
 		return "", fmt.Errorf("docker skill shell runtime requires docker on PATH: %w", err)
 	}
@@ -461,23 +453,15 @@ func (r *DockerSkillShellRuntime) ExecuteCommand(ctx context.Context, command st
 	if err != nil {
 		return "", fmt.Errorf("resolve skill root: %w", err)
 	}
-	rewritten := rewriteHostPaths(command, workspace, skillRoot)
-	if r.useContainerVolumes() {
-		rewritten = command
-	}
-	commandWithMarker := sandboxReadyMarkerCommand(rewritten)
-	if outputText, stats, ok, err := r.executeWarm(ctx, workspace, skillRoot, commandWithMarker); ok {
-		r.lastStats = stats
-		outputText = strings.TrimSpace(rewriteContainerPaths(outputText, workspace, skillRoot))
+	bindWorkspace, bindSkill := workspace, skillRoot
+	if runningInContainer() {
+		bindWorkspace, bindSkill, err = r.resolveContainerBindSources(ctx, workspace, skillRoot)
 		if err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				return "", fmt.Errorf("docker skill shell command timed out: %q", command)
-			}
-			return "", fmt.Errorf("docker warm skill shell command failed for %q: %s", command, outputText)
+			return "", err
 		}
-		return outputText, nil
 	}
-	args := r.dockerArgs(workspace, skillRoot, commandWithMarker)
+	commandWithMarker := sandboxReadyMarkerCommand(rewriteHostPaths(command, workspace, skillRoot))
+	args := r.dockerArgs(bindWorkspace, bindSkill, commandWithMarker)
 
 	cmd := exec.CommandContext(ctx, r.commandBin, args...)
 	var output sandboxLimitBuffer
@@ -516,60 +500,97 @@ func (r *DockerSkillShellRuntime) LastSandboxStats() SandboxExecutionStats {
 	return r.lastStats
 }
 
-func (r *DockerSkillShellRuntime) executeWarm(ctx context.Context, workspace, skillRoot, command string) (string, SandboxExecutionStats, bool, error) {
-	if r == nil || !r.useContainerVolumes() || defaultDockerSkillWarmPool == nil {
-		return "", SandboxExecutionStats{}, false, nil
+// dockerMount describes only the mount information returned by docker inspect.
+type dockerMount struct {
+	Type        string `json:"Type"`
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+}
+
+// resolveContainerBindSources translates paths inside AgentAPI to paths on the
+// Docker host. Only a single user's workspace and a single skill directory are
+// passed to docker run; never inherit the API container's other mounts.
+func (r *DockerSkillShellRuntime) resolveContainerBindSources(ctx context.Context, workspace, skillRoot string) (string, string, error) {
+	if !sandboxPathWithin(workspace, r.config.WorkspaceRoot, false) {
+		return "", "", fmt.Errorf("skill sandbox workspace is outside the configured user workspace root")
 	}
-	name, ok := defaultDockerSkillWarmPool.acquire(r.config)
-	if !ok {
-		return "", SandboxExecutionStats{}, false, nil
+	for _, forbidden := range []string{"/run/agentapi/secrets", "/var/run/docker.sock"} {
+		if sandboxPathWithin(workspace, forbidden, true) || sandboxPathWithin(skillRoot, forbidden, true) {
+			return "", "", fmt.Errorf("skill sandbox path overlaps a protected API mount")
+		}
 	}
-	defer defaultDockerSkillWarmPool.release(name)
-	tmpDir := filepath.Join(workspace, "tmp")
-	args := []string{
-		"exec",
-		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		"-w", skillRoot,
-		"-e", "AGENT_WORKSPACE_DIR=" + workspace,
-		"-e", "CLAUDE_SKILL_DIR=" + skillRoot,
-		"-e", "SKILL_DIR=" + skillRoot,
-		"-e", "TMP_DIR=" + tmpDir,
-		"-e", "TMPDIR=" + tmpDir,
+	allowedSkillRoot := sandboxPathWithin(skillRoot, workspace, true)
+	for _, root := range r.config.SkillRoots {
+		if sandboxPathWithin(skillRoot, root, false) {
+			allowedSkillRoot = true
+			break
+		}
 	}
-	for _, key := range sortedMapKeys(r.env) {
-		if skillShellReservedEnvKey(key) {
+	if !allowedSkillRoot {
+		return "", "", fmt.Errorf("skill sandbox root is not under a configured skill or task workspace")
+	}
+	out, err := exec.CommandContext(ctx, r.commandBin, "inspect", "--format", "{{json .Mounts}}", containerHostname()).Output()
+	if err != nil {
+		return "", "", fmt.Errorf("inspect API container sandbox mounts: %w", err)
+	}
+	var mounts []dockerMount
+	if err := json.Unmarshal(out, &mounts); err != nil {
+		return "", "", fmt.Errorf("decode API container sandbox mounts: %w", err)
+	}
+	workSource, err := sandboxHostBindSource(workspace, mounts)
+	if err != nil {
+		return "", "", err
+	}
+	skillSource, err := sandboxHostBindSource(skillRoot, mounts)
+	if err != nil {
+		return "", "", err
+	}
+	return workSource, skillSource, nil
+}
+
+func sandboxPathWithin(path, base string, allowBase bool) bool {
+	if !filepath.IsAbs(path) || !filepath.IsAbs(base) {
+		return false
+	}
+	rel, err := filepath.Rel(base, path)
+	return err == nil && (rel == "." && allowBase || rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func sandboxHostBindSource(path string, mounts []dockerMount) (string, error) {
+	var selected *dockerMount
+	for i := range mounts {
+		m := &mounts[i]
+		if (m.Type != "bind" && m.Type != "volume") || !filepath.IsAbs(m.Source) || !sandboxPathWithin(path, m.Destination, true) {
 			continue
 		}
-		args = append(args, "-e", key+"="+r.env[key])
+		if selected == nil || len(m.Destination) > len(selected.Destination) {
+			selected = m
+		}
 	}
-	args = append(args, name)
-	if r.shell == skills.ShellBash {
-		args = append(args, "bash", "-lc", command)
-	} else {
-		args = append(args, "sh", "-lc", command)
+	if selected == nil {
+		return "", fmt.Errorf("skill sandbox path %q has no explicit bindable mount", path)
 	}
-	cmd := exec.CommandContext(ctx, r.commandBin, args...)
-	var output sandboxLimitBuffer
-	output.limit = r.config.MaxOutputBytes
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	started := time.Now()
-	err := cmd.Run()
-	duration := time.Since(started)
-	outputText, startup := splitSandboxReadyMarker(output.String(), started)
-	stats := SandboxExecutionStats{
-		Runner:    "docker",
-		Image:     r.config.Image,
-		Network:   r.config.Network,
-		Duration:  duration,
-		Startup:   startup,
-		FromPool:  true,
-		OutputLen: len(outputText),
+	if strings.ContainsAny(selected.Source, ",\n\r") || strings.ContainsAny(path, ",\n\r") {
+		return "", fmt.Errorf("skill sandbox bind path contains unsupported delimiter")
 	}
-	if output.exceeded {
-		return outputText, stats, true, fmt.Errorf("docker skill shell output exceeds max size of %d bytes", output.limit)
+	rel, _ := filepath.Rel(selected.Destination, path)
+	// Reject a symlink in any component: the host Docker daemon may resolve it
+	// outside the intended mount even when the path looks like a subdirectory.
+	component := selected.Destination
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "." {
+			continue
+		}
+		component = filepath.Join(component, part)
+		info, err := os.Lstat(component)
+		if err != nil {
+			return "", fmt.Errorf("inspect skill sandbox path %q: %w", component, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("skill sandbox path %q contains symlink", component)
+		}
 	}
-	return outputText, stats, true, err
+	return filepath.Join(selected.Source, rel), nil
 }
 
 func (r *DockerSkillShellRuntime) dockerArgs(workspace, skillRoot, command string) []string {
@@ -587,30 +608,17 @@ func (r *DockerSkillShellRuntime) dockerArgs(workspace, skillRoot, command strin
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-e", "PYTHONDONTWRITEBYTECODE=1",
 	}
-	if r.useContainerVolumes() {
-		tmpDir := filepath.Join(workspace, "tmp")
-		args = append(args,
-			"--volumes-from", containerHostname(),
-			"-w", skillRoot,
-			"-e", "AGENT_WORKSPACE_DIR="+workspace,
-			"-e", "CLAUDE_SKILL_DIR="+skillRoot,
-			"-e", "SKILL_DIR="+skillRoot,
-			"-e", "TMP_DIR="+tmpDir,
-			"-e", "TMPDIR="+tmpDir,
-		)
-	} else {
-		tmpDir := filepath.Join(containerWorkspaceDir, "tmp")
-		args = append(args,
-			"-v", workspace+":"+containerWorkspaceDir+":rw",
-			"-v", skillRoot+":"+containerSkillDir+":ro",
-			"-w", containerSkillDir,
-			"-e", "AGENT_WORKSPACE_DIR="+containerWorkspaceDir,
-			"-e", "CLAUDE_SKILL_DIR="+containerSkillDir,
-			"-e", "SKILL_DIR="+containerSkillDir,
-			"-e", "TMP_DIR="+tmpDir,
-			"-e", "TMPDIR="+tmpDir,
-		)
-	}
+	tmpDir := filepath.Join(containerWorkspaceDir, "tmp")
+	args = append(args,
+		"--mount", "type=bind,source="+workspace+",target="+containerWorkspaceDir,
+		"--mount", "type=bind,source="+skillRoot+",target="+containerSkillDir+",readonly",
+		"-w", containerSkillDir,
+		"-e", "AGENT_WORKSPACE_DIR="+containerWorkspaceDir,
+		"-e", "CLAUDE_SKILL_DIR="+containerSkillDir,
+		"-e", "SKILL_DIR="+containerSkillDir,
+		"-e", "TMP_DIR="+tmpDir,
+		"-e", "TMPDIR="+tmpDir,
+	)
 	for _, key := range sortedMapKeys(r.env) {
 		if skillShellReservedEnvKey(key) {
 			continue
@@ -723,10 +731,6 @@ func splitSandboxReadyMarker(output string, started time.Time) (string, time.Dur
 		return strings.Join(out, "\n"), startup
 	}
 	return output, 0
-}
-
-func (r *DockerSkillShellRuntime) useContainerVolumes() bool {
-	return runningInContainer() && containerHostname() != ""
 }
 
 func runningInContainer() bool {

@@ -573,6 +573,22 @@ export class ApiClient {
     };
   }
 
+  async adminSandboxPolicy(adminToken: string): Promise<{ active: { revision: number; document: Record<string, unknown> } }> {
+    return this.fetchJSON("/v1/admin/ops/sandbox-policy", { headers: { "X-Admin-Token": adminToken } });
+  }
+
+  async adminSandboxPolicyRevisions(adminToken: string): Promise<{ revisions: Array<{ revision: number; state: string; actor: string }> }> {
+    return this.fetchJSON("/v1/admin/ops/sandbox-policy/revisions", { headers: { "X-Admin-Token": adminToken } });
+  }
+
+  async adminSandboxPolicyAction<T>(adminToken: string, action: "validate" | "preview" | "drafts" | "publish" | "rollback", body: unknown): Promise<T> {
+    return this.fetchJSON<T>(`/v1/admin/ops/sandbox-policy/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": adminToken },
+      body: JSON.stringify(body)
+    });
+  }
+
   async adminOpsLLMConfig(adminToken: string): Promise<LLMGovernanceConfig> {
     const payload = await this.fetchJSON<{ config: LLMGovernanceConfig }>("/v1/admin/ops/llm-config", {
       headers: { "X-Admin-Token": adminToken }

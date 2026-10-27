@@ -298,40 +298,7 @@ export function SkillPolicyModal({
           </section>
           <section className="policy-section">
             <h3>Sandbox</h3>
-            <div className="policy-grid">
-              <label className="policy-field">
-                <span>Runner</span>
-                <Input value={draft.sandboxRunner} onChange={(event) => updateDraft("sandboxRunner", event.currentTarget.value)} placeholder="docker" />
-              </label>
-              <label className="policy-field">
-                <span>Image</span>
-                <Input value={draft.sandboxImage} onChange={(event) => updateDraft("sandboxImage", event.currentTarget.value)} placeholder="python:3.12-slim" />
-              </label>
-              <label className="policy-field">
-                <span>Network</span>
-                <Input value={draft.sandboxNetwork} onChange={(event) => updateDraft("sandboxNetwork", event.currentTarget.value)} placeholder="none, bridge" />
-              </label>
-              <label className="policy-field">
-                <span>Memory</span>
-                <Input value={draft.sandboxMemory} onChange={(event) => updateDraft("sandboxMemory", event.currentTarget.value)} placeholder="512m" />
-              </label>
-              <label className="policy-field">
-                <span>CPUs</span>
-                <Input value={draft.sandboxCpus} onChange={(event) => updateDraft("sandboxCpus", event.currentTarget.value)} placeholder="1" />
-              </label>
-              <label className="policy-field">
-                <span>Pids limit</span>
-                <Input inputMode="numeric" value={draft.sandboxPidsLimit} onChange={(event) => updateDraft("sandboxPidsLimit", event.currentTarget.value)} placeholder="128" />
-              </label>
-              <label className="policy-field">
-                <span>Tmpfs size</span>
-                <Input value={draft.sandboxTmpfsSize} onChange={(event) => updateDraft("sandboxTmpfsSize", event.currentTarget.value)} placeholder="64m" />
-              </label>
-              <label className="policy-field">
-                <span>Max output bytes</span>
-                <Input inputMode="numeric" value={draft.sandboxMaxOutputBytes} onChange={(event) => updateDraft("sandboxMaxOutputBytes", event.currentTarget.value)} placeholder="1048576" />
-              </label>
-            </div>
+            <p>Execution profiles and routes are managed under Admin → Operate → Sandbox. Legacy Skill sandbox metadata is preserved during migration but cannot be edited here.</p>
           </section>
         </div>
         <footer>
@@ -396,17 +363,8 @@ export function skillPolicyConfigFromDraft(base: Record<string, unknown>, draft:
   setPolicyList(next, "network_allowlist", draft.networkAllowlist);
   setPolicyList(next, "artifact_content_types", draft.artifactContentTypes);
   setPolicyString(next, "shell_timeout", draft.shellTimeout);
-  const sandbox: Record<string, unknown> = isRecord(next.sandbox) ? { ...next.sandbox } : {};
-  setPolicyString(sandbox, "runner", draft.sandboxRunner);
-  setPolicyString(sandbox, "image", draft.sandboxImage);
-  setPolicyString(sandbox, "network", draft.sandboxNetwork);
-  setPolicyString(sandbox, "memory", draft.sandboxMemory);
-  setPolicyString(sandbox, "cpus", draft.sandboxCpus);
-  setPolicyNumber(sandbox, "pids_limit", draft.sandboxPidsLimit);
-  setPolicyString(sandbox, "tmpfs_size", draft.sandboxTmpfsSize);
-  setPolicyNumber(sandbox, "max_output_bytes", draft.sandboxMaxOutputBytes);
-  if (Object.keys(sandbox).length) next.sandbox = sandbox;
-  else delete next.sandbox;
+  // Keep legacy sandbox metadata unchanged until the central-policy migration
+  // removes it. Editing it in this Skill modal would create conflicting policy.
   return next;
 }
 

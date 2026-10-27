@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"claude-codex/internal/backend/httpjson"
+	"claude-codex/internal/backend/sandboxpolicy"
 	skillpkg "claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 
@@ -41,6 +42,7 @@ type Server struct {
 	llmStatus            func() LLMGovernanceStatus
 	llmUsage             LLMUsageAdminStore
 	llmConfig            *LLMGovernanceConfigManager
+	sandboxPolicy        sandboxpolicy.Repository
 	metrics              *MetricsRegistry
 	audit                AuditLogger
 	risk                 RiskStore
@@ -211,6 +213,12 @@ func (s *Server) SetEvaluationJudge(judge GoldenJudge) {
 
 func (s *Server) SetLLMGovernanceConfigManager(manager *LLMGovernanceConfigManager) {
 	s.llmConfig = manager
+}
+
+func (s *Server) SetSandboxPolicyStore(store sandboxpolicy.Repository) {
+	if s != nil {
+		s.sandboxPolicy = store
+	}
 }
 
 func (s *Server) SetAPIRateLimitPerMinute(limit int) error {

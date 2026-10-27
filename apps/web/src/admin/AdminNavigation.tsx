@@ -21,10 +21,10 @@ import { BrandLogo } from "../components/brand/BrandLogo";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 
-export type AdminSection = "skills" | "users" | "jobs-assets" | "health-cost" | "audit" | "evaluation" | "prompts";
+export type AdminSection = "skills" | "users" | "jobs-assets" | "sandbox" | "health-cost" | "audit" | "evaluation" | "prompts";
 export type AdminDomain = "build" | "operate" | "observe" | "govern";
 
-const adminSections = new Set<AdminSection>(["skills", "users", "jobs-assets", "health-cost", "audit", "evaluation", "prompts"]);
+const adminSections = new Set<AdminSection>(["skills", "users", "jobs-assets", "sandbox", "health-cost", "audit", "evaluation", "prompts"]);
 
 export function isAdminSection(value: string | null | undefined): value is AdminSection {
   return Boolean(value && adminSections.has(value as AdminSection));
@@ -61,7 +61,8 @@ export function buildAdminDomains(skillCount: number): AdminDomainItem[] {
       label: "Operate",
       icon: <BriefcaseBusiness size={20} />,
       sections: [
-        { id: "jobs-assets", label: "Runs & assets", description: "Inspect sessions, queued jobs, event replays, and generated or uploaded assets.", icon: <FileClock size={17} /> }
+        { id: "jobs-assets", label: "Runs & assets", description: "Inspect sessions, queued jobs, event replays, and generated or uploaded assets.", icon: <FileClock size={17} /> },
+        { id: "sandbox", label: "Sandbox", description: "Validate, publish, preview and roll back sandbox policy revisions. Execution remains disabled until Node admission is ready.", icon: <ShieldCheck size={17} /> }
       ]
     },
     {

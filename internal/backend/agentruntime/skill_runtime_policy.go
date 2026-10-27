@@ -27,13 +27,25 @@ type SkillMarketplaceMetadata struct {
 
 func (r *Runtime) skillRuntimePolicy(skill *skills.SkillDefinition) SkillRuntimePolicy {
 	policy := SkillRuntimePolicy{}
+	var sourcePolicy SkillRuntimePolicy
 	if skill != nil {
 		policy.AllowedTools = cleanStringSlice(skill.AllowedTools)
 		policy.AllowedEnv = cleanStringSlice(skill.AllowedEnv)
+		// The loaded Skill definition is separate from the editable registry row.
+		// Preserve its execution backend settings until the release manifest and
+		// central sandbox policy replace the legacy frontmatter overrides.
+		applySkillPolicyMetadata(&sourcePolicy, skill.Metadata)
 	}
 	record, ok := r.skillRecord(skillName(skill))
 	if ok {
 		applySkillPolicyMetadata(&policy, record.Metadata)
+		// Publication/admin metadata cannot upgrade a skill to local execution,
+		// select another image, or open its network. Do not activate frontmatter
+		// overrides when there is no registry: that would widen the old policy.
+		// Trust for externally loaded Skill files still requires a release manifest.
+		policy.Sandbox.Runner = sourcePolicy.Sandbox.Runner
+		policy.Sandbox.Image = sourcePolicy.Sandbox.Image
+		policy.Sandbox.Network = sourcePolicy.Sandbox.Network
 	}
 	return policy
 }

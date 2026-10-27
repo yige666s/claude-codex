@@ -3016,6 +3016,11 @@ func TestDockerSkillShellRuntimeBuildsIsolatedCommand(t *testing.T) {
 
 	args := runtime.dockerArgs("/host/workspace", "/host/workspace/.claude/skills/demo", "python3 /skill/run.py")
 	joined := strings.Join(args, "\x00")
+	for _, forbidden := range []string{"--volumes-from", "/var/run/docker.sock", "/run/agentapi/secrets"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("sandbox arguments expose %s: %#v", forbidden, args)
+		}
+	}
 	for _, want := range []string{
 		"--rm",
 		"--network\x00none",
@@ -3025,8 +3030,8 @@ func TestDockerSkillShellRuntimeBuildsIsolatedCommand(t *testing.T) {
 		"--read-only",
 		"--cap-drop\x00ALL",
 		"--security-opt\x00no-new-privileges",
-		"/host/workspace:/workspace:rw",
-		"/host/workspace/.claude/skills/demo:/skill:ro",
+		"type=bind,source=/host/workspace,target=/workspace",
+		"type=bind,source=/host/workspace/.claude/skills/demo,target=/skill,readonly",
 		"AGENT_WORKSPACE_DIR=/workspace",
 		"VERTEX_PROJECT_ID=project-1",
 		"python:3.12-slim",
