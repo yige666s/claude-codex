@@ -52,7 +52,7 @@ Configure these in GitHub repository settings:
 ```text
 DEPLOY_HOST=155.94.154.240
 DEPLOY_USER=root
-DEPLOY_PORT=22
+DEPLOY_PORT=49222
 DEPLOY_SSH_KEY=<private key that can SSH to the server>
 ```
 
@@ -97,3 +97,5 @@ AGENTAPI_SKIP_HEALTHCHECK=1 /opt/agentapi/deploy.sh
 ```
 
 Production-like deployments should keep the readiness probe enabled.
+
+Deployment SSH uses port 49222 and pins the verified ED25519 host fingerprint SHA256:UEYE3vbuBgqtKrRcFOCYdVEFdWIOgnsoRpYNjLy719c. Verify any rotation out of band.

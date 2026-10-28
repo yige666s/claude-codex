@@ -84,6 +84,13 @@ func Run(ctx context.Context, cfg startupconfig.Config) error {
 	}
 	skillRegistrySetup := buildSkillRegistrySetup(storeCfg, skillManager)
 	skillCatalog := skillRegistrySetup.catalog
+	sandboxPolicy := buildSandboxPolicyStore(storeCfg)
+	setupCtx, stopSandboxSetup := context.WithTimeout(ctx, 60*time.Second)
+	remoteExecutor, artifactHandler, remoteErr := initializeRemoteSandbox(setupCtx, cfg, skillManager, sandboxPolicy)
+	stopSandboxSetup()
+	if remoteErr != nil {
+		return fmt.Errorf("initialize remote sandbox canary: %w", remoteErr)
+	}
 	skillShellSandboxConfig := skillShellSandboxConfigFromStartup(cfg)
 	if skillShellSandboxConfig.DockerEnabled() {
 		images := append([]string{skillShellSandboxConfig.Image}, startupconfig.SplitCSV(cfg.SkillSandboxPrepullImages)...)
@@ -104,6 +111,7 @@ func Run(ctx context.Context, cfg startupconfig.Config) error {
 		llmCfg:                  llmCfg,
 		skillCatalog:            skillCatalog,
 		skillShellSandboxConfig: skillShellSandboxConfig,
+		remoteSkillExecutor:     remoteExecutor,
 		llmConfigManager:        llmConfigManager,
 		llmUsageStore:           llmUsageStore,
 		riskStore:               riskStore,
@@ -136,6 +144,7 @@ func Run(ctx context.Context, cfg startupconfig.Config) error {
 	mcpConnectorStore := buildMCPConnectorStore(storeCfg)
 	browserPushStore := buildBrowserPushStore(storeCfg)
 	runtimeConfig := runtimeConfigFromStartup(cfg, skillShellSandboxConfig)
+	runtimeConfig.RemoteSkillExecutor = remoteExecutor
 	runtimeConfig.MemoryPolicyProvider = agentruntime.NewStaticMemoryPolicyProvider(runtimeConfig.MemoryPolicy)
 	if memoryPolicyReloader := memoryPolicyReloaderFromStartup(cfg, runtimeConfig.MemoryPolicy, appLogger); memoryPolicyReloader != nil {
 		runtimeConfig.MemoryPolicyProvider = memoryPolicyReloader
@@ -459,7 +468,10 @@ func Run(ctx context.Context, cfg startupconfig.Config) error {
 	server.SetPromptStore(promptStore)
 	server.SetEvaluationJudge(evaluationJudgeFromStartup(cfg, llmCfg, llmConfigManager, llmUsageStore))
 	server.SetLLMGovernanceConfigManager(llmConfigManager)
-	server.SetSandboxPolicyStore(buildSandboxPolicyStore(storeCfg))
+	server.SetSandboxPolicyStore(sandboxPolicy)
+	if artifactHandler != nil {
+		server.SetSandboxArtifactHandler(artifactHandler)
+	}
 	stopDailyEvaluation := server.StartDailyEvaluationScheduler(dailyEvaluationConfigFromStartup(cfg))
 	defer stopDailyEvaluation()
 	server.SetLLMStatusProvider(llmStatusFn)

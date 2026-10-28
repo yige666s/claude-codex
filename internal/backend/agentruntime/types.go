@@ -718,6 +718,7 @@ type RuntimeConfig struct {
 	DeepResearch          DeepResearchRuntimeConfig
 	LoopDiscovery         LoopDiscoveryConfig
 	SkillShellSandbox     SkillShellSandboxConfig
+	RemoteSkillExecutor   RemoteSkillExecutor `json:"-"`
 	MessageSearch         MessageSearchConfig
 	MemoryPolicy          MemoryPolicy
 	MemoryPolicyProvider  MemoryPolicyProvider `json:"-"`

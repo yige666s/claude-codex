@@ -37,6 +37,9 @@ func (s *Server) buildRouter() http.Handler {
 	})
 	router.Get("/", s.handleApp)
 	router.Get("/app", s.handleApp)
+	if s.sandboxArtifactHandler != nil {
+		router.Handle("/v1/internal/sandbox/v1/skills/*", http.StripPrefix("/v1/internal/sandbox", s.sandboxArtifactHandler))
+	}
 
 	router.With(s.publicRiskMiddleware(RiskOperationAuthRegister)).Post("/v1/auth/register", s.handleAuthRegister)
 	router.With(s.publicRiskMiddleware(RiskOperationAuthLogin)).Post("/v1/auth/login", s.handleAuthLogin)

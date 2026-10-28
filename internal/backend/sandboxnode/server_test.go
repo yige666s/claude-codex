@@ -41,6 +41,8 @@ func TestProbeHandlerRequiresAuthAndDoesNotAcceptJobs(t *testing.T) {
 		{"GET", "/v1/capabilities", "Bearer " + token, http.StatusOK},
 		{"GET", "/v1/prepare", "Bearer " + token, http.StatusNotFound},
 		{"POST", "/v1/exec", "Bearer " + token, http.StatusMethodNotAllowed},
+		{"POST", "/v1/dev/execute", "Bearer " + token, http.StatusMethodNotAllowed},
+		{"POST", "/v1/dev/collect", "Bearer " + token, http.StatusMethodNotAllowed},
 	}
 	for _, tc := range cases {
 		req := httptest.NewRequest(tc.method, tc.path, nil)

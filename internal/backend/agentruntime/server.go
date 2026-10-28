@@ -31,37 +31,38 @@ import (
 const defaultRateLimitWindow = time.Minute
 
 type Server struct {
-	runtime              *Runtime
-	router               http.Handler
-	auth                 Authenticator
-	authService          *AuthService
-	limiter              RateLimitPolicy
-	logger               *slog.Logger
-	upgrader             websocket.Upgrader
-	security             WebSecurityConfig
-	llmStatus            func() LLMGovernanceStatus
-	llmUsage             LLMUsageAdminStore
-	llmConfig            *LLMGovernanceConfigManager
-	sandboxPolicy        sandboxpolicy.Repository
-	metrics              *MetricsRegistry
-	audit                AuditLogger
-	risk                 RiskStore
-	riskScanner          RiskScanner
-	evaluation           EvaluationStore
-	evaluationJudge      GoldenJudge
-	promptStore          PromptStore
-	chatStreams          ChatStreamStore
-	structuredOutputs    StructuredOutputStore
-	chatRunSnapshots     ChatRunSnapshotStore
-	chatTurnReservations ChatTurnReservationStore
-	instrumentHTTP       func(http.Handler) http.Handler
-	operationLimiter     *OperationRateLimiter
-	adminToken           string
-	skillRegistry        SkillRegistryAdminStore
-	readyMu              sync.RWMutex
-	readyChecks          map[string]readinessCheck
-	shutdownOnce         sync.Once
-	shutdownCh           chan struct{}
+	runtime                *Runtime
+	router                 http.Handler
+	auth                   Authenticator
+	authService            *AuthService
+	limiter                RateLimitPolicy
+	logger                 *slog.Logger
+	upgrader               websocket.Upgrader
+	security               WebSecurityConfig
+	llmStatus              func() LLMGovernanceStatus
+	llmUsage               LLMUsageAdminStore
+	llmConfig              *LLMGovernanceConfigManager
+	sandboxPolicy          sandboxpolicy.Repository
+	sandboxArtifactHandler http.Handler
+	metrics                *MetricsRegistry
+	audit                  AuditLogger
+	risk                   RiskStore
+	riskScanner            RiskScanner
+	evaluation             EvaluationStore
+	evaluationJudge        GoldenJudge
+	promptStore            PromptStore
+	chatStreams            ChatStreamStore
+	structuredOutputs      StructuredOutputStore
+	chatRunSnapshots       ChatRunSnapshotStore
+	chatTurnReservations   ChatTurnReservationStore
+	instrumentHTTP         func(http.Handler) http.Handler
+	operationLimiter       *OperationRateLimiter
+	adminToken             string
+	skillRegistry          SkillRegistryAdminStore
+	readyMu                sync.RWMutex
+	readyChecks            map[string]readinessCheck
+	shutdownOnce           sync.Once
+	shutdownCh             chan struct{}
 }
 
 func NewServer(runtime *Runtime, auth Authenticator, limiter RateLimitPolicy, logger *log.Logger) *Server {
@@ -215,6 +216,12 @@ func (s *Server) SetLLMGovernanceConfigManager(manager *LLMGovernanceConfigManag
 	s.llmConfig = manager
 }
 
+func (s *Server) SetSandboxArtifactHandler(handler http.Handler) {
+	if s != nil {
+		s.sandboxArtifactHandler = handler
+		s.router = s.buildRouter()
+	}
+}
 func (s *Server) SetSandboxPolicyStore(store sandboxpolicy.Repository) {
 	if s != nil {
 		s.sandboxPolicy = store

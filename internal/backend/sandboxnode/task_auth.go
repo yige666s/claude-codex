@@ -18,10 +18,11 @@ import (
 // TaskSigner provides short-lived, request-bound authentication for simulated
 // lifecycle calls. It does not authorize native execution.
 type TaskSigner struct {
-	key  []byte
-	now  func() time.Time
-	mu   sync.Mutex
-	seen map[string]time.Time
+	key    []byte
+	now    func() time.Time
+	mu     sync.Mutex
+	seen   map[string]time.Time
+	replay *FileNonceStore
 }
 
 func NewTaskSigner(key []byte, now func() time.Time) (*TaskSigner, error) {
@@ -32,6 +33,17 @@ func NewTaskSigner(key []byte, now func() time.Time) (*TaskSigner, error) {
 		now = time.Now
 	}
 	return &TaskSigner{key: append([]byte(nil), key...), now: now, seen: map[string]time.Time{}}, nil
+}
+func NewPersistentTaskSigner(key []byte, store *FileNonceStore) (*TaskSigner, error) {
+	if store == nil {
+		return nil, errors.New("persistent nonce store required")
+	}
+	signer, err := NewTaskSigner(key, nil)
+	if err != nil {
+		return nil, err
+	}
+	signer.replay = store
+	return signer, nil
 }
 func (s *TaskSigner) Sign(r *http.Request, body []byte) error {
 	if s == nil {
@@ -85,6 +97,11 @@ func (s *TaskSigner) Verify(r *http.Request, body []byte) error {
 	}
 	if len(s.seen) >= 4096 {
 		return errors.New("task replay cache full")
+	}
+	if s.replay != nil {
+		if err := s.replay.Record(id, s.now()); err != nil {
+			return err
+		}
 	}
 	s.seen[id] = s.now()
 	return nil

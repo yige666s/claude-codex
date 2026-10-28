@@ -74,19 +74,25 @@ jobs:
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_PORT: 49222
         run: |
           set -euo pipefail
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          ssh-keyscan -T 8 -p "$DEPLOY_PORT" -t ed25519 "$DEPLOY_HOST" > ~/.ssh/known_hosts
+          # Pinned after verification on the authenticated 155 host.
+          fingerprint="$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')"
+          if [ "$fingerprint" != 'SHA256:UEYE3vbuBgqtKrRcFOCYdVEFdWIOgnsoRpYNjLy719c' ]; then
+            echo 'deploy host key mismatch; verify out of band' >&2
+            exit 1
+          fi
 
       - name: Deploy
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          DEPLOY_PORT: 49222
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ github.token }}
           AGENT_API_IMAGE: ${{ env.IMAGE_NAMESPACE }}/agentapi:${{ env.IMAGE_TAG }}

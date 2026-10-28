@@ -6291,7 +6291,7 @@ func (r *Runtime) runSkill(ctx context.Context, userID string, session *state.Se
 	return r.executeSkillWorkflow(ctx, userID, session, skill, args, onToken)
 }
 
-func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *state.Session, skill *skills.SkillDefinition, args string, onToken func(string)) (runnerResult, error) {
+func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *state.Session, skill *skills.SkillDefinition, args string, onToken func(string)) (returned runnerResult, returnedErr error) {
 	startedAt := time.Now().UTC()
 	status := SkillExecutionStatusFailed
 	errText := ""
@@ -6367,11 +6367,46 @@ func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *st
 	if policy.ShellTimeout > 0 {
 		shellTimeout = policy.ShellTimeout
 	}
+	// Remote execution requires a prepublished immutable Skill. Pin the
+	// release before prompt shell expansion so !-blocks and subsequent Bash
+	// commands share the same invocation-local task context.
+	if strings.EqualFold(r.effectiveSkillSandbox(ctx, userID, policy).Runner, "remote") {
+		preparer, ok := r.config.RemoteSkillExecutor.(RemoteSkillPreparer)
+		if !ok || preparer == nil {
+			return runnerResult{Session: session}, errors.New("remote Skill preparation is not configured")
+		}
+		prepared, published, release, prepareErr := preparer.PrepareSkill(ctx, RemoteSkillRequest{
+			UserID: userID, SessionID: session.ID, JobID: jobIDFromContext(ctx),
+			SkillName: skill.Name, SkillRoot: skillDir, WorkingDir: workspace,
+		})
+		if prepareErr != nil {
+			return runnerResult{Session: session}, prepareErr
+		}
+		if prepared == nil || release == nil {
+			return runnerResult{Session: session}, errors.New("remote Skill preparation returned no task context or release")
+		}
+		defer func() {
+			if cleanupErr := release(); cleanupErr != nil {
+				status = SkillExecutionStatusFailed
+				errText = cleanupErr.Error()
+				if returnedErr == nil {
+					returnedErr = cleanupErr
+				} else {
+					returnedErr = errors.Join(returnedErr, cleanupErr)
+				}
+				returned = runnerResult{Session: session}
+			}
+		}()
+		if err := validatePublishedSkillDefinition(skill, published); err != nil {
+			return runnerResult{Session: session}, err
+		}
+		ctx = prepared
+	}
 	blocks, err := skill.GetPrompt(args, &skills.SkillContext{
 		SessionID:    session.ID,
 		WorkingDir:   skillDir,
 		Environment:  r.skillShellEnvironment(workspace, skillDir, policy.AllowedEnv),
-		ShellRuntime: r.skillShellRuntime(workspace, skillDir, skill, policy),
+		ShellRuntime: r.skillShellRuntime(ctx, userID, session.ID, workspace, skillDir, skill, policy),
 		ShellTimeout: shellTimeout,
 	})
 	if err != nil {
@@ -6428,7 +6463,7 @@ func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *st
 		}
 	}
 	generated := skills.WrapGeneratedSkillPrompt(skill.Name, args, promptText)
-	sandbox := applySkillSandboxPolicy(r.config.SkillShellSandbox, policy.Sandbox)
+	sandbox := r.effectiveSkillSandbox(ctx, userID, policy)
 	runner := r.runnerForScope(ctx, Scope{
 		UserID:            userID,
 		SessionID:         session.ID,
@@ -6468,7 +6503,29 @@ func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *st
 		hideSkillExecutionIntermediateAssistantMessages(result.Session, startMessageCount, result.Output)
 		return runnerResult{Output: result.Output, Session: result.Session}, nil
 	}
-	if skillProducesArtifacts(skill) && execDiagnostics.ArtifactCount == 0 {
+	if strings.EqualFold(sandbox.Runner, "remote") {
+		collector, ok := r.config.RemoteSkillExecutor.(RemoteSkillCollector)
+		if !ok || collector == nil {
+			return runnerResult{Session: result.Session}, errors.New("remote artifact collector is not configured")
+		}
+		files, collectErr := collector.CollectSkillArtifacts(ctx, RemoteSkillRequest{UserID: userID, SessionID: session.ID, JobID: jobIDFromContext(ctx), SkillName: skill.Name, SkillRoot: skillDir, WorkingDir: workspace})
+		if collectErr != nil {
+			return runnerResult{Session: result.Session}, collectErr
+		}
+		for i, file := range files {
+			contentType := generatedSkillArtifactContentType(file.Filename)
+			if len(cleanStringSlice(policy.ArtifactTypes)) > 0 && !artifactContentTypeAllowed(contentType, policy.ArtifactTypes) {
+				return runnerResult{Session: result.Session}, errors.New("remote artifact content type denied")
+			}
+			artifact, artifactErr := r.CreateArtifact(ctx, userID, session.ID, file.Filename, contentType, file.Content)
+			if artifactErr != nil {
+				return runnerResult{Session: result.Session}, artifactErr
+			}
+			recordArtifactToolResult(result.Session, fmt.Sprintf("remote-skill-artifact-%d", i+1), artifact, "remote_skill")
+			execDiagnostics.ArtifactCount++
+		}
+	}
+	if skillProducesArtifacts(skill) && execDiagnostics.ArtifactCount == 0 && !strings.EqualFold(sandbox.Runner, "remote") {
 		registered, registerErr := r.registerGeneratedSkillArtifacts(ctx, userID, session.ID, workspace, policy.ArtifactTypes, generatedArtifactsBefore, result.Session)
 		if registerErr != nil {
 			status = SkillExecutionStatusFailed
@@ -7193,11 +7250,25 @@ func declaresVertexAccessToken(allowed map[string]struct{}) bool {
 	return false
 }
 
-func (r *Runtime) skillShellRuntime(workspace, skillRoot string, skill *skills.SkillDefinition, policy SkillRuntimePolicy) skills.PromptShellRuntime {
+func (r *Runtime) effectiveSkillSandbox(ctx context.Context, userID string, policy SkillRuntimePolicy) SkillShellSandboxConfig {
+	selected := applySkillSandboxPolicy(r.config.SkillShellSandbox, policy.Sandbox)
+	if r.config.RemoteSkillExecutor != nil {
+		if route, ok := r.config.RemoteSkillExecutor.(RemoteSkillRouter); ok && route.RemoteSkillEnabled(ctx, userID) {
+			selected.Runner = "remote"
+		}
+	}
+	return selected
+}
+
+func (r *Runtime) skillShellRuntime(parent context.Context, userID, sessionID, workspace, skillRoot string, skill *skills.SkillDefinition, policy SkillRuntimePolicy) skills.PromptShellRuntime {
 	if r == nil || skill == nil {
 		return nil
 	}
-	sandbox := applySkillSandboxPolicy(r.config.SkillShellSandbox, policy.Sandbox)
+	sandbox := r.effectiveSkillSandbox(parent, userID, policy)
+	if strings.EqualFold(sandbox.Runner, "remote") {
+		request := RemoteSkillRequest{UserID: userID, SessionID: sessionID, SkillName: skill.Name, WorkingDir: workspace, SkillRoot: skillRoot}
+		return NewRemoteSkillShellRuntime(r.config.RemoteSkillExecutor, parent, request, skill.Shell, policy.AllowedTools, sandbox.MaxOutputBytes)
+	}
 	env := r.skillShellEnvironment(workspace, skillRoot, policy.AllowedEnv)
 	if sandbox.dockerEnabled() {
 		return NewDockerSkillShellRuntime(sandbox, skill.Shell, workspace, skillRoot, env, policy.AllowedTools)

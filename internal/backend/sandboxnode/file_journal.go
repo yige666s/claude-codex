@@ -115,7 +115,19 @@ func (f *FileJournal) persist() error {
 	if err = temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temp.Name(), f.path)
+	if err := os.Rename(temp.Name(), f.path); err != nil {
+		return err
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = directory.Sync()
+	closeErr := directory.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
 }
 
 func (f *FileJournal) mutate(fn func() error) error {
@@ -198,4 +210,43 @@ func (f *FileJournal) AppendEventForUser(id, user, kind, summary string) (LeaseE
 		return e
 	})
 	return event, err
+}
+
+// LookupJob checks whether a task ID was already persisted before staging.
+// A new process must not treat a re-sent prepare as a recoverable live lease.
+func (f *FileJournal) LookupJob(jobID string) (LeaseSnapshot, error) {
+	if f == nil {
+		return LeaseSnapshot{}, ErrLeaseMissing
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.poisoned {
+		return LeaseSnapshot{}, errors.New("sandbox journal persistence failed")
+	}
+	f.journal.mu.Lock()
+	defer f.journal.mu.Unlock()
+	lease := f.journal.byJob[jobID]
+	if lease == nil {
+		return LeaseSnapshot{}, ErrLeaseMissing
+	}
+	return lease.LeaseSnapshot, nil
+}
+
+// InvalidatePrepared fences every nonterminal lease after startup orphan
+// cleanup. A request replay with the same job ID is then rejected. Call it
+// only while holding the exclusive Node lock and after containers are gone.
+func (f *FileJournal) InvalidatePrepared() (int, error) {
+	count := 0
+	err := f.mutate(func() error {
+		f.journal.mu.Lock()
+		defer f.journal.mu.Unlock()
+		for _, lease := range f.journal.byID {
+			if lease.State == LeasePrepared {
+				lease.State = LeaseCanceled
+				count++
+			}
+		}
+		return nil
+	})
+	return count, err
 }

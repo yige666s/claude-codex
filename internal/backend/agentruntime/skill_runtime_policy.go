@@ -155,6 +155,11 @@ func parseSkillSandboxPolicy(in map[string]any) SkillShellSandboxConfig {
 }
 
 func applySkillSandboxPolicy(base SkillShellSandboxConfig, override SkillShellSandboxConfig) SkillShellSandboxConfig {
+	// A server-selected remote isolated path may never be turned back into the
+	// legacy API-local or API-Docker runner by editable Skill metadata.
+	if strings.EqualFold(strings.TrimSpace(base.Runner), "remote") {
+		return base.normalized()
+	}
 	if strings.TrimSpace(override.Runner) != "" {
 		base.Runner = override.Runner
 	}

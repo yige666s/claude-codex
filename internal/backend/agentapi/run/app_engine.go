@@ -25,6 +25,7 @@ type engineFactoryConfig struct {
 	llmCfg                  bootstrap.LLMConfig
 	skillCatalog            agentruntime.SkillCatalog
 	skillShellSandboxConfig agentruntime.SkillShellSandboxConfig
+	remoteSkillExecutor     agentruntime.RemoteSkillExecutor
 	llmConfigManager        *agentruntime.LLMGovernanceConfigManager
 	llmUsageStore           agentruntime.LLMUsageStore
 	riskStore               agentruntime.RiskStore
@@ -73,7 +74,7 @@ func buildEngineFactory(cfg engineFactoryConfig) (agentruntime.ContextEngineFact
 				}
 			}
 		}
-		sandboxBash := buildSandboxBashRuntime(cfg.skillShellSandboxConfig, root, scope)
+		sandboxBash := buildSandboxBashRuntime(cfg.skillShellSandboxConfig, root, scope, cfg.remoteSkillExecutor)
 		runSubagent := buildRuntimeSubagentRunner(scope, func() *agentruntime.Runtime {
 			if cfg.runtimeProvider == nil {
 				return nil

@@ -28,6 +28,9 @@ type Profile struct {
 	PIDs           int     `json:"pids"`
 	TimeoutSeconds int     `json:"timeout_seconds"`
 	MaxOutputBytes int     `json:"max_output_bytes"`
+	// File-capable profiles require explicit memory and artifact quotas.
+	ScratchMiB       int `json:"scratch_mib,omitempty"`
+	MaxArtifactBytes int `json:"max_artifact_bytes,omitempty"`
 }
 
 type Route struct {
@@ -64,14 +67,14 @@ func (d Document) Validate() error {
 		return errors.New("enabled sandbox policy needs a default profile and node pool")
 	}
 	for name, p := range d.Profiles {
-		if !validID(name) || p.Driver != "oci" || p.Network != "deny" {
-			return fmt.Errorf("invalid or unsafe sandbox profile %q", name)
+		if !validID(name) {
+			return fmt.Errorf("invalid sandbox profile name %q", name)
+		}
+		if err := ValidateOCIProfile(p); err != nil {
+			return fmt.Errorf("profile %q: %w", name, err)
 		}
 		if _, ok := d.NodePools[p.NodePool]; !ok {
 			return fmt.Errorf("profile %q references missing pool", name)
-		}
-		if !pinnedImage.MatchString(p.ImageDigest) || p.CPUs <= 0 || p.CPUs > 8 || p.MemoryMiB < 64 || p.MemoryMiB > 16384 || p.PIDs < 1 || p.PIDs > 1024 || p.TimeoutSeconds < 1 || p.TimeoutSeconds > 3600 || p.MaxOutputBytes < 1 || p.MaxOutputBytes > 8<<20 {
-			return fmt.Errorf("profile %q has invalid limits or unpinned image", name)
 		}
 	}
 	if _, ok := d.Profiles[d.DefaultProfile]; !ok {
@@ -102,6 +105,39 @@ func (d Document) Validate() error {
 		if u.Scheme != "https" && !(u.Scheme == "http" && ip != nil && ip.IsLoopback() && p.Environment == "development") {
 			return fmt.Errorf("pool %q needs HTTPS or development loopback", name)
 		}
+	}
+	return nil
+}
+
+// ValidateOCIProfile is rechecked by the Node's driver, independently of the
+// Broker's DB policy. An unrecognized driver, network mode or mutable image is
+// never coerced to a permissive fallback.
+func ValidateOCIProfile(p Profile) error {
+	if p.Driver != "oci" || p.Network != "deny" {
+		return errors.New("only network-denied OCI profiles are supported")
+	}
+	if !pinnedImage.MatchString(p.ImageDigest) || p.CPUs <= 0 || p.CPUs > 8 || p.MemoryMiB < 64 || p.MemoryMiB > 16384 || p.PIDs < 1 || p.PIDs > 1024 || p.TimeoutSeconds < 1 || p.TimeoutSeconds > 3600 || p.MaxOutputBytes < 1 || p.MaxOutputBytes > 8<<20 {
+		return errors.New("invalid limits or unpinned image")
+	}
+	// Older isolated stdin-only profiles may omit file limits. File-capable
+	// execution rejects missing values instead of silently selecting defaults.
+	if p.ScratchMiB != 0 && (p.ScratchMiB < 8 || p.ScratchMiB > 512 || p.ScratchMiB > p.MemoryMiB/2) {
+		return errors.New("invalid OCI scratch memory quota")
+	}
+	if p.MaxArtifactBytes < 0 || p.MaxArtifactBytes > 8<<20 {
+		return errors.New("invalid OCI artifact budget")
+	}
+	return nil
+}
+
+// ValidateFileOCIProfile is the stricter admission gate for staged tasks.
+// Legacy stateless stdin-only profiles remain valid but cannot receive files.
+func ValidateFileOCIProfile(p Profile) error {
+	if err := ValidateOCIProfile(p); err != nil {
+		return err
+	}
+	if p.ScratchMiB == 0 || p.MaxArtifactBytes == 0 {
+		return errors.New("file OCI profile needs explicit scratch and artifact budgets")
 	}
 	return nil
 }

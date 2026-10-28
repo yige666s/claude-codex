@@ -203,7 +203,7 @@ func scopedToolName(value string) string {
 	return value
 }
 
-func buildSandboxBashRuntime(config agentruntime.SkillShellSandboxConfig, root string, scope agentruntime.Scope) *agentruntime.SandboxBashTool {
+func buildSandboxBashRuntime(config agentruntime.SkillShellSandboxConfig, root string, scope agentruntime.Scope, remote ...agentruntime.RemoteSkillExecutor) *agentruntime.SandboxBashTool {
 	if scope.SkillShellSandbox.Runner != "" {
 		config = scope.SkillShellSandbox
 	}
@@ -213,6 +213,18 @@ func buildSandboxBashRuntime(config agentruntime.SkillShellSandboxConfig, root s
 	shell := scope.SkillShell
 	if shell == "" {
 		shell = skills.ShellBash
+	}
+	if strings.EqualFold(strings.TrimSpace(config.Runner), "remote") {
+		var executor agentruntime.RemoteSkillExecutor
+		if len(remote) > 0 {
+			executor = remote[0]
+		}
+		request := agentruntime.RemoteSkillRequest{
+			UserID: scope.UserID, SessionID: scope.SessionID, SkillName: scope.SkillName,
+			WorkingDir: root, SkillRoot: startupconfig.FirstNonEmpty(scope.SkillRoot, root),
+		}
+		runtime := agentruntime.NewRemoteSkillShellRuntime(executor, nil, request, shell, scope.AllowedTools, config.MaxOutputBytes)
+		return agentruntime.NewSandboxBashTool(runtime)
 	}
 	if config.DockerEnabled() {
 		runtime := agentruntime.NewDockerSkillShellRuntime(

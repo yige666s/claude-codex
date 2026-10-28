@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"claude-codex/internal/backend/sandboxnode"
@@ -18,7 +21,17 @@ func main() {
 	tokenFile := flag.String("token-file", "", "path to a mode-0600 bootstrap token file")
 	simulationJournal := flag.String("simulation-journal", "", "absolute path to test-only journal; no code execution")
 	simulationRevision := flag.String("simulation-revision", "", "expected policy revision for test-only simulation")
+	developmentConfig := flag.String("development-config", "", "explicit private development Node configuration; loopback only")
 	flag.Parse()
+	if *developmentConfig != "" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := serveDevelopment(ctx, *addr, *developmentConfig); err != nil {
+			slog.Error("development Node stopped", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := serveNode(*addr, *tokenFile, *simulationJournal, *simulationRevision); err != nil {
 		slog.Error("sandbox node startup failed", "error", err)
 		os.Exit(1)

@@ -57,3 +57,24 @@ func TestPolicyFailClosedAndValidate(t *testing.T) {
 		t.Fatal("secret-like credential reference accepted")
 	}
 }
+
+func TestFileOCIProfileRequiresExplicitQuotas(t *testing.T) {
+	p := testDocument().Profiles["isolated"]
+	if err := ValidateFileOCIProfile(p); err == nil {
+		t.Fatal("legacy profile admitted for file execution")
+	}
+	p.ScratchMiB = 32
+	p.MaxArtifactBytes = 1 << 20
+	if err := ValidateFileOCIProfile(p); err != nil {
+		t.Fatal(err)
+	}
+	p.ScratchMiB = 300
+	if err := ValidateFileOCIProfile(p); err == nil {
+		t.Fatal("scratch exceeds cgroup budget")
+	}
+	p.ScratchMiB = 32
+	p.MaxArtifactBytes = 9 << 20
+	if err := ValidateFileOCIProfile(p); err == nil {
+		t.Fatal("unbounded artifacts accepted")
+	}
+}
