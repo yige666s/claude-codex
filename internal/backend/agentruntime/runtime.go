@@ -6370,7 +6370,7 @@ func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *st
 	// Remote execution requires a prepublished immutable Skill. Pin the
 	// release before prompt shell expansion so !-blocks and subsequent Bash
 	// commands share the same invocation-local task context.
-	if strings.EqualFold(r.effectiveSkillSandbox(ctx, userID, policy).Runner, "remote") {
+	if strings.EqualFold(r.effectiveSkillSandbox(ctx, userID, skill.Name, policy).Runner, "remote") {
 		preparer, ok := r.config.RemoteSkillExecutor.(RemoteSkillPreparer)
 		if !ok || preparer == nil {
 			return runnerResult{Session: session}, errors.New("remote Skill preparation is not configured")
@@ -6463,7 +6463,7 @@ func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *st
 		}
 	}
 	generated := skills.WrapGeneratedSkillPrompt(skill.Name, args, promptText)
-	sandbox := r.effectiveSkillSandbox(ctx, userID, policy)
+	sandbox := r.effectiveSkillSandbox(ctx, userID, skill.Name, policy)
 	runner := r.runnerForScope(ctx, Scope{
 		UserID:            userID,
 		SessionID:         session.ID,
@@ -6503,7 +6503,7 @@ func (r *Runtime) runSkillDirect(ctx context.Context, userID string, session *st
 		hideSkillExecutionIntermediateAssistantMessages(result.Session, startMessageCount, result.Output)
 		return runnerResult{Output: result.Output, Session: result.Session}, nil
 	}
-	if strings.EqualFold(sandbox.Runner, "remote") {
+	if strings.EqualFold(sandbox.Runner, "remote") && execDiagnostics.ArtifactCount == 0 {
 		collector, ok := r.config.RemoteSkillExecutor.(RemoteSkillCollector)
 		if !ok || collector == nil {
 			return runnerResult{Session: result.Session}, errors.New("remote artifact collector is not configured")
@@ -7250,10 +7250,10 @@ func declaresVertexAccessToken(allowed map[string]struct{}) bool {
 	return false
 }
 
-func (r *Runtime) effectiveSkillSandbox(ctx context.Context, userID string, policy SkillRuntimePolicy) SkillShellSandboxConfig {
+func (r *Runtime) effectiveSkillSandbox(ctx context.Context, userID, skillName string, policy SkillRuntimePolicy) SkillShellSandboxConfig {
 	selected := applySkillSandboxPolicy(r.config.SkillShellSandbox, policy.Sandbox)
 	if r.config.RemoteSkillExecutor != nil {
-		if route, ok := r.config.RemoteSkillExecutor.(RemoteSkillRouter); ok && route.RemoteSkillEnabled(ctx, userID) {
+		if route, ok := r.config.RemoteSkillExecutor.(RemoteSkillRouter); ok && route.RemoteSkillEnabled(ctx, userID, skillName) {
 			selected.Runner = "remote"
 		}
 	}
@@ -7264,7 +7264,7 @@ func (r *Runtime) skillShellRuntime(parent context.Context, userID, sessionID, w
 	if r == nil || skill == nil {
 		return nil
 	}
-	sandbox := r.effectiveSkillSandbox(parent, userID, policy)
+	sandbox := r.effectiveSkillSandbox(parent, userID, skill.Name, policy)
 	if strings.EqualFold(sandbox.Runner, "remote") {
 		request := RemoteSkillRequest{UserID: userID, SessionID: sessionID, SkillName: skill.Name, WorkingDir: workspace, SkillRoot: skillRoot}
 		return NewRemoteSkillShellRuntime(r.config.RemoteSkillExecutor, parent, request, skill.Shell, policy.AllowedTools, sandbox.MaxOutputBytes)
@@ -7337,6 +7337,15 @@ func (r *Runtime) runnerForScope(ctx context.Context, scope Scope) Runner {
 			sessionID: scope.SessionID,
 		}
 		scope.ArtifactMaxBytes = r.artifacts.MaxBytes()
+	}
+	if scope.SkillScoped && strings.EqualFold(scope.SkillShellSandbox.Runner, "remote") && scope.Artifacts != nil {
+		collector, ok := r.config.RemoteSkillExecutor.(RemoteSkillCollector)
+		if !ok || collector == nil {
+			return factoryErrorRunner{err: errors.New("remote Skill collector missing")}
+		}
+		scope.Artifacts = remoteSkillArtifactWriter{base: scope.Artifacts, collector: collector, request: RemoteSkillRequest{
+			UserID: scope.UserID, SessionID: scope.SessionID, SkillName: scope.SkillName, SkillRoot: scope.SkillRoot, WorkingDir: scope.WorkingDir,
+		}}
 	}
 	scope.Artifacts = NewArtifactContentTypeWriter(scope.Artifacts, scope.ArtifactTypes)
 

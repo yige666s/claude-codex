@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"claude-codex/internal/backend/agentruntime"
@@ -39,5 +40,23 @@ func TestPublishedCatalogBindsIDAndRoot(t *testing.T) {
 	req.SkillName = "other"
 	if _, err := catalog.Resolve(context.Background(), req); err == nil {
 		t.Fatal("allowed same root with different id")
+	}
+}
+
+func TestRealUserRouterOnlyPublishedSkills(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux control plane")
+	}
+	broker, request, _ := testBroker(t)
+	published := PublishedCatalog{Store: broker.Artifacts, Roots: map[string]string{request.SkillName: request.SkillRoot}}
+	broker.SkillCatalog = published
+	if !broker.RemoteSkillEnabled(context.Background(), request.UserID, request.SkillName) {
+		t.Fatal("published Skill not routed")
+	}
+	if broker.RemoteSkillEnabled(context.Background(), request.UserID, "unsupported") {
+		t.Fatal("unpublished Skill routed")
+	}
+	if broker.RemoteSkillEnabled(context.Background(), "other", request.SkillName) {
+		t.Fatal("other user routed")
 	}
 }

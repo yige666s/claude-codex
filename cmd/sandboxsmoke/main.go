@@ -28,14 +28,15 @@ func main() {
 	userID := flag.String("user", "smoke-user", "fake tenant identity")
 	expected := flag.String("expected", "fake input", "expected fake input marker")
 	quotaTest := flag.Bool("quota-test", false, "only fake tmpfs exhaustion test")
+	officeTest := flag.Bool("office-test", false, "fake DOCX helper smoke")
 	flag.Parse()
-	if err := smoke(*config, *addr, *work, *storeDir, *skillID, *userID, *expected, *quotaTest); err != nil {
+	if err := smoke(*config, *addr, *work, *storeDir, *skillID, *userID, *expected, *quotaTest, *officeTest); err != nil {
 		fmt.Fprintln(os.Stderr, "sandbox smoke failed:", err)
 		os.Exit(1)
 	}
 	fmt.Println("sandbox smoke passed: prepare/execute/execute/collect/dispose, fake data only")
 }
-func smoke(config, endpoint, workspace, storeDir, skillID, userID, expected string, quotaTest bool) error {
+func smoke(config, endpoint, workspace, storeDir, skillID, userID, expected string, quotaTest, officeTest bool) error {
 	if !filepath.IsAbs(config) || !filepath.IsAbs(workspace) || !filepath.IsAbs(storeDir) {
 		return errors.New("absolute paths required")
 	}
@@ -96,6 +97,27 @@ func smoke(config, endpoint, workspace, storeDir, skillID, userID, expected stri
 	other.UserID = userID + "-other"
 	if _, err := client.Prepare(ctx, other); err == nil {
 		return errors.New("second tenant bypassed single-slot admission")
+	}
+	if officeTest {
+		if skillID != "docx" {
+			return errors.New("office smoke requires docx Skill")
+		}
+		if _, err := rand.Read(id[:]); err != nil {
+			return err
+		}
+		command := "python3 /skill/scripts/create_docx_artifact.py <<'FAKE_DOCX_CONTENT'" + string(rune(10)) + "# Sandbox smoke report" + string(rune(10)) + "This is an isolated, fake document." + string(rune(10)) + "FAKE_DOCX_CONTENT" + string(rune(10))
+		result, execErr := client.Execute(ctx, sandboxstaging.ExecuteRequest{StageControl: control, ExecutionID: hex.EncodeToString(id[:]), Script: []byte(command)})
+		if execErr != nil {
+			return fmt.Errorf("docx helper failed: %w", execErr)
+		}
+		if !strings.Contains(result.Stdout, "artifact_file_path: generated-artifacts/") {
+			return errors.New("docx helper omitted artifact path")
+		}
+		files, collectErr := client.Collect(ctx, control)
+		if collectErr != nil || len(files) != 1 || !strings.HasSuffix(files[0].Path, ".docx") || !strings.HasPrefix(string(files[0].Content), "PK") {
+			return fmt.Errorf("invalid docx result: files=%d err=%v", len(files), collectErr)
+		}
+		return client.Dispose(ctx, lease.LeaseID, req.UserID, false)
 	}
 	if quotaTest {
 		if _, err := rand.Read(id[:]); err != nil {

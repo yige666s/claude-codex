@@ -21,3 +21,8 @@
 - 真实登录测试账号从聊天发起 Skill 调用，验证 prompt !-block、scoped Bash、长任务取消、Artifact Service 的生产对象存储与可见下载；严格限制可执行 Skill、灰度用户和配额。
 - 持久化交付队列、断线重试与幂等结果、长期 tombstone 压缩与多实例 fencing 尚需实现；journal 满额会拒绝新任务。不能用当前内存结果缓存替代生产级投递保证。
 - 将现场薄层 AgentAPI 镜像替换为推送代码后 CI 发布镜像，并通过同样的远端回归和灰度；回滚前先停 canary 路由，不删除审计记录。native 通道和外部 Skill 来源认证仍未开放。
+
+
+## 单账号真实聊天灰度（2026-10-28）
+
+explain/docx 已为指定真实账号路由至 31 Node，其他 Skill 和其他账号尚未切换。正式全用户切流仍需逐 Skill 的依赖、产物及权限验收，至少完成真实登录浏览器端到端、取消/下载/重启测试，解决 31 的公网管理面风险与容量问题。不能把 Node 具备 Python/LibreOffice 简单导入能力等同所有 Office Skill 验收。

@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"claude-codex/internal/harness/engine"
 	"claude-codex/internal/harness/skills"
+	"claude-codex/internal/harness/state"
 )
 
 func TestPublishedPromptAndPolicyMustMatchLoadedSkill(t *testing.T) {
@@ -51,7 +54,7 @@ type fakeCollectedRemote struct {
 	released  int
 }
 
-func (f *fakeCollectedRemote) RemoteSkillEnabled(_ context.Context, user string) bool {
+func (f *fakeCollectedRemote) RemoteSkillEnabled(_ context.Context, user, skill string) bool {
 	return user == "alice"
 }
 func (f *fakeCollectedRemote) PrepareSkill(ctx context.Context, req RemoteSkillRequest) (context.Context, []byte, func() error, error) {
@@ -106,7 +109,67 @@ func TestRemoteCollectedArtifactRegisteredWithService(t *testing.T) {
 	if remote.prepared != 1 || remote.collected != 1 || remote.released != 1 {
 		t.Fatalf("remote lifecycle: %+v", remote)
 	}
-	if got := runtime.effectiveSkillSandbox(context.Background(), "bob", SkillRuntimePolicy{}).Runner; got == "remote" {
+	if got := runtime.effectiveSkillSandbox(context.Background(), "bob", "remote-report", SkillRuntimePolicy{}).Runner; got == "remote" {
 		t.Fatal("noncanary user routed remote")
+	}
+}
+
+type remoteArtifactToolRunner struct {
+	writer ArtifactWriter
+	root   string
+}
+
+func (r remoteArtifactToolRunner) Run(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	return r.RunGeneratedPrompt(ctx, session, prompt)
+}
+func (r remoteArtifactToolRunner) RunGeneratedPrompt(ctx context.Context, session *state.Session, prompt string) (engine.Result, error) {
+	inputBytes, _ := json.Marshal(map[string]string{"filename": "remote-report.txt", "content_type": "text/plain", "file_path": "generated-artifacts/remote-report.txt"})
+	input := json.RawMessage(inputBytes)
+	result, err := NewArtifactTool(r.writer, r.root).Execute(ctx, input)
+	if err != nil {
+		return engine.Result{Session: session}, err
+	}
+	session.AddToolResult("remote-artifact-test", ArtifactToolName, input, result.Output)
+	session.AddAssistantMessage("remote report ready")
+	return engine.Result{Output: "remote report ready", Session: session}, nil
+}
+func TestRemoteArtifactFilePathFlowStoresOnce(t *testing.T) {
+	skillDir := filepath.Join(t.TempDir(), "remote-report")
+	if err := os.MkdirAll(skillDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: remote-report\nuser-invocable: true\nmetadata:\n  agentapi:\n    produces_artifacts: true\n---\nProduce a report"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := skills.NewSkillLoader().LoadSkillsFromDirectory(filepath.Dir(skillDir), skills.SourceFile)
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("skill load: %v", err)
+	}
+	remote := &fakeCollectedRemote{published: []byte(content)}
+	dataDir := t.TempDir()
+	runtime := NewRuntime(RuntimeConfig{DefaultWorkingDir: t.TempDir(), TurnTimeout: time.Minute,
+		SkillShellSandbox: SkillShellSandboxConfig{Runner: "docker"}, RemoteSkillExecutor: remote},
+		NewFileSessionStore(dataDir), NewFileMemoryService(dataDir), fakeSkillCatalog{skills: loaded},
+		func(scope Scope) Runner {
+			if scope.SkillScoped {
+				return remoteArtifactToolRunner{writer: scope.Artifacts, root: scope.WorkingDir}
+			}
+			return echoRunner{}
+		})
+	runtime.SetArtifactService(NewArtifactService(newMemoryArtifactStore(), NewFileObjectStore(t.TempDir()), "artifacts"))
+	session, err := runtime.CreateSession(context.Background(), "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Chat(context.Background(), ChatRequest{UserID: "alice", SessionID: session.ID, Content: "/remote-report fake"}, &collectSink{}); err != nil {
+		t.Fatal(err)
+	}
+	files, err := runtime.ListArtifacts(context.Background(), "alice", session.ID)
+	if err != nil || len(files) != 1 || files[0].Filename != "remote-report.txt" {
+		t.Fatalf("saved: %+v %v", files, err)
+	}
+	if remote.collected != 1 {
+		t.Fatalf("unexpected collection calls=%d", remote.collected)
 	}
 }

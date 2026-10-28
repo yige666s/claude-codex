@@ -140,5 +140,5 @@ func validatePublishedSkillDefinition(skill *skills.SkillDefinition, published [
 // RemoteSkillRouter gates canary per user; non-canary traffic retains the
 // existing configured runner rather than a global remote override.
 type RemoteSkillRouter interface {
-	RemoteSkillEnabled(context.Context, string) bool
+	RemoteSkillEnabled(context.Context, string, string) bool
 }

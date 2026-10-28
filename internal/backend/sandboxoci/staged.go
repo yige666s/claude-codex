@@ -105,7 +105,7 @@ func stagedRunArgs(p sandboxpolicy.Profile, name, skill, workspace string) []str
 // CopyInputToScratch is a fixed prologue to be run before any user command.
 // No caller-supplied path is interpolated into the shell text. Input archives
 // reject links; the initial copy consumes only the bounded /workspace tmpfs.
-const CopyInputToScratch = "set -eu\ncp -R /input/. /workspace/\nchmod -R u+w /workspace\nmkdir -p /workspace/outputs\n"
+const CopyInputToScratch = "set -eu\ncp -R /input/. /workspace/\nchmod -R u+w /workspace\nmkdir -p /workspace/outputs\nrm -rf /workspace/generated-artifacts\nln -s /workspace/outputs /workspace/generated-artifacts\n"
 
 // CollectStagedOutputs validates a bounded archive streamed from a *live*
 // container, e.g. via docker exec tar. Docker cp cannot export tmpfs mounts.

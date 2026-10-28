@@ -1,5 +1,14 @@
 # 2026-10-28 真实 Node 开发灰度联调报告
 
+## 2026-10-28 补充：单账号真实聊天路由已开启（受限范围）
+
+- 155 AgentAPI 已改为现场薄层镜像 claude-codex-agentapi:sandbox-realchat-20261028，活动 DB policy revision 5；31 Node 预期 revision 5，采用固定 digest 的 AgentAPI 运行时镜像（Python、Node、LibreOffice）。策略限额为 1 并发、768 MiB 内存、128 MiB 临时工作区、8 MiB 总产物、180 秒任务超时。
+- 已将邮箱 yige29805@gmail.com 对应的一个 active 用户 ID 加入真实远程灰度名单。该账号触发 **explain 或 docx** 时，Skill prepare、脚本执行（如果有）、产物收集与释放走 31 Node。其他账号及其他 Skill 继续原路径；**不是全站、全 Skill 切换**。没有通过用户密码或伪造登录令牌代发消息，因此实际登录浏览器中的聊天请求需要用户亲自触发并观察结果。
+- 31 上以假文本调用仓库 docx helper 成功生成 .docx，API 单元测试验证 Artifact(file_path=generated-artifacts/...) 读取远程校验后的 outputs，不会误读同名 155 宿主文件，也不会重复注册 Artifact。31 全仓、定向 race 与 vet 已通过；Node 与 AgentAPI 现均健康且没有残留任务容器。
+- 风险：31 的公网 1Panel HTTP 42644 仍然开放，此前用户选择不关闭；本轮未动该服务。Node 控制面拥有 Docker 组权限。本次按用户新请求对其单一账号做真实灰度，**不能据此批准其他用户或其他 Skill 放量**。Office 的真实登录会话和生产对象存储下载尚待用户端到端验证；若失败，远程路径显式报错，不退回本地执行。
+- 快速撤销此真实账号路由：在 155 执行 python3 /opt/agentapi/sandbox-canary-build/disable-real-user-route.py。它恢复仅假身份的 canary 用户配置并重建 AgentAPI，保留 DB revision 5 与节点服务，确认 /readyz=200。若需停用所有远程路线，再执行既有 SQL 策略回滚脚本（以当前活动 revision 为预期值）。
+
+
 ## 当前状态
 
 - 31.25.10.10：开发节点服务 claude-codex-sandboxnode-dev.service 由独立 sandboxnode 用户运行，仅监听 127.0.0.1:18080。使用 digest 固定的 BusyBox 测试镜像；单槽开发池，network=none、非 root、只读 Skill/输入、64 MiB 工作区 tmpfs、256 MiB 内存、32 PIDs、0.5 CPU、1 MiB 产物上限。

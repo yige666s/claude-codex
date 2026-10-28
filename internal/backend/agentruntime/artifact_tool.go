@@ -28,6 +28,12 @@ type ArtifactTool struct {
 	maxBytes int
 }
 
+// ArtifactFileReader resolves a final file from a task-isolated remote
+// sandbox, rather than accidentally reading a same-named file on the API host.
+type ArtifactFileReader interface {
+	ReadArtifactFile(context.Context, string) ([]byte, error)
+}
+
 type artifactContentTypeWriter struct {
 	base    ArtifactWriter
 	allowed []string
@@ -133,7 +139,7 @@ func (t *ArtifactTool) Execute(ctx context.Context, raw json.RawMessage) (toolki
 	if filename == "" || filename == "." || filename == string(filepath.Separator) {
 		return toolkit.Result{}, fmt.Errorf("filename is required")
 	}
-	data, err := t.artifactBytes(input)
+	data, err := t.artifactBytes(ctx, input)
 	if err != nil {
 		return toolkit.Result{}, err
 	}
@@ -461,7 +467,7 @@ func normalizeArtifactToolContentType(filename, contentType string) string {
 	return contentType
 }
 
-func (t *ArtifactTool) artifactBytes(input artifactToolInput) ([]byte, error) {
+func (t *ArtifactTool) artifactBytes(ctx context.Context, input artifactToolInput) ([]byte, error) {
 	hasText := input.Content != ""
 	hasBase64 := strings.TrimSpace(input.ContentBase64) != ""
 	hasFile := strings.TrimSpace(input.FilePath) != ""
@@ -484,6 +490,9 @@ func (t *ArtifactTool) artifactBytes(input artifactToolInput) ([]byte, error) {
 	case hasText:
 		return []byte(input.Content), nil
 	case hasFile:
+		if reader, ok := t.writer.(ArtifactFileReader); ok {
+			return reader.ReadArtifactFile(ctx, input.FilePath)
+		}
 		if strings.TrimSpace(t.rootDir) == "" {
 			return nil, fmt.Errorf("file_path is unavailable without a workspace root")
 		}
@@ -511,6 +520,9 @@ func NewArtifactContentTypeWriter(base ArtifactWriter, allowed []string) Artifac
 	allowed = cleanStringSlice(allowed)
 	if base == nil || len(allowed) == 0 {
 		return base
+	}
+	if reader, ok := base.(ArtifactFileReader); ok {
+		return artifactContentTypeFileWriter{artifactContentTypeWriter{base: base, allowed: allowed}, reader}
 	}
 	return artifactContentTypeWriter{base: base, allowed: allowed}
 }
@@ -544,4 +556,13 @@ func artifactContentTypeAllowed(contentType string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+type artifactContentTypeFileWriter struct {
+	artifactContentTypeWriter
+	reader ArtifactFileReader
+}
+
+func (w artifactContentTypeFileWriter) ReadArtifactFile(ctx context.Context, path string) ([]byte, error) {
+	return w.reader.ReadArtifactFile(ctx, path)
 }

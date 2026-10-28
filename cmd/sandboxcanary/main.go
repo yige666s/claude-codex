@@ -21,7 +21,7 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "", "activate, smoke, or rollback")
+	mode := flag.String("mode", "", "activate, update-profile, smoke, or rollback")
 	cfgFile := flag.String("node-config", "", "private canary node config JSON")
 	root := flag.String("skill-root", "", "approved Skill directory")
 	workspace := flag.String("workspace", "", "fake workspace directory")
@@ -77,6 +77,43 @@ func main() {
 			die(err)
 		}
 		fmt.Printf("sandbox policy canary revision=%d previous=%d\n", published.ID, current.ID)
+	case "update-profile":
+		raw, err := os.ReadFile(*cfgFile)
+		if err != nil {
+			die(err)
+		}
+		var node struct{ Profile sandboxpolicy.Profile }
+		if err := json.Unmarshal(raw, &node); err != nil {
+			die(err)
+		}
+		active, err := store.Active(ctx)
+		if err != nil {
+			die(err)
+		}
+		if !active.Document.Enabled {
+			die(errors.New("cannot update disabled sandbox policy"))
+		}
+		doc := active.Document
+		current := doc.Profiles[doc.DefaultProfile]
+		if current.NodePool == "" || current.NodePool != node.Profile.NodePool {
+			die(errors.New("Node pool change requires independent approval"))
+		}
+		if err := sandboxpolicy.ValidateFileOCIProfile(node.Profile); err != nil {
+			die(err)
+		}
+		doc.Profiles[doc.DefaultProfile] = node.Profile
+		if err := doc.Validate(); err != nil {
+			die(err)
+		}
+		draft, err := store.Draft(ctx, doc, "sandbox-profile-upgrade")
+		if err != nil {
+			die(err)
+		}
+		published, err := store.Publish(ctx, draft.ID, active.ID, "sandbox-profile-upgrade")
+		if err != nil {
+			die(err)
+		}
+		fmt.Printf("sandbox profile revision=%d previous=%d"+string(rune(10)), published.ID, active.ID)
 	case "rollback":
 		if *previous < 1 {
 			die(errors.New("previous revision required"))

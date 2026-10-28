@@ -170,8 +170,12 @@ func (b *Executor) PrepareSkill(ctx context.Context, req agentruntime.RemoteSkil
 	return context.WithValue(ctx, preparedKey{}, task), published, release, nil
 }
 
-func (b *Executor) RemoteSkillEnabled(ctx context.Context, userID string) bool {
-	if b == nil || !b.AllowedUserIDs[userID] || b.Policy == nil || ctx == nil {
+func (b *Executor) RemoteSkillEnabled(ctx context.Context, userID, skillName string) bool {
+	if b == nil || !b.AllowedUserIDs[userID] || b.Policy == nil || ctx == nil || skillName == "" {
+		return false
+	}
+	catalog, ok := b.SkillCatalog.(PublishedCatalog)
+	if !ok || catalog.Roots[skillName] == "" {
 		return false
 	}
 	revision, err := b.Policy.Active(ctx)
