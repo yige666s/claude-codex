@@ -16,7 +16,6 @@ def main():
     saved = BACKUP.read_text()
     if 'AGENT_API_SANDBOX_CANARY_USER_IDS=sandbox-smoke-user' not in saved:
         raise SystemExit('backup is not the expected fake-only canary')
-    current = CONFIG.read_bytes()
     CONFIG.write_text(saved)
     CONFIG.chmod(0o600)
     command = [
@@ -33,8 +32,7 @@ def main():
         raise SystemExit('running image could not be determined')
     result = subprocess.run(command, cwd='/opt/agentapi/repo', env=env, timeout=180)
     if result.returncode != 0:
-        CONFIG.write_bytes(current)
-        raise SystemExit('API recreation failed; inspect service before retrying')
+        raise SystemExit('API recreation failed; safe fake-only config remains on disk. Inspect service before retrying')
     for _ in range(30):
         try:
             with urllib.request.urlopen('http://127.0.0.1:8081/readyz', timeout=3) as response:
@@ -42,7 +40,8 @@ def main():
                     print('real user sandbox route disabled; API healthy')
                     return
         except Exception:
-            time.sleep(3)
+            pass
+        time.sleep(3)
     raise SystemExit('API did not become healthy; operator attention required')
 
 
