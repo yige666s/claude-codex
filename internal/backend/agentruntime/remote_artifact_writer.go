@@ -20,6 +20,14 @@ func (w remoteSkillArtifactWriter) Write(ctx context.Context, filename, contentT
 }
 func (w remoteSkillArtifactWriter) ReadArtifactFile(ctx context.Context, requested string) ([]byte, error) {
 	requested = strings.TrimSpace(strings.ReplaceAll(requested, "\\", "/"))
+	// Accept only fixed absolute paths inside the task container. This
+	// never reads an absolute path on the API host.
+	for _, root := range []string{"/workspace/generated-artifacts/", "/workspace/outputs/"} {
+		if strings.HasPrefix(requested, root) {
+			requested = strings.TrimPrefix(requested, "/workspace/")
+			break
+		}
+	}
 	if requested == "" || strings.HasPrefix(requested, "/") || path.Clean(requested) != requested {
 		return nil, errors.New("remote artifact path rejected")
 	}

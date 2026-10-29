@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"claude-codex/internal/backend/pubsub"
+	"claude-codex/internal/backend/agentruntime/pubsub"
 )
 
 type JobEventBus interface {

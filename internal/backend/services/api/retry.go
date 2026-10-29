@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	backendretry "claude-codex/internal/backend/retry"
+	backendretry "claude-codex/internal/backend/agentruntime/retry"
 )
 
 // CalculateBackoff calculates exponential backoff delay

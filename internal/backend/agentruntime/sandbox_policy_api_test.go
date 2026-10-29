@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"claude-codex/internal/backend/sandboxpolicy"
+	"claude-codex/internal/backend/agentruntime/sandboxpolicy"
 )
 
 type testSandboxPolicyRepo struct {

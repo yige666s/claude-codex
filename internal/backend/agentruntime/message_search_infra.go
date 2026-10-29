@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"claude-codex/internal/backend/googleauth"
-	"claude-codex/internal/backend/httpclient"
+	"claude-codex/internal/backend/agentruntime/googleauth"
+	"claude-codex/internal/backend/agentruntime/httpclient"
 	"claude-codex/internal/harness/state"
 )
 

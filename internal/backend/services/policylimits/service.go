@@ -13,7 +13,7 @@ import (
 
 	appauth "claude-codex/internal/app/auth"
 	"claude-codex/internal/app/config"
-	"claude-codex/internal/backend/httpclient"
+	"claude-codex/internal/backend/agentruntime/httpclient"
 )
 
 type Restrictions map[string]any

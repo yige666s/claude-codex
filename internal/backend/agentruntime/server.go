@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"claude-codex/internal/backend/httpjson"
-	"claude-codex/internal/backend/sandboxpolicy"
+	"claude-codex/internal/backend/agentruntime/httpjson"
+	"claude-codex/internal/backend/agentruntime/sandboxpolicy"
 	skillpkg "claude-codex/internal/harness/skills"
 	"claude-codex/internal/harness/state"
 

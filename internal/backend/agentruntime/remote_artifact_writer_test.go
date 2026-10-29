@@ -39,7 +39,11 @@ func TestRemoteArtifactFilePathReadsVerifiedTaskNotHost(t *testing.T) {
 	if collector.calls != 1 {
 		t.Fatalf("remote collector calls=%d", collector.calls)
 	}
-	for _, bad := range []string{"../report.txt", "generated-artifacts/../report.txt", "/etc/passwd", "other/report.txt", "generated-artifacts/missing.txt"} {
+	absolute, _ := json.Marshal(map[string]string{"filename": "report.txt", "content_type": "text/plain", "file_path": "/workspace/generated-artifacts/report.txt"})
+	if _, err := tool.Execute(context.Background(), absolute); err != nil {
+		t.Fatalf("fixed in-container path rejected: %v", err)
+	}
+	for _, bad := range []string{"../report.txt", "generated-artifacts/../report.txt", "/workspace/generated-artifacts/../report.txt", "/workspace/other/report.txt", "/etc/passwd", "other/report.txt", "generated-artifacts/missing.txt"} {
 		input, _ = json.Marshal(map[string]string{"filename": "report.txt", "content_type": "text/plain", "file_path": bad})
 		if _, err := tool.Execute(context.Background(), input); err == nil {
 			t.Fatalf("unsafe remote artifact path accepted: %q", bad)

@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"claude-codex/internal/backend/httpclient"
-	workerlifecycle "claude-codex/internal/backend/workers"
+	"claude-codex/internal/backend/agentruntime/httpclient"
+	workerlifecycle "claude-codex/internal/backend/agentruntime/workers"
 	"claude-codex/internal/harness/state"
 )
 

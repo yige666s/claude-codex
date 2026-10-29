@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"claude-codex/internal/backend/agentruntime"
-	workerlifecycle "claude-codex/internal/backend/workers"
+	workerlifecycle "claude-codex/internal/backend/agentruntime/workers"
 )
 
 var httpListenAndServe = func(addr string, handler *agentruntime.Server, shutdownTimeout time.Duration) error {

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"claude-codex/internal/backend/googleauth"
+	"claude-codex/internal/backend/agentruntime/googleauth"
 )
 
 // VertexProvider implements Provider for Google and partner models on Vertex AI.

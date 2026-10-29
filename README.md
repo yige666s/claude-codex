@@ -46,7 +46,7 @@ AgentAPI is the main product surface in this repository. It combines the `cmd/ag
 | `internal/backend/agentapi` | AgentAPI configuration, dependency wiring, runtime lifecycle, and workers. |
 | `internal/backend/agentruntime` | Core web agent runtime for HTTP APIs, WebSockets, sessions, jobs, memory, skills, artifacts, admin, and risk APIs. |
 | `internal/backend/services` | Product services such as analytics, api, compact, context, cost, history, mcp, oauth, tasks, tokens, tools, voice, and x402. |
-| `internal/backend/googleauth` | Google service-account helper for Vertex AI access tokens. |
+| `internal/backend/agentruntime/googleauth` | Google service-account helper for Vertex AI access tokens. |
 | `.claude/skills` | Local skills that AgentAPI can load. |
 | `deploy/local` | Local Docker Compose development stack. |
 | `deploy/production` | Production deployment examples, frontend nginx config, release, sizing, and backup/restore docs. |
@@ -181,7 +181,7 @@ The claudecode Go refactor is the second major workstream in this repository. It
 - **Application assembly layer**: `internal/app`
 - **Terminal UI**: `internal/ui/tui`
 - **Core harness**: `internal/harness`
-- **Remote/server boundaries**: `internal/backend/bridge`, `internal/backend/remote`, `internal/backend/upstreamproxy`
+- **Remote/server boundaries**: `internal/backend/agentapi/bridge`, `internal/backend/agentruntime/remote`, `internal/backend/agentruntime/upstreamproxy`
 - **Public foundation packages**: `internal/public`
 
 The default local execution chain is:
@@ -282,7 +282,7 @@ Detailed refactor docs:
 ```bash
 make fmt
 make test
-go test ./internal/backend/agentruntime ./internal/backend/googleauth ./internal/harness/provider ./cmd/agentapi
+go test ./internal/backend/agentruntime ./internal/backend/agentruntime/googleauth ./internal/harness/provider ./cmd/agentapi
 go build ./cmd/agentapi
 go build ./cmd/tui
 

@@ -15,7 +15,7 @@ import (
 	appauth "claude-codex/internal/app/auth"
 	"claude-codex/internal/app/config"
 	"claude-codex/internal/app/settings"
-	"claude-codex/internal/backend/httpclient"
+	"claude-codex/internal/backend/agentruntime/httpclient"
 )
 
 const endpointPath = "/api/claude_code/user_settings"

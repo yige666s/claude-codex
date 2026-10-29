@@ -1,12 +1,15 @@
 # Backend Package Layout
 
-This directory is organized by runtime ownership and shared infrastructure.
+This directory has three top-level ownership areas: API entrypoints, the agent
+runtime and its infrastructure, and product services.
 
 ## Agent API
 
 - `agentapi/config`: command-line and environment configuration.
 - `agentapi/bootstrap`: dependency construction and wiring.
 - `agentapi/run`: server, worker, and shutdown lifecycle.
+- `agentapi/bridge`: local bridge server/client and remote work-secret handling.
+- `agentapi/legacy/server`: older standalone HTTP server kept for compatibility.
 
 ## Agent Runtime
 
@@ -16,23 +19,21 @@ This directory is organized by runtime ownership and shared infrastructure.
 - `agentruntime/migrations`: goose migrations for the runtime database schema.
 - `agentruntime/sqlc` and `agentruntime/dbsqlc`: sqlc query definitions and
   generated database code.
-
-## Bridge And Remote
-
-- `bridge`: local bridge server/client code and remote work-secret handling.
-- `remote`: remote WebSocket client lifecycle and reconnect behavior.
-- `upstreamproxy`: proxy support for upstream backend calls.
+- `agentruntime/remote`: remote WebSocket client lifecycle and reconnect behavior.
+- `agentruntime/upstreamproxy`: proxy support for upstream backend calls.
+- `agentruntime/sandbox*`: published artifacts, policy, broker, node protocol,
+  OCI execution, staging and bounded transfer.
 
 ## Shared Infrastructure
 
-- `httpclient`: shared outbound HTTP client helpers for JSON, retries, logging,
+- `agentruntime/httpclient`: shared outbound HTTP client helpers for JSON, retries, logging,
   metrics, and request context propagation.
-- `httpjson`: shared inbound HTTP JSON decoding, encoding, validation, and error
+- `agentruntime/httpjson`: shared inbound HTTP JSON decoding, encoding, validation, and error
   response helpers.
-- `retry`: shared retry policy and backoff behavior.
-- `workers`: shared worker and scheduler lifecycle primitives.
-- `pubsub`: shared publish/subscribe interfaces and in-memory implementation.
-- `googleauth`: Google service-account authentication helpers.
+- `agentruntime/retry`: shared retry policy and backoff behavior.
+- `agentruntime/workers`: shared worker and scheduler lifecycle primitives.
+- `agentruntime/pubsub`: shared publish/subscribe interfaces and in-memory implementation.
+- `agentruntime/googleauth`: Google service-account authentication helpers.
 
 ## Product Services
 
@@ -40,20 +41,14 @@ This directory is organized by runtime ownership and shared infrastructure.
   code should reuse shared infrastructure above instead of adding local HTTP,
   retry, or lifecycle implementations.
 
-## Legacy
-
-- `legacy/server`: older standalone backend server package retained for
-  compatibility and regression tests. Do not add new framework work here unless
-  it is needed to keep legacy behavior compiling. New HTTP backend work should
-  go through `agentruntime` and `agentapi`.
-
 ## Migration Rules
 
 - New HTTP routes should be registered through the chi router in
   `agentruntime/routes.go`.
-- New request/response JSON handling should use `httpjson`.
-- New outbound HTTP calls should use `httpclient`.
-- New retry behavior should use `retry.Policy`.
-- New goroutine or scheduler lifecycle code should use `workers.Group`.
+- New request/response JSON handling should use `agentruntime/httpjson`.
+- New outbound HTTP calls should use `agentruntime/httpclient`.
+- New retry behavior should use `agentruntime/retry.Policy`.
+- New goroutine or scheduler lifecycle code should use `agentruntime/workers.Group`.
+- Keep new HTTP routes in `agentruntime`, not `agentapi/legacy/server`.
 - Postgres schema changes should be represented by goose migrations and sqlc
   queries where practical.

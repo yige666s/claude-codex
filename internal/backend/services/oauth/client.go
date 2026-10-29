@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"claude-codex/internal/backend/httpclient"
+	"claude-codex/internal/backend/agentruntime/httpclient"
 )
 
 // Client handles OAuth token operations

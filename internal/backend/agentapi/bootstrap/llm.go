@@ -9,7 +9,7 @@ import (
 
 	startupconfig "claude-codex/internal/backend/agentapi/config"
 	"claude-codex/internal/backend/agentruntime"
-	"claude-codex/internal/backend/googleauth"
+	"claude-codex/internal/backend/agentruntime/googleauth"
 	"claude-codex/internal/harness/anthropic"
 	"claude-codex/internal/harness/engine"
 	providerbackend "claude-codex/internal/harness/provider"

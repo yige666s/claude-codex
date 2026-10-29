@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"claude-codex/internal/backend/googleauth"
+	"claude-codex/internal/backend/agentruntime/googleauth"
 )
 
 const defaultVertexLiveGcloudTokenTTL = 50 * time.Minute

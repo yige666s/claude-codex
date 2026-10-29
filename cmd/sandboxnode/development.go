@@ -11,12 +11,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"claude-codex/internal/backend/sandboxartifact"
-	"claude-codex/internal/backend/sandboxnode"
-	"claude-codex/internal/backend/sandboxoci"
-	"claude-codex/internal/backend/sandboxpolicy"
-	"claude-codex/internal/backend/sandboxstaging"
-	"claude-codex/internal/backend/sandboxtransfer"
+	"claude-codex/internal/backend/agentruntime/sandboxartifact"
+	"claude-codex/internal/backend/agentruntime/sandboxnode"
+	"claude-codex/internal/backend/agentruntime/sandboxoci"
+	"claude-codex/internal/backend/agentruntime/sandboxpolicy"
+	"claude-codex/internal/backend/agentruntime/sandboxstaging"
+	"claude-codex/internal/backend/agentruntime/sandboxtransfer"
 )
 
 type developmentConfig struct {

@@ -10,7 +10,7 @@ import (
 
 	startupconfig "claude-codex/internal/backend/agentapi/config"
 	"claude-codex/internal/backend/agentruntime"
-	"claude-codex/internal/backend/sandboxpolicy"
+	"claude-codex/internal/backend/agentruntime/sandboxpolicy"
 	"claude-codex/internal/harness/skills"
 )
 

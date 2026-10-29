@@ -1,6 +1,6 @@
 package agentruntime
 
-import backendretry "claude-codex/internal/backend/retry"
+import backendretry "claude-codex/internal/backend/agentruntime/retry"
 
 type RetryPolicy = backendretry.Policy
 type RetryAfterProvider = backendretry.RetryAfterProvider

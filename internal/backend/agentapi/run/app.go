@@ -10,7 +10,7 @@ import (
 	"claude-codex/internal/backend/agentapi/bootstrap"
 	startupconfig "claude-codex/internal/backend/agentapi/config"
 	"claude-codex/internal/backend/agentruntime"
-	workerlifecycle "claude-codex/internal/backend/workers"
+	workerlifecycle "claude-codex/internal/backend/agentruntime/workers"
 	"claude-codex/internal/harness/coordinator"
 	coretasks "claude-codex/internal/harness/tasks"
 )

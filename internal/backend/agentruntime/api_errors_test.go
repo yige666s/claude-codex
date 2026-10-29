@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"claude-codex/internal/backend/httpjson"
+	"claude-codex/internal/backend/agentruntime/httpjson"
 )
 
 func TestSanitizeAPIErrorMessageHidesCredentialInternals(t *testing.T) {

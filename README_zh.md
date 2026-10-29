@@ -46,7 +46,7 @@ AgentAPI 是当前仓库的主要产品面。它由 `cmd/agentapi` 后端和 `ap
 | `internal/backend/agentapi` | AgentAPI 的配置、依赖装配、运行生命周期和 workers。 |
 | `internal/backend/agentruntime` | 核心 Web Agent Runtime，负责 HTTP API、WebSocket、sessions、jobs、memory、skills、artifacts、admin/risk 等。 |
 | `internal/backend/services` | 产品服务层，例如 analytics、api、compact、context、cost、history、mcp、oauth、tasks、tokens、tools、voice、x402。 |
-| `internal/backend/googleauth` | Google service account 到 Vertex AI 访问令牌的辅助实现。 |
+| `internal/backend/agentruntime/googleauth` | Google service account 到 Vertex AI 访问令牌的辅助实现。 |
 | `.claude/skills` | 本地 skills 目录，AgentAPI 可以加载这里的技能。 |
 | `deploy/local` | 本地 Docker Compose 开发栈。 |
 | `deploy/production` | 生产部署示例、前端 nginx 配置、发布、扩容和备份恢复文档。 |
@@ -181,7 +181,7 @@ claudecode Go 重构是仓库里的第二条主线：把 Claude Code 的 TypeScr
 - **应用装配层**：`internal/app`
 - **终端 UI**：`internal/ui/tui`
 - **核心 harness**：`internal/harness`
-- **远程/服务端边界**：`internal/backend/bridge`、`internal/backend/remote`、`internal/backend/upstreamproxy`
+- **远程/服务端边界**：`internal/backend/agentapi/bridge`、`internal/backend/agentruntime/remote`、`internal/backend/agentruntime/upstreamproxy`
 - **公共基础包**：`internal/public`
 
 默认本地执行链是：
@@ -282,7 +282,7 @@ go run ./cmd/tui
 ```bash
 make fmt
 make test
-go test ./internal/backend/agentruntime ./internal/backend/googleauth ./internal/harness/provider ./cmd/agentapi
+go test ./internal/backend/agentruntime ./internal/backend/agentruntime/googleauth ./internal/harness/provider ./cmd/agentapi
 go build ./cmd/agentapi
 go build ./cmd/tui
 

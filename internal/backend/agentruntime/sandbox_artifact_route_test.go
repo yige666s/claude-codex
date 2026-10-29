@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"claude-codex/internal/backend/sandboxartifact"
-	"claude-codex/internal/backend/sandboxtransfer"
+	"claude-codex/internal/backend/agentruntime/sandboxartifact"
+	"claude-codex/internal/backend/agentruntime/sandboxtransfer"
 )
 
 func TestSandboxArtifactRouteRequiresDedicatedToken(t *testing.T) {

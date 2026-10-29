@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"claude-codex/internal/backend/sandboxpolicy"
+	"claude-codex/internal/backend/agentruntime/sandboxpolicy"
 )
 
 type sandboxPolicyRevisionRequest struct {

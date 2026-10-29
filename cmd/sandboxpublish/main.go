@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"claude-codex/internal/backend/sandboxartifact"
-	"claude-codex/internal/backend/sandboxtransfer"
+	"claude-codex/internal/backend/agentruntime/sandboxartifact"
+	"claude-codex/internal/backend/agentruntime/sandboxtransfer"
 )
 
 func main() {

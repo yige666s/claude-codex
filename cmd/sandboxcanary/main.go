@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"claude-codex/internal/backend/agentruntime"
-	"claude-codex/internal/backend/sandboxartifact"
-	"claude-codex/internal/backend/sandboxbroker"
-	"claude-codex/internal/backend/sandboxpolicy"
-	"claude-codex/internal/backend/sandboxtransfer"
+	"claude-codex/internal/backend/agentruntime/sandboxartifact"
+	"claude-codex/internal/backend/agentruntime/sandboxbroker"
+	"claude-codex/internal/backend/agentruntime/sandboxpolicy"
+	"claude-codex/internal/backend/agentruntime/sandboxtransfer"
 	"claude-codex/internal/harness/skills"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )

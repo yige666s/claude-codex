@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"claude-codex/internal/backend/httpclient"
+	"claude-codex/internal/backend/agentruntime/httpclient"
 )
 
 const (

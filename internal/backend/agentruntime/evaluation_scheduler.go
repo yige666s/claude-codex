@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	workerlifecycle "claude-codex/internal/backend/workers"
+	workerlifecycle "claude-codex/internal/backend/agentruntime/workers"
 )
 
 const EvaluationTriggerDailyIncremental = "daily_incremental"

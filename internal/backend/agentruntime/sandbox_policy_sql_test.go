@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"claude-codex/internal/backend/sandboxpolicy"
+	"claude-codex/internal/backend/agentruntime/sandboxpolicy"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 

@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"claude-codex/internal/backend/httpjson"
+	"claude-codex/internal/backend/agentruntime/httpjson"
 )
 
 type APIError struct {

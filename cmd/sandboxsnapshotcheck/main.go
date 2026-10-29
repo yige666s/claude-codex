@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"claude-codex/internal/backend/sandboxtransfer"
+	"claude-codex/internal/backend/agentruntime/sandboxtransfer"
 )
 
 // Dry-run only: no network transport or archive persistence.

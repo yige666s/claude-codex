@@ -15,7 +15,7 @@ import (
 	"claude-codex/internal/app/config"
 	lspcore "claude-codex/internal/app/lsp"
 	"claude-codex/internal/app/securestorage"
-	bridgepkg "claude-codex/internal/backend/bridge"
+	bridgepkg "claude-codex/internal/backend/agentapi/bridge"
 	anthropicbackend "claude-codex/internal/harness/anthropic"
 	api "claude-codex/internal/harness/anthropic"
 	"claude-codex/internal/harness/coordinator"

@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"claude-codex/internal/backend/httpclient"
+	"claude-codex/internal/backend/agentruntime/httpclient"
 	"claude-codex/internal/harness/state"
 )
 
