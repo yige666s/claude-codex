@@ -236,3 +236,48 @@ func TestSeparatePublishedSkillAndPerTaskWorkspace(t *testing.T) {
 		t.Fatal("skill archive accepted as workspace")
 	}
 }
+
+func TestWorkspaceSnapshotExcludesConfiguredPriorOutputs(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "users")
+	work := filepath.Join(root, "alice")
+	historical := filepath.Join(work, "generated-artifacts")
+	if err := os.MkdirAll(historical, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(historical, "old.docx"), bytes.Repeat([]byte("x"), 5<<20), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "input.txt"), []byte("only input"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	builder := Builder{WorkspaceRoot: root, Limits: DevLimits(), ExcludedWorkspaceDirs: []string{"generated-artifacts"}}
+	archive, err := builder.BuildWorkspace(context.Background(), work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	if err := ExtractWorkspace(archive, dest, DevLimits()); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(dest, "workspace", "input.txt"))
+	if err != nil || string(content) != "only input" {
+		t.Fatalf("input missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "workspace", "generated-artifacts")); !os.IsNotExist(err) {
+		t.Fatalf("old outputs shipped: %v", err)
+	}
+	if len(archive) > 4<<20 {
+		t.Fatalf("unexpected large archive: %d", len(archive))
+	}
+	for _, invalid := range []string{"../escape", "a/b", ".", string([]byte{120, 92, 121}), ""} {
+		builder.ExcludedWorkspaceDirs = []string{invalid}
+		if _, err := builder.BuildWorkspace(context.Background(), work); err == nil {
+			t.Fatalf("invalid exclusion accepted: %q", invalid)
+		}
+	}
+	builder.ExcludedWorkspaceDirs = nil
+	if _, err := builder.BuildWorkspace(context.Background(), work); err == nil {
+		t.Fatal("oversize old output accepted without configured exclusion")
+	}
+}

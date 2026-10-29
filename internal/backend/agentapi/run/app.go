@@ -86,7 +86,7 @@ func Run(ctx context.Context, cfg startupconfig.Config) error {
 	skillCatalog := skillRegistrySetup.catalog
 	sandboxPolicy := buildSandboxPolicyStore(storeCfg)
 	setupCtx, stopSandboxSetup := context.WithTimeout(ctx, 60*time.Second)
-	remoteExecutor, artifactHandler, remoteErr := initializeRemoteSandbox(setupCtx, cfg, skillManager, sandboxPolicy)
+	remoteExecutor, artifactHandler, remoteErr := initializeRemoteSandbox(setupCtx, cfg, skillManager, skillCatalog, sandboxPolicy)
 	stopSandboxSetup()
 	if remoteErr != nil {
 		return fmt.Errorf("initialize remote sandbox canary: %w", remoteErr)

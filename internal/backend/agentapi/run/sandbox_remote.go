@@ -20,7 +20,7 @@ import (
 
 // Optional canary-only wiring. Endpoints/profiles remain in the active DB
 // revision; credentials live in mode-0600 files, never in that DB row.
-func initializeRemoteSandbox(ctx context.Context, cfg startupconfig.Config, manager *skills.SkillManager, policy sandboxpolicy.Repository) (agentruntime.RemoteSkillExecutor, http.Handler, error) {
+func initializeRemoteSandbox(ctx context.Context, cfg startupconfig.Config, manager *skills.SkillManager, published agentruntime.SkillCatalog, policy sandboxpolicy.Repository) (agentruntime.RemoteSkillExecutor, http.Handler, error) {
 	users := startupconfig.SplitCSV(os.Getenv("AGENT_API_SANDBOX_CANARY_USER_IDS"))
 	if len(users) == 0 {
 		return nil, nil, nil
@@ -36,6 +36,10 @@ func initializeRemoteSandbox(ctx context.Context, cfg startupconfig.Config, mana
 	if len(skillIDs) == 0 || artifactDir == "" || credentialRef == "" {
 		return nil, nil, errors.New("remote sandbox publication and credential references required")
 	}
+	roots, err := remotePublishedSkillRoots(manager, published, skillIDs)
+	if err != nil {
+		return nil, nil, err
+	}
 	if _, err := readPrivateSandboxKey(tokenPath); err != nil {
 		return nil, nil, err
 	}
@@ -44,18 +48,13 @@ func initializeRemoteSandbox(ctx context.Context, cfg startupconfig.Config, mana
 		return nil, nil, err
 	}
 	allowedRoots := startupconfig.SplitCSV(cfg.SkillDirs)
-	builder := sandboxtransfer.Builder{WorkspaceRoot: cfg.UserWorkspaceRoot, SkillRoots: allowedRoots, Limits: sandboxtransfer.DevLimits()}
+	builder := sandboxtransfer.Builder{WorkspaceRoot: cfg.UserWorkspaceRoot, SkillRoots: allowedRoots,
+		ExcludedWorkspaceDirs: startupconfig.SplitCSV(os.Getenv("AGENT_API_SANDBOX_WORKSPACE_EXCLUDE_DIRS")), Limits: sandboxtransfer.DevLimits()}
 	store := sandboxartifact.Store{Dir: artifactDir, Builder: builder}
-	roots := make(map[string]string, len(skillIDs))
 	for _, id := range skillIDs {
-		skill, ok := manager.GetSkill(id)
-		if !ok || skill == nil || skill.Name != id || skill.Source != skills.SourceFile || filepath.Base(skill.SkillRoot) != id {
-			return nil, nil, fmt.Errorf("sandbox skill %q has no direct local publication", id)
-		}
-		if _, err := store.Publish(ctx, id, skill.SkillRoot); err != nil {
+		if _, err := store.Publish(ctx, id, roots[id]); err != nil {
 			return nil, nil, fmt.Errorf("publish sandbox skill %q: %w", id, err)
 		}
-		roots[id] = skill.SkillRoot
 	}
 	allowed := make(map[string]bool, len(users))
 	for _, id := range users {
@@ -99,4 +98,26 @@ func readPrivateSandboxKey(path string) ([]byte, error) {
 		return nil, errors.New("invalid sandbox credential length")
 	}
 	return raw, nil
+}
+
+// A Node allowlist is not equivalent to the SQL/Admin publication state.
+// Reject a mismatched deployment before serving chat traffic, rather than
+// allowing an unknown-skill error on the first real user request.
+func remotePublishedSkillRoots(manager *skills.SkillManager, published agentruntime.SkillCatalog, ids []string) (map[string]string, error) {
+	if manager == nil || published == nil {
+		return nil, errors.New("remote sandbox skill registry unavailable")
+	}
+	roots := make(map[string]string, len(ids))
+	for _, id := range ids {
+		skill, ok := manager.GetSkill(id)
+		if !ok || skill == nil || skill.Name != id || skill.Source != skills.SourceFile || filepath.Base(skill.SkillRoot) != id {
+			return nil, fmt.Errorf("sandbox skill %q has no direct local publication", id)
+		}
+		_, ok = published.GetSkill(id)
+		if !ok {
+			return nil, fmt.Errorf("sandbox skill %q must be published in Admin before enabling Node routing", id)
+		}
+		roots[id] = skill.SkillRoot
+	}
+	return roots, nil
 }

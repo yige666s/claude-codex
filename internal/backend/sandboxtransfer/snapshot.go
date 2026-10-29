@@ -37,7 +37,10 @@ func DevLimits() Limits { return Limits{MaxFiles: 256, MaxBytes: 8 << 20, MaxFil
 type Builder struct {
 	WorkspaceRoot string
 	SkillRoots    []string
-	Limits        Limits
+	// ExcludedWorkspaceDirs are top-level generated outputs, not per-task inputs.
+	// Callers must configure them explicitly; each name is validated.
+	ExcludedWorkspaceDirs []string
+	Limits                Limits
 }
 
 func (b Builder) Build(ctx context.Context, workspace, skillRoot string) ([]byte, error) {
@@ -78,10 +81,10 @@ func (b Builder) Build(ctx context.Context, workspace, skillRoot string) ([]byte
 	writer := tar.NewWriter(&buf)
 	count := 0
 	var total int64
-	if err = walkRoot(ctx, writer, workRoot, "workspace", b.Limits, &count, &total); err != nil {
+	if err = walkRoot(ctx, writer, workRoot, "workspace", b.Limits, &count, &total, nil); err != nil {
 		return nil, err
 	}
-	if err = walkRoot(ctx, writer, skillHandle, "skill", b.Limits, &count, &total); err != nil {
+	if err = walkRoot(ctx, writer, skillHandle, "skill", b.Limits, &count, &total, nil); err != nil {
 		return nil, err
 	}
 	if err := writer.Close(); err != nil {
@@ -110,7 +113,11 @@ func (b Builder) BuildWorkspace(ctx context.Context, workspace string) ([]byte, 
 		return nil, err
 	}
 	defer root.Close()
-	return buildArchive(ctx, root, "workspace", b.Limits)
+	excluded, err := workspaceExclusions(b.ExcludedWorkspaceDirs)
+	if err != nil {
+		return nil, err
+	}
+	return buildArchive(ctx, root, "workspace", b.Limits, excluded)
 }
 
 // BuildSkill runs at publication, not on the request hot path. Only configured
@@ -133,18 +140,18 @@ func (b Builder) BuildSkill(ctx context.Context, skillRoot string) ([]byte, erro
 			if err != nil || !info.Mode().IsRegular() {
 				return nil, errors.New("skill entrypoint missing or invalid")
 			}
-			return buildArchive(ctx, root, "skill", b.Limits)
+			return buildArchive(ctx, root, "skill", b.Limits, nil)
 		}
 	}
 	return nil, errors.New("skill path outside configured roots")
 }
 
-func buildArchive(ctx context.Context, root *os.Root, prefix string, lim Limits) ([]byte, error) {
+func buildArchive(ctx context.Context, root *os.Root, prefix string, lim Limits, excluded map[string]bool) ([]byte, error) {
 	var buf bytes.Buffer
 	writer := tar.NewWriter(&buf)
 	count := 0
 	var total int64
-	if err := walkRoot(ctx, writer, root, prefix, lim, &count, &total); err != nil {
+	if err := walkRoot(ctx, writer, root, prefix, lim, &count, &total, excluded); err != nil {
 		return nil, err
 	}
 	if err := writer.Close(); err != nil {
@@ -154,6 +161,25 @@ func buildArchive(ctx context.Context, root *os.Root, prefix string, lim Limits)
 		return nil, errors.New("snapshot archive exceeds limit")
 	}
 	return buf.Bytes(), nil
+}
+
+func workspaceExclusions(names []string) (map[string]bool, error) {
+	if len(names) > 16 {
+		return nil, errors.New("too many workspace exclusions")
+	}
+	excluded := make(map[string]bool, len(names))
+	for _, name := range names {
+		if len(name) == 0 || len(name) > 64 || name == "." || name == ".." || strings.ContainsAny(name, string([]byte{0, 47, 92, 58})) || excluded[name] {
+			return nil, errors.New("invalid workspace exclusion")
+		}
+		for _, r := range name {
+			if r < 32 || r == 127 {
+				return nil, errors.New("invalid workspace exclusion")
+			}
+		}
+		excluded[name] = true
+	}
+	return excluded, nil
 }
 
 func withinConfiguredRoot(target, base string, allowBase bool) error {
@@ -254,9 +280,12 @@ func openConstrainedRoot(base, target string) (*os.Root, error) {
 	return child, nil
 }
 
-func walkRoot(ctx context.Context, w *tar.Writer, root *os.Root, prefix string, lim Limits, count *int, total *int64) error {
+func walkRoot(ctx context.Context, w *tar.Writer, root *os.Root, prefix string, lim Limits, count *int, total *int64, excluded map[string]bool) error {
 	var visit func(string) error
 	visit = func(rel string) error {
+		if prefix == "workspace" && rel != "." && !strings.ContainsRune(rel, filepath.Separator) && excluded[rel] {
+			return nil
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}

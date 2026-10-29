@@ -335,6 +335,7 @@ services:
       # Canary-only remote Skill execution; policy endpoint/profile come from DB.
       AGENT_API_SANDBOX_CANARY_USER_IDS: ${AGENT_API_SANDBOX_CANARY_USER_IDS:-}
       AGENT_API_SANDBOX_SKILL_IDS: ${AGENT_API_SANDBOX_SKILL_IDS:-}
+      AGENT_API_SANDBOX_WORKSPACE_EXCLUDE_DIRS: ${AGENT_API_SANDBOX_WORKSPACE_EXCLUDE_DIRS:-generated-artifacts}
       AGENT_API_SANDBOX_NODE_CREDENTIAL_REF: ${AGENT_API_SANDBOX_NODE_CREDENTIAL_REF:-node_dev}
       AGENT_API_SANDBOX_NODE_KEY_FILE: /run/agentapi/secrets/sandbox-node.key
       AGENT_API_SANDBOX_ARTIFACT_KEY_FILE: /run/agentapi/secrets/sandbox-artifact.key

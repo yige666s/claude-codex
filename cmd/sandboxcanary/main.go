@@ -17,11 +17,12 @@ import (
 	"claude-codex/internal/backend/sandboxbroker"
 	"claude-codex/internal/backend/sandboxpolicy"
 	"claude-codex/internal/backend/sandboxtransfer"
+	"claude-codex/internal/harness/skills"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func main() {
-	mode := flag.String("mode", "", "activate, update-profile, smoke, or rollback")
+	mode := flag.String("mode", "", "activate, update-profile, smoke, prompt, or rollback")
 	cfgFile := flag.String("node-config", "", "private canary node config JSON")
 	root := flag.String("skill-root", "", "approved Skill directory")
 	workspace := flag.String("workspace", "", "fake workspace directory")
@@ -127,16 +128,16 @@ func main() {
 			die(err)
 		}
 		fmt.Printf("sandbox policy rolled back to new disabled revision=%d\n", revision.ID)
-	case "smoke":
-		if err := runBroker(ctx, store, *root, *workspace, *storeDir, *keyFile); err != nil {
+	case "smoke", "prompt":
+		if err := runBroker(ctx, store, *root, *workspace, *storeDir, *keyFile, *mode == "prompt"); err != nil {
 			die(err)
 		}
-		fmt.Println("Broker to real Node canary passed with fake workspace")
+		fmt.Println("Broker to real Node", *mode, "passed with fake workspace")
 	default:
-		die(errors.New("mode activate, rollback or smoke required"))
+		die(errors.New("mode activate, update-profile, rollback, smoke or prompt required"))
 	}
 }
-func runBroker(ctx context.Context, policy *sandboxpolicy.Store, skill, workspace, storeDir, keyPath string) error {
+func runBroker(ctx context.Context, policy *sandboxpolicy.Store, skill, workspace, storeDir, keyPath string, prompt bool) error {
 	for _, path := range []string{skill, workspace, storeDir, keyPath} {
 		if !filepath.IsAbs(path) {
 			return errors.New("absolute canary paths required")
@@ -174,6 +175,48 @@ func runBroker(ctx context.Context, policy *sandboxpolicy.Store, skill, workspac
 	defer release()
 	if len(published) == 0 {
 		return errors.New("published prompt missing")
+	}
+	if prompt {
+		if id != "docx" {
+			return errors.New("prompt smoke requires docx Skill")
+		}
+		loaded, err := skills.NewSkillLoader().LoadSkillsFromDirectory(filepath.Dir(skill), skills.SourceFile)
+		if err != nil {
+			return err
+		}
+		var definition *skills.SkillDefinition
+		for _, candidate := range loaded {
+			if candidate.Name == id {
+				definition = candidate
+				break
+			}
+		}
+		if definition == nil {
+			return errors.New("Skill not loaded")
+		}
+		runtime := agentruntime.NewRemoteSkillShellRuntime(broker, prepared, request, definition.Shell, definition.AllowedTools, 1<<20)
+		args := "# Sandbox verification report" + string(rune(10)) + string(rune(10)) + "This is finalized fake text for the DOCX remote prompt check."
+		blocks, err := definition.GetPrompt(args, &skills.SkillContext{SessionID: request.SessionID, WorkingDir: skill, ShellRuntime: runtime, ShellTimeout: 60 * time.Second})
+		if err != nil {
+			return fmt.Errorf("actual Skill prompt execution failed: %w", err)
+		}
+		found := false
+		for _, block := range blocks {
+			if strings.Contains(block.Text, "artifact_file_path: generated-artifacts/") {
+				found = true
+			}
+		}
+		if !found {
+			return errors.New("actual DOCX prompt did not emit a final artifact path")
+		}
+		files, err := broker.CollectSkillArtifacts(prepared, request)
+		if err != nil {
+			return err
+		}
+		if len(files) != 1 || !strings.HasSuffix(files[0].Filename, ".docx") || !strings.HasPrefix(string(files[0].Content), "PK") {
+			return errors.New("actual Skill prompt did not produce a valid DOCX")
+		}
+		return release()
 	}
 	request.Command = "cat " + filepath.Join(workspace, "input.txt") + " && printf fake > " + filepath.Join(workspace, "outputs/result.txt")
 	output, err := broker.ExecuteSkillCommand(prepared, request)
